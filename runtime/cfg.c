@@ -62,7 +62,10 @@ static const char *const known[] = {
     "PROFILE_MAIN", "PROFILE_RENDER", "PROMPTS", "PUSH_SKIP", "PUSH_STAGE", "QUICKLOAD_KEY", "QUICKSAVE", "QUICKSAVE_KEY", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_ASYNC", "REC_END", "REC_SPIN_US", "REEXEC", "REFLEX",
     "RENDER_SCALE", "REPLAY_ASYNC", "REPLAY_CHUNKS", "REPLAY_CHUNK_DRAWS", "REPLAY_SKEW_US", "REPLAY_STATE_CHECK", "REPLAY_WORKERS",
     "REPLAY_CHECK", "REPORT_GUARD", "RESOLVE_CHECK", "RESTART_WAIT", "ROMFS", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
-    "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RSTICK_DEADZONE", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SCENE_UPSCALER", "SHADER_CACHE",
+    "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RSTICK_DEADZONE",
+    "RT_AO", "RT_AO_STRENGTH", "RT_GI", "RT_GI_STRENGTH", "RT_LIGHTS", "RT_MAT", "RT_QUALITY", "RT_REFL", "RT_SHADOWS",
+    "RT_SHADOW_ONLY", "RT_SHADOW_STRENGTH", "RT_TONE", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS",
+    "SCENE_UPSCALER", "SHADER_CACHE",
     "SHADER_MEMO", "SHADOW", "SHADOW_DEFER", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHADOW_SNAP", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR", "SHUTTER_FIX",
     "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_US", "STICK_DEADZONE", "STICK_SENS",
     "SWKBD_ANSWER", "SYNC_AHEAD",
@@ -88,7 +91,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"SCENE_UPSCALER", "display"}, {"DLAA", "display"}, {"DLSS", "display"}, {"FSR_SHARPNESS", "display"}, {"DLSS_PRESET", "display"}, {"DLSS_CHAR_MASK", "display"}, {"DLSS_FIXED_EXPOSURE", "display"}, {"DLAA_EFFECTS_AFTER", "display"}, {"REFLEX", "display"}, {"FXAA", "display"},
     {"DEVICE_PROFILE", "display"}, {"ASSUME_FOCUS", "display"},
     {"DISCORD_RPC", "discord"}, {"DISCORD_APP_ID", "discord"}, {"DISCORD_IMAGE", "discord"},
-    {"SHADOW_SCALE", "display"}, {"SHADOW_RANGE", "display"}, {"GRASS_RANGE", "display"}, {"CONTACT_SHADOWS", "display"},
+    {"SHADOW_SCALE", "display"}, {"SHADOW_RANGE", "display"}, {"GRASS_RANGE", "display"}, {"CONTACT_SHADOWS", "display"}, {"RT_AO", "display"}, {"RT_SHADOWS", "display"}, {"RT_AO_STRENGTH", "display"}, {"RT_SHADOW_STRENGTH", "display"}, {"RT_GI", "display"}, {"RT_GI_STRENGTH", "display"}, {"RT_REFL", "display"}, {"RT_TONE", "display"}, {"RT_SHADOW_ONLY", "display"}, {"RT_MAT", "display"}, {"RT_QUALITY", "display"}, {"RT_LIGHTS", "display"},
     {"PCSS", "display"},
     {"MODS_DIR", "mods"}, {"MODS_ORDER", "mods"}, {"MODS_DISABLED", "mods"}, {"MODS_NO_CODE", "mods"}, {"MODS_REBUILD", "mods"}, {"MODS_WITHOUT_CODE", "mods"},
     {"TEX_HEAP_EXTRA_MB", "mods"},
@@ -160,6 +163,13 @@ static const CfgMeta metas[] = {
     {"SHADOW_RES", "game", "game|256|512|768|1024|1536|2048", RESTART},
     {"SHADOW_SCALE", "1", "1..4", RESTART},
     {"SHADOW_RANGE", "100", "50..400", RESTART}, {"GRASS_RANGE", "100", "50..400", RESTART}, {"CONTACT_SHADOWS", "0", "0..100", RESTART},
+    {"RT_AO", "0", "0|1", LIVE}, {"RT_SHADOWS", "0", "0|1", LIVE},
+    {"RT_AO_STRENGTH", "100", "0..200", LIVE}, {"RT_SHADOW_STRENGTH", "100", "0..100", LIVE},
+    {"RT_GI", "0", "0|1", LIVE}, {"RT_GI_STRENGTH", "300", "0..600", LIVE},   // live once ray tracing is on (vk_rt_live)
+    {"RT_REFL", "100", "0..200", LIVE}, {"RT_TONE", "100", "0..100", LIVE}, {"RT_SHADOW_ONLY", "1", "0|1", LIVE},
+    {"RT_MAT", "0", "0|1", LIVE},   // ray hits shaded from their own textures (docs/raytracing.md, materials)
+    {"RT_QUALITY", "high", "low|medium|high|ultra", LIVE},
+    {"RT_LIGHTS", "0", "0|1", LIVE},   // the game's local lights cast ray-traced shadows (gfx_shader.c patch_rt_lights)
     {"PCSS", "0", "0..200", RESTART},
     // Game
     {"FPS_LIMIT", "60", "30|40|45|60|90|120|144|display", LIVE}, {"FPS60", "1", "0|1", LIVE}, {"FRAME_QUEUE", "0", "0|1", LIVE},
@@ -384,7 +394,28 @@ static int profile_of(void) {
 
 const char *cfg_device_profile(void) { return profile_of() ? "deck" : "desktop"; }
 
+// Test overrides (cfg_test_set, vk_rt.c live_test: TOTK_RT_LIVE_SET): above the environment, in memory only, never saved
+#define TEST_MAX 16
+static const char *test_k[TEST_MAX];
+static const char *volatile test_v[TEST_MAX];
+static volatile int n_test;
+
+void cfg_test_set(const char *name, const char *value) {
+    plat_mutex_lock(&set_lock);
+    int i = 0, n = n_test;
+    while (i < n && strcasecmp(test_k[i], name)) i++;
+    if (i == n && n < TEST_MAX) test_k[i] = strdup(name), __atomic_store_n(&n_test, n + 1, __ATOMIC_RELEASE);
+    if (i < TEST_MAX) __atomic_store_n(&test_v[i], strdup(value), __ATOMIC_RELEASE);   // the old string stays for readers
+    __atomic_add_fetch(&version, 1, __ATOMIC_RELEASE);
+    plat_mutex_unlock(&set_lock);
+}
+
 static const char *raw_get(const char *name) {
+    for (int i = 0, n = __atomic_load_n(&n_test, __ATOMIC_ACQUIRE); i < n; i++)
+        if (!strcasecmp(test_k[i], name)) {
+            const char *v = __atomic_load_n(&test_v[i], __ATOMIC_ACQUIRE);
+            if (v) return v;
+        }
     const char *e = getenv(name);
     if (e || strncmp(name, PREFIX, PREFIX_LEN)) return e;
     int n = __atomic_load_n(&n_entries, __ATOMIC_ACQUIRE);

@@ -37,7 +37,7 @@
 #include "vk_exec.h"
 
 static struct {
-    int read, tried, ok, strength, debug, logged;
+    int read, tried, ok, strength, debug, logged, rt;   // rt: vk_rt.c's test pass runs here instead
     PFN_vkCmdPushDescriptorSetKHR push;
     VkDescriptorSetLayout dsl;
     VkPipelineLayout layout;
@@ -45,7 +45,18 @@ static struct {
     VkSampler sampler;
     VkExecTarget scene, depth;         // the last G-buffer's scene colour and linear depth
     VkExecTarget sun;                  // this frame's half-resolution lighting target (is_lighting); no img: none seen
+    VkExecTarget aot;                  // the game's AO target since that G-buffer: target 0 of the half-resolution G-buffer
+                                       // pass (RGBA8), whose blue channel is the SSAO the composite applies (ray-traced AO)
     int pending;                       // the composite into scene ran; the march waits for the next pass
+    int inject;                        // the pending pass is the ray-traced AO before the composite
+    int injected;                      // it was planned for this G-buffer's composite
+    int qtraced;                       // the first shadow pass ran at the quarter-res lighting (the 8-target pass skips it)
+    int shadow, shadowed;              // the pending pass is the ray-traced sun shadow (1 trace only, 2 build and trace);
+                                       // shadow passes planned since the last composite
+    VkExecTarget alb;                  // the G-buffer's albedo (its first RGBA8 target after the first), for the GI
+    VkExecTarget mtl, mid;             // its target 3 (normal, baked AO, smoothness) and target 0 (shading class), RGBA8
+    int gi_after, gi_job;              // a GI pass is due after this composite; the pending pass is it
+    int ecopy;                         // the pending pass copies the scene colour before the composite (the GI's glow)
     uint64_t c4;
 } C;
 
@@ -55,7 +66,8 @@ int vk_contact_strength(void) {
         C.strength = s < 0 ? 0 : s > 100 ? 100 : s;
         C.read = 1;
     }
-    return C.strength;
+    C.rt = vk_rt_on();   // the menu can switch ray tracing in play (vk_rt.c rt_poll)
+    return C.strength ? C.strength : C.rt;
 }
 
 static int init(VkCtx *c) {
@@ -145,6 +157,18 @@ static int is_composite(const VkExec *ex) {
 
 int vk_contact_plan(const VkExec *ex, int pass, VkExecJob *j) {
     if (!vk_contact_strength()) return 0;
+    // the GI after a composite whose AO went before it: at the first op after the composite pass
+    if (C.gi_after && !C.pending) {
+        const VkExecTarget *s_, *d_;
+        if (pass && is_composite(ex)) {
+            // the composite itself, asked again at its first draw
+        } else if (pass && is_gbuffer(ex, &s_, &d_)) {
+            C.gi_after = 0;   // missed (the next frame began): none this frame
+        } else {
+            C.gi_after = 0, C.gi_job = 1, C.pending = 1;
+            goto job;
+        }
+    }
     if (pass) {
         const VkExecTarget *scene, *depth;
         // The camera block: c4 of the fragment stage, 0x940 bytes. The composite binds it only after its pass begins, so
@@ -153,34 +177,93 @@ int vk_contact_plan(const VkExec *ex, int pass, VkExecJob *j) {
         if (b->addr && b->size == 0x940) C.c4 = b->addr;
         if (is_gbuffer(ex, &scene, &depth)) {
             C.pending = 0;
-            C.scene = *scene, C.depth = *depth, C.sun = (VkExecTarget){0};
+            C.scene = *scene, C.depth = *depth, C.sun = (VkExecTarget){0}, C.injected = 0, C.gi_after = 0;
+            memset(&C.alb, 0, sizeof C.alb);
+            for (uint32_t i = 1; i < ex->pass_ncolor && i < 8; i++) {
+                const VkExecTarget *t = &ex->color[i];
+                if (t->image && !t->level && t->width == ex->pass_w && t->height == ex->pass_h &&
+                    t->format == VK_FORMAT_R8G8B8A8_SRGB) { C.alb = *t; break; }
+            }
+            memset(&C.mtl, 0, sizeof C.mtl), memset(&C.mid, 0, sizeof C.mid);
+            for (uint32_t i = 0; i < ex->pass_ncolor && i < 4; i += 3) {   // targets 0 and 3, the albedo's size, UNORM
+                const VkExecTarget *t = &ex->color[i];
+                if (t->image && !t->level && t->width == ex->pass_w && t->height == ex->pass_h &&
+                    t->format == VK_FORMAT_R8G8B8A8_UNORM) *(i ? &C.mtl : &C.mid) = *t;
+            }
+            if (C.rt) vk_rt_live();
+            memset(&C.aot, 0, sizeof C.aot);
             return 0;
         }
         if (is_lighting(ex)) {
             C.sun = ex->color[0];
-            return 0;
+            if (!C.rt) return 0;   // with ray tracing the same pass is where the traced shadow and AO go (below)
         }
+        // the game's quarter-res lighting (5 targets, frame dump pass 91) comes before the half-res one and reads the
+        // shadow's quarter-res copy: the first shadow pass goes before it, else it lit with last frame's shadow, which
+        // sat in the wrong place on the screen while the camera turned
+        if (C.rt && C.scene.image && !C.shadowed && ex->pass_ncolor >= 5 && ex->pass_w == (C.scene.width + 3) / 4 &&
+            ex->pass_h == (C.scene.height + 3) / 4) {
+            if (!C.c4 || !vk_rt_shadows()) return 0;
+            C.shadow = ++C.shadowed, C.qtraced = 1, C.pending = 1;
+        } else
+        if (C.rt && C.scene.image && ex->pass_ncolor == 8 && ex->color[0].image && !ex->color[0].level &&
+            ex->color[0].format == VK_FORMAT_R8G8B8A8_UNORM && ex->pass_w == (C.scene.width + 1) / 2 &&
+            ex->pass_h == (C.scene.height + 1) / 2 && ex->color[0].img &&
+            (ex->color[0].img->usage & VK_IMAGE_USAGE_STORAGE_BIT)) {
+            C.aot = ex->color[0];   // the half-resolution G-buffer's target 0: the SSAO chain writes the game's AO there
+            // the ray-traced sun shadow, before this pass's lighting shaders read it. The pass comes twice a frame: more
+            // G-buffer draws come between, lit by the second. The first traces last frame's scene (1), the second builds
+            // the scene with all of this frame's draws and traces again (2); the composite's AO then reuses that scene.
+            if (C.qtraced) { C.qtraced = 0; return 0; }   // traced already, before the quarter-res lighting
+            if (C.shadowed >= 2 || !C.c4 || !vk_rt_shadows()) return 0;
+            C.shadow = ++C.shadowed, C.pending = 1;
+        } else
         if (is_composite(ex)) {
+            if (C.injected) return 0;   // asked again for the same composite (its first draw): the pass ran before it
+            C.shadowed = 0, C.qtraced = 0;   // the next half-resolution lighting is the next frame's (a G-buffer-shaped pass can come
+                              // between the two lighting passes of one frame: resetting there ran the shadows twice)
             C.pending = C.c4 != 0;
-            return 0;
+            C.gi_after = C.pending && C.rt && vk_rt_gi();   // the GI goes after the composite
+            // ray-traced AO into the game's AO target: the pass goes before the composite, which applies it
+            if (!(C.pending && C.rt && C.aot.image && vk_rt_ao_inject())) {
+                if (!C.gi_after) return 0;
+                // the GI: before the composite adds the lighting, the scene colour holds only the glow the G-buffer
+                // shaders wrote (the GI's lights: vk_rt.c emit_copy); a pass copies it now, the GI follows the composite
+                // as after an injection
+                C.ecopy = C.injected = 1;
+            } else {
+                C.inject = C.injected = 1;
+            }
         }
     }
     if (!C.pending) return 0;
+job:
     C.pending = 0;
-    const float *u = (const float *)(uintptr_t)C.c4;
+    int gi = C.gi_job;
+    C.gi_job = 0;
+    // With ray tracing, the camera block as the replay's submit holds it (vk_usnap): game memory may already hold the
+    // next frame's camera, and while the camera turns that placed the ray-traced scene and its shadows off the game's
+    // (doubled shadows that come and go). Game memory when there is no copy, and for the contact shadows alone as before.
+    const float *g = (const float *)(uintptr_t)C.c4, *u = C.rt ? (const float *)vk_usnap_bytes(C.c4, 0x940) : NULL;
+    if (!u) u = g;
     float lx = -u[44 * 4 + 0], ly = -u[44 * 4 + 1], lz = -u[44 * 4 + 2], ll = sqrtf(lx * lx + ly * ly + lz * lz);
     float px = u[7 * 4 + 0], py = u[8 * 4 + 1], zfar = u[14 * 4 + 1];
     if (!(ll > 1e-6f) || !(px > 0) || !(py > 0) || !(zfar > 1)) return 0;
+    int slot = C.rt ? vk_rt_note_camera(u) : 0, inj = C.inject, sh = C.shadow, ec = C.ecopy;
+    C.inject = C.shadow = C.ecopy = 0;
+    if (inj) vk_rt_note_aot(slot, &C.aot);
+    if (gi) vk_rt_note_alb(slot, &C.alb), vk_rt_note_mtl(slot, &C.mtl, &C.mid);
     float w = (float)C.scene.width, h = (float)C.scene.height;
     *j = (VkExecJob){.scene = C.scene, .depth = C.depth, .sun = C.sun,
                      .pc = {px, py, zfar, (float)C.strength / 100.0f,
                             lx / ll, ly / ll, lz / ll, 0.6f,
                             w, h, 1.0f / w, 1.0f / h,
-                            0, 0, 0, 0}};
+                            gi ? 2.0f : 0.0f, inj ? 1.0f : ec ? 2.0f : 0.0f, (float)sh, (float)slot}};
     return 1;
 }
 
 void vk_contact_exec(VkExec *ex, const VkExecJob *j) {
+    if (C.rt) { vk_rt_exec(ex, j); return; }
     if (!C.tried) init(vk_ctx());
     if (!C.ok) return;
     VkImageView in = vk_exec_target_view(j->depth.img, VK_FORMAT_R32_SFLOAT, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT,
@@ -238,6 +321,7 @@ void vk_contact_flush(VkExec *ex) {
 
 void vk_contact_release(void) {
     VkCtx *c = vk_ctx();
+    vk_rt_release();
     if (!c || !C.tried) return;
     if (C.pipe) vkDestroyPipeline(c->device, C.pipe, NULL);
     if (C.sampler) vkDestroySampler(c->device, C.sampler, NULL);

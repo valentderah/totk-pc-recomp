@@ -1,0 +1,2047 @@
+#version 460
+// Ray-traced one-bounce diffuse GI, the phase 7 cost probe (runtime/vk_rt.c, TOTK_RT_GI=1; docs/raytracing.md).
+// Runs after the composite, on the lit HDR scene colour. Three modes, the AO's layout:
+//
+// mode 0, trace (quarter resolution, one thread per 4x4 block): one pixel of the block (a different one each frame), its
+// world position and normal from the linear depth, one cosine-weighted ray of pc.prm.x metres. A hit whose point is on
+// the screen and not hidden there takes the lit colour of that pixel (this frame's, before GI: one bounce); a hit off the
+// screen or hidden, and a miss, bring nothing (the game's own ambient keeps the sky light). The history at the point's
+// position last frame is reprojected. hist_out[i] = (history rgb or raw, view depth), hist_out[n + i] = (raw rgb, frames),
+// hist_out[2n + i] = (sky visibility history or raw, raw): 1 for a miss, (t / length)^2 for a hit at t. rt_aoinj.comp
+// dims the game's ambient by it before the next composite (the ambient rebalance).
+//
+// mode 3, temporal (quarter resolution): the history clamped to the 3x3 neighbourhood's raw mean +- 2 sd (same depth),
+// then blended with the raw value over up to 32 frames.
+//
+// mode 1, apply (full resolution): a depth-aware 3x3 upsample of the quarter-res GI, times the surface colour (the
+// G-buffer's albedo when found, else the lit colour's chroma), times pc.prm.y, added to the scene.
+// view 20: the GI light alone (times pc.ext.y); 21: split screen, GI on the left half, none on the right (the ambient
+// rebalance, applied before the composite, is on both halves); 22: the sky visibility; 23: the pixels that count as
+// lights (red); 24: the reflections alone (times their weight); 25: the reflection weight (Fresnel x gloss x found);
+// 28: the material targets (red: the reflection weight from the material, green: the game's smoothness; blue: none bound).
+//
+// Reflections (pc.rfl.x > 0; the UltraCam RTGI's glossy floors), half resolution, their buffer bound at 2 for the apply:
+// mode 8, trace (one thread per 2x2 block, a different pixel of it each frame): the mirror direction from the depth
+// normal, jittered by the roughness; a hit on the screen and not hidden there takes that pixel's lit colour, a miss whose
+// vanishing point on the screen is sky or farther than the ray takes that; anything else is not found. Values are kept
+// premultiplied, (rgb x found, found). The gloss: planar surfaces (the normal matches its neighbours' 3 pixels away)
+// reflect, curved ones (characters, rocks) do not. r[i] = reprojected history, r[n + i] = raw, r[2n + i] = (view depth,
+// frames, gloss, -).
+// mode 9, temporal: the history clamped to the 3x3 raw mean +- 1.5 sd, blended over up to pc.rfl.w frames.
+// mode 10, spatial: one a-trous step (like mode 7) on the premultiplied values.
+// The apply mixes the scene towards the reflection by Fresnel (Schlick; F0 pc.rsz.z on floors, polished or wet, 0.04 on
+// walls) x gloss x found x strength. Then the night tone (pc.tone, vk_rt.c: by the frame's lighting level) scales it.
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_nonuniform_qualifier : require
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0) uniform sampler2D lin_depth;              // the game's linear depth: (view distance - near) / far
+layout(binding = 1, r11f_g11f_b10f) uniform image2D scene;    // the lit scene colour (HDR, before tonemapping)
+layout(binding = 2, std430) readonly buffer HistIn { vec4 hist_in[]; };
+layout(binding = 3, std430) buffer HistOut { vec4 hist_out[]; };
+layout(set = 1, binding = 0) uniform accelerationStructureEXT tlas;
+layout(binding = 4, std430) readonly buffer World { vec4 world[]; };
+layout(binding = 5, std430) readonly buffer Gtab { uint gtab[]; };
+layout(binding = 7) uniform sampler2D albedo;                 // the G-buffer's albedo (sRGB view: linear when read)
+// The G-buffer's material targets (vk_contact.c, bound when pc.rsz.z < 0): target 3 (RGBA8) holds the packed normal in
+// rg, baked AO in b (bits 2-7, its sqrt) and the material texture's smoothness in a (bits 2-7); target 0 (RGBA8) the
+// shading class: g 253 characters (r 8-11 the part), g 125 foliage, g 32 trees and far cards, r 128 far terrain.
+layout(binding = 13) uniform sampler2D gmtl;
+layout(binding = 14) uniform sampler2D gmid;
+// The G-buffer's glow: the scene colour before the lighting composite added the light (vk_rt.c emit_copy), bound when
+// pc.ext.w < 0. What the game's shaders say glows, and how brightly: the GI's lights (is_light), not guessed from a
+// pixel's brightness over its albedo, which also took dark surfaces lit by strong light for lamps (the shrine
+// doorway's interior, lit green, re-emitted 8 x).
+layout(binding = 15) uniform sampler2D emis;
+// The veil (rt_late.comp mode 2, last frame's, valid when pc.ext.x < 0): how much of a pixel the game's passes after the
+// GI let show. The light the GI takes from the screen (bounce, the light cache, reflections, the glow's lights) is the
+// screen at the composite times it, so what a veil covers (the shrine's portal) does not light the scene.
+layout(binding = 16) uniform sampler2D veil;
+// What apply added to each pixel (its GI and reflections; cleared to 0 each frame, vk_rt.c): the late measure takes it
+// out of the finished picture, so the appearance cache learns the game's picture, not ours, and the GI's hits off the
+// screen do not read the GI back (a loop: the shrine doorway's green rose until it saturated)
+layout(binding = 6, rgba16f) uniform writeonly image2D added;   // a: the luminance apply wrote (covered later: not ours)
+// The frame's light list (modes 5, 4): one entry per 4x4 block whose lit colour is at least the threshold (lanterns,
+// crystals, lit windows): (world position, area m^2), (radiance times the emissive gain, -)
+// lsum, lnum (mode 6): the frame's lighting level, the sum (x 64) and count of lit colour / albedo over the blocks
+// the world-space light cache (vk_rt.c gcache): CN slots, a key (0: empty) and the lit colour + the frame it was written
+#define CN 524288u
+layout(binding = 9, std430) buffer Cache { uint ckey[CN]; vec4 cval[]; };
+layout(binding = 8, std430) buffer Lights { uint lcount; uint lsum, lnum, skysum, skynum, lp0, lp1, lp2; vec4 lights[]; };   // sky: the night tone's day signal
+#define LMAX 32768u
+// Materials (vk_rt.c gsun, wattr, MT; docs/raytracing.md, materials step 4): the sun's measurement (mode 12: the lit colour / albedo
+// summed x 64 where the sun reaches, with N.L x 1024, and where it does not), the sun's world direction (w: known),
+// its colour and the sky's (w: measured); the triangles' UVs and texture words; the albedo textures
+// ssum: in the sun (N.L > 0.25) the lit colour x 64 (0-2), the count (3), the albedo x 256 (4-6), the albedo x N.L x 256
+// (7-9); in its shadow the lit colour x 64 (10-12), the albedo x 256 (13-15), the count (16). shist: histograms of the
+// lit / albedo luminance ratio, 4 bins a stop from 2^-6: in the shadow (0-63), in the sun over N.L (64-127); vk_rt.c takes
+// their medians for the levels (a block the capture misjudges, under glass or a cloud, cannot pull them far).
+// mprobe (debug view 26, TOTK_RT_MPROBE): the materials primary rays hit at 32 points of the right half
+layout(binding = 10, std430) buffer Sun { uint ssum[32]; uint shist[128]; uvec4 mprobe[96]; uint fsum[256];
+                                           vec4 sun_dir; vec4 sun_col; vec4 sky_col; vec4 pbox; vec4 hz[32]; };
+// The game's distance haze (fsum: mat_measure's sums per distance bin, 2 a stop from HZ_D0; hz: vk_rt.c haze_fit):
+// hz[0] (extinction per metre rgb, w 1 when fitted), hz[1] (the haze's colour rgb): c T + colour (1 - T), T = e^(-sigma t)
+#define HZ_D0 16.0
+vec3 haze(vec3 c, float t) {
+    if (hz[0].w < 0.5) return c;
+    vec3 T = exp(-hz[0].rgb * t);
+    return c * T + hz[1].rgb * (1.0 - T);
+}
+layout(binding = 11, std430) readonly buffer WAttr { vec4 wattr[]; };
+// view 26's right half when the late hook puts it in (nr.z; rt_late.comp mode 1, after the late measure has read the
+// game's whole picture): per pixel (colour, its weight over the game's finished pixel) as halves
+layout(binding = 12, std430) writeonly buffer Split { uvec2 split[]; };
+layout(set = 2, binding = 0) uniform sampler2D mtex[8192];
+layout(set = 2, binding = 1) uniform sampler2DArray mtexa[8192];
+layout(set = 2, binding = 2, std430) readonly buffer MGen { uint mgen[]; };
+// The materials' measured colours (vk_rt.c MT.cal; rt_gi.comp mode 13 sums, mode 14 updates). Per slot 64 uints, x 64
+// (rounded at random, so small values sum without bias): the diffuse colour the sun gives Ss (25-27), 28 the count, the
+// finished screen's colour F there (29-31, the haze taken out), the diffuse colour the sky gives Sa (32-34);
+// rt_late.comp's late measure, else mode 13 with the scene at GI time; then Ss^2 35-37, Sa^2 38-40, Ss Sa 41-43, R^2
+// 44-46, Ss R 47-49, Sa R 50-52, F Ss 53-55, F Sa 56-58, F R 59-61 with R the Fresnel-weighted light a mirror ray
+// brings, for mode 14's fit F = look Ss + ambient look Sa + spec R. Before that, x 4096
+// the G-buffer albedo a (0-2), the raw texel t (3-5), t^2 (6-8), a t (9-11); the count (12); the generation + 1 the sums
+// are of (14), the generation + 1 measured (15); x 64 the lit colour (16-18) and the lit colour where it glows (is_light,
+// 19-21). Then per slot three vec4: (the fit's scale, the mean texel's red), (its offset, green): albedo = scale x
+// texel + offset; (the light it gives off, blue): where the albedo is black (shaded by the game elsewhere: far impostors,
+// effects) the lit colour the screen shows, else the glowing part's; (the look, w 1 once measured: mat_look); 4, 5
+// debug; 6 the reflection strength (mat_spec); 7 the ambient look (mat_alook).
+// sval: per fragment shader id (mgen's second half per slot; 0 none) its materials' fit averaged (scale, w 1 once set;
+// offset; emission; look; reflection; ambient look), which a material not measured yet takes
+// mrec (rt_gi.comp mode 13 -> rt_late.comp): three records a 4x4 block for the late measure as halves: (slot + 1, pixel
+// and frame, Ss, the distance), (Sa, R, the cache's cell by colour + 1), (our diffuse colour there Lt, the reflection strength q, the appearance cache's
+// cell + 1, 1 where it glows).
+// mcache: the appearance cache (ac_get), 16 uints a cell: key, frame last measured, count, then x 1024 the sums of
+// F' (the finished colour less q R), Lt F', Lt^2, Lt per channel
+layout(set = 2, binding = 3, std430) buffer MCal { uint msum[2u * 8192u * 64u]; vec4 sval[4096u * 6u]; uvec4 mrec[3u * 522240u]; uint mcache[524288u * 16u];
+                                                   vec4 mval[]; };
+uint tri_index(int ci, int geom, int prim) { return (ci == 0 ? 0u : gtab[uint(ci - 2 + geom)]) + uint(prim); }
+bool alpha_cut(uint ct, vec2 bc, float t, vec3 rd);
+uint pcg(uint v);
+float app_mode();
+float lum(vec3 c);
+#define PROCEED(q, dir) \
+    while (rayQueryProceedEXT(q)) { \
+        int ci_ = rayQueryGetIntersectionInstanceCustomIndexEXT(q, false); \
+        uint ct_ = ci_ == 1 ? 0u : tri_index(ci_, rayQueryGetIntersectionGeometryIndexEXT(q, false), \
+                                             rayQueryGetIntersectionPrimitiveIndexEXT(q, false)); \
+        vec4 ca_ = ci_ == 1 ? vec4(0.0) : world[ct_ * 3u], cb_ = ci_ == 1 ? vec4(0.0) : world[ct_ * 3u + 1u], \
+             cc_ = ci_ == 1 ? vec4(0.0) : world[ct_ * 3u + 2u]; \
+        if ((ci_ == 1 || ca_.w > 1.5 || dot(cross(cb_.xyz - ca_.xyz, cc_.xyz - ca_.xyz), dir) < 0.0) && \
+            (ci_ == 1 || !alpha_cut(ct_, rayQueryGetIntersectionBarycentricsEXT(q, false), rayQueryGetIntersectionTEXT(q, false), dir))) \
+            rayQueryConfirmIntersectionEXT(q); \
+    }
+// the same for a ray toward the sun: both sides of a triangle block it (the game's shadow map draws its casters so: an
+// open mesh's far side, a single-sided lattice, cast their shadows)
+#define PROCEED_SUN(q, dir) \
+    while (rayQueryProceedEXT(q)) { \
+        int ci_ = rayQueryGetIntersectionInstanceCustomIndexEXT(q, false); \
+        if (ci_ == 1 || !alpha_cut(tri_index(ci_, rayQueryGetIntersectionGeometryIndexEXT(q, false), \
+                                             rayQueryGetIntersectionPrimitiveIndexEXT(q, false)), \
+                                   rayQueryGetIntersectionBarycentricsEXT(q, false), rayQueryGetIntersectionTEXT(q, false), dir)) \
+            rayQueryConfirmIntersectionEXT(q); \
+    }
+
+layout(push_constant) uniform Params {
+    vec4 proj;             // projection x scale, y scale, far plane, mode (0 trace, 3 temporal, 1 apply)
+    vec4 iv0, iv1, iv2;    // inverse view rows: view space -> world
+    vec4 pv0, pv1, pv2, pv3;   // last frame's view-projection rows (clip = row . world)
+    vec4 prm;              // ray length (m), strength, saturation, frame number
+    vec4 sz;               // width, height, quarter width, quarter height
+    vec4 flg;              // history valid, uv x sign, uv y sign, view
+    vec4 ext;              // farthest pixel given GI (m), debug brightness, light threshold (negative: no albedo bound),
+                           // emissive gain
+    vec4 rfl;              // reflections: strength (0: off), roughness, ray length (m), history frames
+    vec4 rsz;              // reflections: half width, half height, floors' F0 (walls 0.04), offset of the result in binding 2
+    vec4 tone;             // the night tone: rgb gains, amount (0: none): the scene times mix(1, gains, amount)
+    layout(offset = 240) vec4 nr;   // x: the near plane (m); the linear depth is (view distance - near) / far; y: mode 13
+                                    // leaves records for the late measure; z: view 26's half goes to split; w: the
+                                  // appearance cache on
+} pc;
+float thr() { return abs(pc.ext.z); }
+float gfar() { return abs(pc.ext.x); }   // (negative: the veil is bound)
+
+vec3 view_pos(vec2 uv, float z) {
+    vec2 ndc = uv * 2.0 - 1.0;
+    return vec3(ndc.x * z / pc.proj.x, -ndc.y * z / pc.proj.y, -z);
+}
+vec3 to_world(vec3 p) { vec4 q = vec4(p, 1.0); return vec3(dot(pc.iv0, q), dot(pc.iv1, q), dot(pc.iv2, q)); }
+vec3 dir_world(vec3 d) { return vec3(dot(pc.iv0.xyz, d), dot(pc.iv1.xyz, d), dot(pc.iv2.xyz, d)); }
+// world -> view space: the inverse view is a rotation and a translation
+vec3 to_view(vec3 w) {
+    vec3 d = w - vec3(pc.iv0.w, pc.iv1.w, pc.iv2.w);
+    return vec3(dot(vec3(pc.iv0.x, pc.iv1.x, pc.iv2.x), d), dot(vec3(pc.iv0.y, pc.iv1.y, pc.iv2.y), d),
+                dot(vec3(pc.iv0.z, pc.iv1.z, pc.iv2.z), d));
+}
+
+// ---- materials: a captured triangle's albedo (rt_test.comp and rt_gi.comp have the same code)
+// The raw material at a hit of triangle ct (barycentrics bc, t along rd): 0 none (no material, or its slot went since);
+// 1 a texel tx of the draw's texture at the mip of a one-pixel ray cone; 2 a flat material (tx 1); 3 a material whose
+// slot was freed since (its texture went: the game streamed a new one in) but still holds its last measure. k: its slot
+// (2D slots, then array ones). atest: the draw is alpha-tested.
+// The last mat_raw's place on its texture (type 1): x, y in the appearance cache's cells by texture, the layer; w the
+// cells a side (0: none): at most 64, fewer where a pixel covers more than a cell (mip levels: a far pixel's colour is
+// the average of several cells' and would wash out the near ones')
+vec4 g_uv = vec4(0.0);
+uint mat_raw(uint ct, vec2 bc, float t, vec3 rd, out vec4 tx, out uint k, out bool atest) {
+    tx = vec4(1.0), k = 0u, atest = false, g_uv = vec4(0.0);
+    if (uint(wattr.length()) <= ct * 2u + 1u) return 0u;
+    vec4 a = wattr[ct * 2u], b = wattr[ct * 2u + 1u];
+    uint lz = floatBitsToUint(b.z), tw = floatBitsToUint(b.w), fl = lz >> 16;
+    atest = (fl & 4u) != 0u;
+    if ((fl & 9u) == 0u || (tw & 0x80000000u) == 0u) return 0u;
+    uint slot = tw & 0xffffu, arr = (tw >> 30) & 1u;
+    if (slot >= 8192u) return 0u;
+    k = arr * 8192u + slot;
+    if (mgen[k] != ((tw >> 16) & 0x3fffu)) return msum[k * 64u + 15u] == ((tw >> 16) & 0x3fffu) + 1u ? 3u : 0u;
+    if ((fl & 1u) == 0u) return 2u;
+    vec2 uv = a.xy * (1.0 - bc.x - bc.y) + a.zw * bc.x + b.xy * bc.y;
+    vec3 p0 = world[ct * 3u].xyz, p1 = world[ct * 3u + 1u].xyz, p2 = world[ct * 3u + 2u].xyz;
+    vec3 nc = cross(p1 - p0, p2 - p0);
+    float aw = length(nc);
+    vec3 n = nc / max(aw, 1e-20);
+    vec2 d1 = a.zw - a.xy, d2 = b.xy - a.xy;
+    float at = abs(d1.x * d2.y - d1.y * d2.x);
+    ivec2 ts = arr != 0u ? textureSize(mtexa[nonuniformEXT(slot)], 0).xy : textureSize(mtex[nonuniformEXT(slot)], 0);
+    float spread = 2.0 / (pc.proj.y * pc.sz.y);   // a pixel's angle
+    float lod = 0.5 * log2(max(at * float(ts.x) * float(ts.y), 1e-20) / max(aw, 1e-20)) +
+                log2(max(t * spread, 1e-6) / max(abs(dot(n, rd)), 0.1));
+    tx = arr != 0u ? textureLod(mtexa[nonuniformEXT(slot)], vec3(uv, float(lz & 0xffffu)), lod)
+                   : textureLod(mtex[nonuniformEXT(slot)], uv, lod);
+    // Single-channel (BC4 / R8) mask textures sample as (r, 0, 0, 1) in Vulkan; broadcast to greyscale so trim masks
+    // do not render or fit as pure neon red.
+    if (max(tx.g, tx.b) == 0.0 && tx.r > 0.0) tx.gb = vec2(tx.r);
+    float tm = float(max(ts.x, ts.y)), c0 = min(tm, 64.0);
+    float cn = max(c0 * exp2(-clamp(ceil(lod - log2(tm / c0) - 0.5), 0.0, 6.0)), 1.0);
+    g_uv = vec4(uv * cn, float(lz & 0xffffu), cn);
+    return 1u;
+}
+// ---- step 6 (docs/raytracing.md, materials): the game's own fragment shader at a hit. gfx_prog.c compiled its albedo (target 1) and
+// glow (target 5) to a register program (pcode); a draw that used it recorded its corners' varyings (pext; wext points
+// a triangle at its first corner's) and its textures and uniforms (pmat, per material slot: the program + 1, the material
+// word it was written for, 8 texture words, the uniforms). Opcodes: gfx.h GP_*.
+layout(set = 2, binding = 4, std430) readonly buffer PCode { uvec4 pcode[]; };
+layout(set = 2, binding = 5, std430) readonly buffer PMat { uint pmat[]; };
+layout(set = 2, binding = 6, std430) readonly buffer PExt { vec4 pext[]; };
+layout(set = 2, binding = 7, std430) readonly buffer PWext { uint wext[]; };
+#define PROG_REGS 112u   // the program's constants, then its registers (gfx_prog.c finish)
+#define PM_WORDS 64u
+// a program texture (the record's word: the bindless table's slot and generation), at lodw (log2 of the ray cone's
+// footprint in UV units) for its size, or the program's own LOD (mode 1) or bias (2); fetch: integer texels
+vec4 prog_tex(uint w, uvec3 c, uint mode, uint lv, bool fetch, float lodw) {
+    if ((w & 0x80000000u) == 0u) return vec4(0.0);
+    uint slot = w & 0xffffu, arr = (w >> 30) & 1u;
+    if (slot >= 8192u || mgen[arr * 8192u + slot] != ((w >> 16) & 0x3fffu)) return vec4(0.0);
+    if (fetch) {
+        ivec3 ic = ivec3(c);
+        int l = int(lv);
+        return arr != 0u ? texelFetch(mtexa[nonuniformEXT(slot)], ic, l) : texelFetch(mtex[nonuniformEXT(slot)], ic.xy, l);
+    }
+    vec3 fc = uintBitsToFloat(c);
+    ivec2 ts = arr != 0u ? textureSize(mtexa[nonuniformEXT(slot)], 0).xy : textureSize(mtex[nonuniformEXT(slot)], 0);
+    float fl = uintBitsToFloat(lv);
+    float lod = mode == 1u ? fl : lodw + 0.5 * log2(max(float(ts.x) * float(ts.y), 1.0)) + (mode == 2u ? fl : 0.0);
+    return arr != 0u ? textureLod(mtexa[nonuniformEXT(slot)], fc, lod) : textureLod(mtex[nonuniformEXT(slot)], fc.xy, lod);
+}
+uint prog_ext1(uint e, uint a) {
+    float x = uintBitsToFloat(a);
+    int i = int(a);
+    switch (e) {
+    case 1u: return floatBitsToUint(round(x)); case 2u: return floatBitsToUint(roundEven(x)); case 3u: return floatBitsToUint(trunc(x));
+    case 4u: return floatBitsToUint(abs(x)); case 5u: return uint(abs(i)); case 6u: return floatBitsToUint(sign(x));
+    case 7u: return uint(sign(i)); case 8u: return floatBitsToUint(floor(x)); case 9u: return floatBitsToUint(ceil(x));
+    case 10u: return floatBitsToUint(fract(x)); case 11u: return floatBitsToUint(radians(x)); case 12u: return floatBitsToUint(degrees(x));
+    case 13u: return floatBitsToUint(sin(x)); case 14u: return floatBitsToUint(cos(x)); case 15u: return floatBitsToUint(tan(x));
+    case 16u: return floatBitsToUint(asin(x)); case 17u: return floatBitsToUint(acos(x)); case 18u: return floatBitsToUint(atan(x));
+    case 27u: return floatBitsToUint(exp(x)); case 28u: return floatBitsToUint(log(x)); case 29u: return floatBitsToUint(exp2(x));
+    case 30u: return floatBitsToUint(log2(x)); case 31u: return floatBitsToUint(sqrt(x)); case 32u: return floatBitsToUint(inversesqrt(x));
+    case 73u: return uint(findLSB(a)); case 74u: return uint(findMSB(i)); case 75u: return uint(findMSB(a));
+    }
+    return 0u;
+}
+uint prog_ext2(uint e, uint a, uint b) {
+    float x = uintBitsToFloat(a), y = uintBitsToFloat(b);
+    switch (e) {
+    case 25u: return floatBitsToUint(atan(x, y)); case 26u: return floatBitsToUint(pow(x, y));
+    case 37u: return floatBitsToUint(min(x, y)); case 38u: return min(a, b); case 39u: return uint(min(int(a), int(b)));
+    case 40u: return floatBitsToUint(max(x, y)); case 41u: return max(a, b); case 42u: return uint(max(int(a), int(b)));
+    case 48u: return floatBitsToUint(step(x, y)); case 53u: return floatBitsToUint(ldexp(x, int(b)));
+    case 79u: return floatBitsToUint(isnan(x) ? y : isnan(y) ? x : min(x, y));
+    case 80u: return floatBitsToUint(isnan(x) ? y : isnan(y) ? x : max(x, y));
+    case 58u: return packHalf2x16(vec2(x, y));
+    case 60u: return floatBitsToUint(unpackSnorm2x16(a)[min(b, 1u)]); case 61u: return floatBitsToUint(unpackUnorm2x16(a)[min(b, 1u)]);
+    case 62u: return floatBitsToUint(unpackHalf2x16(a)[min(b, 1u)]); case 63u: return floatBitsToUint(unpackSnorm4x8(a)[min(b, 3u)]);
+    case 64u: return floatBitsToUint(unpackUnorm4x8(a)[min(b, 3u)]);
+    }
+    return 0u;
+}
+uint prog_ext3(uint e, uint a, uint b, uint c) {
+    float x = uintBitsToFloat(a), y = uintBitsToFloat(b), z = uintBitsToFloat(c);
+    switch (e) {
+    case 43u: return floatBitsToUint(min(max(x, y), z)); case 44u: return min(max(a, b), c);
+    case 45u: return uint(min(max(int(a), int(b)), int(c))); case 46u: return floatBitsToUint(mix(x, y, z));
+    case 49u: return floatBitsToUint(smoothstep(x, y, z)); case 50u: return floatBitsToUint(fma(x, y, z));
+    case 81u: return floatBitsToUint(isnan(x) ? y : clamp(x, y, z));
+    }
+    return 0u;
+}
+uint prog_cmp(uint op, uint un, float x, float y) {
+    bool n = isnan(x) || isnan(y), r;
+    switch (op) {
+    case 33u: r = x == y; break; case 34u: r = x != y && !n; break; case 35u: r = x < y; break;
+    case 36u: r = x > y; break; case 37u: r = x <= y; break; default: r = x >= y; break;
+    }
+    return (un != 0u ? (n || r) : (!n && r)) ? 1u : 0u;
+}
+// The program of material k at triangle ct (barycentrics bc): albedo and glow; false where there is none
+int g_prog_st = 0;   // (debug) 0 no program, 1 no record or pointer, 2 ran
+bool prog_run(uint k, uint ct, vec2 bc, float lodw, out vec3 alb, out vec3 glow) {
+    alb = vec3(0.0), glow = vec3(0.0), g_prog_st = 0;
+    if (k >= 16384u || uint(wext.length()) <= ct || uint(pmat.length()) < (k + 1u) * PM_WORDS) return false;
+    uint mb = k * PM_WORDS, po = pmat[mb];
+    if (po == 0u) return false;
+    g_prog_st = 1;
+    uint xw = wext[ct];
+    if (xw == 0u) return false;
+    uint h = po - 1u;
+    uvec4 h0 = pcode[h], h1 = pcode[h + 1u], h2 = pcode[h + 2u];
+    uint ni = h0.x, nsl = h2.z, flat_ = h2.w;
+    uint slm = (xw >> 27) & 15u, xs = (slm == 15u ? 0u : slm) + 1u;   // the slots the draw recorded (the program's, then the UV's and layer's)
+    if (h0.z > PROG_REGS || xs < nsl) return false;
+    uint xb = xw & 0x07ffffffu, cb = h + 3u + ni;
+    vec3 wt = vec3(1.0 - bc.x - bc.y, bc.x, bc.y);
+    if ((xw & 0x80000000u) != 0u) wt = wt.xzy;   // the triangle's corners 1 and 2 were swapped (rt_unproject.comp)
+    uint R[PROG_REGS];
+    for (uint i = 0u; i < min(h0.y, PROG_REGS); i++) R[i] = pcode[cb + (i >> 2u)][i & 3u];
+    for (uint sl = 0u; sl < ((h0.w & 0x8000u) != 0u ? 0u : nsl); sl++) {   // the varyings, interpolated (flat: the first corner's)
+        vec4 v = pext[xb + sl];
+        if ((flat_ >> sl & 1u) == 0u) v = wt.x * v + wt.y * pext[xb + xs + sl] + wt.z * pext[xb + 2u * xs + sl];
+        uint vr = h0.y + 4u * sl;
+        for (uint q = 0u; q < 4u; q++) R[min(vr + q, PROG_REGS - 1u)] = floatBitsToUint(v[q]);
+    }
+    for (uint u = 0u, ub = h0.y + 4u * nsl; u < (h0.w >> 16); u++) R[min(ub + u, PROG_REGS - 1u)] = pmat[mb + 10u + min(u, 53u)];
+#define PRD(o) R[min((o), PROG_REGS - 1u)]
+    for (uint i = 0u; i < ni; i++) {
+        uvec4 I = pcode[h + 3u + i];
+        uint op = I.x & 255u, d = min((I.x >> 8) & 0xfffu, PROG_REGS - 1u), aux = I.x >> 20;
+        uint a = PRD(I.y), b = PRD(I.z), c = PRD(I.w), r = 0u;
+        float fa = uintBitsToFloat(a), fb = uintBitsToFloat(b), fc = uintBitsToFloat(c);
+        if (aux != 0u && ((op >= 4u && op <= 7u) || op == 11u)) {   // operands negated (gfx_prog.c peephole)
+            if ((aux & 1u) != 0u) fa = -fa;
+            if ((aux & 2u) != 0u) fb = -fb;
+            if ((aux & 4u) != 0u) fc = -fc;
+        }
+        if (op == 59u || op == 60u) {   // GP_SMP, GP_FETCH: four registers; the LOD in the ARG after
+            uint lv = PRD(pcode[h + 4u + i].y);
+            vec4 tv = prog_tex(pmat[mb + 2u + min(aux & 31u, 7u)], uvec3(a, b, c), (aux >> 5) & 3u, lv, op == 60u, lodw);
+            for (uint q = 0u; q < 4u; q++) R[min(d + q, PROG_REGS - 1u)] = floatBitsToUint(tv[q]);
+            i++;
+            continue;
+        }
+        if (op == 61u) {   // GP_TSIZE
+            uint w = pmat[mb + 2u + min(aux & 31u, 7u)], slot = w & 0xffffu;
+            ivec3 ts = ivec3(0);
+            if ((w & 0x80000000u) != 0u && slot < 8192u)
+                ts = (w & 0x40000000u) != 0u ? textureSize(mtexa[nonuniformEXT(slot)], int(a)) : ivec3(textureSize(mtex[nonuniformEXT(slot)], int(a)), 1);
+            for (uint q = 0u; q < 3u; q++) R[min(d + q, PROG_REGS - 1u)] = uint(ts[q]);
+            continue;
+        }
+        switch (op) {
+        case 1u: r = a; break;
+        case 2u: {   // GP_LDV: the varying interpolated (flat: the first corner's)
+            uint s = aux >> 2, q = aux & 3u;
+            float v0 = pext[xb + s][q];
+            r = (flat_ >> s & 1u) != 0u ? floatBitsToUint(v0) : floatBitsToUint(dot(wt, vec3(v0, pext[xb + xs + s][q], pext[xb + 2u * xs + s][q])));
+            break;
+        }
+        case 3u: r = pmat[mb + 10u + min(aux, 53u)]; break;
+        case 4u: r = floatBitsToUint(fa + fb); break; case 5u: r = floatBitsToUint(fa - fb); break;
+        case 6u: r = floatBitsToUint(fa * fb); break; case 7u: r = floatBitsToUint(fa / fb); break;
+        case 8u: r = floatBitsToUint(fa - fb * floor(fa / fb)); break; case 9u: r = floatBitsToUint(fa - fb * trunc(fa / fb)); break;
+        case 10u: r = floatBitsToUint(-fa); break; case 11u: r = floatBitsToUint(fma(fa, fb, fc)); break;
+        case 12u: r = a + b; break; case 13u: r = a - b; break; case 14u: r = a * b; break;
+        case 15u: r = b == 0u ? 0xffffffffu : a / b; break; case 16u: r = b == 0u ? 0u : uint(int(a) / int(b)); break;
+        case 17u: r = b == 0u ? 0u : a % b; break;
+        case 18u: r = b == 0u ? 0u : uint(int(a) - int(b) * (int(a) / int(b))); break;
+        case 19u: { int m = b == 0u ? 0 : int(a) - int(b) * (int(a) / int(b)); if (m != 0 && ((m < 0) != (int(b) < 0))) m += int(b); r = uint(m); break; }
+        case 20u: r = a & b; break; case 21u: r = a | b; break; case 22u: r = a ^ b; break; case 23u: r = ~a; break;
+        case 24u: r = a << (b & 31u); break; case 25u: r = a >> (b & 31u); break; case 26u: r = uint(int(a) >> int(b & 31u)); break;
+        case 27u: r = isnan(fa) ? 0u : uint(max(fa, 0.0)); break; case 28u: r = isnan(fa) ? 0u : uint(int(fa)); break;
+        case 29u: r = floatBitsToUint(float(a)); break; case 30u: r = floatBitsToUint(float(int(a))); break;
+        case 31u: r = isnan(fa) ? 1u : 0u; break; case 32u: r = isinf(fa) ? 1u : 0u; break;
+        case 33u: case 34u: case 35u: case 36u: case 37u: case 38u: r = prog_cmp(op, aux & 1u, fa, fb); break;
+        case 39u: r = a == b ? 1u : 0u; break; case 40u: r = a != b ? 1u : 0u; break;
+        case 41u: r = a > b ? 1u : 0u; break; case 42u: r = int(a) > int(b) ? 1u : 0u; break;
+        case 43u: r = a >= b ? 1u : 0u; break; case 44u: r = int(a) >= int(b) ? 1u : 0u; break;
+        case 45u: r = a < b ? 1u : 0u; break; case 46u: r = int(a) < int(b) ? 1u : 0u; break;
+        case 47u: r = a <= b ? 1u : 0u; break; case 48u: r = int(a) <= int(b) ? 1u : 0u; break;
+        case 49u: r = (a != 0u && b != 0u) ? 1u : 0u; break; case 50u: r = (a != 0u || b != 0u) ? 1u : 0u; break;
+        case 51u: r = a == 0u ? 1u : 0u; break;
+        case 52u: r = a != 0u ? b : c; break;
+        case 53u: r = bitfieldExtract(a, int(min(b, 31u)), int(min(c, 32u - min(b, 31u)))); break;
+        case 54u: r = uint(bitfieldExtract(int(a), int(min(b, 31u)), int(min(c, 32u - min(b, 31u))))); break;
+        case 55u: { uint cnt = PRD(pcode[h + 4u + i].y); r = bitfieldInsert(a, b, int(min(c, 31u)), int(min(cnt, 32u - min(c, 31u)))); i++; break; }
+        case 56u: r = prog_ext1(aux, a); break;
+        case 57u: r = prog_ext2(aux, a, b); break;
+        case 58u: r = prog_ext3(aux, a, b, c); break;
+        default: break;
+        }
+        R[d] = r;
+    }
+    alb = vec3(uintBitsToFloat(PRD(h1.x)), uintBitsToFloat(PRD(h1.y)), uintBitsToFloat(PRD(h1.z)));
+    glow = vec3(uintBitsToFloat(PRD(h1.w)), uintBitsToFloat(PRD(h2.x)), uintBitsToFloat(PRD(h2.y)));
+#undef PRD
+    if (any(isnan(alb)) || any(isinf(alb))) return false;
+    if (any(isnan(glow)) || any(isinf(glow))) glow = vec3(0.0);
+    g_prog_st = 2;
+    return true;
+}
+vec3 prog_err_col(vec3 e) { float m = max(e.r, max(e.g, e.b)); return m < 0.02 ? vec3(0.0, 4.0, 0.0) : m < 0.05 ? vec3(4.0, 4.0, 0.0) : vec3(4.0, 0.0, 0.0); }
+// the program at a hit: lodw from the albedo UV's density on the triangle (UV area over world area) and the ray cone
+bool prog_hit(uint k, uint ct, vec2 bc, float t, vec3 rd, out vec3 alb, out vec3 glow) {
+    alb = vec3(0.0), glow = vec3(0.0);
+    if (uint(wattr.length()) <= ct * 2u + 1u) return false;
+    vec4 a = wattr[ct * 2u], b = wattr[ct * 2u + 1u];
+    vec3 p0 = world[ct * 3u].xyz, p1 = world[ct * 3u + 1u].xyz, p2 = world[ct * 3u + 2u].xyz;
+    vec3 nc = cross(p1 - p0, p2 - p0);
+    float aw = length(nc);
+    vec2 d1 = a.zw - a.xy, d2 = b.xy - a.xy;
+    float at = abs(d1.x * d2.y - d1.y * d2.x);
+    if (!(at > 0.0) || ((floatBitsToUint(b.z) >> 16) & 1u) == 0u) at = aw;   // no UV: one UV unit a metre
+    float spread = 2.0 / (pc.proj.y * pc.sz.y);
+    float lodw = 0.5 * log2(max(at, 1e-20) / max(aw, 1e-20)) + log2(max(t * spread, 1e-6) / max(abs(dot(nc / max(aw, 1e-20), rd)), 0.1));
+    if (k >= 16384u || uint(pmat.length()) < (k + 1u) * PM_WORDS || pmat[k * PM_WORDS + 1u] != floatBitsToUint(b.w)) return false;
+    return prog_run(k, ct, bc, lodw, alb, glow);
+}
+// slot k's colour measured on screen (rt_gi.comp mode 14 wrote it for its current generation)
+bool mat_measured(uint k) { return msum[k * 64u + 15u] == mgen[k] + 1u; }
+// The look: what the finished screen shows over the diffuse light the albedo gets (per channel; mode 14 from
+// vk_rt_tone_scene's late measure: the game's character shading, specular and reflections), 1 unknown. The albedo
+// times this is the colour a lit hit takes.
+// (the albedo times the look may pass 1, to LOOK_MAX: glassy, glowing or glossy surfaces the game shows brighter than a
+// white diffuse one)
+#define LOOK_MAX 4.0
+// The reflection: what the finished screen shows beyond the diffuse colour, as light a mirror ray brings in weighted by
+// Fresnel (mode 14's fit F = look S + spec R, per channel), 0 unknown. mat_albedo leaves it in g_spec.
+vec3 g_spec = vec3(0.0);
+vec3 mat_spec(uint k, uint sid) {
+    vec4 m = mval[k * 8u + 6u];
+    if (m.w > 0.5) return m.rgb;
+    if (sid != 0u && sid < 4096u && sval[sid * 6u + 4u].w > 0.5) return sval[sid * 6u + 4u].rgb;
+    return vec3(0.0);
+}
+vec3 mat_look(uint k, uint sid) {
+    vec4 m = mval[k * 8u + 3u];
+    if (m.w > 0.5) return m.rgb;
+    if (sid != 0u && sid < 4096u && sval[sid * 6u + 3u].w > 0.5) return sval[sid * 6u + 3u].rgb;
+    return vec3(1.0);
+}
+// The ambient look: the same for the light the sky gives (ours is the sky's colour, alike from every side; the game's
+// shade comes from its light probes, AO and bounced light, often far bluer or darker). Unknown: the look.
+// mat_albedo leaves the albedo times it in g_amb.
+vec3 g_amb = vec3(0.0);
+uint g_k = ~0u;   // the hit's material slot (mat_albedo)
+vec3 g_tx = vec3(1.0);   // its raw texel (1 for a flat material)
+vec3 mat_alook(uint k, uint sid) {
+    vec4 m = mval[k * 8u + 7u];
+    if (m.w > 0.5) return m.rgb;
+    if (sid != 0u && sid < 4096u && sval[sid * 6u + 5u].w > 0.5) return sval[sid * 6u + 5u].rgb;
+    return mat_look(k, sid);
+}
+// The albedo at a hit: its material's measured fit, scale x texel + offset (rt_gi.comp mat_update), which is the texel
+// times a tint where the texture is the albedo, and falls back towards the material's mean colour where the texture
+// does not follow the screen (a texture that is not the albedo, or a UV that is not its UV); a flat material (tx 1) gets
+// its mean colour. A texture not measured yet: the texel as it is. false: no material, or a flat one not measured yet.
+// st (debug view 17): 1 texture unmeasured, 2 mostly the texture, 3 mostly the offset (the texture explains little),
+// 4 flat, 5 flat unmeasured, 6 not measured: its shader's average fit, 7 its texture went: the fit at the mean texel
+// em: the light it gives off (measured; 0 otherwise)
+bool mat_albedo(uint ct, vec2 bc, float t, vec3 rd, out vec3 alb, out int st, out vec3 em) {
+    vec4 tx;
+    uint k;
+    bool at;
+    uint r = mat_raw(ct, bc, t, rd, tx, k, at);
+    alb = vec3(0.0), st = 0, em = vec3(0.0), g_spec = vec3(0.0), g_amb = vec3(0.0), g_k = ~0u;
+    if (r == 0u) return false;
+    g_k = k, g_tx = r == 1u ? clamp(tx.rgb, 0.0, 1.0) : vec3(1.0);
+    uint sid = mgen[16384u + k];
+    vec3 base;
+    {   // step 6: the game's own shader where the draw recorded its varyings: the G-buffer albedo it writes, its glow
+        vec3 pa, pg;
+        if (r != 3u && prog_hit(k, ct, bc, t, rd, pa, pg)) {
+            base = clamp(pa, 0.0, 1.0), em = max(pg, vec3(0.0)), st = 8;
+            alb = clamp(base * mat_look(k, sid), 0.0, LOOK_MAX), g_amb = clamp(base * mat_alook(k, sid), 0.0, LOOK_MAX);
+            g_spec = mat_spec(k, sid);
+            return true;
+        }
+    }
+    if (r == 3u) {
+        vec4 s0 = mval[k * 8u], s1 = mval[k * 8u + 1u], s2 = mval[k * 8u + 2u];
+        base = clamp(s0.rgb * vec3(s0.w, s1.w, s2.w) + s1.rgb, 0.0, 1.0), em = s2.rgb, st = 7;
+        alb = clamp(base * mat_look(k, sid), 0.0, LOOK_MAX), g_amb = clamp(base * mat_alook(k, sid), 0.0, LOOK_MAX);
+        g_spec = mat_spec(k, sid);
+        return true;
+    }
+    bool meas = mat_measured(k);
+    vec4 v0, v1;
+    if (meas) {
+        v0 = mval[k * 8u], v1 = mval[k * 8u + 1u], em = mval[k * 8u + 2u].rgb;
+    } else {   // not measured: its shader's average fit, or the texel as it is
+        if (sid == 0u || sid >= 4096u || sval[sid * 6u].w < 0.5) { alb = g_amb = tx.rgb, st = r == 2u ? 5 : 1; return r == 1u; }
+        v0 = sval[sid * 6u], v1 = sval[sid * 6u + 1u], em = sval[sid * 6u + 2u].rgb;
+        base = clamp(v0.rgb * tx.rgb + v1.rgb, 0.0, 1.0), st = 6;
+        alb = clamp(base * mat_look(k, sid), 0.0, LOOK_MAX), g_amb = clamp(base * mat_alook(k, sid), 0.0, LOOK_MAX);
+        g_spec = mat_spec(k, sid);
+        return true;
+    }
+    base = clamp(v0.rgb * tx.rgb + v1.rgb, 0.0, 1.0);
+    alb = clamp(base * mat_look(k, sid), 0.0, LOOK_MAX), g_amb = clamp(base * mat_alook(k, sid), 0.0, LOOK_MAX);
+    g_spec = mat_spec(k, sid);
+    float mtl = dot(vec3(v0.w, v1.w, mval[k * 8u + 2u].w), vec3(0.2126, 0.7152, 0.0722));   // the mean texel's luminance
+    st = r == 2u ? 4 : dot(v0.rgb, vec3(1.0)) * mtl >= dot(max(v1.rgb, 0.0), vec3(1.0)) ? 2 : 3;
+    return true;
+}
+// an alpha-tested triangle's candidate hit where its albedo's alpha is below 0.5 (the shader discards there)
+bool alpha_cut(uint ct, vec2 bc, float t, vec3 rd) {
+    if (uint(wattr.length()) <= ct * 2u + 1u || ((floatBitsToUint(wattr[ct * 2u + 1u].z) >> 16) & 4u) == 0u) return false;
+    vec4 tx;
+    uint k;
+    bool at;
+    return mat_raw(ct, bc, t, rd, tx, k, at) == 1u && tx.a < 0.5;
+}
+bool sun_known() { return sun_dir.w > 0.5; }
+// The light a hit at hp (normal n, facing the ray) gets: the sky's colour, plus the sun's x N.L where a ray toward the
+// sun is not blocked (its length 1 km; the captured scene reaches about 2 km)
+vec3 sky_light() { return sky_col.w > 0.5 ? sky_col.rgb : vec3(0.0); }
+// the sun's part of it alone
+vec3 hit_sun(vec3 hp, vec3 n, float t) {
+    vec3 e = vec3(0.0);
+    float ndl = dot(n, sun_dir.xyz);
+    if (ndl > 0.0 && sun_col.w > 0.5) {
+        vec3 o = hp + n * (0.03 + 0.002 * t);
+        rayQueryEXT sq;
+        rayQueryInitializeEXT(sq, tlas, gl_RayFlagsTerminateOnFirstHitEXT, 0x01, o, 0.0, sun_dir.xyz, 1000.0);
+        PROCEED_SUN(sq, sun_dir.xyz)
+        if (rayQueryGetIntersectionTypeEXT(sq, true) == gl_RayQueryCommittedIntersectionNoneEXT) e += sun_col.rgb * ndl;
+    }
+    return e;
+}
+vec3 hit_light(vec3 hp, vec3 n, float t) { return sky_light() + hit_sun(hp, n, t); }
+// The share of the sky a hit at hp (normal n) sees: 8 rays of up to 6 m, cosine-weighted, in directions fixed to the
+// normal (the same each frame: no flicker). Under a ledge or a rail, in a corner, the shade is darker, as the game's.
+int g_svn = 8;   // sky_vis's rays: 8, or 4 (every other, which half by the frame: the measure's samples are averaged)
+float sky_vis(vec3 hp, vec3 n) {
+    vec3 tg = normalize(abs(n.y) < 0.9 ? cross(n, vec3(0.0, 1.0, 0.0)) : cross(n, vec3(1.0, 0.0, 0.0))), bt = cross(n, tg);
+    vec3 o = hp + n * 0.03;
+    float open = 0.0;
+    int f1 = int(pc.prm.w) & 1;
+    for (int j = 0; j < g_svn; j++) {   // (4: two of each ring, spread round; the other four next frame)
+        int i = g_svn == 8 ? j : j * 2 + ((j + f1) & 1);
+        float a = float(i) * 0.785398 + 0.39, r = (i & 1) == 0 ? 0.45 : 0.85;
+        vec3 d = normalize(tg * (cos(a) * r) + bt * (sin(a) * r) + n * sqrt(1.0 - r * r));
+        rayQueryEXT q;
+        rayQueryInitializeEXT(q, tlas, gl_RayFlagsTerminateOnFirstHitEXT, 0x01, o, 0.0, d, 6.0);
+        PROCEED(q, d)
+        if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT) open += 1.0;
+    }
+    return open / float(g_svn);
+}
+// The appearance cache: what the game's finished picture showed of a material, against what our model gives there, in
+// two levels of cell of one table (AC_N cells of 16 uints, 8 probed):
+// - by texture: per material, layer and place on its texture (at most 64 cells a side, read bilinear; a flat material
+//   one cell). How the game shows each part of a texture, wherever it is, our diffuse colour Lt telling the light: the
+//   patterns, glow and tints its other textures (masks we do not read) give, on what moves too, and where the screen
+//   never showed that place.
+// - by place: cells of 12 cm within 8 m of the camera, doubling with each doubling of the distance, per material and
+//   facing (the normal's main axis: the two sides of a thin wall apart), read trilinear. What the game showed there
+//   against what the texture level then gave (P): the light our model has not (its shadows' depth, occlusion, local
+//   lights), over the texture's detail.
+// Mode 13 claims a record's two cells and sets P, rt_late.comp sums the finished colour F (its reflections in), P
+// and Lt into them, mode 14 halves the sums past 64 samples (about two seconds) and frees cells not seen for 30 s.
+// A hit takes the texture cells' mean F', each channel varied as our colour here against our mean there (ac_col), else
+// our fit's colour; times the place cells' F' over P.
+#define AC_N 524288u
+#define AC_P 8u
+uint ac_level(float d) { return uint(clamp(floor(log2(max(d, 1.0) / 8.0)) + 1.0, 0.0, 6.0)); }
+float ac_size(uint lv) { return 0.12 * float(1u << lv); }
+uint ac_axis(vec3 n) {
+    vec3 a = abs(n);
+    return a.x > a.y && a.x > a.z ? (n.x > 0.0 ? 0u : 1u) : a.y > a.z ? (n.y > 0.0 ? 2u : 3u) : (n.z > 0.0 ? 4u : 5u);
+}
+uvec2 ac_key(uint h) { return uvec2(h % AC_N, pcg(h ^ 0x2545f491u) | 1u); }   // first cell, key (never 0)
+uvec2 ac_hash(ivec3 c, uint lv, uint k, uint ax) {
+    return ac_key(pcg(uint(c.x) + pcg(uint(c.y) + pcg(uint(c.z) + pcg(lv * 6u + ax + pcg(k + 911u))))));
+}
+// a cell by texture: material k, layer, cell c (wrapped: the texture repeats)
+uvec2 uv_hash(uint k, ivec2 c, vec4 uv) {
+    uvec2 w = uvec2(ivec2(mod(vec2(c), uv.w)));
+    return ac_key(pcg(w.x + pcg(w.y + pcg(uint(uv.z) * 1024u + uint(uv.w) + pcg(k * 7u + 0x9e37u)))));
+}
+uvec2 lut_hash(uint k, vec3 tx) {
+    uvec3 q = uvec3(clamp(tx, 0.0, 1.0) * 15.0 + 0.5);
+    return ac_key(pcg(q.x + q.y * 16u + q.z * 256u + pcg(k * 3u + 0x51edu)));
+}
+float cam_dist(vec3 p) { return length(p - vec3(pc.iv0.w, pc.iv1.w, pc.iv2.w)); }
+// the cell of key hk a sample goes into (+ 1; 0 none free)
+uint ac_claim_hk(uvec2 hk, uint fr) {
+    for (uint i = 0u; i < AC_P; i++)
+        if (mcache[((hk.x + i) % AC_N) * 16u] == hk.y) return (hk.x + i) % AC_N + 1u;
+    uint old = ~0u, oa = 0u;
+    for (uint i = 0u; i < AC_P; i++) {
+        uint s = (hk.x + i) % AC_N;
+        uint prev = atomicCompSwap(mcache[s * 16u], 0u, hk.y);
+        if (prev == 0u) { mcache[s * 16u + 1u] = fr; return s + 1u; }
+        if (prev == hk.y) return s + 1u;
+        uint age = fr - mcache[s * 16u + 1u];
+        if (age > oa) oa = age, old = s;
+    }
+    // all taken: the one unseen longest, if for 240 frames (about 4 s), started again
+    if (old != ~0u && oa > 240u) {
+        uint b = old * 16u, prev = mcache[b];
+        if (atomicCompSwap(mcache[b], prev, hk.y) == prev) {
+            for (uint i = 2u; i < 16u; i++) mcache[b + i] = 0u;
+            mcache[b + 1u] = fr;
+            return old + 1u;
+        }
+    }
+    return 0u;
+}
+uint ac_claim(uint k, vec3 hp, vec3 n, uint fr) {
+    uint lv = ac_level(cam_dist(hp));
+    return ac_claim_hk(ac_hash(ivec3(floor(hp / ac_size(lv))), lv, k, ac_axis(n)), fr);
+}
+vec2 g_cn = vec2(0.0, 1e9);   // (debug -4: the most samples and the fewest frames since one of the cells read)
+// a cell's sums, weighted: F', P, Lt, lum(Lt)^2, the weight
+// (Fq: F over the samples whose P was the settled texture level's, those P is summed over)
+struct AcSum { vec3 F, P, L, Fq; float LL, w; };
+AcSum ac_sum0() { return AcSum(vec3(0.0), vec3(0.0), vec3(0.0), vec3(0.0), 0.0, 0.0); }
+float g_wt = 0.0;   // the texture level's weight at this hit (ac_apply)
+// cell hk's means added by weight w x its confidence (full at nf samples: a place cell's vary with the view, a texture
+// cell's samples are of one place on the texture); the weight added
+float ac_add(uvec2 hk, float w, float nf, inout AcSum a) {
+    for (uint p = 0u; p < AC_P; p++) {
+        uint b = ((hk.x + p) % AC_N) * 16u;
+        if (mcache[b] != hk.y) continue;
+        float cn = float(mcache[b + 2u]);
+        g_cn = vec2(max(g_cn.x, cn), min(g_cn.y, float(uint(pc.prm.w) - mcache[b + 1u])));
+        if (cn < 1.0) return 0.0;
+        w *= min(cn, nf) / nf;
+        float iw = w / (cn * 1024.0);
+        a.F += iw * vec3(mcache[b + 3u], mcache[b + 4u], mcache[b + 5u]);
+        a.P += iw * vec3(mcache[b + 6u], mcache[b + 7u], mcache[b + 8u]);
+        a.LL += iw * float(mcache[b + 9u]);
+        a.L += iw * vec3(mcache[b + 10u], mcache[b + 11u], mcache[b + 12u]);
+        a.Fq += iw * vec3(mcache[b + 13u], mcache[b + 14u], mcache[b + 15u]);
+        a.w += w;
+        return w;
+    }
+    return 0.0;
+}
+// the colour from cells' means at our colour Lt: F' each channel as Lt against the mean Lt (a channel ours hardly has
+// follows our brightness); a black material (water, effects: the game shades it elsewhere) its F' as it is
+vec3 ac_col(AcSum a, vec3 Lt) {
+    vec3 F = a.F / a.w, L = a.L / a.w;
+    if (a.LL / a.w < 1e-4) return F;
+    float lr = clamp(lum(Lt) / max(lum(L), 1e-4), 0.0, 4.0);
+    // Prevent a dark channel in L (e.g. red on deep-blue Zora stone) from blowing up 4x when evaluated on white/silver trim.
+    vec3 cr = clamp(Lt / max(L, vec3(0.35 * lum(L) + 1e-4)), lr * 0.65, lr * 1.35);
+    return F * mix(vec3(lr), cr, vec3(greaterThan(L, 0.05 * F)));
+}
+// The texture level at the place uv on material k's texture (bilinear; a flat material its one cell): the colour, from
+// our fit's (c0: Lt + em) as far as its cells know; w how far
+// one level's cells about uv (a quarter of the weight known is enough: a cell not known yet takes its neighbours')
+float ac_tex1(uint k, vec4 uv, inout AcSum a) {
+    vec2 g = uv.xy - 0.5;
+    ivec2 i0 = ivec2(floor(g));
+    vec2 fr = g - vec2(i0);
+    for (int i = 0; i < 4; i++) {
+        ivec2 o = ivec2(i & 1, i >> 1);
+        vec2 wv = mix(1.0 - fr, fr, vec2(o));
+        if (wv.x * wv.y >= 1e-3) ac_add(uv_hash(k, i0 + o, uv), wv.x * wv.y, 2.0, a);
+    }
+    return a.w < 0.05 ? 0.0 : clamp(a.w * 4.0, 0.0, 1.0);
+}
+vec3 ac_tex(uint k, vec4 uv, vec3 Lt, vec3 c0, out float w) {
+    AcSum a = ac_sum0();
+    if (uv.w < 0.5) {
+        ac_add(lut_hash(k, vec3(1.0)), 1.0, 2.0, a);
+        w = a.w < 0.05 ? 0.0 : clamp(a.w * 4.0, 0.0, 1.0);
+        return w > 0.0 ? mix(c0, ac_col(a, Lt), w) : c0;
+    }
+    w = ac_tex1(k, uv, a);
+    vec3 c = w > 0.0 ? ac_col(a, Lt) : c0;
+    if (w < 1.0 && uv.w > 1.5) {   // where this level is not known yet, a coarser one (4 x 4 cells in one)
+        AcSum b = ac_sum0();
+        float cb = max(floor(uv.w * 0.25), 1.0), wb = ac_tex1(k, vec4(uv.xy * (cb / uv.w), uv.z, cb), b);
+        c = mix(wb > 0.0 ? mix(c0, ac_col(b, Lt), wb) : c0, c, w);
+        w = 1.0 - (1.0 - w) * (1.0 - wb);
+    }
+    return c;
+}
+// The place level around hp (trilinear over the 8 cells about it): the colour ct (the texture level's here) as the game
+// showed it there, each channel F' over P (where P had little of it: F' as ac_col gives it); w how far its cells know
+vec3 g_dbg = vec3(0.0);   // (debug)
+// one distance level's colour (lv: the cells' size, 12 cm x 2^lv) and how far it knows
+vec3 ac_place1(uint k, vec3 hp, uint lv, uint ax, vec3 Lt, vec3 ct, out float w) {
+    vec3 g = hp / ac_size(lv) - 0.5;
+    ivec3 i0 = ivec3(floor(g));
+    vec3 fr = g - vec3(i0);
+    AcSum a = ac_sum0();
+    for (int i = 0; i < 8; i++) {
+        ivec3 o = ivec3(i & 1, (i >> 1) & 1, i >> 2);
+        vec3 wv = mix(1.0 - fr, fr, vec3(o));
+        float wi = wv.x * wv.y * wv.z;
+        if (wi >= 1e-3) ac_add(ac_hash(i0 + o, lv, k, ax), wi, 16.0, a);
+    }
+    w = 0.0;
+    if (a.w < 0.05) return ct;
+    vec3 F = a.F / a.w, P = a.P / a.w, Fq = a.Fq / a.w;
+    g_dbg = vec3(lum(F), lum(P), lum(ct));
+    // The texture level x F / P only from the samples taken when the texture level was settled (P from its warm-up,
+    // the fit's colour or a half-learnt one, against F gave a channel's ratio far off: railings pink, then deep blue),
+    // and only where this hit's texture level is settled too (g_wt); else the cell's own colour. (rq: how many such
+    // samples, from their share of F)
+    float rq = clamp(lum(Fq) / max(lum(F), 1e-5) * a.w * 2.0, 0.0, 1.0) * g_wt;
+    // Place cells average over 3D boxes (mostly blue stone where P.r is tiny); cap Fq / P around the luminance ratio so
+    // white/silver trim (ct.r high) inside a blue place cell does not get its red channel multiplied by 4-8x.
+    float lrp = clamp(lum(Fq) / max(lum(P), 1e-4), 0.0, 4.0);
+    vec3 pr = clamp(Fq / max(max(P, ct * 0.5), vec3(0.35 * lum(P) + 1e-4)), lrp * 0.65, lrp * 1.35);
+    vec3 c = mix(ac_col(a, Lt), ct * pr, vec3(greaterThan(P, 0.05 * Fq)) * rq);
+    // a black one (water, effects) changes with the view (glints, the sky mirrored): its cells want more samples
+    w = a.LL < 1e-4 * a.w ? clamp(a.w * 2.0 - 1.0, 0.0, 1.0) : clamp(a.w, 0.0, 1.0);
+    return c;
+}
+// The place level: the level for hp's distance, where it does not know yet the next two coarser ones (what was learnt
+// from farther away while walking up to it)
+vec3 ac_place(uint k, vec3 hp, vec3 n, vec3 Lt, vec3 ct, out float w) {
+    uint lv = ac_level(cam_dist(hp)), ax = ac_axis(n);
+    vec3 c = ac_place1(k, hp, lv, ax, Lt, ct, w);
+    for (uint j = 1u; j <= 2u && w < 0.99 && lv + j <= 6u; j++) {
+        float wc;
+        vec3 cc = ac_place1(k, hp, lv + j, ax, Lt, ct, wc);
+        c = mix(cc, c, w / max(1.0 - (1.0 - w) * (1.0 - wc), 1e-4));
+        w = 1.0 - (1.0 - w) * (1.0 - wc);
+    }
+    return c;
+}
+// P, the texture level's colour, in 32 bits: 10 a channel, log2 from 2^-12 to 2^8 (0: below)
+uint pack_lg(vec3 v) {
+    uvec3 c = uvec3(clamp((log2(max(v, vec3(1.0 / 8192.0))) + 12.0) * (1023.0 / 20.0) + 0.5, 0.0, 1023.0));
+    return c.x | c.y << 10 | c.z << 20;
+}
+// the colour a hit takes: mat_albedo's albedo times its look in the sun, times its ambient look (g_amb) in the sky's
+// light, as much as it sees of the sky
+// (the light it gets, the sun's and the sky's as much as it sees it, left in g_irr: its sheen follows it)
+vec3 g_irr = vec3(0.0);
+vec3 hit_col(vec3 alb, vec3 hp, vec3 n, float t) {
+    vec3 ls = hit_sun(hp, n, t), la = sky_light() * sky_vis(hp, n);
+    g_irr = ls + la;
+    return alb * ls + g_amb * la;
+}
+// The appearance cache over our colour c (the fit's: Lt + em, its reflection) at a hit of material k at hp, uv on its
+// texture: the texture level's, then the place level's, as far as each knows. They hold what the game showed, its
+// reflections and glow included.
+vec3 ac_apply(uint k, vec4 uv, vec3 hp, vec3 n, vec3 Lt, vec3 c) {
+    if (app_mode() > 0.5 && k != ~0u) {
+        float wt = 0.0, wp = 0.0;
+        // (TOTK_RT_APP=3: the place level alone, 4: the texture level alone, for tests)
+        if (abs(app_mode() - 3.0) > 0.5) c = ac_tex(k, uv, Lt, c, wt);
+        g_wt = wt;
+        g_cn = vec2(0.0, 1e9);
+        vec3 cp = abs(app_mode() - 4.0) > 0.5 ? ac_place(k, hp, n, Lt, c, wp) : c;
+        if (pbox.x < -3.5 && pbox.x > -4.5) return vec3(g_cn.x / 64.0, g_cn.y < 3.0 ? 1.0 : 0.0, g_cn.y > 60.0 ? 1.0 : 0.0) * pbox.y;   // (debug -4,s)
+        if (pbox.x < -2.5 && pbox.x > -3.5) return g_dbg * 0.25 * pbox.y;   // (debug -3,s: s/4 x the place cells' F', P and the texture level's colour, luminances)
+        if (pbox.x < -1.5 && pbox.x > -2.5) return vec3(wp, wt, 0.0);   // (debug, TOTK_RT_MPROBE_BOX=-2,..: red by place, green by texture)
+        c = mix(c, cp, wp);
+    }
+    return c;
+}
+// a hit's colour without its reflection (a mirror ray's hit)
+vec3 hit_col_em(vec3 alb, vec3 em, vec3 hp, vec3 n, float t) {
+    uint k = g_k;
+    vec4 uv = g_uv;   // (before hit_col's rays: their alpha tests set it)
+    vec3 Lt = hit_col(alb, hp, n, t);
+    return ac_apply(k, uv, hp, n, Lt, Lt + em);
+}
+// Schlick's Fresnel weight for a dielectric (F0 0.04) at N.V ndv
+// TOTK_RT_APP's units: the appearance cache's mode (0 off, 1 on, 3 by place alone, 4 by colour alone); its tens: the
+// reflection a mirror ray brings (10) rather than the sky's (the game's reflections are its sky probe's, mostly)
+float app_mode() { return mod(pc.nr.w, 10.0); }
+float fresnel_w(float ndv) { float x = 1.0 - clamp(ndv, 0.0, 1.0), x2 = x * x; return 0.04 + 0.96 * x2 * x2 * x; }
+// The light a mirror ray from hp (normal n) along r brings: the hit's diffuse colour (its albedo x hit_light + its
+// emission, hazed), the sky's colour where it leaves the scene
+vec3 refl_light(vec3 hp, vec3 n, vec3 r) {
+    vec3 sky = sky_col.w > 0.5 ? sky_col.rgb : vec3(0.0);
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, tlas, gl_RayFlagsNoneEXT, 0x01, hp + n * 0.03, 0.0, r, 1000.0);
+    PROCEED(q, r)
+    if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT) return sky;
+    int ci = rayQueryGetIntersectionInstanceCustomIndexEXT(q, true);
+    if (ci == 1) return sky;
+    uint ct = tri_index(ci, rayQueryGetIntersectionGeometryIndexEXT(q, true), rayQueryGetIntersectionPrimitiveIndexEXT(q, true));
+    float t = rayQueryGetIntersectionTEXT(q, true);
+    vec3 alb, em;
+    int st;
+    if (!mat_albedo(ct, rayQueryGetIntersectionBarycentricsEXT(q, true), t, r, alb, st, em)) return sky;
+    vec3 p0 = world[ct * 3u].xyz, nn = normalize(cross(world[ct * 3u + 1u].xyz - p0, world[ct * 3u + 2u].xyz - p0));
+    if (dot(nn, r) > 0.0) nn = -nn;
+    return haze(min(hit_col_em(alb, em, hp + n * 0.03 + r * t, nn, t), vec3(16.0)), t);
+}
+// A ray's committed hit lit from its texture (ok false: no albedo for it, or the sun unknown): the diffuse colour, plus
+// the mirror light by the material's reflection and Fresnel
+// The reflection a hit at hp (normal n) shows along r, by Fresnel: a sheen of the light the hit gets (the last
+// hit_col's g_irr: the game's glossy surfaces brighten towards grazing where lit, not in the shade; TOTK_RT_APP tens 1:
+// a mirror ray's light)
+vec3 refl_in(vec3 hp, vec3 n, vec3 dir) {
+    vec3 r = reflect(dir, n);
+    return fresnel_w(dot(n, -dir)) * (mod(pc.nr.w, 100.0) > 9.5 ? refl_light(hp, n, r) : g_irr);
+}
+bool g_gi_hit = false;   // shade_hit for a GI ray (trace)
+vec3 shade_hit(rayQueryEXT q, vec3 o, vec3 dir, out bool ok) {
+    ok = false;
+    if (!sun_known()) return vec3(0.0);
+    int ci = rayQueryGetIntersectionInstanceCustomIndexEXT(q, true);
+    if (ci == 1) return vec3(0.0);
+    uint ct = tri_index(ci, rayQueryGetIntersectionGeometryIndexEXT(q, true), rayQueryGetIntersectionPrimitiveIndexEXT(q, true));
+    float t = rayQueryGetIntersectionTEXT(q, true);
+    vec3 alb, em;
+    int st;
+    if (!mat_albedo(ct, rayQueryGetIntersectionBarycentricsEXT(q, true), t, dir, alb, st, em)) return vec3(0.0);
+    vec3 p0 = world[ct * 3u].xyz, n = normalize(cross(world[ct * 3u + 1u].xyz - p0, world[ct * 3u + 2u].xyz - p0));
+    if (dot(n, dir) > 0.0) n = -n;
+    ok = true;
+    uint k = g_k;
+    vec4 uv = g_uv;   // (before the rays: their alpha tests set it)
+    vec3 sp = g_spec, hp = o + dir * t, Lt = hit_col(alb, hp, n, t), c = Lt + em;
+    if (any(greaterThan(sp, vec3(0.0))) && pbox.x > -1.5) c += sp * refl_in(hp, n, dir);
+    vec3 r = ac_apply(k, uv, hp, n, Lt, c);
+    // a GI ray's hit: its glow as the glow's lights count it, once and at its own strength (apply multiplies the GI
+    // by its strength), not the appearance cache's picture of it (which shows the glow) times that strength
+    if (g_gi_hit) r = max(r - em, vec3(0.0)) + em / max(pc.prm.y, 1.0);
+    return r;
+}
+
+float depth_at(ivec2 p) { return texelFetch(lin_depth, clamp(p, ivec2(0), ivec2(pc.sz.xy) - 1), 0).x; }
+vec3 vpos(ivec2 p) { return view_pos((vec2(clamp(p, ivec2(0), ivec2(pc.sz.xy) - 1)) + 0.5) / pc.sz.xy, (depth_at(p) * pc.proj.z + pc.nr.x)); }
+
+vec3 view_normal(ivec2 px, vec3 p) {
+    vec3 l = vpos(px - ivec2(1, 0)), r = vpos(px + ivec2(1, 0)), u = vpos(px - ivec2(0, 1)), d = vpos(px + ivec2(0, 1));
+    vec3 dx = abs(r.z - p.z) < abs(p.z - l.z) ? r - p : p - l;
+    vec3 dy = abs(d.z - p.z) < abs(p.z - u.z) ? d - p : p - u;
+    vec3 n = normalize(cross(dx, dy));
+    return dot(n, p) > 0.0 ? -n : n;
+}
+bool sky_depth(float d);
+// the veil at screen pixel p (its surface reprojected into last frame, where the veil was measured): 1 unknown
+float veil_px(ivec2 p) {
+    if (pc.ext.x >= 0.0 || pc.flg.x < 0.5) return 1.0;
+    float d = depth_at(p);
+    if (sky_depth(d)) return 1.0;
+    vec4 w = vec4(to_world(vpos(p)), 1.0);
+    vec4 c = vec4(dot(pc.pv0, w), dot(pc.pv1, w), dot(pc.pv2, w), dot(pc.pv3, w));
+    if (c.w <= 0.01) return 1.0;
+    vec2 uv = 0.5 + 0.5 * vec2(pc.flg.y, pc.flg.z) * c.xy / c.w;
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThanEqual(uv, vec2(1.0)))) return 1.0;
+    return textureLod(veil, uv, 0.0).r;
+}
+
+uint pcg(uint v) {
+    uint s = v * 747796405u + 2891336453u;
+    uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+    return (w >> 22u) ^ w;
+}
+float rnd(inout uint s) { s = pcg(s); return float(s >> 8) * (1.0 / 16777216.0); }
+bool sky_depth(float d) { return d <= 0.0 || d >= 0.999; }
+float lum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+// How brightly pixel p is lit: its lit colour over its albedo (the light falling on it; for a glowing surface, far more
+// than for its neighbours). Without the albedo, the lit colour alone.
+float lit_ratio(ivec2 p, vec3 L) {
+    if (pc.ext.z <= 0.0) return lum(L);
+    return lum(L) / max(lum(texelFetch(albedo, clamp(p, ivec2(0), ivec2(pc.sz.xy) - 1), 0).rgb), 0.04);
+}
+// A light: at least the threshold (TOTK_RT_GI_LIGHT) and lit at least LK times as brightly as the frame's average pixel.
+// At night that leaves the crystals and lanterns; in sunshine every sunlit surface passed the threshold alone.
+#define LK 4.0
+bool emis_on() { return pc.ext.w < 0.0; }
+vec3 emis_at(ivec2 p) { return texelFetch(emis, clamp(p, ivec2(0), ivec2(pc.sz.xy) - 1), 0).rgb; }
+#define EMIS_MIN 0.05   // the glow's luminance from which a pixel is a light
+bool is_light(ivec2 p, vec3 L) {
+    if (emis_on()) {
+        vec3 e = emis_at(p);
+        // Require the pixel's final lit scene colour L to actually carry the glow: some exterior objects (e.g. the
+        // Lookout Landing Guardian behind the lab's roof) write to the glow target before the interior wall overwrites
+        // depth/albedo, leaving a phantom glow in emis_at(p) that is absent from L (and occluded in reality).
+        float le = lum(e);
+        if (le < EMIS_MIN) return false;
+        if (lum(L) < 0.25 * le) return false;
+        // Also ensure the hue of L is compatible with the glow (a bright blue phantom glow on a brown/grey wall has
+        // near-zero L.b compared to e.b).
+        if (max(L.r, max(L.g, L.b)) < 0.25 * max(e.r, max(e.g, e.b))) return false;
+        return true;
+    }
+    if (lum(L) < thr()) return false;
+    float mean = lnum > 0u ? float(lsum) / (64.0 * float(lnum)) : 0.0;
+    return lit_ratio(p, L) >= LK * mean;
+}
+
+// ---- the light cache: cells of 0.25 m within 4 m of the camera, doubling with each doubling of the distance (16 m at
+// most); hashed into CN slots, 4 probed. Written from the lit scene (mode 11, one pixel of each 4x4 block a frame), read
+// where a GI ray's hit is off the screen or hidden on it. A cell not written for 900 frames (15 s) counts as empty.
+bool cache_on() { return pc.flg.w > 99.5; }
+uint cache_level(float dist) { return uint(clamp(floor(log2(max(dist, 0.5) / 4.0)) + 1.0, 0.0, 6.0)); }
+uvec2 cell_hash(vec3 p, uint lv) {
+    ivec3 c = ivec3(floor(p / (0.25 * float(1u << lv))));
+    uint h1 = pcg(uint(c.x) + pcg(uint(c.y) + pcg(uint(c.z) + pcg(lv + 77u))));
+    return uvec2(h1 % CN, pcg(h1 ^ 0x68bc21ebu) | 1u);   // slot, key (never 0)
+}
+bool cache_get(vec3 p, float dist, out vec3 c) {
+    float fr = pc.prm.w;
+    uint lv0 = cache_level(dist);
+    for (uint lv = lv0; lv <= min(lv0 + 1u, 6u); lv++) {   // the next coarser cell when the fine one is empty
+        uvec2 hk = cell_hash(p, lv);
+        for (uint k = 0u; k < 4u; k++) {
+            uint s = (hk.x + k) % CN;
+            if (ckey[s] == hk.y) {
+                vec4 v = cval[s];
+                if (fr - v.w < 900.0 && fr >= v.w) { c = v.rgb; return true; }
+                break;
+            }
+        }
+    }
+    c = vec3(0.0);
+    return false;
+}
+void cache_put(vec3 p, float dist, vec3 L) {
+    float fr = pc.prm.w;
+    uvec2 hk = cell_hash(p, cache_level(dist));
+    for (uint k = 0u; k < 4u; k++) {
+        uint s = (hk.x + k) % CN;
+        uint old = atomicCompSwap(ckey[s], 0u, hk.y);
+        if (old == 0u) { cval[s] = vec4(L, fr); return; }
+        if (old == hk.y) {
+            vec4 v = cval[s];
+            float a = (fr - v.w > 60.0 || fr < v.w) ? 1.0 : 0.15;   // a cell not seen for a second starts afresh
+            cval[s] = vec4(mix(v.rgb, L, a), fr);
+            return;
+        }
+        // another cell's slot, stale: taken over
+        if ((fr - cval[s].w > 900.0 || fr < cval[s].w) && atomicCompSwap(ckey[s], old, hk.y) == old) { cval[s] = vec4(L, fr); return; }
+    }
+}
+// mode 11: the lit scene into the cache, one pixel of each 4x4 block (another each frame)
+void cache_write(ivec2 c) {
+    uint fr = uint(pc.prm.w);
+    ivec2 px = min(c * 4 + ivec2(pcg(fr * 13u + 5u) & 3u, pcg(fr * 29u + 11u) & 3u), ivec2(pc.sz.xy) - 1);
+    float d = depth_at(px);
+    if (sky_depth(d)) return;
+    float z = (d * pc.proj.z + pc.nr.x);
+    if (z > gfar() + pc.prm.x) return;
+    vec3 pv = vpos(px);
+    vec3 L = imageLoad(scene, px).rgb * veil_px(px);
+    if (emis_on()) L = max(L - emis_at(px), vec3(0.0));   // (the glow is the lights')
+    float l = lum(L);
+    if (l > 16.0) L *= 16.0 / l;
+    cache_put(to_world(pv), length(pv), L);
+}
+
+void trace(ivec2 qp) {
+    uint n = uint(pc.sz.z) * uint(pc.sz.w), i = uint(qp.y) * uint(pc.sz.z) + uint(qp.x);
+    uint fr = uint(pc.prm.w);
+    uint seed = pcg(i ^ pcg(fr * 9781u + 1u));
+    // the block's pixel: fixed centre on continuous surfaces, deterministic closest foreground pixel on depth edges
+    // (random 4x4 jitter hopped across thin handrails every frame, resetting history and flashing GI between 0 and 1-spp)
+    ivec2 base = qp * 4, szm = ivec2(pc.sz.xy) - 1;
+    ivec2 px = min(base + ivec2(2, 2), szm);
+    float d = depth_at(px);
+    {
+        const ivec2 o4[4] = ivec2[4](ivec2(1, 1), ivec2(3, 1), ivec2(1, 3), ivec2(3, 3));
+        float dmin = 2.0, dmax = -1.0;
+        ivec2 pmin = px;
+        for (int k = 0; k < 4; k++) {
+            ivec2 q = min(base + o4[k], szm);
+            float dq = depth_at(q);
+            if (sky_depth(dq)) continue;
+            if (dq < dmin) dmin = dq, pmin = q;
+            if (dq > dmax) dmax = dq;
+        }
+        if (dmin < 1.5) {
+            float zmin = dmin * pc.proj.z + pc.nr.x, zmax = dmax * pc.proj.z + pc.nr.x;
+            if (sky_depth(d) || (zmax - zmin) > 0.05 * zmin + 0.1) px = pmin, d = dmin;
+        }
+    }
+    if (sky_depth(d)) { hist_out[i] = vec4(0.0); hist_out[n + i] = vec4(0.0, 0.0, 0.0, -1.0); hist_out[2u * n + i] = vec4(1.0); return; }
+    float z = (d * pc.proj.z + pc.nr.x);
+    if (z > gfar()) { hist_out[i] = vec4(0.0, 0.0, 0.0, z); hist_out[n + i] = vec4(0.0, 0.0, 0.0, -1.0); hist_out[2u * n + i] = vec4(1.0); return; }
+    vec3 pv = vpos(px), pw = to_world(pv), nw = normalize(dir_world(view_normal(px, pv)));
+    vec3 t = normalize(abs(nw.y) < 0.99 ? cross(nw, vec3(0, 1, 0)) : cross(nw, vec3(1, 0, 0))), b = cross(nw, t);
+    vec3 cam = vec3(pc.iv0.w, pc.iv1.w, pc.iv2.w);
+    float fp = z * 2.0 / (pc.proj.y * pc.sz.y);
+    float ndv = max(dot(nw, normalize(cam - pw)), 0.1);
+    vec3 o = pw + nw * (0.02 + 1.5 * fp / ndv);
+    float u1 = rnd(seed), u2 = rnd(seed);
+    float s = sqrt(u1), phi = 6.2831853 * u2;
+    vec3 dir = normalize(t * (s * cos(phi)) + b * (s * sin(phi)) + nw * sqrt(max(1.0 - u1, 0.0)));
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, tlas, gl_RayFlagsNoneEXT, 0x01, o, 0.0, dir, pc.prm.x);
+    PROCEED(q, dir)
+    vec3 rad = vec3(0.0);
+    float vis = 1.0;
+    if (rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+        float ht = rayQueryGetIntersectionTEXT(q, true) / pc.prm.x;
+        vis = ht * ht;
+        vec3 hp = o + dir * rayQueryGetIntersectionTEXT(q, true);
+        vec3 hv = to_view(hp);
+        float hz = -hv.z;
+        bool found = false;
+        // TOTK_RT_GIMAT (pc.nr.w's hundreds): 0 on, 1 off (the light cache), 2 / 3 (debug) every hit shaded / from the
+        // light cache, the screen not read: against the screen's GI, how good each is where the screen is not
+        float gm = floor(pc.nr.w / 100.0);
+        if (hz > 0.1 && gm < 1.5) {
+            vec2 uv = 0.5 + 0.5 * vec2(hv.x * pc.proj.x / hz, -hv.y * pc.proj.y / hz);
+            if (all(greaterThanEqual(uv, vec2(0.0))) && all(lessThan(uv, vec2(1.0)))) {
+                ivec2 sp = ivec2(uv * pc.sz.xy);
+                float sz_ = (depth_at(sp) * pc.proj.z + pc.nr.x);
+                if (abs(sz_ - hz) < 0.05 * hz + 0.3) {
+                    found = true;
+                    rad = imageLoad(scene, sp).rgb;
+                    // a glowing surface the ray found is left out: the aimed rays below count the lights (no light
+                    // counted twice)
+                    // (with the glow known: its reflected part stays, the glow is the aimed rays')
+                    if (is_light(sp, rad)) rad = emis_on() ? max(rad - emis_at(sp), vec3(0.0)) : vec3(0.0);
+                    rad *= veil_px(sp);
+                }
+            }
+        }
+        // off the screen or hidden on it (step 5): the surface's own colour, lit by the sun and sky, through the
+        // appearance cache (what the game showed of it); without a material (or TOTK_RT_GIMAT=0) the light cache
+        bool shaded = false;
+        if (!found && (gm < 0.5 || abs(gm - 2.0) < 0.5)) {
+            g_gi_hit = true;
+            vec3 c = shade_hit(q, o, dir, shaded);
+            g_gi_hit = false;
+            if (shaded) rad = c;
+        }
+        if (!found && !shaded && cache_on()) cache_get(hp, length(hv), rad);
+    }
+    // aimed at the lights (resampled importance sampling): of 8 lights picked at random from the list, one in
+    // proportion to its unshadowed share here (radiance x area x cosine / distance^2), then one ray to see whether it
+    // is blocked. Unbiased for the sum over the list: the chosen light's colour / its luminance x the weights' sum x N / M.
+    uint nl = min(lcount, LMAX);
+    if (nl > 0u) {
+        int M = int(min(nl, 64u));
+        float fM = float(M), fnl = float(nl);
+        float wsum = 0.0, sp_ = 0.0;
+        vec4 sa = vec4(0.0);
+        vec3 sl = vec3(0.0);
+        for (int m = 0; m < M; m++) {
+            // exact uniform-marginal stratified draw across [0, nl) (or every light when nl <= 64)
+            uint k = nl <= 64u ? uint(m) : min(uint((float(m) + rnd(seed)) * fnl / fM), nl - 1u);
+            vec4 a = lights[2u * k];
+            vec3 lc = lights[2u * k + 1u].rgb, dv = a.xyz - o;
+            float d2 = dot(dv, dv);
+            if (d2 < 0.04 || d2 > pc.prm.x * pc.prm.x) continue;
+            float cr = dot(nw, dv) * inversesqrt(d2);
+            if (cr <= 0.0) continue;
+            float ph = lum(lc) * a.w * cr / (3.14159265 * max(d2, a.w));
+            wsum += ph;
+            if (rnd(seed) * wsum < ph) sa = a, sl = lc, sp_ = ph;
+        }
+        if (sp_ > 0.0) {
+            vec3 dv = sa.xyz - o;
+            float dl = length(dv);
+            vec3 ld = dv / dl;
+            rayQueryEXT q2;
+            rayQueryInitializeEXT(q2, tlas, gl_RayFlagsTerminateOnFirstHitEXT, 0x01, o, 0.0, ld, max(dl - max(0.15, 0.05 * dl), 0.01));
+            PROCEED_SUN(q2, ld)
+            if (rayQueryGetIntersectionTypeEXT(q2, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+                // (the glow's light keeps its own colour: apply raises the GI's saturation by pc.prm.z, a mix with
+                // the luminance that keeps it, so the inverse mix here cancels it for this part; its strength is
+                // glow_gain's)
+                vec3 glw = sl / max(lum(sl), 1e-4) * wsum * fnl / fM;
+                rad += max(mix(vec3(lum(glw)), glw, 1.0 / max(pc.prm.z, 1.0)), vec3(0.0));
+            }
+        }
+    }
+    float l = lum(rad);
+    if (l > 16.0) rad *= 16.0 / l;   // fireflies
+    vec4 h = vec4(rad, z), r = vec4(rad, 0.0), v = vec4(vis, vis, 0.0, 0.0);
+    if (pc.flg.x > 0.5) {
+        vec4 c = vec4(dot(pc.pv0, vec4(pw, 1)), dot(pc.pv1, vec4(pw, 1)), dot(pc.pv2, vec4(pw, 1)), dot(pc.pv3, vec4(pw, 1)));
+        if (c.w > 0.01) {
+            vec2 uv = 0.5 + 0.5 * vec2(pc.flg.y, pc.flg.z) * c.xy / c.w;
+            ivec2 qq = ivec2(floor(uv * pc.sz.xy / 4.0));
+            bool got = false;
+            if (all(greaterThanEqual(qq, ivec2(0))) && all(lessThan(qq, ivec2(pc.sz.zw)))) {
+                uint k = uint(qq.y) * uint(pc.sz.z) + uint(qq.x);
+                vec4 o4 = hist_in[k], f4 = hist_in[n + k];
+                if (o4.w > 0.0 && f4.w >= 0.0 && abs(o4.w - c.w) < 0.05 * c.w + 0.1)
+                    h = vec4(o4.rgb, z), r.w = f4.w, v.x = hist_in[2u * n + k].x, got = true;
+            }
+            if (!got) {   // fallback to 2x2 neighbourhood when thin geometry crosses a 4x4 block boundary
+                vec2 qf = uv * pc.sz.xy / 4.0 - 0.5;
+                ivec2 q0 = ivec2(floor(qf));
+                vec2 fr_ = qf - vec2(q0);
+                vec3 hs = vec3(0.0);
+                float fs = 0.0, vs = 0.0, ws = 0.0;
+                for (int by = 0; by <= 1; by++)
+                    for (int bx = 0; bx <= 1; bx++) {
+                        ivec2 qb = q0 + ivec2(bx, by);
+                        if (any(lessThan(qb, ivec2(0))) || any(greaterThanEqual(qb, ivec2(pc.sz.zw)))) continue;
+                        uint k = uint(qb.y) * uint(pc.sz.z) + uint(qb.x);
+                        vec4 o4 = hist_in[k], f4 = hist_in[n + k];
+                        if (o4.w <= 0.0 || f4.w < 0.0 || abs(o4.w - c.w) >= 0.05 * c.w + 0.1) continue;
+                        float bw = max((bx == 0 ? 1.0 - fr_.x : fr_.x) * (by == 0 ? 1.0 - fr_.y : fr_.y), 1e-3);
+                        hs += o4.rgb * bw, fs += f4.w * bw, vs += hist_in[2u * n + k].x * bw, ws += bw;
+                    }
+                if (ws > 1e-4) h = vec4(hs / ws, z), r.w = fs / ws, v.x = vs / ws;
+            }
+        }
+    }
+    hist_out[i] = h;
+    hist_out[n + i] = r;
+    hist_out[2u * n + i] = v;
+}
+
+// mode 4: the light list, one thread per 4x4 block (its centre pixel)
+// How strongly a glowing surface at light pixel px (world wl, pixel size fp m) lights its surroundings, by the glowing
+// area around it in the world: 24 points on rings of 0.6, 1.2 and 2.4 m (in the screen at that depth; points on another
+// surface, farther than twice the ring from it, left out) that glow at all. A small source (a lamp, a crystal: under
+// one in fifty) gets the boost, pc.ext.w x the GI strength (apply's); a large one (the shrine doorway's glowing
+// frame, a big panel: one in eight or more) its glow as it is, physically, whatever the GI strength. A boosted
+// large source lit its surroundings far brighter than itself.
+float glow_gain(ivec2 px, vec3 wl, float fp) {
+    int n = 0, g = 0;
+    for (int k = 0; k < 24; k++) {
+        float r = k < 8 ? 0.6 : k < 16 ? 1.2 : 2.4, a = float(k & 7) * 0.785398 + float(k >> 3) * 0.26;
+        ivec2 sp = px + ivec2(round(vec2(cos(a), sin(a)) * (r / max(fp, 1e-4))));
+        if (any(lessThan(sp, ivec2(0))) || any(greaterThanEqual(sp, ivec2(pc.sz.xy)))) continue;
+        float d = depth_at(sp);
+        if (sky_depth(d)) { n++; continue; }
+        if (distance(to_world(vpos(sp)), wl) > 2.0 * r) continue;
+        n++;
+        if (lum(emis_at(sp)) >= 0.2 * EMIS_MIN) g++;   // (any glow: a flame band's is patchy)
+    }
+    float big = smoothstep(0.02, 0.12, n > 0 ? float(g) / float(n) : 0.0);
+    return mix(abs(pc.ext.w), 1.0 / max(pc.prm.y, 1.0), big);   // (apply multiplies by the GI strength pc.prm.y)
+}
+
+// Aggregate each 4x4 sub-tile of quarter-res blocks (16x16 full-res pixels) into one area light using shared memory:
+// cuts lcount by up to 16x on large glowing pillars/rings while preserving exact total radiant flux and single-block lanterns.
+shared vec4 sl_pa[64];   // (world pos * power, area)
+shared vec4 sl_ar[64];   // (radiance * area, power)
+
+void build_lights(ivec2 c) {
+    uint li = gl_LocalInvocationID.y * 8u + gl_LocalInvocationID.x;
+    vec4 pa = vec4(0.0), ar = vec4(0.0);
+    if (c.x < int(pc.sz.z) && c.y < int(pc.sz.w)) {
+        ivec2 px = min(c * 4 + 2, ivec2(pc.sz.xy) - 1);
+        float d = depth_at(px);
+        if (!sky_depth(d)) {
+            float z = (d * pc.proj.z + pc.nr.x);
+            if (z <= gfar() + pc.prm.x) {
+                vec3 L = imageLoad(scene, px).rgb;
+                if (is_light(px, L)) {
+                    float fp = z * 2.0 / (pc.proj.y * pc.sz.y);
+                    float area = 16.0 * fp * fp;
+                    vec3 wl = to_world(vpos(px));
+                    vec3 rad = (emis_on() ? emis_at(px) * glow_gain(px, wl, fp) : L * abs(pc.ext.w)) * veil_px(px);
+                    float pw_ = lum(rad) * area;
+                    if (pw_ > 1e-8) pa = vec4(wl * pw_, area), ar = vec4(rad * area, pw_);
+                }
+            }
+        }
+    }
+    sl_pa[li] = pa;
+    sl_ar[li] = ar;
+    barrier();
+    if ((gl_LocalInvocationID.x & 3u) == 0u && (gl_LocalInvocationID.y & 3u) == 0u) {
+        vec4 spa = vec4(0.0), sar = vec4(0.0);
+        for (uint dy = 0u; dy < 4u; dy++)
+            for (uint dx = 0u; dx < 4u; dx++) {
+                uint j = (gl_LocalInvocationID.y + dy) * 8u + (gl_LocalInvocationID.x + dx);
+                spa += sl_pa[j], sar += sl_ar[j];
+            }
+        if (spa.w > 0.0 && sar.w > 1e-8) {
+            uint k = atomicAdd(lcount, 1u);
+            if (k < LMAX) {
+                lights[2u * k] = vec4(spa.xyz / sar.w, spa.w);
+                lights[2u * k + 1u] = vec4(sar.rgb / spa.w, 0.0);
+            }
+        }
+    }
+}
+
+// mode 6: the frame's lighting level (lit colour / albedo, averaged over the blocks' centres; each clamped, so a few
+// lights do not raise it)
+void light_level(ivec2 c) {
+    ivec2 px = min(c * 4 + 2, ivec2(pc.sz.xy) - 1);
+    float d = depth_at(px);
+    if (sky_depth(d)) {   // the sky's brightness: day or night, also in rain (vk_rt.c holds it where no sky shows)
+        atomicAdd(skysum, uint(min(lum(imageLoad(scene, px).rgb), 16.0) * 64.0));
+        atomicAdd(skynum, 1u);
+        return;
+    }
+    if ((d * pc.proj.z + pc.nr.x) > gfar() + pc.prm.x) return;
+    float r = min(lit_ratio(px, imageLoad(scene, px).rgb), 50.0);
+    atomicAdd(lsum, uint(r * 64.0));
+    atomicAdd(lnum, 1u);
+}
+
+// mode 12 (materials): the sun's and the sky's colours measured at the blocks' centres. Lit colour / albedo is the light a
+// pixel gets; where a ray toward the sun is blocked (or N.L <= 0) that is the sky's, where it is not (N.L > 0.25) the
+// sky's + the sun's x N.L. Glowing pixels and dark albedos are left out; vk_rt.c averages over frames.
+void sun_level(ivec2 c) {
+    if (!sun_known() || pc.ext.z <= 0.0) return;
+    ivec2 px = min(c * 4 + 2, ivec2(pc.sz.xy) - 1);
+    float d = depth_at(px);
+    if (sky_depth(d)) return;
+    float z = (d * pc.proj.z + pc.nr.x);
+    if (z > gfar() + pc.prm.x) return;
+    vec3 L = imageLoad(scene, px).rgb, a = texelFetch(albedo, px, 0).rgb;
+    if (lum(a) < 0.05 || is_light(px, L)) return;
+    uvec3 vl = uvec3(min(L, vec3(60.0)) * 64.0), va = uvec3(clamp(a, 0.0, 1.0) * 256.0);
+    float x = lum(L) / max(lum(a), 0.05);
+    vec3 pv = vpos(px), pw = to_world(pv), nw = normalize(dir_world(view_normal(px, pv)));
+    float ndl = dot(nw, sun_dir.xyz);
+    bool lit = false;
+    if (ndl > 0.0) {
+        vec3 cam = vec3(pc.iv0.w, pc.iv1.w, pc.iv2.w);
+        float fp = z * 2.0 / (pc.proj.y * pc.sz.y), ndv = max(dot(nw, normalize(cam - pw)), 0.1);
+        vec3 o = pw + nw * (0.02 + 1.5 * fp / ndv);
+        rayQueryEXT q;
+        rayQueryInitializeEXT(q, tlas, gl_RayFlagsTerminateOnFirstHitEXT, 0x01, o, 0.0, sun_dir.xyz, 1000.0);
+        PROCEED(q, sun_dir.xyz)
+        lit = rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT;
+    }
+    if (lit && ndl > 0.25) {
+        uvec3 vn = uvec3(clamp(a, 0.0, 1.0) * ndl * 256.0);
+        atomicAdd(ssum[0], vl.x), atomicAdd(ssum[1], vl.y), atomicAdd(ssum[2], vl.z), atomicAdd(ssum[3], 1u);
+        atomicAdd(ssum[4], va.x), atomicAdd(ssum[5], va.y), atomicAdd(ssum[6], va.z);
+        atomicAdd(ssum[7], vn.x), atomicAdd(ssum[8], vn.y), atomicAdd(ssum[9], vn.z);
+        atomicAdd(shist[64u + uint(clamp((log2(max(x / ndl, 1e-6)) + 6.0) * 4.0, 0.0, 63.0))], 1u);
+    } else if (!lit) {
+        atomicAdd(shist[uint(clamp((log2(max(x, 1e-6)) + 6.0) * 4.0, 0.0, 63.0))], 1u);
+        atomicAdd(ssum[10], vl.x), atomicAdd(ssum[11], vl.y), atomicAdd(ssum[12], vl.z);
+        atomicAdd(ssum[13], va.x), atomicAdd(ssum[14], va.y), atomicAdd(ssum[15], va.z), atomicAdd(ssum[16], 1u);
+    }
+}
+
+// Mode 13: the materials' colours measured where the screen shows them. One pixel a 4x4 block (moving with the frame):
+// a primary ray through it; where it hits the surface the depth buffer has, the G-buffer albedo there and the hit's raw
+// texel (1 for a flat material) are summed into its material's slot with their squares and products.
+void mat_measure(ivec2 c) {
+    g_svn = 4;
+    if (pc.ext.z <= 0.0) return;
+    uint f = uint(pc.prm.w);
+    ivec2 px = min(c * 4 + ivec2(f & 3u, (f >> 2) & 3u), ivec2(pc.sz.xy) - 1);
+    float d = depth_at(px);
+    if (sky_depth(d)) return;
+    float z = d * pc.proj.z + pc.nr.x;
+    vec3 vd = view_pos((vec2(px) + 0.5) / pc.sz.xy, 1.0);
+    float cz = 1.0 / length(vd);   // view depth per metre along the ray
+    vec3 cam = vec3(pc.iv0.w, pc.iv1.w, pc.iv2.w), dir = normalize(dir_world(vd));
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, tlas, gl_RayFlagsNoneEXT, 0x01, cam, 0.01, dir, z / cz * 1.1 + 1.0);
+    PROCEED(q, dir)
+    if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT) return;
+    int ci = rayQueryGetIntersectionInstanceCustomIndexEXT(q, true);
+    float t = rayQueryGetIntersectionTEXT(q, true);
+    if (ci == 1) return;
+    uint ct = tri_index(ci, rayQueryGetIntersectionGeometryIndexEXT(q, true), rayQueryGetIntersectionPrimitiveIndexEXT(q, true));
+    vec4 tx;
+    uint k;
+    bool at;
+    uint r = mat_raw(ct, rayQueryGetIntersectionBarycentricsEXT(q, true), t, dir, tx, k, at);
+    if (r == 0u || abs(t * cz - z) > 0.03 * z + 0.05) return;
+    vec3 a = clamp(texelFetch(albedo, px, 0).rgb, 0.0, 1.0), tr = clamp(tx.rgb, 0.0, 1.0);
+    uint b = k * 64u;
+    uvec3 ua = uvec3(a * 4096.0 + 0.5), ut = uvec3(tr * 4096.0 + 0.5), utt = uvec3(tr * tr * 4096.0 + 0.5),
+          uat = uvec3(a * tr * 4096.0 + 0.5);
+    atomicAdd(msum[b], ua.x), atomicAdd(msum[b + 1u], ua.y), atomicAdd(msum[b + 2u], ua.z);
+    atomicAdd(msum[b + 3u], ut.x), atomicAdd(msum[b + 4u], ut.y), atomicAdd(msum[b + 5u], ut.z);
+    atomicAdd(msum[b + 6u], utt.x), atomicAdd(msum[b + 7u], utt.y), atomicAdd(msum[b + 8u], utt.z);
+    atomicAdd(msum[b + 9u], uat.x), atomicAdd(msum[b + 10u], uat.y), atomicAdd(msum[b + 11u], uat.z);
+    atomicAdd(msum[b + 12u], 1u);
+    vec3 L = min(imageLoad(scene, px).rgb, vec3(60.0));
+    uvec3 ul = uvec3(L * 64.0 + 0.5);
+    atomicAdd(msum[b + 16u], ul.x), atomicAdd(msum[b + 17u], ul.y), atomicAdd(msum[b + 18u], ul.z);
+    bool lt = is_light(px, L);
+    if (lt) {   // its glow: the G-buffer's where known (else the lit colour of a pixel that counts as a light)
+        uvec3 ue = emis_on() ? uvec3(min(emis_at(px), vec3(60.0)) * 64.0 + 0.5) : ul;
+        atomicAdd(msum[b + 19u], ue.x), atomicAdd(msum[b + 20u], ue.y), atomicAdd(msum[b + 21u], ue.z);
+    }
+    if (!sun_known()) return;
+    // the colour lit here S (the G-buffer albedo x hit_light): per slot (25-27, its count 28) for what the screen shows
+    // beyond the diffuse light (mat_update: a dark shiny material's emission); past 16 m, against the screen's colour G
+    // per distance bin, for vk_rt.c's haze fit G = T S + I
+    vec3 p0 = world[ct * 3u].xyz, n = normalize(cross(world[ct * 3u + 1u].xyz - p0, world[ct * 3u + 2u].xyz - p0));
+    if (dot(n, dir) > 0.0) n = -n;
+    vec3 Ls = hit_sun(cam + dir * t, n, t), La = sky_light() * sky_vis(cam + dir * t, n);
+    g_irr = Ls + La;
+    vec3 Ss = min(a * Ls, vec3(8.0)), Sa = min(a * La, vec3(8.0)), S = min(Ss + Sa, vec3(8.0));
+    // the late measure (rt_late.comp) takes the finished screen's colour here: where the game's picture is then (debug
+    // views 26, 27 put ours in the right half: measuring it would feed our colours back; view 26's goes in after the
+    // measure while the late hook puts it in, nr.z)
+    int view = int(pc.flg.w + 0.5) % 100;
+    bool game_px = view < 20 || ((view == 26 || view == 27) && px.x * 2 < int(pc.sz.x)) || (view == 26 && pc.nr.z > 0.5);
+    if (pc.nr.y > 0.5) {
+        if (game_px) {   // (glowing pixels: for the appearance cache alone)
+            uint ri = 3u * (uint(c.y) * uint(pc.sz.z) + uint(c.x));
+            vec3 hp = cam + dir * t, alb, em;
+            int st;
+            // our diffuse colour here (the fit's), the reflection strength, the cache's cell
+            bool hm = mat_albedo(ct, rayQueryGetIntersectionBarycentricsEXT(q, true), t, dir, alb, st, em);
+            vec3 Lt = hm ? min(alb * Ls + g_amb * La, vec3(8.0)) : vec3(0.0);
+            float qs = hm ? g_spec.r : 0.0;
+            vec3 sp = hm ? g_spec : vec3(0.0);
+            uint cs = app_mode() > 0.5 ? ac_claim(k, hp, n, f) : 0u;
+            vec4 uv = g_uv;
+            uint cl = app_mode() < 0.5 ? 0u : ac_claim_hk(uv.w > 0.5 ? uv_hash(k, ivec2(floor(uv.xy)), uv) : lut_hash(k, vec3(1.0)), f);
+            float wt = 0.0;
+            vec3 Rl = min(refl_in(hp, n, dir), vec3(8.0));
+            vec3 P = Lt + em + sp * Rl;   // the texture level's colour
+            if (app_mode() > 0.5 && hm) P = ac_tex(k, uv, Lt, P, wt);
+            mrec[ri] = uvec4(k + 1u, uint(px.x) | uint(px.y) << 12 | (f & 255u) << 24, packHalf2x16(Ss.rg), packHalf2x16(vec2(Ss.b, t)));
+            mrec[ri + 1u] = uvec4(packHalf2x16(Sa.rg), packHalf2x16(vec2(Sa.b, Rl.b)), packHalf2x16(Rl.rg), cl);
+            mrec[ri + 2u] = uvec4(packHalf2x16(Lt.rg), packHalf2x16(vec2(Lt.b, qs)), cs | (lt ? 0x80000000u : 0u), pack_lg(P) | (wt > 0.99 ? 0x40000000u : 0u));
+        }
+    } else if (!lt) {      // none: the scene now (before the game's transparents, fog and character shading)
+        uint sd = pcg(uint(px.x) * 7919u + uint(px.y) * 104729u + f * 15485863u);
+        vec3 dz = vec3(rnd(sd), rnd(sd), rnd(sd));   // rounded at random: no bias in the sums
+        uvec3 us0 = uvec3(Ss * 64.0 + dz), uf = uvec3(min(L, vec3(8.0)) * 64.0 + dz), ua = uvec3(Sa * 64.0 + dz);
+        atomicAdd(msum[b + 25u], us0.x), atomicAdd(msum[b + 26u], us0.y), atomicAdd(msum[b + 27u], us0.z), atomicAdd(msum[b + 28u], 1u);
+        atomicAdd(msum[b + 29u], uf.x), atomicAdd(msum[b + 30u], uf.y), atomicAdd(msum[b + 31u], uf.z);
+        atomicAdd(msum[b + 32u], ua.x), atomicAdd(msum[b + 33u], ua.y), atomicAdd(msum[b + 34u], ua.z);
+    }
+    if (t > HZ_D0 && !lt) {
+        vec3 G = min(L, vec3(8.0));
+        uint hb = uint(clamp(2.0 * log2(t / HZ_D0), 0.0, 15.0)) * 16u;
+        uvec3 us = uvec3(S * 64.0 + 0.5), ug = uvec3(G * 64.0 + 0.5), uss = uvec3(S * S * 64.0 + 0.5), usg = uvec3(S * G * 64.0 + 0.5);
+        atomicAdd(fsum[hb], us.x), atomicAdd(fsum[hb + 1u], us.y), atomicAdd(fsum[hb + 2u], us.z);
+        atomicAdd(fsum[hb + 3u], ug.x), atomicAdd(fsum[hb + 4u], ug.y), atomicAdd(fsum[hb + 5u], ug.z);
+        atomicAdd(fsum[hb + 6u], uss.x), atomicAdd(fsum[hb + 7u], uss.y), atomicAdd(fsum[hb + 8u], uss.z);
+        atomicAdd(fsum[hb + 9u], usg.x), atomicAdd(fsum[hb + 10u], usg.y), atomicAdd(fsum[hb + 11u], usg.z);
+        atomicAdd(fsum[hb + 12u], 1u);
+    }
+}
+
+// Mode 14: one slot k (2 x 8192): once its sums hold enough samples (16 the first time, then 64; a material seen
+// rarely gathers them over frames), the albedo's least-squares fit a = scale x t + offset per channel, the scale pulled
+// towards the plain tint (mean a / mean t) by a ridge of MRIDGE: a texture with little contrast keeps its tint, one
+// the albedo does not follow (noise, a mask, the wrong UV) gets a scale near 0 and the mean colour as its offset. The
+// fit moves towards this measure (by 0.1; the first is taken as it is) and the sums are cleared. A slot given to another
+// material (its generation moved on) starts again.
+#define MRIDGE 0.003
+void mat_update(uint k) {
+    if (k >= 2u * 8192u) return;
+    uint b = k * 64u, g = mgen[k];
+    if (g == 0xffffffffu || msum[b + 14u] != g + 1u) {   // freed (its measure kept for stale words) or reused (dropped)
+        for (uint i = 0u; i < 13u; i++) msum[b + i] = 0u;
+        for (uint i = 16u; i < 22u; i++) msum[b + i] = 0u;
+        for (uint i = 25u; i < 62u; i++) msum[b + i] = 0u;
+        if (g != 0xffffffffu) msum[b + 15u] = 0u, mval[k * 8u + 3u] = vec4(0.0), mval[k * 8u + 6u] = vec4(0.0), mval[k * 8u + 7u] = vec4(0.0);
+        msum[b + 14u] = g == 0xffffffffu ? 0u : g + 1u;
+        return;
+    }
+    bool meas = msum[b + 15u] == g + 1u;
+    uint n = msum[b + 12u];
+    if (n < (meas ? 64u : 16u)) return;
+    float fn = float(n) * 4096.0;
+    vec3 ma = vec3(msum[b], msum[b + 1u], msum[b + 2u]) / fn, mt = vec3(msum[b + 3u], msum[b + 4u], msum[b + 5u]) / fn;
+    vec3 mtt = vec3(msum[b + 6u], msum[b + 7u], msum[b + 8u]) / fn, mat_ = vec3(msum[b + 9u], msum[b + 10u], msum[b + 11u]) / fn;
+    vec3 vt = max(mtt - mt * mt, vec3(0.0)), cv = mat_ - ma * mt;
+    // Constrain the texture fit a = sc * t + of so both sc >= 0 and of = ma - sc * mt >= 0 in every channel, and couple
+    // weak channels to the luminance correlation alpha so a single channel (e.g. red on blue Zora stone) cannot fit an
+    // isolated slope with zero/negative green & blue offset that turns dark panels black and bright trim lines neon red.
+    const vec3 lw = vec3(0.2126, 0.7152, 0.0722);
+    float alpha_l = clamp((dot(cv, lw) + MRIDGE) / (dot(vt, lw) + MRIDGE), 0.0, 1.0);
+    vec3 alpha_c = clamp((cv + MRIDGE) / (vt + MRIDGE), vec3(0.0), vec3(1.0));
+    vec3 cw_t = clamp(min(ma, mt) / max(0.35 * max(lum(ma), lum(mt)), 0.05), 0.0, 1.0);
+    vec3 alpha = clamp(mix(vec3(alpha_l), alpha_c, 0.35 * cw_t), vec3(0.0), vec3(1.0));
+    vec3 sc = alpha * (ma / max(mt, vec3(1e-3)));
+    vec3 of = max(ma - sc * mt, vec3(0.0));
+    vec4 v0 = mval[k * 8u], v1 = mval[k * 8u + 1u];
+    // the light it gives off: a black albedo's whole colour on the finished screen (the game shades it elsewhere; the
+    // lit colour now until that is measured); else what glows
+    float fl = float(n) * 64.0;
+    vec3 mL = vec3(msum[b + 16u], msum[b + 17u], msum[b + 18u]) / fl, em;
+    uint ns = msum[b + 28u];
+    float fs = max(float(ns), 1.0) * 64.0;
+    vec3 mSs = vec3(msum[b + 25u], msum[b + 26u], msum[b + 27u]) / fs, mF = vec3(msum[b + 29u], msum[b + 30u], msum[b + 31u]) / fs;
+    vec3 mSa = vec3(msum[b + 32u], msum[b + 33u], msum[b + 34u]) / fs, mS = mSs + mSa;
+    // the glow measured where the G-buffer's is known (a black albedo lit by strong light glows no more than any other);
+    // else a black albedo's whole colour, as before
+    if (emis_on()) em = vec3(msum[b + 19u], msum[b + 20u], msum[b + 21u]) / fl;
+    else if (lum(ma) < 0.02) em = ns >= 16u ? mF : mL;
+    else em = vec3(msum[b + 19u], msum[b + 20u], msum[b + 21u]) / fl;
+    // The look and the reflection: the finished colour F = look x S + spec x R per channel, least squares over the
+    // samples (S our diffuse colour, R the Fresnel-weighted mirror light): character shading and tints go to the look,
+    // what changes with the view (sky and walls mirrored in glossy floors, crystal, water) to the reflection. Ridge
+    // towards the plain ratio and no reflection; a channel the light hardly reaches is held to a 20th of the luminance.
+    vec4 v3 = mval[k * 8u + 3u], v6 = mval[k * 8u + 6u], v7 = mval[k * 8u + 7u];
+    if (ns >= 16u && lum(ma) >= 0.02 && lum(mS) > 0.004) {
+#define MS3(i) (vec3(msum[b + i], msum[b + i + 1u], msum[b + i + 2u]) / fs)
+        vec3 ss = MS3(35u), aa = MS3(38u), sa = MS3(41u), rr = MS3(44u), sr = MS3(47u), ar = MS3(50u);
+        vec3 fS = MS3(53u), fA = MS3(56u), fr = MS3(59u);
+#undef MS3
+        // Regularize weak channels (where mS.c << lum(mS), e.g. red on blue Zora stone) towards the luminance ratio so
+        // additive specular/haze on dark blue stone does not fit a 5-24x red multiplier that turns silver trim bright red.
+        float lr0 = lum(mF) / max(lum(mS), 1e-4);
+        vec3 cw = clamp(mS / max(0.5 * lum(mS), 1e-4), 0.0, 1.0);
+        vec3 l0 = mix(vec3(lr0), mF / max(mS, vec3(0.25 * lum(mS))), cw);
+        vec3 SS = ss + 2.0 * sa + aa, SA = sa + aa, FS = fS + fA, SR = sr + ar;
+        float ss_iso = 0.25 * max(SS.r, max(SS.g, SS.b)), aa_iso = 0.25 * max(aa.r, max(aa.g, aa.b));
+        vec3 lu = 0.02 * max(SS, vec3(max(ss_iso, 1e-6))), ld = 0.25 * max(aa, vec3(max(aa_iso, 1e-6)));
+        vec3 m11 = SS + lu, m22 = aa + ld, det = m11 * m22 - SA * SA;
+        vec3 b1 = FS + lu * l0, b2 = fA;
+        vec3 ub = (m22 * b1 - SA * b2) / det, db = (m11 * b2 - SA * b1) / det;
+        vec3 ur = (m22 * SR - SA * ar) / det, dr = (m11 * ar - SA * SR) / det;
+        float rs = rr.r + rr.g + rr.b, mu = 0.02 * max(rs, 1e-6);
+        float qn = fr.r + fr.g + fr.b - dot(SR, ub) - dot(ar, db), qd = rs + mu - dot(SR, ur) - dot(ar, dr);
+        float q = qd > 1e-9 && rs > 1e-7 ? max(qn / qd, 0.0) : 0.0;
+        vec3 u = ub - q * ur;
+        vec3 lk = clamp(u, vec3(0.0), vec3(24.0)), lv = clamp(u + db - q * dr, vec3(0.0), vec3(24.0));
+        float llk = lum(lk), llv = lum(lv);
+        lk = clamp(lk, vec3(llk * 0.65), vec3(min(llk * 1.35 + 0.1, 24.0)));
+        lv = clamp(lv, vec3(llv * 0.65), vec3(min(llv * 1.35 + 0.1, 24.0)));
+        vec3 sp = vec3(clamp(q, 0.0, 24.0));
+        v3 = v3.w > 0.5 ? vec4(mix(v3.rgb, lk, 0.1), 1.0) : vec4(lk, 1.0);
+        v7 = v7.w > 0.5 ? vec4(mix(v7.rgb, lv, 0.1), 1.0) : vec4(lv, 1.0);
+        v6 = v6.w > 0.5 ? vec4(mix(v6.rgb, sp, 0.1), 1.0) : vec4(sp, 1.0);
+        mval[k * 8u + 4u] = vec4(mS, float(ns)), mval[k * 8u + 5u] = vec4(mF, lum(ma));   // (debug: the probe's last measure)
+    } else if (ns >= 16u && lum(ma) < 0.02) {   // a black albedo: its whole finished colour is its emission, no reflection
+        v6 = vec4(0.0, 0.0, 0.0, 1.0);
+    }
+    vec4 v2 = mval[k * 8u + 2u];
+    if (!meas) {   // the w's: the mean texel
+        v0 = vec4(sc, mt.r), v1 = vec4(of, mt.g), v2 = vec4(em, mt.b);
+        msum[b + 15u] = g + 1u;
+    } else {
+        v0 = mix(v0, vec4(sc, mt.r), 0.1), v1 = mix(v1, vec4(of, mt.g), 0.1), v2 = mix(v2, vec4(em, mt.b), 0.1);
+    }
+    mval[k * 8u] = v0, mval[k * 8u + 1u] = v1, mval[k * 8u + 2u] = v2, mval[k * 8u + 3u] = v3, mval[k * 8u + 6u] = v6;
+    mval[k * 8u + 7u] = v7;
+    uint sid = mgen[16384u + k];   // its shader's average fit (concurrent slots of one shader may drop each other's step)
+    if (sid != 0u && sid < 4096u) {
+        vec4 s0 = sval[sid * 6u];
+        bool set = s0.w > 0.5;
+        sval[sid * 6u] = vec4(set ? mix(s0.rgb, v0.rgb, 0.05) : v0.rgb, 1.0);
+        sval[sid * 6u + 1u] = vec4(set ? mix(sval[sid * 6u + 1u].rgb, v1.rgb, 0.05) : v1.rgb, 0.0);
+        sval[sid * 6u + 2u] = vec4(set ? mix(sval[sid * 6u + 2u].rgb, v2.rgb, 0.05) : v2.rgb, 0.0);
+        vec4 s3 = sval[sid * 6u + 3u];
+        if (v3.w > 0.5) sval[sid * 6u + 3u] = vec4(s3.w > 0.5 ? mix(s3.rgb, v3.rgb, 0.05) : v3.rgb, 1.0);
+        vec4 s4 = sval[sid * 6u + 4u];
+        if (v6.w > 0.5) sval[sid * 6u + 4u] = vec4(s4.w > 0.5 ? mix(s4.rgb, v6.rgb, 0.05) : v6.rgb, 1.0);
+        vec4 s5 = sval[sid * 6u + 5u];
+        if (v7.w > 0.5) sval[sid * 6u + 5u] = vec4(s5.w > 0.5 ? mix(s5.rgb, v7.rgb, 0.05) : v7.rgb, 1.0);
+    }
+    for (uint i = 0u; i < 13u; i++) msum[b + i] = 0u;
+    for (uint i = 16u; i < 22u; i++) msum[b + i] = 0u;
+    if (ns >= 16u)
+        for (uint i = 25u; i < 62u; i++) msum[b + i] = 0u;
+}
+
+// the appearance cache kept (mode 14, one thread for 32 cells): sums halved past 64 samples, cells unseen for 30 s freed
+void ac_keep(uint id) {
+    if (id >= 16384u || app_mode() < 0.5) return;
+    uint fr = uint(pc.prm.w);
+    for (uint j = fr & 7u; j < 32u; j += 8u) {   // an eighth of the table a frame (the limits are loose: 64 samples, 1800 frames)
+        uint b = (id * 32u + j) * 16u;
+        if (mcache[b] == 0u) continue;
+        if (fr - mcache[b + 1u] > 1800u) {
+            for (uint i = 1u; i < 16u; i++) mcache[b + i] = 0u;
+            mcache[b] = 0u;
+        } else if (mcache[b + 2u] >= 64u) {
+            for (uint i = 2u; i < 16u; i++) mcache[b + i] >>= 1;
+        }
+    }
+}
+
+void temporal(ivec2 p) {
+    uint n = uint(pc.sz.z) * uint(pc.sz.w), i = uint(p.y) * uint(pc.sz.z) + uint(p.x);
+    vec4 c = hist_in[i], rr = hist_in[n + i], cv = hist_in[2u * n + i];
+    if (c.w <= 0.0 || rr.w < 0.0) { hist_out[i] = c; hist_out[n + i] = rr; hist_out[2u * n + i] = cv; return; }
+    if (rr.w < 0.5) {   // first frame after disocclusion: seed from same-depth 3x3 raw mean
+        vec3 m1 = vec3(0.0);
+        float wsum = 0.0, v1 = 0.0;
+        for (int y = -1; y <= 1; y++)
+            for (int x = -1; x <= 1; x++) {
+                ivec2 q = p + ivec2(x, y);
+                if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, ivec2(pc.sz.zw)))) continue;
+                uint k = uint(q.y) * uint(pc.sz.z) + uint(q.x);
+                vec4 h = hist_in[k], g = hist_in[n + k];
+                if (h.w <= 0.0 || g.w < 0.0 || abs(h.w - c.w) > 0.05 * c.w + 0.1) continue;
+                m1 += g.rgb, wsum += 1.0, v1 += hist_in[2u * n + k].y;
+            }
+        hist_out[i] = vec4(m1 / max(wsum, 1.0), c.w);
+        hist_out[n + i] = vec4(rr.rgb, 1.0);
+        hist_out[2u * n + i] = vec4(v1 / max(wsum, 1.0), cv.y, 0.0, 0.0);
+        return;
+    }
+    // Unbiased exponential moving average (no raw 3x3 mean +- 2 sd clamp, which collapsed sd to 0 on thin geometry
+    // and chopped converged history whenever 1-spp RIS rays in a 3x3 box missed a bright lamp).
+    float f = min(rr.w + 1.0, 32.0);
+    hist_out[i] = vec4(mix(c.rgb, rr.rgb, 1.0 / f), c.w);
+    hist_out[n + i] = vec4(rr.rgb, f);
+    hist_out[2u * n + i] = vec4(mix(cv.x, cv.y, 1.0 / f), cv.y, 0.0, 0.0);
+}
+
+// mode 7, the spatial denoiser (quarter resolution, after the temporal pass): one a-trous step of a 5x5 B3-spline
+// kernel, taps pc.proj.z quarter pixels apart, depth-aware; hist_in[proj.x + i] -> hist_out[proj.y + i] = (rgb, depth).
+// Run three times (1, 2, 4): 1 ray per 4x4 block, even after 32 frames, left a grain the 3x3 upsample did not hide.
+void atrous(ivec2 p) {
+    uint i = uint(p.y) * uint(pc.sz.z) + uint(p.x), src = uint(pc.proj.x), dst = uint(pc.proj.y);
+    int st = int(pc.proj.z);
+    vec4 c = hist_in[src + i];
+    if (c.w <= 0.0) { hist_out[dst + i] = c; return; }
+    const float k[3] = float[3](0.375, 0.25, 0.0625);
+    vec3 sum = vec3(0.0);
+    float wsum = 0.0;
+    for (int y = -2; y <= 2; y++)
+        for (int x = -2; x <= 2; x++) {
+            ivec2 q = p + ivec2(x, y) * st;
+            if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, ivec2(pc.sz.zw)))) continue;
+            vec4 h = hist_in[src + uint(q.y) * uint(pc.sz.z) + uint(q.x)];
+            if (h.w <= 0.0) continue;
+            float w = k[abs(x)] * k[abs(y)] * exp(-abs(h.w - c.w) / ((0.02 * c.w + 0.05) * float(st)));
+            sum += h.rgb * w, wsum += w;
+        }
+    hist_out[dst + i] = vec4(wsum > 1e-5 ? sum / wsum : c.rgb, c.w);
+}
+
+// ---- reflections (modes 8, 9, 10; their half-res buffer is hist_in/hist_out like the GI's) ----
+vec3 dir_view(vec3 d) {   // world direction -> view space
+    return vec3(dot(vec3(pc.iv0.x, pc.iv1.x, pc.iv2.x), d), dot(vec3(pc.iv0.y, pc.iv1.y, pc.iv2.y), d),
+                dot(vec3(pc.iv0.z, pc.iv1.z, pc.iv2.z), d));
+}
+vec3 rnd_ball(inout uint s) {   // a point in the unit ball
+    float u = rnd(s) * 2.0 - 1.0, ph = 6.2831853 * rnd(s), r = sqrt(max(1.0 - u * u, 0.0));
+    return vec3(r * cos(ph), r * sin(ph), u) * pow(rnd(s), 0.3333333);
+}
+// 1 where the surface is planar around px (the depth normals 3 pixels away agree with n; a neighbour on another surface,
+// past a depth jump, does not count), 0 where it curves (characters, rocks, foliage)
+// What a pixel's own material says about reflecting (docs/raytracing.md, materials, the material targets): x the weight (0 where the
+// game's smoothness is low: soil, grass, wood, cloth, paper, rough rock; and for foliage, characters and far cards),
+// y the roughness that blurs the ray and caps the grazing Fresnel, z the smoothness (debug view 28). Without the
+// targets: (1, the global roughness, -1).
+vec3 mtl_refl(ivec2 px) {
+    if (pc.rsz.z >= 0.0) return vec3(1.0, pc.rfl.y, -1.0);
+    vec4 m = texelFetch(gmtl, px, 0), c = texelFetch(gmid, px, 0);
+    uint g = uint(c.g * 255.0 + 0.5), r = uint(c.r * 255.0 + 0.5);
+    float sm = float(uint(m.a * 255.0 + 0.5) >> 2u) / 63.0;
+    // On water (r == 51), keep reflections clean and gentle only on shallow/still pools (like Zora's Domain fountain,
+    // where the water surface is close to the floor/edge or calm) and let deep moving cave/river water stay subtle.
+    bool cls = g == 125u || g == 253u || g == 32u || r == 128u;
+    if (r == 51u) return vec3(0.55, clamp(pc.rfl.y + 0.05, 0.0, 1.0), sm);
+    float w = cls ? 0.0 : smoothstep(0.5, 0.85, sm);
+    float rough = clamp(pc.rfl.y + 0.6 * (1.0 - sm), 0.0, 1.0);
+    return vec3(w, rough, sm);
+}
+
+float planarity(ivec2 px, vec3 pv, vec3 n) {
+    float m = 1.0;
+    int vx = 0, vy = 0;
+    const ivec2 o[4] = ivec2[4](ivec2(3, 0), ivec2(-3, 0), ivec2(0, 3), ivec2(0, -3));
+    for (int k = 0; k < 4; k++) {
+        ivec2 q = clamp(px + o[k], ivec2(1), ivec2(pc.sz.xy) - 2);
+        if (sky_depth(depth_at(q))) continue;
+        vec3 pq = vpos(q);
+        if (abs(pq.z - pv.z) > 0.03 * abs(pv.z) + 0.05) continue;
+        if (k < 2) vx++; else vy++;
+        m = min(m, dot(n, view_normal(q, pq)));
+    }
+    if (vx == 0 || vy == 0) return 0.0;   // thin strips (< 6 px wide: handrails, poles, edges) are not planar mirrors
+    const ivec2 o1[4] = ivec2[4](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1));
+    for (int k = 0; k < 4; k++) {
+        ivec2 q = clamp(px + o1[k], ivec2(1), ivec2(pc.sz.xy) - 2);
+        if (sky_depth(depth_at(q))) continue;
+        vec3 pq = vpos(q);
+        if (abs(pq.z - pv.z) > 0.02 * abs(pv.z) + 0.03) continue;
+        m = min(m, dot(n, view_normal(q, pq)));
+    }
+    return smoothstep(0.95, 0.99, m);
+}
+
+void refl_trace(ivec2 hp) {
+    uint hw = uint(pc.rsz.x), n = hw * uint(pc.rsz.y), i = uint(hp.y) * hw + uint(hp.x);
+    uint fr = uint(pc.prm.w);
+    // deterministic pixel pick (fixed corner on continuous surfaces, closest foreground on depth edges) so thin edges
+    // do not hop across depths or strobe planarity on a 4-frame cycle
+    ivec2 base = hp * 2, szm = ivec2(pc.sz.xy) - 1;
+    ivec2 px = min(base, szm);
+    float d = depth_at(px);
+    {
+        float dmin = 2.0, dmax = -1.0;
+        ivec2 pmin = px;
+        for (int k = 0; k < 4; k++) {
+            ivec2 q = min(base + ivec2(k & 1, k >> 1), szm);
+            float dq = depth_at(q);
+            if (sky_depth(dq)) continue;
+            if (dq < dmin) dmin = dq, pmin = q;
+            if (dq > dmax) dmax = dq;
+        }
+        if (dmin < 1.5) {
+            float zmin = dmin * pc.proj.z + pc.nr.x, zmax = dmax * pc.proj.z + pc.nr.x;
+            if (sky_depth(d) || (zmax - zmin) > 0.03 * zmin + 0.05) px = pmin, d = dmin;
+        }
+    }
+    if (sky_depth(d)) { hist_out[i] = vec4(0.0); hist_out[n + i] = vec4(0.0); hist_out[2u * n + i] = vec4(0.0, -1.0, 0.0, 0.0); return; }
+    float z = (d * pc.proj.z + pc.nr.x);
+    vec3 mr = mtl_refl(px);
+    if (mr.x <= 0.0) { hist_out[i] = vec4(0.0); hist_out[n + i] = vec4(0.0); hist_out[2u * n + i] = vec4(z, 0.0, 0.0, mr.y); return; }
+    vec3 pv = vpos(px), nv = view_normal(px, pv);
+    // Stabilize depth-reconstructed normal against DLAA sub-pixel jitter on planar floors: average the 4-neighbour
+    // depth normals on the same plane so jitter does not rock the reflection ray back and forth across a pixel every frame.
+    {
+        vec3 ns = nv;
+        const ivec2 no[4] = ivec2[4](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1));
+        for (int k = 0; k < 4; k++) {
+            ivec2 q = clamp(px + no[k], ivec2(1), ivec2(pc.sz.xy) - 2);
+            if (sky_depth(depth_at(q))) continue;
+            vec3 pq = vpos(q);
+            if (abs(pq.z - pv.z) > 0.02 * abs(pv.z) + 0.03) continue;
+            vec3 nq = view_normal(q, pq);
+            if (dot(nq, nv) > 0.95) ns += nq;
+        }
+        nv = normalize(ns);
+    }
+    float gloss = planarity(px, pv, nv) * mr.x;
+    vec3 pw = to_world(pv), nw = normalize(dir_world(nv)), cam = vec3(pc.iv0.w, pc.iv1.w, pc.iv2.w);
+    bool is_water = pc.rsz.z < 0.0 && uint(texelFetch(gmid, px, 0).r * 255.0 + 0.5) == 51u;
+    // Distinguish still/architectural pools (e.g. Zora's Domain fountain, where sunlight/sky/stone surround the basin
+    // and water is shallow/still) from dark deep moving cave rivers: attenuate water reflections gently when far
+    // from the camera or in dark caves, and anchor water normal strictly to world-up (0, 1, 0) with micro-ripples
+    // so still pools show crisp, physically stable reflections without mirror-cutout wobble.
+    if (is_water) {
+        nw = vec3(0.0, 1.0, 0.0);
+        gloss = mr.x * (1.0 - smoothstep(18.0, 45.0, z));
+    }
+    vec3 V = normalize(pw - cam);
+    float ndv = dot(nw, -V);
+    vec4 raw = vec4(0.0);
+    // the reflection's weight in apply (Fresnel x gloss, at strength 100 %): below 0.5 % it would not show, no ray.
+    // (Not pc.rfl.x: the strength is 0 in these passes, set for apply alone; it once turned every ray off)
+    float F0 = mix(0.04, abs(pc.rsz.z), smoothstep(0.7, 0.95, nw.y));
+    // Floor-aware Fresnel: damp the steep-angle drop-off on polished floors (nw.y > 0.7) so reflections stay
+    // consistent across camera pitch angles instead of popping in/out when tilting the camera.
+    float f_pow = pow(1.0 - clamp(ndv, 0.0, 1.0), mix(5.0, 2.5, smoothstep(0.7, 0.95, nw.y)));
+    float Fw = (F0 + (max(1.0 - mr.y, F0) - F0) * f_pow) * gloss;
+    if (gloss > 0.0 && ndv > 0.0 && Fw > 0.005) {
+        vec3 rn = nw;
+        if (is_water) {
+            // Very subtle calm-pool wave ripple (stable, no fast shimmer)
+            float tm = pc.prm.w * 0.02;
+            float rx = sin(pw.x * 2.5 + pw.z * 1.6 + tm) * 0.006 + cos(pw.x * 5.1 - pw.z * 3.4 - tm * 1.2) * 0.004;
+            float rz = cos(pw.z * 2.7 - pw.x * 1.5 + tm * 0.9) * 0.006 + sin(pw.z * 4.8 + pw.x * 3.2 + tm * 1.1) * 0.004;
+            rn = normalize(vec3(rx, 1.0, rz));
+        }
+        vec3 dir = reflect(V, rn);
+        float dn = dot(dir, nw);
+        if (dn < 0.02) dir = normalize(dir + (0.02 - dn) * nw);
+        float fp = z * 2.0 / (pc.proj.y * pc.sz.y);
+        vec3 o = pw + nw * (0.02 + 1.5 * fp / max(ndv, 0.1));
+        rayQueryEXT q;
+        rayQueryInitializeEXT(q, tlas, gl_RayFlagsNoneEXT, 0x01, o, 0.0, dir, pc.rfl.z);
+        PROCEED(q, dir)
+        vec2 uv = vec2(-1.0);
+        float want = -1.0;   // the view depth the screen must show there (negative: anything at least the ray length)
+        if (rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+            vec3 hv = to_view(o + dir * rayQueryGetIntersectionTEXT(q, true));
+            float hz = -hv.z;
+            if (hz > 0.1) uv = 0.5 + 0.5 * vec2(hv.x * pc.proj.x / hz, -hv.y * pc.proj.y / hz), want = hz;
+        } else {   // a miss: what the screen shows at the direction's vanishing point, if it is sky or that far
+            vec3 dv = dir_view(dir);
+            if (-dv.z > 0.05) uv = 0.5 + 0.5 * vec2(dv.x * pc.proj.x / -dv.z, -dv.y * pc.proj.y / -dv.z);
+        }
+        float gm = floor(pc.nr.w / 100.0);   // TOTK_RT_GIMAT (trace)
+        float scr_w = 0.0;
+        vec3 scr_rad = vec3(0.0);
+        if ((gm < 1.5 || want < 0.0) && all(greaterThanEqual(uv, vec2(0.0))) && all(lessThan(uv, vec2(1.0)))) {
+            ivec2 sp = ivec2(uv * pc.sz.xy);
+            float sd = depth_at(sp), sz_ = (sd * pc.proj.z + pc.nr.x);
+            bool ok = want > 0.0 ? abs(sz_ - want) < 0.05 * want + 0.3 : (sky_depth(sd) || sz_ > 0.7 * pc.rfl.z);
+            if (ok) {
+                scr_rad = imageLoad(scene, sp).rgb * veil_px(sp);
+                float l = lum(scr_rad);
+                if (l > 16.0) scr_rad *= 16.0 / l;
+                // Smoothly fade screen-space contribution near screen borders (12% margin) so reflections do not
+                // abruptly pop/switch when a reflected object crosses the edge of the screen.
+                vec2 edge = min(uv, 1.0 - uv);
+                scr_w = smoothstep(0.0, 0.12, min(edge.x, edge.y));
+                raw = vec4(scr_rad, 1.0);
+            }
+        }
+        // a hit off the screen, near the screen edge, or hidden on it (step 5): the surface's own colour, lit by the
+        // sun and sky, through the appearance cache, hazed over the whole path (camera to the floor, on to the hit)
+        if ((raw.w == 0.0 || scr_w < 0.999) && rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT && (gm < 0.5 || abs(gm - 2.0) < 0.5)) {
+            bool shaded;
+            vec3 rad = shade_hit(q, o, dir, shaded);
+            if (shaded) {
+                rad = haze(rad, length(o - cam) + rayQueryGetIntersectionTEXT(q, true));
+                float l = lum(rad);
+                if (l > 16.0) rad *= 16.0 / l;
+                raw = vec4(scr_w > 0.0 ? mix(rad, scr_rad, scr_w) : rad, 1.0);
+            }
+        }
+    }
+    vec4 h = raw;
+    float frames = 0.0, gloss_h = gloss;
+    if (pc.flg.x > 0.5) {   // the history at the point's position last frame
+        vec4 c = vec4(dot(pc.pv0, vec4(pw, 1)), dot(pc.pv1, vec4(pw, 1)), dot(pc.pv2, vec4(pw, 1)), dot(pc.pv3, vec4(pw, 1)));
+        if (c.w > 0.01) {
+            vec2 uv = 0.5 + 0.5 * vec2(pc.flg.y, pc.flg.z) * c.xy / c.w;
+            if (all(greaterThanEqual(uv, vec2(0.0))) && all(lessThan(uv, vec2(1.0)))) {
+            // Always use bilinear interpolation from the 2x2 neighbourhood in last frame's reflection history so
+            // sub-pixel camera motion does not snap between nearest half-res texels (which caused micro-flicker).
+            vec2 qf = uv * pc.sz.xy * 0.5 - 0.5;
+            ivec2 q0 = ivec2(floor(qf));
+            vec2 fr_ = qf - vec2(q0);
+            vec4 hs = vec4(0.0);
+            float fs = 0.0, gs = 0.0, ws = 0.0;
+            for (int by = 0; by <= 1; by++)
+                for (int bx = 0; bx <= 1; bx++) {
+                    ivec2 qb = q0 + ivec2(bx, by);
+                    if (any(lessThan(qb, ivec2(0))) || any(greaterThanEqual(qb, ivec2(pc.rsz.xy)))) continue;
+                    uint k = uint(qb.y) * hw + uint(qb.x);
+                    vec4 m4 = hist_in[2u * n + k];
+                    if (m4.y < 0.0 || abs(m4.x - c.w) >= 0.05 * c.w + 0.1) continue;
+                    float bw = max((bx == 0 ? 1.0 - fr_.x : fr_.x) * (by == 0 ? 1.0 - fr_.y : fr_.y), 1e-3);
+                    hs += hist_in[k] * bw, fs += m4.y * bw, gs += m4.z * bw, ws += bw;
+                }
+            if (ws > 1e-4)
+                h = hs / ws, frames = fs / ws, gloss_h = mix(gs / ws, gloss, 1.0 / min(frames + 1.0, 16.0));
+            }
+        }
+    }
+    hist_out[i] = h;
+    hist_out[n + i] = raw;
+    hist_out[2u * n + i] = vec4(z, frames, gloss_h, mr.y);
+}
+
+void refl_temporal(ivec2 p) {
+    uint hw = uint(pc.rsz.x), n = hw * uint(pc.rsz.y), i = uint(p.y) * hw + uint(p.x);
+    vec4 h = hist_in[i], r = hist_in[n + i], m = hist_in[2u * n + i];
+    if (m.y < 0.0 || m.z <= 0.0) { hist_out[i] = vec4(0.0); hist_out[2u * n + i] = m; return; }
+    // Anti-flicker real-time reflection temporal filter (zero trailing ghosts on camera motion):
+    // 1. Compute 3x3 same-depth spatial mean & standard deviation of the current frame's reflection to eliminate
+    //    single-pixel DLAA jitter shimmer and half-res aliasing.
+    vec4 m1 = vec4(0.0), m2 = vec4(0.0), ga = vec4(0.0);
+    float ws = 0.0, gws = 0.0;
+    const float kw[3] = float[3](1.0, 0.5, 0.25);
+    for (int y = -1; y <= 1; y++)
+        for (int x = -1; x <= 1; x++) {
+            ivec2 q = p + ivec2(x, y);
+            if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, ivec2(pc.rsz.xy)))) continue;
+            uint k = uint(q.y) * hw + uint(q.x);
+            vec4 mq = hist_in[2u * n + k];
+            if (mq.y < 0.0 || abs(mq.x - m.x) > 0.05 * m.x + 0.1) continue;
+            vec4 rq = hist_in[n + k];
+            float w = kw[abs(x) + abs(y)];
+            ga += rq * w, gws += w;
+            m1 += rq, m2 += rq * rq, ws += 1.0;
+        }
+    vec4 mean = m1 / max(ws, 1.0);
+    vec4 sd = sqrt(max(m2 / max(ws, 1.0) - mean * mean, vec4(0.0)));
+    float blur = clamp(0.35 + smoothstep(0.02, 0.16, m.w) * 0.45, 0.0, 0.8);
+    vec4 cur = mix(r, ga / max(gws, 1.0), blur);
+    // 2. Motion-reactive temporal stabilization: compute 3x3 neighbourhood in the reprojected history as well, and
+    //    blend up to 12 frames when steady so bright highlights and thin edges have zero flicker; on rapid motion
+    //    (camera rotation / moving NPC), clamp tightly to the current 3x3 envelope and shorten history immediately
+    //    so there are no trailing ghosts.
+    if (m.y < 0.5) { hist_out[i] = cur; hist_out[2u * n + i] = vec4(m.x, 1.0, m.z, m.w); return; }
+    vec4 lo = mean - 1.25 * sd - vec4(0.03), hi = mean + 1.25 * sd + vec4(0.03);
+    vec4 prev = clamp(h, lo, hi);
+    float diff = length(h.rgb - prev.rgb) / max(lum(mean.rgb) + 0.15, 0.15);
+    float max_f = mix(12.0, 1.5, smoothstep(0.10, 0.40, diff));
+    float nf = min(m.y + 1.0, max_f);
+    hist_out[i] = mix(prev, cur, 1.0 / max(nf, 1.0));
+    hist_out[2u * n + i] = vec4(m.x, nf, m.z, m.w);
+}
+
+// one a-trous step: hist_in[proj.x + i] -> hist_out[proj.y + i], taps proj.z half pixels apart; depth & roughness from hist_in[2n + i]
+void refl_atrous(ivec2 p) {
+    uint hw = uint(pc.rsz.x), n = hw * uint(pc.rsz.y), i = uint(p.y) * hw + uint(p.x);
+    uint src = uint(pc.proj.x), dst = uint(pc.proj.y);
+    int st = int(pc.proj.z);
+    vec4 m = hist_in[2u * n + i];
+    hist_out[2u * n + i] = m;   // keep temporally smoothed gloss & roughness in the buffer apply reads
+    if (m.y < 0.0 || m.z <= 0.0) { hist_out[dst + i] = vec4(0.0); return; }
+    vec4 cen = hist_in[src + i];
+    float blur = st == 1 ? smoothstep(0.02, 0.12, m.w) : smoothstep(0.06, 0.22, m.w);
+    if (blur <= 1e-3) { hist_out[dst + i] = cen; return; }
+    const float k[3] = float[3](0.375, 0.25, 0.0625);
+    vec4 sum = vec4(0.0);
+    float ws = 0.0;
+    for (int y = -2; y <= 2; y++)
+        for (int x = -2; x <= 2; x++) {
+            ivec2 q = p + ivec2(x, y) * st;
+            if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, ivec2(pc.rsz.xy)))) continue;
+            uint kq = uint(q.y) * hw + uint(q.x);
+            vec4 mq = hist_in[2u * n + kq];
+            if (mq.y < 0.0) continue;
+            float w = k[abs(x)] * k[abs(y)] * exp(-abs(mq.x - m.x) / ((0.02 * m.x + 0.05) * float(st)));
+            sum += hist_in[src + kq] * w, ws += w;
+        }
+    hist_out[dst + i] = mix(cen, ws > 1e-5 ? sum / ws : cen, blur);
+}
+
+// the reflection at a full-res pixel: a depth-aware 3x3 upsample of the half-res one (premultiplied), and its gloss
+vec4 refl_at(ivec2 px, float z, out float gloss) {
+    uint hw = uint(pc.rsz.x), n = hw * uint(pc.rsz.y), off = uint(pc.rsz.w);
+    ivec2 c = px / 2;
+    vec4 s = vec4(0.0);
+    float g = 0.0, ws = 0.0;
+    for (int y = -1; y <= 1; y++)
+        for (int x = -1; x <= 1; x++) {
+            ivec2 q = c + ivec2(x, y);
+            if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, ivec2(pc.rsz.xy)))) continue;
+            uint k = uint(q.y) * hw + uint(q.x);
+            vec4 m = hist_in[2u * n + k];
+            if (m.y < 0.0) continue;
+            vec2 dd = (vec2(q) * 2.0 + 1.0 - (vec2(px) + 0.5)) * 0.5;
+            float w = exp(-dot(dd, dd)) * exp(-abs(m.x - z) / (0.04 * z + 0.05));
+            s += hist_in[off + k] * w, g += m.z * w, ws += w;
+        }
+    gloss = ws > 1e-4 ? g / ws : 0.0;
+    return ws > 1e-4 ? s / ws : vec4(0.0);
+}
+
+// view 26's right half: colour c over the game's pixel by weight w (now, or by the late hook over its finished picture)
+void put26(ivec2 px, vec3 c, float w) {
+    if (pc.nr.z > 0.5) {
+        int x0 = (int(pc.sz.x) + 1) / 2;
+        split[uint(px.y) * uint(int(pc.sz.x) - x0) + uint(px.x - x0)] = uvec2(packHalf2x16(c.rg), packHalf2x16(vec2(c.b, w)));
+    } else if (w > 0.0) {
+        imageStore(scene, px, vec4(mix(imageLoad(scene, px).rgb, c, w), 1.0));
+    }
+}
+
+void apply(ivec2 px) {
+    float d = depth_at(px);
+    int view = int(pc.flg.w + 0.5) % 100;
+    if (view == 33) { imageStore(scene, px, vec4(vec3(veil_px(px)), 1.0)); return; }   // (debug) the veil
+    if (view == 32) { imageStore(scene, px, vec4(emis_on() ? emis_at(px) : vec3(0.3, 0.0, 0.3), 1.0)); return; }   // (debug) the glow
+    if (view == 27 && px.x * 2 >= int(pc.sz.x)) { imageStore(scene, px, vec4(texelFetch(albedo, px, 0).rgb * 3.0, 1.0)); return; }
+    // (debug, step 6) view 29: left the G-buffer's albedo, right the program's at the surface the primary ray hits (x 3
+    // both); view 30: right the program's glow. Dark grey: no program for the material; magenta: a program but the
+    // triangle has no varyings (cached before, or the ring was full); blue: no material
+    if ((view == 29 || view == 30) && px.x * 2 < int(pc.sz.x) && view == 29) { imageStore(scene, px, vec4(texelFetch(albedo, px, 0).rgb * 3.0, 1.0)); return; }
+    // view 31: right the program's albedo against the G-buffer's where the primary ray hits the surface the G-buffer holds:
+    // green the largest channel's difference under 0.02, yellow under 0.05, red more; dark blue another surface
+    if ((view == 29 || view == 30 || view == 31) && px.x * 2 >= int(pc.sz.x)) {
+        vec3 cam = vec3(pc.iv0.w, pc.iv1.w, pc.iv2.w);
+        vec3 vd = view_pos((vec2(px) + 0.5) / pc.sz.xy, 1.0), dir = normalize(dir_world(vd));
+        float z = d * pc.proj.z + pc.nr.x, cz = 1.0 / length(vd), zd = z / cz, tolr = (0.03 * z + 0.05) / cz;
+        rayQueryEXT q;
+        rayQueryInitializeEXT(q, tlas, gl_RayFlagsNoneEXT, 0x01, cam, sky_depth(d) ? 0.01 : max(0.01, zd - 2.0 * tolr), dir, 20000.0);
+        PROCEED(q, dir)
+        vec3 o = vec3(0.0);
+        int ci = rayQueryGetIntersectionInstanceCustomIndexEXT(q, true);
+        if (rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT && ci != 1) {
+            uint ct = tri_index(ci, rayQueryGetIntersectionGeometryIndexEXT(q, true), rayQueryGetIntersectionPrimitiveIndexEXT(q, true));
+            vec2 bc = rayQueryGetIntersectionBarycentricsEXT(q, true);
+            float th = rayQueryGetIntersectionTEXT(q, true);
+            vec4 tx;
+            uint k;
+            bool at;
+            uint r = mat_raw(ct, bc, th, dir, tx, k, at);
+            vec3 pa, pg;
+            if (r == 0u) o = vec3(0.0, 0.0, 0.25);
+            else if (prog_hit(k, ct, bc, th, dir, pa, pg))
+                o = view == 29 ? clamp(pa, 0.0, 1.0) * 3.0 : view == 30 ? pg
+                  : abs(th - zd) < 2.0 * tolr + 0.05 ? prog_err_col(abs(clamp(pa, 0.0, 1.0) - texelFetch(albedo, px, 0).rgb)) : vec3(0.0, 0.0, 0.3);
+            else o = g_prog_st == 1 ? vec3(0.5, 0.0, 0.5) : vec3(0.06);
+            if (view == 31 && ci >= 2 && max(o.r, o.g) > 1.0) o.b = 4.0;   // a cached mesh's: green -> cyan, red -> magenta
+        }
+        imageStore(scene, px, vec4(o, 1.0));
+        return;
+    }
+    if (view == 26 && px.x * 2 >= int(pc.sz.x)) {
+        // the right half: the surfaces the game shows, as the captured scene has them, lit from their textures (hit_light);
+        // a miss keeps the game's sky, a hit without albedo is dark magenta. The ray starts just before the game's surface
+        // (its depth): the captured scene also holds what the game did not draw at this pixel (LODs fading out by a
+        // dither, cut-out cards whose cut-out is not read), which floated over the game's background.
+        vec3 cam = vec3(pc.iv0.w, pc.iv1.w, pc.iv2.w);
+        vec3 vd = view_pos((vec2(px) + 0.5) / pc.sz.xy, 1.0), dir = normalize(dir_world(vd));
+        float z = d * pc.proj.z + pc.nr.x, cz = 1.0 / length(vd), zd = z / cz, tolr = (0.03 * z + 0.05) / cz;
+        rayQueryEXT q;
+        rayQueryInitializeEXT(q, tlas, gl_RayFlagsNoneEXT, 0x01, cam, sky_depth(d) ? 0.01 : max(0.01, zd - 2.0 * tolr), dir, 20000.0);
+        PROCEED(q, dir)
+        bool dbg = pbox.x < -0.5;   // (TOTK_RT_MPROBE_BOX=-1,...: misses green, hits past 300 m red, past 60 m yellow)
+        if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+            put26(px, vec3(0.0, 2.0, 0.0), dbg ? 1.0 : 0.0);
+            return;
+        }
+        bool ok;
+        vec3 c = shade_hit(q, cam, dir, ok);
+        float th = rayQueryGetIntersectionTEXT(q, true);
+        if (ok) c = haze(c, th);   // as the game hazes its far surfaces
+        // Past 40 m (fully past 80 m) the game's pixel, as step 5's hits the screen holds will take: the capture holds the
+        // far cliffs in pieces that come and go frame to frame; a far hit behind the game's surface is one it lacks
+        float gw = 0.0;   // the game's pixel's weight
+        if (!sky_depth(d) && th > zd - 2.0 * tolr - 0.01) c = ok ? c : vec3(0.15, 0.0, 0.15), gw = smoothstep(40.0, 80.0, zd), ok = true;
+        if (dbg && th > 60.0) c = (th > 300.0 ? vec3(1.0, 0.1, 0.1) : vec3(1.0, 1.0, 0.1)) * (0.5 + lum(c)), gw = 0.0;
+        if (pbox.x < -4.5) { put26(px, th > zd + 4.0 * tolr + 0.05 && !sky_depth(d) ? vec3(1.0, 0.0, 1.0) : vec3(lum(c)), 1.0); return; }   // (debug -5: hits behind the game's surface)
+        put26(px, ok ? c : vec3(0.15, 0.0, 0.15), 1.0 - gw);
+        // the probe: at the centres of an 8 x 4 grid over the right half, the hit's material and its measure
+        // (TOTK_RT_MPROBE_BOX: the grid over that box of the screen, 0-1)
+        vec4 bx = pbox.z > pbox.x ? pbox : vec4(0.5, 0.0, 1.0, 1.0);
+        vec2 fp = (vec2(px) + 0.5) / pc.sz.xy;
+        ivec2 gp = ivec2(floor((fp - bx.xy) / (bx.zw - bx.xy) * vec2(8.0, 4.0)));
+        ivec2 gc = ivec2((bx.xy + (vec2(gp) + 0.5) / vec2(8.0, 4.0) * (bx.zw - bx.xy)) * pc.sz.xy);
+        int ci = rayQueryGetIntersectionInstanceCustomIndexEXT(q, true);
+        if (px == gc && all(greaterThanEqual(gp, ivec2(0))) && gp.x < 8 && gp.y < 4 && ci != 1) {
+            uint i = uint(gp.y * 8 + gp.x), ct = tri_index(ci, rayQueryGetIntersectionGeometryIndexEXT(q, true),
+                                                          rayQueryGetIntersectionPrimitiveIndexEXT(q, true));
+            vec2 bc = rayQueryGetIntersectionBarycentricsEXT(q, true);
+            float t = rayQueryGetIntersectionTEXT(q, true);
+            vec4 tx;
+            uint k;
+            bool at;
+            uint r = mat_raw(ct, bc, t, dir, tx, k, at);
+            vec3 alb, em;
+            int st;
+            mat_albedo(ct, bc, t, dir, alb, st, em);
+            uint b = k * 64u;
+            bool in_ = uint(wattr.length()) > ct * 2u + 1u;
+            mprobe[i * 3u] = uvec4(ct, in_ ? floatBitsToUint(wattr[ct * 2u + 1u].w) : 0u, in_ ? floatBitsToUint(wattr[ct * 2u + 1u].z) : 0u,
+                                   uint(st) | r << 4 | k << 8 | uint(min(ci, 255)) << 24);
+            float zs = sky_depth(d) ? -1.0 : (d * pc.proj.z + pc.nr.x) * length(view_pos((vec2(px) + 0.5) / pc.sz.xy, 1.0));
+            // (debug) the sun ray's first blocker: its triangle (~0u none, ~1u facing away) and distance
+            uint sb = ~1u;
+            float sbt = 0.0;
+            {
+                vec3 p0 = world[ct * 3u].xyz, nn = normalize(cross(world[ct * 3u + 1u].xyz - p0, world[ct * 3u + 2u].xyz - p0));
+                if (dot(nn, dir) > 0.0) nn = -nn;
+                if (dot(nn, sun_dir.xyz) > 0.0) {
+                    rayQueryEXT sq;
+                    rayQueryInitializeEXT(sq, tlas, gl_RayFlagsTerminateOnFirstHitEXT, 0x01, cam + dir * t + nn * (0.03 + 0.002 * t), 0.0,
+                                          sun_dir.xyz, 1000.0);
+                    PROCEED(sq, sun_dir.xyz)
+                    sb = ~0u;
+                    if (rayQueryGetIntersectionTypeEXT(sq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+                        int sci = rayQueryGetIntersectionInstanceCustomIndexEXT(sq, true);
+                        sb = sci == 1 ? ~2u : tri_index(sci, rayQueryGetIntersectionGeometryIndexEXT(sq, true),
+                                                         rayQueryGetIntersectionPrimitiveIndexEXT(sq, true));
+                        sbt = rayQueryGetIntersectionTEXT(sq, true);
+                    }
+                }
+            }
+            mprobe[i * 3u + 1u] = uvec4(sb, floatBitsToUint(zs), floatBitsToUint(sbt), floatBitsToUint(t));
+            vec4 v0 = mval[k * 8u + 3u], v1 = mval[k * 8u + 6u], v2 = mval[k * 8u + 7u];   // the look, the reflection, the ambient look
+            mprobe[i * 3u + 2u] = uvec4(packHalf2x16(v0.rg), packHalf2x16(vec2(v0.b, v1.r)), packHalf2x16(v2.rg), packHalf2x16(vec2(v2.b, lum(em))));
+        }
+        return;
+    }
+    if (sky_depth(d)) {   // the sky gets the night tone alone
+        if (pc.tone.w > 0.0 && view < 20) {
+            vec4 c = imageLoad(scene, px);
+            imageStore(scene, px, vec4(c.rgb * mix(vec3(1.0), pc.tone.rgb, pc.tone.w), c.a));
+        }
+        return;
+    }
+    float z = (d * pc.proj.z + pc.nr.x);
+    ivec2 c = px / 4, hs = ivec2(pc.sz.zw);
+    vec3 sum = vec3(0.0);
+    float wsum = 0.0;
+    for (int y = -1; y <= 1; y++)
+        for (int x = -1; x <= 1; x++) {
+            ivec2 q = c + ivec2(x, y);
+            if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, hs))) continue;
+            vec4 h = hist_out[uint(q.y) * uint(pc.sz.z) + uint(q.x)];
+            if (h.w <= 0.0) continue;
+            vec2 dd = (vec2(q) * 4.0 + 2.0 - vec2(px)) / 4.0;
+            float w = exp(-dot(dd, dd) / 1.5) * exp(-abs(h.w - z) / (0.04 * z + 0.05));
+            sum += h.rgb * w, wsum += w;
+        }
+    vec3 gi = wsum > 1e-4 ? sum / wsum : vec3(0.0);
+    gi *= 1.0 - smoothstep(gfar() * 0.7, gfar(), z);
+    gi = max(mix(vec3(lum(gi)), gi, pc.prm.z), vec3(0.0));   // saturation (TOTK_RT_GI_SAT, 1 as traced)
+    if (view == 20) { imageStore(scene, px, vec4(gi * pc.ext.y, 1.0)); return; }
+    if (view == 22) {   // the sky visibility the ambient is dimmed by (nearest quarter pixel)
+        uint n = uint(pc.sz.z) * uint(pc.sz.w);
+        float v = hist_out[2u * n + uint(c.y) * uint(pc.sz.z) + uint(c.x)].x;
+        imageStore(scene, px, vec4(vec3(v * pc.ext.y), 1.0));
+        return;
+    }
+    if (view == 21 && px.x * 2 >= int(pc.sz.x)) return;
+    vec4 col = imageLoad(scene, px);
+    if (view == 23) {   // (debug) the lights: red boosted (small sources), blue as they are (large: glow_gain)
+        vec4 o = vec4(col.rgb * 0.3, 1.0);
+        if (is_light(px, col.rgb)) {
+            float zz = d * pc.proj.z + pc.nr.x, fp = zz * 2.0 / (pc.proj.y * pc.sz.y), lo = 1.0 / max(pc.prm.y, 1.0);
+            float t = emis_on() ? clamp((glow_gain(px, to_world(vpos(px)), fp) - lo) / max(abs(pc.ext.w) - lo, 1e-3), 0.0, 1.0) : 1.0;
+            o = vec4(mix(vec3(0.1, 0.3, 1.0), vec3(1.0, 0.1, 0.1), t), 1.0);
+        }
+        imageStore(scene, px, o);
+        return;
+    }
+    vec3 alb;
+    if (pc.ext.z > 0.0) alb = texelFetch(albedo, px, 0).rgb;
+    else alb = 0.5 * col.rgb / max(max(col.r, max(col.g, col.b)), 1e-4);   // no albedo: the lit colour's hue
+    vec3 res = col.rgb + gi * alb * pc.prm.y;
+    // the reflection's weight: use a small floor-aware floor for F0 (0.04 -> 0.18 at night, 0.04 -> 0.10 in day) so
+    // wet/polished Zora stone floors do not lose their reflections when looking steeply downward (high ndv).
+    if (pc.rfl.x > 0.0) {   // the reflections: the scene mixed towards them by Fresnel x gloss x found
+        vec3 mr = mtl_refl(px);
+        if (view == 28) { imageStore(scene, px, vec4(mr.x, max(mr.z, 0.0), mr.z < 0.0 ? 1.0 : 0.0, 1.0)); return; }
+        if (mr.x > 0.0 || view == 24 || view == 25) {
+            float gl;
+            vec4 rs = refl_at(px, z, gl);
+            if (gl > 0.0 && rs.a > 1e-3) {
+                vec3 pv = vpos(px), nv = view_normal(px, pv);
+                float up = dot(pc.iv1.xyz, nv);   // the normal's world y: floors face up
+                float ndv = clamp(dot(nv, -normalize(pv)), 0.0, 1.0), F0 = mix(0.04, abs(pc.rsz.z), smoothstep(0.7, 0.95, up));
+                float f_pow = pow(1.0 - ndv, mix(5.0, 2.5, smoothstep(0.7, 0.95, up)));
+                float F = F0 + (max(1.0 - mr.y, F0) - F0) * f_pow;
+                vec3 rc = rs.rgb / rs.a;
+                float w = clamp(pc.rfl.x * F * gl * min(rs.a, 1.0), 0.0, 0.95);
+                if (view == 24) { imageStore(scene, px, vec4(rc * w * pc.ext.y, 1.0)); return; }
+                if (view == 25) { imageStore(scene, px, vec4(vec3(w), 1.0)); return; }
+                res = mix(res, rc, w);
+            } else if (view == 24 || view == 25) {
+                imageStore(scene, px, vec4(0.0, 0.0, 0.0, 1.0));
+                return;
+            }
+        }
+    }
+    vec3 tf = pc.tone.w > 0.0 ? mix(vec3(1.0), pc.tone.rgb, pc.tone.w) : vec3(1.0);
+    res *= tf;
+    imageStore(added, px, vec4(max(res - col.rgb * tf, vec3(0.0)), dot(res, vec3(0.2126, 0.7152, 0.0722))));
+    imageStore(scene, px, vec4(res, col.a));
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    bool half_ = p.x < int(pc.rsz.x) && p.y < int(pc.rsz.y);
+    if (pc.proj.w < 0.5) {
+        if (p.x < int(pc.sz.z) && p.y < int(pc.sz.w)) trace(p);
+    } else if (pc.proj.w > 13.5) {
+        mat_update(uint(p.y) * 256u + uint(p.x));
+        ac_keep(uint(p.y) * 256u + uint(p.x));
+    } else if (pc.proj.w > 12.5) {
+        if (p.x < int(pc.sz.z) && p.y < int(pc.sz.w)) mat_measure(p);
+    } else if (pc.proj.w > 11.5) {
+        if (p.x < int(pc.sz.z) && p.y < int(pc.sz.w)) sun_level(p);
+    } else if (pc.proj.w > 10.5) {
+        if (p.x < int(pc.sz.z) && p.y < int(pc.sz.w)) cache_write(p);
+    } else if (pc.proj.w > 9.5) {
+        if (half_) refl_atrous(p);
+    } else if (pc.proj.w > 8.5) {
+        if (half_) refl_temporal(p);
+    } else if (pc.proj.w > 7.5) {
+        if (half_) refl_trace(p);
+    } else if (pc.proj.w > 6.5) {
+        if (p.x < int(pc.sz.z) && p.y < int(pc.sz.w)) atrous(p);
+    } else if (pc.proj.w > 5.5) {
+        if (p.x < int(pc.sz.z) && p.y < int(pc.sz.w)) light_level(p);
+    } else if (pc.proj.w > 4.5) {
+        if (p.x == 0 && p.y == 0) lcount = 0u, lsum = 0u, lnum = 0u, skysum = 0u, skynum = 0u;   // mode 5: the list emptied
+    } else if (pc.proj.w > 3.5) {
+        build_lights(p);   // barrier() inside requires every thread in the 8x8 workgroup
+    } else if (pc.proj.w > 2.5) {
+        if (p.x < int(pc.sz.z) && p.y < int(pc.sz.w)) temporal(p);
+    } else if (p.x < int(pc.sz.x) && p.y < int(pc.sz.y)) {
+        apply(p);
+    }
+}

@@ -181,6 +181,37 @@ void vk_hdr_support(float out[4]);
 // vk_contact.c: screen-space contact shadows on the game's composed scene colour (TOTK_CONTACT_SHADOWS)
 int vk_contact_strength(void);   // percent, 0 = off
 void vk_contact_release(void);   // before the device goes away
+// vk_rt.c: hardware ray tracing (docs/raytracing.md). Its passes run in place of the contact shadows (vk_contact.c hands
+// them the scene colour, the linear depth and the camera block).
+int vk_rt_wanted(void);                          // the setting asks for ray tracing: device creation enables it
+void vk_rt_device_caps(int rq, int pos_fetch);   // vk_device.c: what the device enabled
+void vk_rt_device_null(int null_desc);           // vk_device.c: null descriptors (robustness2) are on
+int vk_rt_on(void);                              // wanted and enabled
+int vk_rt_note_camera(const float *c4);          // vk_contact.c: the camera block when the pass is planned
+int vk_rt_capturing(void);                       // G-buffer draws capture their triangles (vk_exec_draw.c)
+int vk_rt_shadow_capturing(void);                // shadow cascade draws may be cached (TOTK_RT_SHADOW)
+// flags: bit 0 the front face is clockwise, bit 1 front faces are culled (the back is what shows), bit 2 no culling
+uint64_t vk_exec_geo_key(void);   // vk_exec_draw.c: the geometry key of the draw rt_mesh_id last named (this thread)
+void vk_pipeline_xfb_regen(void);   // vk_pipeline.c: the draws look their transform feedback variants up again
+int vk_rt_capable(void);   // vk_rt.c: ray tracing can run on this device (it may be switched on in play)
+int vk_rt_xfb_begin(VkCommandBuffer cb, uint32_t verts, uint64_t tag, uint32_t flags, uint64_t id, const void *scam,
+                    const uint32_t *mat);   // 1: transform feedback begun for the draw; mat: its material words (3) or NULL
+uint32_t vk_rt_mat_tex(VkImage image, VkImageView view, int array, const void *fs);   // the material word of an albedo view
+                                                 // drawn by fragment shader fs (texture lock held)
+uint32_t vk_rt_mat_flat(const void *fs);         // a draw without an albedo texture: a material of its shader alone, its
+                                                 // colour measured on screen (rt_gi.comp mode 13)
+void vk_rt_image_gone(VkImage image);            // vk_exec_image_gone: its albedo slots are freed (texture lock held)
+int vk_rt_materials(void);                       // the capture records the albedo UVs too (vk_pipeline.c spirv_xfb)
+// Step 6 (docs/raytracing.md, materials): the varyings a G-buffer draw's corners give the ray tracer for its fragment shader's program
+// (gfx_shader_prog), to transform feedback buffer 2 at one vec4 a slot: the program's Locations, then the albedo UV's
+// and the layer's when not among them (their slots in *uv_slot, *lay_slot; -1 none). 0: no program for the draw (the
+// UV and layer then go to buffer 1 as before). The same answer for the pipeline variant and for the draw.
+int vk_prog_ext(const void *vs, const void *fs, uint8_t locs[12], int *uv_slot, int *lay_slot);
+int vk_rt_programs(void);   // step 6 is on (materials on and its buffers made)
+int vk_rt_prog_due(uint32_t mword);   // the material's program record not yet written this frame
+void vk_rt_prog_note(uint32_t mword, const void *fs, const uint32_t *tex, const uint32_t *uni);   // write it
+void vk_rt_xfb_end(VkCommandBuffer cb);
+void vk_rt_release(void);                        // before the device goes away
 void vk_present_flip(void);
 // Every submission to ctx->gfx_queue (and xfer_queue when shared) takes this lock; vk_present_image and the swapchain
 // rebuild do. Recursive.
@@ -662,6 +693,11 @@ VkPipeline vk_pipeline_graphics(const VkPipeState *s, const VkPipeInfo **info);
 // wait_ms > 0 waits up to that long for a pending pipeline first. Pipelines built in a run are recorded to
 // pipeline-keys.bin next to the pipeline cache and prebuilt at the next boot (TOTK_PIPE_PREBUILD=0: not).
 VkPipeline vk_pipeline_graphics_async(const VkPipeState *s, const VkPipeInfo **info, int *pending, uint32_t wait_ms);
+// vk_rt.c's geometry capture: s's pipeline with the vertex position written to transform feedback buffer 0 (vec4, stride
+// 16), built on a thread of its own; VK_NULL_HANDLE until it is ready or when it cannot be built.
+VkPipeline vk_pipeline_xfb(const VkPipeState *s, int *failed);   // failed: it never will be (NULL meanwhile: queued)
+uint32_t vk_pipeline_xfb_gen(void);   // changes when the variants are destroyed (vk_pipeline_shutdown)
+void vk_pipeline_xfb_stats(int *built, int *failed);
 // rt_boot calls it unless --shot is given; TOTK_PIPE_SYNC=1 makes it a no-op. Probes never call it.
 void vk_pipeline_async_enable(void);
 int vk_pipeline_async_on(void);   // 1 after vk_pipeline_async_enable: graphics shaders are translated in the background too

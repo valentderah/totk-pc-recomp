@@ -290,6 +290,39 @@
 # from one shadow cascade to the next, so it does not step up where a farther cascade begins. Done in the translated
 # shaders (translator patches 0010 and 0017), so the shader cache is rebuilt once after an update. Read at start.
 # pcss = 0
+# Hardware ray tracing (docs/raytracing.md), on GPUs with Vulkan ray queries and acceleration structures. Each feature
+# below switches at once in the menu (F1, Screen tab, "Ray tracing") once ray tracing was on at the start; when all are
+# off at the start the device is made without ray tracing, and turning one on then takes effect at the next start.
+# While any of them runs, the contact shadows (contact_shadows) are off. About 1.1 GB of extra video memory at 1080p.
+# Ray-traced ambient occlusion in place of the game's wide screen-space AO (its short-range AO is kept): 1 on, 0 off.
+# rt_ao = 0
+# How strongly the ray-traced AO darkens, 0 to 200: 0 keeps the game's AO, 100 as traced, higher darker.
+# rt_ao_strength = 100
+# Ray-traced sun shadows within the quality's range (60 to 160 m), sharp at contact and softer with distance from what
+# casts them; the game's shadow maps beyond: 1 on, 0 off.
+# rt_shadows = 0
+# How much of the sun shadow is traced, 0 to 100; the rest is the game's shadow map.
+# rt_shadow_strength = 100
+# 1: where shadows are traced, the game's shadow map is left out completely; 0 keeps its darker value for leaves and
+# grass, which the traced scene holds as solid triangles, at the cost of doubled shadows.
+# rt_shadow_only = 1
+# Ray-traced one-bounce global illumination: lit and glowing surfaces, on the screen and seen recently, light their
+# surroundings; the ambient light dims where the sky is blocked: 1 on, 0 off.
+# rt_gi = 0
+# Brightness of the bounced light, 0 to 600 (100 as traced).
+# rt_gi_strength = 300
+# Reflections on smooth flat surfaces (floors, still water, polished stone), 0 to 200 percent (0 off). Needs rt_gi.
+# rt_refl = 100
+# Cool night grading on dark night scenes, 0 to 100 percent (0 off). Needs rt_gi.
+# rt_tone = 100
+# 1: ray hits take their surface's texture colour (and, for glowing or animated materials, the game's own shader run at
+# the hit) instead of a cache of earlier frames: better bounced light and reflections, about 1 ms. Needs rt_gi.
+# rt_mat = 0
+# 1: the game's local lights (lamps, lanterns, torches) cast ray-traced shadows: each pixel a light reaches traces one
+# ray toward it, so the light stops at walls instead of shining through. Needs one of the features above on.
+# rt_lights = 0
+# low, medium, high or ultra: shadow range and rate, GI and reflection ray lengths, AO rays (docs/raytracing.md).
+# rt_quality = high
 
 # The temporal upscaler for the 3D scene: off (the game's own scaling and FXAA), dlss (NVIDIA DLSS, on NVIDIA RTX GPUs
 # with the DLSS model from NVIDIA's DLSS SDK next to the executable: Windows nvngx_dlss.dll next to totk.exe; Linux

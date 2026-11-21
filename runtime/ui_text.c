@@ -142,6 +142,61 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PCSS] = "Soft shadows",
     [UI_MENU_PCSS_DESC] = "Sun shadows sharp where an object meets the ground and softer the further the shadow falls "
                           "(PCSS). 0 keeps the game's filter. Takes effect at the next start.",
+    [UI_MENU_RT_GROUP] = "Ray tracing",
+    [UI_MENU_WINDOW_GROUP] = "Window",
+    [UI_MENU_RT_QUALITY] = "Ray tracing quality",
+    [UI_MENU_RT_QUALITY_DESC] = "How much ray tracing work a frame does. Low: shadows traced to 60 m on alternate "
+                                "pixels, one AO ray, short GI rays, no reflections. Medium: shadows to 90 m, "
+                                "reflections on. High: shadows to 120 m on every pixel, two AO rays. Ultra: shadows to "
+                                "160 m, four AO rays, longer GI and reflection rays. Applies at once.",
+    [UI_MENU_RT_Q_LOW] = "Low", [UI_MENU_RT_Q_MEDIUM] = "Medium", [UI_MENU_RT_Q_HIGH] = "High",
+    [UI_MENU_RT_Q_ULTRA] = "Ultra",
+    [UI_MENU_RT_AO] = "Ray-traced ambient occlusion",
+    [UI_MENU_RT_AO_DESC] = "Ambient occlusion traced with the GPU's ray tracing against the scene around you, in place of "
+                           "the game's wide screen-space AO: corners, the undersides of objects and what is off the "
+                           "screen darken correctly. Needs a GPU with Vulkan ray tracing; contact shadows stay off while "
+                           "ray tracing runs. Switches at once when ray tracing was on at the start, else at the next "
+                           "start.",
+    [UI_MENU_RT_AO_STRENGTH] = "Ray-traced AO strength",
+    [UI_MENU_RT_AO_STRENGTH_DESC] = "How strongly the ray-traced AO darkens: 0 keeps the game's own AO, 100 is the ray-traced "
+                                    "AO as traced, above 100 darkens it further. Applies at once.",
+    [UI_MENU_RT_SHADOWS] = "Ray-traced sun shadows",
+    [UI_MENU_RT_SHADOWS_DESC] = "Sun shadows traced with the GPU's ray tracing within the quality's range (60 to 160 m), "
+                                "sharp where an object meets the ground and softer the further they fall; beyond it the "
+                                "game's shadow maps. Needs a GPU with Vulkan ray tracing. Switches at once when ray "
+                                "tracing was on at the start, else at the next start.",
+    [UI_MENU_RT_SHADOW_STRENGTH] = "Ray-traced shadow strength",
+    [UI_MENU_RT_SHADOW_STRENGTH_DESC] = "How much of the sun shadow comes from the ray tracing: 0 is the game's own shadow, "
+                                        "100 the ray-traced one; between, a blend of the two. Applies at once.",
+    [UI_MENU_RT_SHADOW_ONLY] = "Ray-traced shadows only",
+    [UI_MENU_RT_SHADOW_ONLY_DESC] = "Where the sun's shadows are traced, the game's shadow maps are left out, so no second, "
+                                    "blurrier shadow shows beside the traced one (on by default). Off keeps them for leaves "
+                                    "and grass, which the rays see as solid, at the cost of doubled shadows. Applies at once.",
+    [UI_MENU_RT_GI] = "Ray-traced global illumination",
+    [UI_MENU_RT_GI_DESC] = "Bounced light traced with the GPU's ray tracing: lit and glowing surfaces, on the screen and "
+                           "seen recently, light their surroundings (the Zora crystals tint the floor and walls), and the "
+                           "ambient light dims where the sky is blocked. Needs a GPU with Vulkan ray tracing. Switches at "
+                           "once when ray tracing was on at the start, else at the next start.",
+    [UI_MENU_RT_GI_STRENGTH] = "Ray-traced GI strength",
+    [UI_MENU_RT_GI_STRENGTH_DESC] = "How bright the bounced light is: 100 is as traced, the default 300 brighter and more "
+                                    "colourful. Applies at once.",
+    [UI_MENU_RT_REFL] = "Ray-traced reflections",
+    [UI_MENU_RT_REFL_DESC] = "Reflections on smooth flat surfaces (floors, still water, polished stone). Needs ray-traced "
+                             "global illumination. 0 turns them off, 100 as traced, higher makes them stronger. Applies "
+                             "at once.",
+    [UI_MENU_RT_TONE] = "Night tone",
+    [UI_MENU_RT_TONE_DESC] = "A cool blue tint on dark night scenes, fading out as it gets brighter. Needs ray-traced "
+                             "global illumination. 0 turns it off, 100 full. Applies at once.",
+    [UI_MENU_RT_MAT] = "Ray-traced materials",
+    [UI_MENU_RT_MAT_DESC] = "Ray hits get the surface's own texture colour, lit by the sun and sky and matched to how the "
+                            "game showed it, so bounced light and reflections from things off the screen or hidden take "
+                            "their real colours (without it they come from a coarse cache of earlier frames). Needs "
+                            "ray-traced GI; costs about 1 ms and some video memory. Applies at once.",
+    [UI_MENU_RT_LIGHTS] = "Ray-traced light shadows",
+    [UI_MENU_RT_LIGHTS_DESC] = "Lamps, lanterns, torches and other local lights cast ray-traced shadows: their light stops at walls and "
+                               "objects instead of shining through them. Needs another ray tracing feature on (it traces that scene); "
+                               "costs little, as only pixels a light reaches trace a ray. Applies at once.",
+    [UI_MENU_OV_RT_BUILD] = "RT scene build (GPU)", [UI_MENU_OV_RT_TRACE] = "RT trace (GPU)",
     [UI_MENU_CONTACT_SHADOWS] = "Contact shadows",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Small sun shadows the shadow maps miss: at feet, under stones, in grass and creases. "
                                      "Traced on the screen after lighting. Takes effect at the next start.",
@@ -786,6 +841,66 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_PCSS] = "Мягкие тени",
     [UI_MENU_PCSS_DESC] = "Тени от солнца резкие там, где предмет касается земли, и мягче, чем дальше падает тень "
                           "(PCSS). 0 оставляет фильтр игры. Действует после перезапуска.",
+    [UI_MENU_RT_GROUP] = "Трассировка лучей",
+    [UI_MENU_WINDOW_GROUP] = "Окно",
+    [UI_MENU_RT_QUALITY] = "Качество трассировки",
+    [UI_MENU_RT_QUALITY_DESC] = "Сколько работы трассировки лучей делается за кадр. Низкое: тени до 60 м через пиксель, "
+                                "один луч AO, короткие лучи GI, без отражений. Среднее: тени до 90 м, отражения включены. "
+                                "Высокое: тени до 120 м на каждом пикселе, два луча AO. Ультра: тени до 160 м, четыре луча "
+                                "AO, более длинные лучи GI и отражений. Действует сразу.",
+    [UI_MENU_RT_Q_LOW] = "Низкое", [UI_MENU_RT_Q_MEDIUM] = "Среднее", [UI_MENU_RT_Q_HIGH] = "Высокое",
+    [UI_MENU_RT_Q_ULTRA] = "Ультра",
+    [UI_MENU_RT_AO] = "Фоновое затенение с трассировкой",
+    [UI_MENU_RT_AO_DESC] = "Фоновое затенение (AO), рассчитанное трассировкой лучей по сцене вокруг вас, вместо широкого "
+                           "экранного AO игры: углы, низ предметов и то, что за краем экрана, затеняются правильно. "
+                           "Нужна видеокарта с трассировкой лучей Vulkan; пока трассировка работает, контактные тени "
+                           "выключены. Переключается сразу, если трассировка была включена при запуске, иначе после "
+                           "перезапуска.",
+    [UI_MENU_RT_AO_STRENGTH] = "Сила AO с трассировкой",
+    [UI_MENU_RT_AO_STRENGTH_DESC] = "Насколько сильно затеняет AO с трассировкой: 0 оставляет AO игры, 100 — как рассчитано, "
+                                    "выше 100 — темнее. Действует сразу.",
+    [UI_MENU_RT_SHADOWS] = "Тени от солнца с трассировкой",
+    [UI_MENU_RT_SHADOWS_DESC] = "Тени от солнца, рассчитанные трассировкой лучей в пределах дальности качества (от 60 до "
+                                "160 м): резкие там, где предмет касается земли, и мягче, чем дальше падает тень; дальше — "
+                                "карты теней игры. Нужна видеокарта с трассировкой лучей Vulkan. Переключается сразу, если "
+                                "трассировка была включена при запуске, иначе после перезапуска.",
+    [UI_MENU_RT_SHADOW_STRENGTH] = "Сила теней с трассировкой",
+    [UI_MENU_RT_SHADOW_STRENGTH_DESC] = "Какая доля тени от солнца берётся из трассировки: 0 — тень игры, 100 — "
+                                        "трассированная, между ними — смесь. Действует сразу.",
+    [UI_MENU_RT_SHADOW_ONLY] = "Только тени с трассировкой",
+    [UI_MENU_RT_SHADOW_ONLY_DESC] = "Там, где тени от солнца трассируются, карты теней игры не используются, и рядом не "
+                                    "появляется вторая, более размытая тень (включено по умолчанию). Выключено — они "
+                                    "остаются для листвы и травы, которые лучи видят сплошными, ценой двойных теней. "
+                                    "Действует сразу.",
+    [UI_MENU_RT_GI] = "Глобальное освещение с трассировкой",
+    [UI_MENU_RT_GI_DESC] = "Отражённый свет, рассчитанный трассировкой лучей: освещённые и светящиеся поверхности на "
+                           "экране и недавно виденные освещают всё вокруг (кристаллы зора окрашивают пол и стены), а "
+                           "рассеянный свет тускнеет там, где закрыто небо. Нужна видеокарта с трассировкой лучей "
+                           "Vulkan. Переключается сразу, если трассировка была включена при запуске, иначе после "
+                           "перезапуска.",
+    [UI_MENU_RT_GI_STRENGTH] = "Сила GI с трассировкой",
+    [UI_MENU_RT_GI_STRENGTH_DESC] = "Яркость отражённого света: 100 — как рассчитано, 300 по умолчанию — ярче и красочнее. "
+                                    "Действует сразу.",
+    [UI_MENU_RT_REFL] = "Отражения с трассировкой",
+    [UI_MENU_RT_REFL_DESC] = "Отражения на гладких ровных поверхностях (полы, спокойная вода, полированный камень). Нужно "
+                             "глобальное освещение с трассировкой. 0 выключает их, 100 — как рассчитано, выше — сильнее. "
+                             "Действует сразу.",
+    [UI_MENU_RT_TONE] = "Ночной тон",
+    [UI_MENU_RT_TONE_DESC] = "Холодный синий оттенок в тёмных ночных сценах, слабеющий по мере того, как становится "
+                             "светлее. Нужно глобальное освещение с трассировкой. 0 выключает его, 100 — полностью. "
+                             "Действует сразу.",
+    [UI_MENU_RT_MAT] = "Материалы для трассировки",
+    [UI_MENU_RT_MAT_DESC] = "Точки попадания лучей получают собственный цвет текстуры поверхности, освещённый солнцем и "
+                            "небом и подогнанный к тому, как его показала игра, поэтому отражённый свет и отражения от "
+                            "предметов за экраном или скрытых получают их настоящие цвета (без этого — из грубого кэша "
+                            "прошлых кадров). Нужно GI с трассировкой; стоит около 1 мс и немного видеопамяти. "
+                            "Действует сразу.",
+    [UI_MENU_RT_LIGHTS] = "Тени от ламп с трассировкой",
+    [UI_MENU_RT_LIGHTS_DESC] = "Лампы, фонари, факелы и другие местные источники света отбрасывают тени, рассчитанные трассировкой "
+                               "лучей: их свет останавливается на стенах и предметах, а не проходит сквозь них. Нужна ещё одна "
+                               "функция трассировки (она даёт сцену); стоит мало, так как луч пускают только пиксели, до которых "
+                               "доходит свет. Действует сразу.",
+    [UI_MENU_OV_RT_BUILD] = "Сборка сцены RT (GPU)", [UI_MENU_OV_RT_TRACE] = "Трассировка RT (GPU)",
     [UI_MENU_CONTACT_SHADOWS] = "Контактные тени",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Мелкие тени от солнца, которых нет на картах теней: у ног, под камнями, в траве и "
                                      "складках. Считаются по экрану после освещения. Действует после перезапуска.",
@@ -1901,6 +2016,65 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_GRASS_RANGE_DESC] = "Até onde a grama cresce ao redor da câmera (62,5 m no jogo). Mais alto mantém a "
                                  "grama dos campos mais longe em vez de ela surgir logo à sua frente; mais baixo "
                                  "desenha menos grama. Vale no próximo início.",
+    [UI_MENU_RT_GROUP] = "Ray tracing",
+    [UI_MENU_WINDOW_GROUP] = "Janela",
+    [UI_MENU_RT_QUALITY] = "Qualidade do ray tracing",
+    [UI_MENU_RT_QUALITY_DESC] = "Quanto trabalho de ray tracing cada quadro faz. Baixa: sombras traçadas até 60 m em "
+                                "pixels alternados, um raio de AO, raios de GI curtos, sem reflexos. Média: sombras até "
+                                "90 m, reflexos ligados. Alta: sombras até 120 m em todos os pixels, dois raios de AO. "
+                                "Ultra: sombras até 160 m, quatro raios de AO, raios de GI e de reflexo mais longos. "
+                                "Aplica na hora.",
+    [UI_MENU_RT_Q_LOW] = "Baixa", [UI_MENU_RT_Q_MEDIUM] = "Média", [UI_MENU_RT_Q_HIGH] = "Alta",
+    [UI_MENU_RT_Q_ULTRA] = "Ultra",
+    [UI_MENU_RT_AO] = "Oclusão ambiente com ray tracing",
+    [UI_MENU_RT_AO_DESC] = "Oclusão ambiente traçada com o ray tracing da GPU contra a cena ao seu redor, no lugar do AO "
+                           "amplo em espaço de tela do jogo: cantos, a parte de baixo dos objetos e o que está fora da "
+                           "tela escurecem corretamente. Precisa de uma GPU com ray tracing Vulkan; as sombras de contato "
+                           "ficam desligadas enquanto o ray tracing roda. Muda na hora se o ray tracing estava ligado ao "
+                           "iniciar, senão na próxima inicialização.",
+    [UI_MENU_RT_AO_STRENGTH] = "Força do AO com ray tracing",
+    [UI_MENU_RT_AO_STRENGTH_DESC] = "Quanto o AO com ray tracing escurece: 0 mantém o AO do jogo, 100 é o AO como traçado, "
+                                    "acima de 100 escurece mais. Aplica na hora.",
+    [UI_MENU_RT_SHADOWS] = "Sombras do sol com ray tracing",
+    [UI_MENU_RT_SHADOWS_DESC] = "Sombras do sol traçadas com o ray tracing da GPU dentro do alcance da qualidade (60 a "
+                                "160 m), nítidas onde o objeto toca o chão e mais suaves quanto mais longe caem; além "
+                                "disso, os mapas de sombra do jogo. Precisa de uma GPU com ray tracing Vulkan. Muda na "
+                                "hora se o ray tracing estava ligado ao iniciar, senão na próxima inicialização.",
+    [UI_MENU_RT_SHADOW_STRENGTH] = "Força das sombras com ray tracing",
+    [UI_MENU_RT_SHADOW_STRENGTH_DESC] = "Quanto da sombra do sol vem do ray tracing: 0 é a sombra do jogo, 100 a traçada; "
+                                        "entre eles, uma mistura das duas. Aplica na hora.",
+    [UI_MENU_RT_SHADOW_ONLY] = "Só sombras com ray tracing",
+    [UI_MENU_RT_SHADOW_ONLY_DESC] = "Onde as sombras do sol são traçadas, os mapas de sombra do jogo ficam de fora, então "
+                                    "nenhuma segunda sombra mais borrada aparece ao lado (ligado por padrão). Desligado, "
+                                    "eles ficam para folhas e grama, que os raios veem como sólidas, ao custo de sombras "
+                                    "duplicadas. Aplica na hora.",
+    [UI_MENU_RT_GI] = "Iluminação global com ray tracing",
+    [UI_MENU_RT_GI_DESC] = "Luz rebatida traçada com o ray tracing da GPU: superfícies iluminadas e brilhantes, na tela e "
+                           "vistas há pouco, iluminam o que está em volta (os cristais zora tingem o chão e as paredes), "
+                           "e a luz ambiente diminui onde o céu está bloqueado. Precisa de uma GPU com ray tracing "
+                           "Vulkan. Muda na hora se o ray tracing estava ligado ao iniciar, senão na próxima "
+                           "inicialização.",
+    [UI_MENU_RT_GI_STRENGTH] = "Força da GI com ray tracing",
+    [UI_MENU_RT_GI_STRENGTH_DESC] = "O brilho da luz rebatida: 100 é como traçada, o padrão 300 é mais claro e colorido. "
+                                    "Aplica na hora.",
+    [UI_MENU_RT_REFL] = "Reflexos com ray tracing",
+    [UI_MENU_RT_REFL_DESC] = "Reflexos em superfícies lisas e planas (pisos, água parada, pedra polida). Precisa da "
+                             "iluminação global com ray tracing. 0 desliga, 100 como traçados, acima disso mais fortes. "
+                             "Aplica na hora.",
+    [UI_MENU_RT_TONE] = "Tom noturno",
+    [UI_MENU_RT_TONE_DESC] = "Um tom azul frio em cenas noturnas escuras, que some conforme fica mais claro. Precisa da "
+                             "iluminação global com ray tracing. 0 desliga, 100 total. Aplica na hora.",
+    [UI_MENU_RT_MAT] = "Materiais com ray tracing",
+    [UI_MENU_RT_MAT_DESC] = "Os pontos atingidos pelos raios recebem a cor da textura da própria superfície, iluminada pelo "
+                            "sol e pelo céu e ajustada a como o jogo a mostrou, então a luz rebatida e os reflexos de "
+                            "coisas fora da tela ou escondidas têm suas cores reais (sem isso vêm de um cache grosseiro "
+                            "de quadros anteriores). Precisa da GI com ray tracing; custa cerca de 1 ms e um pouco de "
+                            "memória de vídeo. Aplica na hora.",
+    [UI_MENU_RT_LIGHTS] = "Sombras das luzes com ray tracing",
+    [UI_MENU_RT_LIGHTS_DESC] = "Lâmpadas, lanternas, tochas e outras luzes locais projetam sombras com ray tracing: a luz para nas "
+                               "paredes e nos objetos em vez de atravessá-los. Precisa de outro recurso de ray tracing ligado (ele "
+                               "traça essa cena); custa pouco, pois só os pixels que a luz alcança traçam um raio. Aplica na hora.",
+    [UI_MENU_OV_RT_BUILD] = "Montagem da cena RT (GPU)", [UI_MENU_OV_RT_TRACE] = "Traçado RT (GPU)",
     [UI_MENU_CONTACT_SHADOWS] = "Sombras de contato",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Pequenas sombras do sol que os mapas de sombra não pegam: nos pés, sob pedras, "
                                      "na grama e em dobras. Traçadas na tela depois da iluminação. Vale no próximo "
@@ -2665,6 +2839,49 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_SHADOW_RANGE_DESC] = "把阴影变柔和的分界（游戏中为 20、40、80 和 160 米）推得更远。阴影贴图会覆盖更大的地面，请同时提高阴影分辨率。下次启动时生效。",
     [UI_MENU_GRASS_RANGE] = "草地范围",
     [UI_MENU_GRASS_RANGE_DESC] = "镜头周围长草的距离（游戏中为 62.5 米）。调高后草地延伸得更远，不会在你面前才长出来；调低则少画一些草。下次启动时生效。",
+    [UI_MENU_RT_GROUP] = "光线追踪",
+    [UI_MENU_WINDOW_GROUP] = "窗口",
+    [UI_MENU_RT_QUALITY] = "光线追踪质量",
+    [UI_MENU_RT_QUALITY_DESC] = "每帧光线追踪的工作量。低：阴影追踪到 60 米、隔像素计算，1 条 AO 光线，GI 光线较短，无反射。"
+                                "中：阴影到 90 米，开启反射。高：阴影到 120 米、逐像素计算，2 条 AO 光线。超高：阴影到 "
+                                "160 米，4 条 AO 光线，GI 和反射光线更长。立即生效。",
+    [UI_MENU_RT_Q_LOW] = "低", [UI_MENU_RT_Q_MEDIUM] = "中", [UI_MENU_RT_Q_HIGH] = "高",
+    [UI_MENU_RT_Q_ULTRA] = "超高",
+    [UI_MENU_RT_AO] = "光线追踪环境光遮蔽",
+    [UI_MENU_RT_AO_DESC] = "用显卡的光线追踪对周围场景计算环境光遮蔽，取代游戏的大范围屏幕空间 AO：角落、物体底部和屏幕外的"
+                           "东西都会正确变暗。需要支持 Vulkan 光线追踪的显卡；光线追踪运行时接触阴影关闭。若启动时已开启"
+                           "光线追踪则立即切换，否则下次启动生效。",
+    [UI_MENU_RT_AO_STRENGTH] = "光追 AO 强度",
+    [UI_MENU_RT_AO_STRENGTH_DESC] = "光追 AO 的变暗程度：0 保留游戏自身的 AO，100 为追踪结果，高于 100 更暗。立即生效。",
+    [UI_MENU_RT_SHADOWS] = "光线追踪太阳阴影",
+    [UI_MENU_RT_SHADOWS_DESC] = "在质量设定的范围内（60 到 160 米）用光线追踪计算太阳阴影：物体接触地面处清晰，投得越远越柔和；"
+                                "更远处使用游戏的阴影贴图。需要支持 Vulkan 光线追踪的显卡。若启动时已开启光线追踪则立即切换，"
+                                "否则下次启动生效。",
+    [UI_MENU_RT_SHADOW_STRENGTH] = "光追阴影强度",
+    [UI_MENU_RT_SHADOW_STRENGTH_DESC] = "太阳阴影中来自光线追踪的比例：0 为游戏自身的阴影，100 为追踪的阴影，中间为两者混合。"
+                                        "立即生效。",
+    [UI_MENU_RT_SHADOW_ONLY] = "仅光追阴影",
+    [UI_MENU_RT_SHADOW_ONLY_DESC] = "在追踪太阳阴影的范围内不使用游戏的阴影贴图，旁边就不会出现第二道更模糊的阴影（默认开启）。"
+                                    "关闭则为树叶和草保留阴影贴图（光线把它们视为实体），代价是阴影重叠。立即生效。",
+    [UI_MENU_RT_GI] = "光线追踪全局光照",
+    [UI_MENU_RT_GI_DESC] = "用光线追踪计算反弹光：屏幕上和最近见过的受光面与发光面会照亮周围（佐拉的水晶会染色地面和墙壁），"
+                           "天空被遮挡处的环境光会变暗。需要支持 Vulkan 光线追踪的显卡。若启动时已开启光线追踪则立即切换，"
+                           "否则下次启动生效。",
+    [UI_MENU_RT_GI_STRENGTH] = "光追 GI 强度",
+    [UI_MENU_RT_GI_STRENGTH_DESC] = "反弹光的亮度：100 为追踪结果，默认 300 更亮、色彩更浓。立即生效。",
+    [UI_MENU_RT_REFL] = "光线追踪反射",
+    [UI_MENU_RT_REFL_DESC] = "光滑平面（地板、静水、抛光石材）上的反射。需要光线追踪全局光照。0 关闭，100 为追踪结果，更高则更强。"
+                             "立即生效。",
+    [UI_MENU_RT_TONE] = "夜间色调",
+    [UI_MENU_RT_TONE_DESC] = "在昏暗的夜景中加入冷蓝色调，越亮越淡。需要光线追踪全局光照。0 关闭，100 为完整效果。立即生效。",
+    [UI_MENU_RT_MAT] = "光线追踪材质",
+    [UI_MENU_RT_MAT_DESC] = "光线命中点使用表面自身的纹理颜色，由太阳和天空照亮并与游戏显示的效果匹配，因此屏幕外或被遮挡物体的"
+                            "反弹光和反射呈现真实颜色（关闭时来自前几帧的粗略缓存）。需要光追 GI；约耗时 1 毫秒并占用少量显存。"
+                            "立即生效。",
+    [UI_MENU_RT_LIGHTS] = "光线追踪灯光阴影",
+    [UI_MENU_RT_LIGHTS_DESC] = "灯、灯笼、火把等局部光源投射光线追踪阴影：光会被墙壁和物体挡住，而不再穿透它们。"
+                               "需要同时开启另一项光线追踪功能（使用其场景）；开销很小，只有被灯光照到的像素才发射光线。立即生效。",
+    [UI_MENU_OV_RT_BUILD] = "光追场景构建（GPU）", [UI_MENU_OV_RT_TRACE] = "光线追踪（GPU）",
     [UI_MENU_CONTACT_SHADOWS] = "接触阴影",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "阴影贴图遗漏的细小太阳阴影：脚下、石头下、草丛和褶皱中。在光照之后于屏幕空间追踪。下次启动时生效。",
     [UI_MENU_PCSS] = "柔和阴影",

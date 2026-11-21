@@ -995,6 +995,7 @@ static VkDescriptorType descriptor_type(int kind, const GfxShaderRes *r) {
     case GFX_RES_UBO: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     case GFX_RES_SSBO: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     case GFX_RES_TEX:
+        if (r->flags & GFX_RES_RT_TLAS) return VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;   // gfx_shader.c patch_rt_lights
         if (buffer) return VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
         if (r->separate) LOG_ONCE("vk_pipeline: a separate texture handle: bound as SAMPLED_IMAGE");
         return r->separate ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -1416,6 +1417,10 @@ static uint32_t vs_union_missing(const VkPipeState *s, GfxShaderIo fin[32]) {
     return missing;
 }
 
+static _Thread_local int tl_xfb;   // vk_pipeline_xfb's worker: the vertex position goes to transform feedback buffer 0
+static _Thread_local int tl_xfb_mat;   // and the variant being built records the albedo UVs (materials on when asked)
+static uint32_t *spirv_xfb(const uint32_t *w, uint64_t n, uint64_t *out_n, int uv_loc, int lay_loc, const uint8_t *ext, int next);
+
 static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Layout *l, uint32_t fs_off) {
     VkShaderModule vm = VK_NULL_HANDLE, fm = VK_NULL_HANDLE;
     uint64_t vw, fw;
@@ -1461,8 +1466,25 @@ static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Lay
         // A bound colour target outside the shader's output map gets write mask 0 (target_wmask)
         if (fcode) fm = make_module(fcode, fw);
     }
-    vm = make_module(vcode, vw);
-    free(vpatched), free(fpatched);
+    uint32_t *vx = NULL;
+    if (tl_xfb) {
+        // materials (vk_rt_materials): the fragment shader's albedo UV varying (and its array layer's, when that is
+        // another varying) to transform feedback buffer 1 as well
+        int uv_loc = -1, lay_loc = -1;
+        const GfxAlbedo *a = s->fs && tl_xfb_mat ? gfx_shader_albedo(s->fs) : NULL;
+        if (a && (a->kind == GFX_ALB_2D || a->kind == GFX_ALB_ARRAY)) {
+            uv_loc = a->uv_loc;
+            if (a->kind == GFX_ALB_ARRAY && a->layer_loc != 0xff && a->layer_loc != a->uv_loc) lay_loc = a->layer_loc;
+        }
+        // step 6: a draw with a program records its varyings to buffer 2 (the UV and layer among them: not buffer 1)
+        uint8_t ext[12];
+        int us, ls, next = tl_xfb_mat ? vk_prog_ext(s->vs, s->fs, ext, &us, &ls) : 0;
+        if (next) uv_loc = lay_loc = -1;
+        uint64_t n2 = 0;
+        if ((vx = spirv_xfb(vcode, vw, &n2, uv_loc, lay_loc, ext, next))) vcode = vx, vw = n2;
+    }
+    vm = tl_xfb && !vx ? VK_NULL_HANDLE : make_module(vcode, vw);
+    free(vpatched), free(fpatched), free(vx);
     VkPipeline pipe = VK_NULL_HANDLE;
     if (!vm || (s->fs && !fm)) goto out;
 
@@ -3522,6 +3544,8 @@ void vk_pipeline_autosave(void) {
         rt_log("vk_pipeline: cannot start the autosave thread; the cache is saved at exit only");
 }
 
+static void xfb_clear(void);
+
 void vk_pipeline_shutdown(void) {
     if (!P.ready) return;
     lb_stop();
@@ -3529,6 +3553,7 @@ void vk_pipeline_shutdown(void) {
     vk_pipeline_save();
     plat_mutex_lock(&P.lock);
     vkDeviceWaitIdle(P.device);
+    xfb_clear();
     for (int i = 0; i < PIPE_BUCKETS; i++) {
         for (Pipe *p = pipes[i], *n; p; p = n) {
             n = p->next;
@@ -3785,4 +3810,236 @@ int vk_pipeline_selftest(void) {
     int ok = built > 0 && cbuilt > 0 && cached && recorded && errors == 0;
     printf("vk_pipeline selftest: %s\n", ok ? "passed" : "FAILED");
     return ok ? 0 : 1;
+}
+
+// Step 6: the varyings for a draw's program (vk.h vk_prog_ext). TOTK_RT_PROG=0: none. Every slot a vec4 of 32 bits the
+// vertex shader writes; at most 12.
+int vk_prog_ext(const void *vsp, const void *fsp, uint8_t locs[12], int *uv_slot, int *lay_slot) {
+    const GfxShader *vs = vsp, *fs = fsp;
+    *uv_slot = *lay_slot = -1;
+    if (!vs || !fs || !vk_rt_programs()) return 0;
+    const GfxProg *p = gfx_shader_prog(fs);
+    if (p->status != GFX_PROG_OK || !(p->flags & GFX_PROG_WANTED) || p->nregs > 112 || !p->nloc) return 0;
+    GfxShaderIo io[32];
+    uint32_t om = gfx_shader_outputs(vs, io);
+    int n = 0;
+    for (int i = 0; i < p->nloc; i++) locs[n++] = p->loc[i];
+    const GfxAlbedo *a = gfx_shader_albedo(fs);
+    if (a->kind == GFX_ALB_2D || a->kind == GFX_ALB_ARRAY) {
+        int want[2] = {a->uv_loc, a->kind == GFX_ALB_ARRAY && a->layer_loc != 0xff ? a->layer_loc : -1};
+        for (int w = 0; w < 2; w++) {
+            if (want[w] < 0) continue;
+            int s = -1;
+            for (int i = 0; i < n; i++) if (locs[i] == want[w]) s = i;
+            if (s < 0) {
+                if (n >= 12) return 0;
+                s = n, locs[n++] = (uint8_t)want[w];
+            }
+            *(w ? lay_slot : uv_slot) = s;
+        }
+    }
+    for (int i = 0; i < n; i++)
+        if (locs[i] >= 32 || !(om >> locs[i] & 1) || io[locs[i]].comps != 4 || io[locs[i]].packed) return 0;
+    return n;
+}
+
+// ---- transform feedback variants (vk_rt.c, TOTK_RT_TEST: docs/raytracing.md, geometry version 1)
+// The pipeline of a draw with its vertex shader's position output (gl_Position, a vec4) captured into transform
+// feedback buffer 0 at stride 16: the draw renders as before and its primitives' clip-space corners land in the
+// buffer as a triangle list. Built monolithic on a thread of its own, from the layout the draw's own pipeline was
+// entered with; NULL until it is ready (the draw is then not captured).
+
+// Capability TransformFeedback, ExecutionMode Xfb on the entry point, and the decorations: XfbBuffer 0, XfbStride 16 on
+// the output variable, Offset 0 on the position (the variable, or its member of the output block).
+// uv_loc, lay_loc (-1: none): the output variables at those Locations to buffer 1 too, stride 32: uv_loc's at offset 0,
+// lay_loc's at 16 (vk_rt.c's attribute capture); each only when it is a 4-component vector of 32-bit values.
+// ext, next: step 6's varyings (vk_prog_ext), to buffer 2 at stride 16 x next, slot i's at offset 16 i.
+static uint32_t *spirv_xfb(const uint32_t *w, uint64_t n, uint64_t *out_n, int uv_loc, int lay_loc, const uint8_t *ext, int next) {
+    enum { OP_ENTRY = 15, OP_EXEC_MODE = 16, OP_CAP = 17, OP_TYPE_POINTER = 32, OP_VARIABLE = 59, OP_DECORATE = 71,
+           OP_MEMBER_DECORATE = 72, DEC_BUILTIN = 11, DEC_OFFSET = 35, DEC_XFB_BUFFER = 36, DEC_XFB_STRIDE = 37,
+           BI_POSITION = 0, SC_OUTPUT = 3, CAP_XFB = 53, MODE_XFB = 11 };
+    if (n < 5) return NULL;
+    uint32_t entry = 0, var = 0, strct = 0, member = 0;
+    uint64_t at_cap = 0, after_entry = 0, at_dec = 0;
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (!len || i + len > n) return NULL;
+        if (op == OP_CAP && !at_cap) at_cap = i + len;
+        if (op == OP_ENTRY && w[i + 1] == 0 /* Vertex */) entry = w[i + 2], after_entry = i + len;
+        if (op == OP_DECORATE && len >= 4 && w[i + 2] == DEC_BUILTIN && w[i + 3] == BI_POSITION) var = w[i + 1], at_dec = i + len;
+        if (op == OP_MEMBER_DECORATE && len >= 5 && w[i + 3] == DEC_BUILTIN && w[i + 4] == BI_POSITION)
+            strct = w[i + 1], member = w[i + 2], at_dec = i + len;
+        i += len;
+    }
+    if (strct && !var) {   // the output variable of the block: Variable (Pointer Output strct) Output
+        uint32_t ptr = 0;
+        for (uint64_t i = 5; i < n; i += w[i] >> 16) {
+            uint32_t op = w[i] & 0xffff;
+            if (op == OP_TYPE_POINTER && w[i + 2] == SC_OUTPUT && w[i + 3] == strct) ptr = w[i + 1];
+            if (op == OP_VARIABLE && ptr && w[i + 1] == ptr && w[i + 3] == SC_OUTPUT) { var = w[i + 2]; break; }
+        }
+    }
+    if (!entry || !var || !at_cap || !after_entry || !at_dec) return NULL;
+    // the attribute variables: Output variables decorated Location uv_loc / lay_loc whose type is a vec4 of 32 bits;
+    // then step 6's (avar 2-13)
+    uint32_t avar[14] = {0};
+    if (next > 12) next = 12;
+    for (int a = 0; a < 2 + next; a++) {
+        int loc = a == 0 ? uv_loc : a == 1 ? lay_loc : ext[a - 2];
+        if (loc < 0) continue;
+        for (uint64_t i = 5; i < n && !avar[a]; i += w[i] >> 16) {
+            uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+            if (op != OP_DECORATE || len < 4 || w[i + 2] != 30 /* Location */ || w[i + 3] != (uint32_t)loc) continue;
+            uint32_t v = w[i + 1], ptr = 0, ty = 0, ok = 0;
+            for (uint64_t j = 5; j < n; j += w[j] >> 16)
+                if ((w[j] & 0xffff) == OP_VARIABLE && w[j + 2] == v && w[j + 3] == SC_OUTPUT) { ptr = w[j + 1]; break; }
+            for (uint64_t j = 5; ptr && j < n; j += w[j] >> 16)
+                if ((w[j] & 0xffff) == OP_TYPE_POINTER && w[j + 1] == ptr) { ty = w[j + 3]; break; }
+            for (uint64_t j = 5; ty && j < n; j += w[j] >> 16)
+                if ((w[j] & 0xffff) == 23 /* TypeVector */ && w[j + 1] == ty && w[j + 3] == 4) {
+                    uint32_t ct = w[j + 2];
+                    for (uint64_t q = 5; q < n; q += w[q] >> 16) {
+                        uint32_t qo = w[q] & 0xffff;
+                        if ((qo == 21 /* TypeInt */ || qo == 22 /* TypeFloat */) && w[q + 1] == ct) { ok = w[q + 2] == 32; break; }
+                    }
+                    break;
+                }
+            if (ok) avar[a] = v;
+        }
+    }
+    for (int a = 2; a < 2 + next; a++)
+        if (!avar[a]) return NULL;   // vk_prog_ext promised it: no variant rather than a draw writing nothing there
+    uint32_t *o = malloc((n + 160) * sizeof *o);
+    if (!o) return NULL;
+    uint64_t k = 0;
+    for (uint64_t i = 0; i < n;) {
+        uint32_t len = i < 5 ? 1 : w[i] >> 16;
+        memcpy(o + k, w + i, len * sizeof *w), k += len, i += len;
+        if (i == at_cap) o[k++] = 2u << 16 | OP_CAP, o[k++] = CAP_XFB;
+        if (i == after_entry) o[k++] = 3u << 16 | OP_EXEC_MODE, o[k++] = entry, o[k++] = MODE_XFB;
+        if (i == at_dec) {
+            o[k++] = 4u << 16 | OP_DECORATE, o[k++] = var, o[k++] = DEC_XFB_BUFFER, o[k++] = 0;
+            o[k++] = 4u << 16 | OP_DECORATE, o[k++] = var, o[k++] = DEC_XFB_STRIDE, o[k++] = 16;
+            if (strct) o[k++] = 5u << 16 | OP_MEMBER_DECORATE, o[k++] = strct, o[k++] = member, o[k++] = DEC_OFFSET, o[k++] = 0;
+            else o[k++] = 4u << 16 | OP_DECORATE, o[k++] = var, o[k++] = DEC_OFFSET, o[k++] = 0;
+            for (int a = 0; a < 2 + next; a++) {
+                if (!avar[a]) continue;
+                int b2 = a >= 2;
+                o[k++] = 4u << 16 | OP_DECORATE, o[k++] = avar[a], o[k++] = DEC_XFB_BUFFER, o[k++] = b2 ? 2 : 1;
+                o[k++] = 4u << 16 | OP_DECORATE, o[k++] = avar[a], o[k++] = DEC_XFB_STRIDE, o[k++] = b2 ? 16u * (uint32_t)next : 32;
+                o[k++] = 4u << 16 | OP_DECORATE, o[k++] = avar[a], o[k++] = DEC_OFFSET, o[k++] = b2 ? 16u * (uint32_t)(a - 2) : a ? 16 : 0;
+            }
+        }
+    }
+    *out_n = k;
+    return o;
+}
+
+#define XFB_BUCKETS 4096
+typedef struct XfbEnt { struct XfbEnt *next, *qnext; uint64_t hash; GKey k; VkPipeState s; const Layout *l; uint32_t fs_off;
+                        VkPipeline pipe; int state, orphan, mat; } XfbEnt;   // mat: records the UVs too   // state 0 queued, 1 ready, 2 failed; orphan: cleared while built
+static struct {
+    PlatMutex lock;
+    PlatCond cv;
+    XfbEnt *b[XFB_BUCKETS], *qhead, *qtail, *cur;   // cur: the worker's
+    PlatThread *thread;
+    int built, failed;
+} XF = {.lock = PLAT_MUTEX_INIT, .cv = PLAT_COND_INIT};
+
+static void xfb_worker(void *arg) {
+    (void)arg;
+    tl_xfb = 1;
+    plat_mutex_lock(&XF.lock);
+    for (;;) {
+        while (!XF.qhead) plat_cond_wait(&XF.cv, &XF.lock);
+        XfbEnt *e = XF.qhead;
+        if (!(XF.qhead = e->qnext)) XF.qtail = NULL;
+        XF.cur = e;
+        plat_mutex_unlock(&XF.lock);
+        tl_xfb_mat = e->mat;
+        VkPipeline p = create_graphics(&e->s, &e->k, e->l, e->fs_off);
+        plat_mutex_lock(&XF.lock);
+        XF.cur = NULL;
+        if (e->orphan) {   // xfb_clear ran meanwhile
+            if (p) vkDestroyPipeline(P.device, p, NULL);
+            free(e);
+            continue;
+        }
+        __atomic_store_n(&e->pipe, p, __ATOMIC_RELEASE);
+        e->state = p ? 1 : 2;
+        if (p) XF.built++;
+        else if (XF.failed++ < 8) rt_log("vk_pipeline: transform feedback variant not built (no position output, or the driver refused)");
+    }
+}
+
+static uint32_t xfb_gen = 1;   // bumped at shutdown: what callers remembered is gone
+uint32_t vk_pipeline_xfb_gen(void) { return __atomic_load_n(&xfb_gen, __ATOMIC_ACQUIRE); }
+// materials switched in play (vk_rt.c mat_switch): the draws' memos forget their variants (none is destroyed)
+void vk_pipeline_xfb_regen(void) { __atomic_add_fetch(&xfb_gen, 1, __ATOMIC_RELEASE); }
+
+VkPipeline vk_pipeline_xfb(const VkPipeState *s, int *failed) {
+    *failed = 0;
+    if (!s->vs || !ensure_init()) return *failed = 1, VK_NULL_HANDLE;
+    GKey k;
+    gkey_fill(s, &k);
+    const int mat = vk_rt_materials();
+    uint64_t h = key_hash(&k, sizeof k) ^ (uint64_t)mat;
+    plat_mutex_lock(&XF.lock);
+    XfbEnt **head = &XF.b[h % XFB_BUCKETS], *e;
+    for (e = *head; e; e = e->next)
+        if (e->hash == h && e->mat == mat && !memcmp(&e->k, &k, sizeof k)) break;
+    if (e) {
+        VkPipeline p = e->pipe;
+        *failed = e->state == 2;
+        plat_mutex_unlock(&XF.lock);
+        return p;
+    }
+    plat_mutex_unlock(&XF.lock);
+    plat_mutex_lock(&P.lock);   // the layout the draw's own pipeline was entered with
+    Pipe *np = pipe_find(&k, sizeof k, h ^ (uint64_t)mat);
+    const Layout *l = np ? np->lay : NULL;
+    plat_mutex_unlock(&P.lock);
+    if (!l || !(e = calloc(1, sizeof *e))) return VK_NULL_HANDLE;
+    *e = (XfbEnt){.hash = h, .k = k, .s = *s, .l = l, .fs_off = P.indep ? 0 : binding_span(s->vs) - 1, .mat = mat};
+    plat_mutex_lock(&XF.lock);
+    for (XfbEnt *o = *head; o; o = o->next)   // another thread queued it while the lock was free
+        if (o->hash == h && o->mat == mat && !memcmp(&o->k, &k, sizeof k)) {
+            plat_mutex_unlock(&XF.lock);
+            free(e);
+            return VK_NULL_HANDLE;
+        }
+    e->next = *head, *head = e;
+    if (XF.qtail) XF.qtail->qnext = e;
+    else XF.qhead = e;
+    XF.qtail = e;
+    if (!XF.thread) XF.thread = plat_thread_new(xfb_worker, NULL, "xfb pipelines");
+    plat_cond_broadcast(&XF.cv);
+    plat_mutex_unlock(&XF.lock);
+    return VK_NULL_HANDLE;
+}
+
+// The transform feedback variants go with the device (vk_pipeline_shutdown): queued ones are dropped, built ones
+// destroyed, and the generation tells the draws' memos (vk_exec_draw.c rt_xfb_pipe) to forget theirs. A variant the
+// worker is building now is entered after this and destroyed by nobody (a release mid-build only, rare).
+static void xfb_clear(void) {
+    plat_mutex_lock(&XF.lock);
+    for (int i = 0; i < XFB_BUCKETS; i++) {
+        for (XfbEnt *e = XF.b[i], *n; e; e = n) {
+            n = e->next;
+            if (e == XF.cur) { e->orphan = 1; continue; }   // the worker frees it when its build returns
+            if (e->state == 1 && e->pipe) vkDestroyPipeline(P.device, e->pipe, NULL);
+            free(e);
+        }
+        XF.b[i] = NULL;
+    }
+    XF.qhead = XF.qtail = NULL;
+    XF.built = XF.failed = 0;
+    __atomic_add_fetch(&xfb_gen, 1, __ATOMIC_RELEASE);
+    plat_mutex_unlock(&XF.lock);
+}
+
+void vk_pipeline_xfb_stats(int *built, int *failed) {
+    plat_mutex_lock(&XF.lock);
+    *built = XF.built, *failed = XF.failed;
+    plat_mutex_unlock(&XF.lock);
 }

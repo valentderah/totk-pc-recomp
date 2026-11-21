@@ -791,6 +791,22 @@ static void rows_color(void) {
 
 static void tab_screen(float scale) {
     opt_begin("##screen", scale);
+    // ray tracing first, to switch it quickly (live once it was on at start: vk_rt_live)
+    opt_group(UI_MENU_RT_GROUP);
+    static const UiTextId rtq[] = {UI_MENU_RT_Q_LOW, UI_MENU_RT_Q_MEDIUM, UI_MENU_RT_Q_HIGH, UI_MENU_RT_Q_ULTRA};
+    opt_choice("TOTK_RT_QUALITY", UI_MENU_RT_QUALITY, rtq, 4, UI_MENU_RT_QUALITY_DESC);
+    opt_toggle("TOTK_RT_AO", UI_MENU_RT_AO, UI_MENU_RT_AO_DESC);
+    opt_slider("TOTK_RT_AO_STRENGTH", UI_MENU_RT_AO_STRENGTH, 0, 200, UI_MENU_RT_AO_STRENGTH_DESC, 10, "%.0f %%");
+    opt_toggle("TOTK_RT_SHADOWS", UI_MENU_RT_SHADOWS, UI_MENU_RT_SHADOWS_DESC);
+    opt_slider("TOTK_RT_SHADOW_STRENGTH", UI_MENU_RT_SHADOW_STRENGTH, 0, 100, UI_MENU_RT_SHADOW_STRENGTH_DESC, 10, "%.0f %%");
+    opt_toggle("TOTK_RT_GI", UI_MENU_RT_GI, UI_MENU_RT_GI_DESC);
+    opt_slider("TOTK_RT_GI_STRENGTH", UI_MENU_RT_GI_STRENGTH, 0, 600, UI_MENU_RT_GI_STRENGTH_DESC, 25, "%.0f %%");
+    opt_slider("TOTK_RT_REFL", UI_MENU_RT_REFL, 0, 200, UI_MENU_RT_REFL_DESC, 10, "%.0f %%");
+    opt_slider("TOTK_RT_TONE", UI_MENU_RT_TONE, 0, 100, UI_MENU_RT_TONE_DESC, 10, "%.0f %%");
+    opt_toggle("TOTK_RT_SHADOW_ONLY", UI_MENU_RT_SHADOW_ONLY, UI_MENU_RT_SHADOW_ONLY_DESC);
+    opt_toggle("TOTK_RT_MAT", UI_MENU_RT_MAT, UI_MENU_RT_MAT_DESC);
+    opt_toggle("TOTK_RT_LIGHTS", UI_MENU_RT_LIGHTS, UI_MENU_RT_LIGHTS_DESC);
+    opt_group(UI_MENU_WINDOW_GROUP);
     opt_toggle("TOTK_FULLSCREEN", UI_MENU_FULLSCREEN, UI_MENU_FULLSCREEN_DESC);
     row_window_size();
     static const UiTextId present[] = {UI_MENU_PRESENT_MAILBOX, UI_MENU_PRESENT_VSYNC, UI_MENU_PRESENT_IMMEDIATE};
@@ -1804,6 +1820,8 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     ImGui::EndTable();
 }
 
+extern "C" int vk_rt_overlay(float *build_ms, float *trace_ms);
+
 static void perf_full_draw(const MenuTarget *t, float scale) {
     float w = (float)t->width;
     PerfStats s;
@@ -1893,6 +1911,13 @@ static void perf_full_draw(const MenuTarget *t, float scale) {
         perf_cell(UI_MENU_OV_FMT_MS, s.xlate_ms);
         perf_label(UI_MENU_OV_TEX_UPLOADS, wait_c);
         perf_cell(UI_MENU_OV_PER_FRAME, s.tex_uploads);
+        float rt_build, rt_trace;   // ray tracing (vk_rt.c): GPU time a frame, while it runs
+        if (vk_rt_overlay(&rt_build, &rt_trace)) {
+            perf_label(UI_MENU_OV_RT_BUILD, wait_c);
+            perf_cell(UI_MENU_OV_FMT_MS, rt_build);
+            perf_label(UI_MENU_OV_RT_TRACE, wait_c);
+            perf_cell(UI_MENU_OV_FMT_MS, rt_trace);
+        }
         ImGui::EndTable();
     }
     perf_picture(t, pic_c);

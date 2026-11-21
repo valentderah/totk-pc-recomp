@@ -51,6 +51,11 @@ void rec_vertex_input(PFN_vkCmdSetVertexInputEXT fn, VkCommandBuffer cb, uint32_
                       const VkVertexInputBindingDescription2EXT *b, uint32_t na,
                       const VkVertexInputAttributeDescription2EXT *a);
 void rec_bool(PFN_vkCmdSetDepthClampEnableEXT fn, VkCommandBuffer cb, VkBool32 v);   // also alpha to coverage
+// vk_rt.c: bind transform feedback buffer 0 (off, size) and begin it (end 0), or end it (end 1); the bind, begin and end
+// functions are the device's
+void rec_xfb(void *bind, void *begin, void *end_fn, VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off, VkDeviceSize size,
+             VkBuffer buf1, VkDeviceSize off1, VkDeviceSize size1, VkBuffer buf2, VkDeviceSize off2, VkDeviceSize size2,
+             int end);   // buf1, buf2: buffers 1 and 2 too (when not null; buf2 needs buf1)
 void rec_polygon_mode(PFN_vkCmdSetPolygonModeEXT fn, VkCommandBuffer cb, VkPolygonMode m);
 void rec_blend_enable(PFN_vkCmdSetColorBlendEnableEXT fn, VkCommandBuffer cb, uint32_t first, uint32_t n, const VkBool32 *v);
 void rec_blend_equation(PFN_vkCmdSetColorBlendEquationEXT fn, VkCommandBuffer cb, uint32_t first, uint32_t n,

@@ -1,0 +1,165 @@
+#version 450
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+// The late material measure (vk_rt_tone_scene, called by vk_dlaa.c where the scene ends: after the transparents, fog
+// and haze, before the bloom). rt_gi.comp mode 13 left a record a 4x4 block where a primary ray hit the surface the
+// screen shows (its material slot, pixel, frame, the diffuse colour S it computed and the distance); here the finished
+// screen's colour F there (the game's haze taken out) is summed with the diffuse colours the sun and the sky give, Ss
+// and Sa, and the mirror light R into the slot (msum 25-61, rounded at random). Mode 14 then fits
+// F = look Ss + ambient look Sa + spec R (rt_gi.comp mat_look, mat_alook, mat_spec).
+// Mode 1 (view 26): the GI pass's right half (binding 12) put over the finished picture, after the measure.
+// The AO's pipeline layout: binding 1 the light target, binding 12 view 26's half, set 2 the materials.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 1, r11f_g11f_b10f) uniform image2D scene;
+layout(binding = 12, std430) readonly buffer Split { uvec2 split[]; };
+// Mode 2 (vk_rt.c late_veil): the veil, how much of the scene as the GI pass left it (binding 0, copied after its apply)
+// the game's later passes let show (the finished light target, binding 1): lum(finished) / lum(post), at most 1. The
+// shrine's portal veil, water, fog: the GI takes its bounce light from the scene at the composite, where what such a
+// pass covers still shows at full strength (the shrine interior lit green behind its doorway lit the ground outside).
+layout(binding = 0) uniform sampler2D post;   // (mode 0, when pc.md.w: what the GI's apply added, rt_gi.comp binding 6)
+layout(binding = 6, r8) uniform writeonly image2D veil_out;
+layout(set = 2, binding = 3, std430) buffer MCal { uint msum[2u * 8192u * 64u]; vec4 sval[4096u * 6u]; uvec4 mrec[3u * 522240u]; uint mcache[524288u * 16u]; };
+layout(push_constant) uniform P {
+    ivec4 size;   // width, height, blocks across, blocks down
+    vec4 hs;      // the haze's extinction per metre rgb, w 1 when fitted (rt_gi.comp hz[0])
+    vec3 hf;      // the haze's colour
+    uint fr;      // the GI pass's frame number the records must carry (its low 8 bits)
+    ivec4 md;     // mode (0 measure, 1 view 26's half), the half's first column
+} pc;
+
+uint pcg(uint v) {
+    uint s = v * 747796405u + 2891336453u;
+    uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+    return (w >> 22u) ^ w;
+}
+// (x 64 or x k, each rounded up with a random chance of its fraction)
+
+// The sums are added a subgroup at a time: the lanes with the same slot (or cell) summed first, then one atomic for
+// them (neighbouring blocks mostly share their material, and 64 lanes adding into the same words one by one took 0.7 ms
+// a frame). Integer sums in any order: the same totals.
+uint lv[37];   // msum[b + 25 + i]
+uint cv[14];   // mcache[cb + 2 + i]
+void q3(uint i, vec3 v, inout uint s) {
+    for (uint c = 0u; c < 3u; c++) {
+        s = pcg(s);
+        lv[i + c] = uint(v[c] * 64.0 + float(s >> 8) * (1.0 / 16777216.0));
+    }
+}
+void qk(uint i, vec3 v, inout uint s, float k) {
+    for (uint c = 0u; c < 3u; c++) {
+        s = pcg(s);
+        cv[i + c] = uint(v[c] * k + float(s >> 8) * (1.0 / 16777216.0));
+    }
+}
+
+void put_half() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    int hw = pc.size.x - pc.md.y;
+    if (p.x >= hw || p.y >= pc.size.y) return;
+    uvec2 s = split[uint(p.y) * uint(hw) + uint(p.x)];
+    vec2 bw = unpackHalf2x16(s.y);
+    ivec2 px = ivec2(p.x + pc.md.y, p.y);
+    vec3 g = imageLoad(scene, px).rgb;
+    // (debug, TOTK_RT_AB=1: the game's own right half of this frame in the left half, beside ours, to compare pixel by pixel)
+    if (pc.md.z != 0) imageStore(scene, ivec2(p.x + pc.md.y - hw, p.y), vec4(g, 1.0));
+    if (!(bw.y > 0.0)) return;
+    imageStore(scene, px, vec4(mix(g, vec3(unpackHalf2x16(s.x), bw.x), min(bw.y, 1.0)), 1.0));
+}
+
+void main() {
+    if (pc.md.x == 1) { put_half(); return; }
+    if (pc.md.x == 2) {
+        ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+        if (any(greaterThanEqual(p, pc.size.xy))) return;
+        vec3 lw = vec3(0.2126, 0.7152, 0.0722);
+        float f = dot(imageLoad(scene, p).rgb, lw), q = dot(texelFetch(post, p, 0).rgb, lw);
+        imageStore(veil_out, p, vec4(q > 1e-3 ? clamp(f / q, 0.0, 1.0) : 1.0));
+        return;
+    }
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    if (c.x >= pc.size.z || c.y >= pc.size.w) return;
+    uint i = 3u * (uint(c.y) * uint(pc.size.z) + uint(c.x));
+    uvec4 r = mrec[i];
+    if (r.x == 0u) return;
+    mrec[i].x = 0u;
+    uvec4 r2 = mrec[i + 1u], r3 = mrec[i + 2u];
+    if ((r.y >> 24) != (pc.fr & 255u) || r.x > 2u * 8192u) return;
+    ivec2 px = ivec2(r.y & 4095u, (r.y >> 12) & 4095u);
+    if (any(greaterThanEqual(px, pc.size.xy))) return;
+    vec2 bt = unpackHalf2x16(r.w);
+    // F: the finished screen as shown. Taking our GI and reflections out everywhere does not work: a later pass of the
+    // game may cover them (water over a floor our reflections lit), and subtracting what is no longer there leaves
+    // colours never shown...
+    vec2 ab = unpackHalf2x16(r2.y);
+    vec3 Ss = vec3(unpackHalf2x16(r.z), bt.x), Sa = vec3(unpackHalf2x16(r2.x), ab.x), Rl = vec3(unpackHalf2x16(r2.z), ab.y);
+    vec3 F = imageLoad(scene, px).rgb;
+    // ... except where our GI added light to an off-screen surface's colour, which the cache gives back to the GI's
+    // hits: a loop, which saturated an enclosed glow (the shrine doorway's green). So what apply added comes out of F
+    // as far as the pixel still holds it (a: the luminance apply wrote): a later pass that adds light over it (the
+    // doorway's glow) leaves all of it; one blended over it (water) leaves the part its darkening suggests.
+    if (pc.md.w != 0) {
+        vec4 A = texelFetch(post, px, 0);
+        float lf = dot(F, vec3(0.2126, 0.7152, 0.0722));
+        if (A.a > 1e-5) F = max(F - A.rgb * min(lf / A.a, 1.0), vec3(0.0));
+    }
+    float t = bt.y;
+    if (pc.hs.w > 0.5) {   // c T + colour (1 - T) undone; where the haze hides most of it, nothing to learn
+        vec3 T = exp(-pc.hs.rgb * t);
+        if (min(T.r, min(T.g, T.b)) < 0.3) return;
+        F = max((F - pc.hf * (1.0 - T)) / T, vec3(0.0));
+    }
+    F = min(F, vec3(8.0));
+    uint sd = pcg(uint(px.x) * 7919u + uint(px.y) * 104729u + pc.fr * 15485863u);
+    // the appearance cache's cell (rt_gi.comp ac_get): F' = F less the reflection, against our diffuse colour Lt
+    vec2 lq = unpackHalf2x16(r3.y);
+    vec3 Lt = clamp(vec3(unpackHalf2x16(r3.x), lq.x), 0.0, 8.0), Rq = clamp(vec3(unpackHalf2x16(r2.z), unpackHalf2x16(r2.y).y), 0.0, 8.0);
+    vec3 Fp = F;   // (its reflection in: the cache shows it as the game did)
+    // P: the texture level's colour here (rt_gi.comp pack_lg)
+    uvec3 pq = uvec3(r3.w, r3.w >> 10, r3.w >> 20) & 1023u;
+    vec3 P = mix(exp2(vec3(pq) * (20.0 / 1023.0) - 12.0), vec3(0.0), vec3(equal(pq, uvec3(0u))));
+    float ll = dot(Lt, vec3(0.2126, 0.7152, 0.0722));
+    ll *= ll;
+    for (uint j = 0u; j < 2u; j++) {   // its cells by place (with P) and by texture
+        uint cell = j == 0u ? r3.z & 0x7fffffffu : r2.w;
+        if (cell == 0u || cell > 524288u) continue;
+        uint cb = (cell - 1u) * 16u;
+        mcache[cb + 1u] = pc.fr;
+        for (uint i = 0u; i < 14u; i++) cv[i] = 0u;
+        cv[0] = 1u;
+        qk(1u, Fp, sd, 1024.0), qk(8u, Lt, sd, 1024.0);
+        // (P and the F it goes against only from samples taken when the texture level was settled, bit 30)
+        if (j == 0u && (r3.w & 0x40000000u) != 0u) qk(4u, min(P, vec3(8.0)), sd, 1024.0), qk(11u, Fp, sd, 1024.0);
+        sd = pcg(sd);
+        cv[7] = uint(ll * 1024.0 + float(sd >> 8) * (1.0 / 16777216.0));
+        for (;;) {
+            uint fc = subgroupBroadcastFirst(cb);
+            if (fc == cb) {
+                for (uint i = 0u; i < 14u; i++) {
+                    uint t_ = subgroupAdd(cv[i]);
+                    if (subgroupElect() && t_ != 0u) atomicAdd(mcache[cb + 2u + i], t_);
+                }
+                break;
+            }
+        }
+    }
+    if ((r3.z >> 31) != 0u) return;   // a glowing pixel: the cache's alone
+    uint b = (r.x - 1u) * 64u;
+    Ss = clamp(Ss, 0.0, 8.0), Sa = clamp(Sa, 0.0, 8.0), Rl = clamp(Rl, 0.0, 8.0);
+    // x 64, rounded at random (a fixed +0.5 would add half a step to every sample, and the squares of small values, a
+    // dark channel's or a faint reflection's, would round to nothing)
+    q3(0u, Ss, sd), lv[3] = 1u, q3(4u, F, sd), q3(7u, Sa, sd);
+    q3(10u, Ss * Ss, sd), q3(13u, Sa * Sa, sd), q3(16u, Ss * Sa, sd);
+    q3(19u, Rl * Rl, sd), q3(22u, Ss * Rl, sd), q3(25u, Sa * Rl, sd);
+    q3(28u, F * Ss, sd), q3(31u, F * Sa, sd), q3(34u, F * Rl, sd);
+    for (;;) {
+        uint fb = subgroupBroadcastFirst(b);
+        if (fb == b) {
+            for (uint i = 0u; i < 37u; i++) {
+                uint t_ = subgroupAdd(lv[i]);
+                if (subgroupElect() && t_ != 0u) atomicAdd(msum[b + 25u + i], t_);
+            }
+            break;
+        }
+    }
+}

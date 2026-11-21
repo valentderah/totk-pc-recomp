@@ -87,6 +87,10 @@ struct GfxShader {
     GfxShaderIo in[32], out[32];
     uint32_t local[3];
     uint32_t mvprev_banks;                                 // .res.json "mvprev_banks" (patch 0015), 0 none
+    GfxAlbedo albedo;                                      // gfx_shader_albedo, once albedo_done is 1
+    volatile int32_t albedo_done;
+    GfxProg prog;                                          // gfx_shader_prog, once prog_done is 1
+    volatile int32_t prog_done;
 };
 
 static PlatMutex cache_lock = PLAT_MUTEX_INIT;                  // memory cache
@@ -841,6 +845,540 @@ out:
     free(cc);
 }
 
+// Ray-traced sun shadows (vk_rt.c, TOTK_RT_SHADOWS=1; docs/raytracing.md). The game's deferred lighting shaders, fragment
+// shaders that write 4 or more colour targets and sample a 2D-array depth texture (the sun's four cascades), take the
+// sun shadow as a few explicit-LOD depth compares on it (OpImageSampleDrefExplicitLod; translator patch 0010 turns
+// each into a PCSS lookup when TOTK_PCSS is on, which this sees as more compares). Each compare's result r becomes
+//     mix(r, mix(V, min(V, r), G), B),   (V, G, B) = texelFetch(rt_shadow, ivec2(gl_FragCoord.xy)).rgb
+// from a combined image sampler added at a new binding of the shader's set. Its resource entry has the flag
+// GFX_RES_RT_SHADOW and no slot; the replay binds vk_rt.c's shadow image there (vk_exec_draw.c): V the ray-traced
+// sun visibility, G how far to keep the shadow map's darker value, B the weight (0: the game's own result).
+// gl_FragCoord is declared when the shader lacks it. Applied to the SPIR-V after it is loaded: the cache is untouched.
+enum { OP_EXT_INST_IMPORT = 11, OP_EXT_INST = 12, OP_TYPE_IMAGE = 25, OP_TYPE_SAMPLED_IMAGE = 27, OP_CONSTANT = 43,
+       OP_FUNCTION = 54, OP_LOAD = 61, OP_VECTOR_SHUFFLE = 79, OP_COMPOSITE_EXTRACT = 81, OP_IMAGE_FETCH = 95,
+       OP_IMAGE = 100, OP_CONVERT_F_TO_S = 110, OP_SAMPLE_DREF_EXPLICIT = 90, OP_DECORATE_ID = 332,
+       DEC_BINDING = 33, DEC_SET = 34, BI_FRAG_COORD = 15, SC_UNIFORM_CONSTANT = 0, GLSL_FMIN = 37, GLSL_FMIX = 46,
+       IO_LOD = 2 };
+
+static void patch_rt_shadow(GfxShader *s) {
+    static int on = -1;
+    static volatile int32_t n_logged;
+    if (on < 0) on = vk_rt_shadow_patch_wanted();
+    uint32_t *w = s->spirv;
+    uint64_t n = s->words;
+    // 3 outputs: the game's quarter-res lighting pass (frame dump pass 91, 480x270; vk_rt.c binds a quarter-res copy)
+    if (!on || n < 5 || s->stage != GFX_STAGE_FS || __builtin_popcount(s->out_mask) < 3) return;
+    uint32_t bound = w[3] < (1u << 20) ? w[3] : (1u << 20);
+    uint32_t *pointee = calloc(bound, sizeof *pointee), *simg_of = calloc(bound, sizeof *simg_of);
+    uint8_t *arr_depth = calloc(bound, 1), *shadow_load = calloc(bound, 1);
+    uint32_t *o = NULL;
+    if (!pointee || !simg_of || !arr_depth || !shadow_load) goto out;
+    // ids found in the module; 0 = absent
+    uint32_t f32 = 0, i32 = 0, v2f = 0, v4f = 0, v2i = 0, c0 = 0, glsl = 0, img2d = 0, simg2d = 0, puc = 0, pin = 0,
+             fc = 0, shadow_var = 0, set = 0, has_set = 0;
+    uint64_t dec_at = 0, fn_at = 0;
+    for (uint64_t i = 5; i < n;) {   // types, pointers, variables and decorations, before the first function
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (!len || i + len > n) goto out;
+        const uint32_t *a = w + i + 1;
+        if (op == OP_FUNCTION) { fn_at = i; break; }
+        if ((op >= OP_DECORATE && op <= 75) || op == OP_DECORATE_ID) dec_at = i + len;
+        if (op == OP_EXT_INST_IMPORT && len >= 3 && !strncmp((const char *)(a + 1), "GLSL.std.450", (len - 2) * 4)) glsl = a[0];
+        else if (op == OP_TYPE_FLOAT && len == 3 && a[1] == 32) f32 = a[0];
+        else if (op == OP_TYPE_INT && len == 4 && a[1] == 32 && a[2] == 1) i32 = a[0];
+        else if (op == OP_TYPE_VECTOR && len == 4 && f32 && a[1] == f32 && a[2] == 2) v2f = a[0];
+        else if (op == OP_TYPE_VECTOR && len == 4 && f32 && a[1] == f32 && a[2] == 4) v4f = a[0];
+        else if (op == OP_TYPE_VECTOR && len == 4 && i32 && a[1] == i32 && a[2] == 2) v2i = a[0];
+        else if (op == OP_CONSTANT && len == 4 && i32 && a[0] == i32 && a[2] == 0) c0 = a[1];
+        else if (op == OP_TYPE_IMAGE && len >= 9 && a[0] < bound) {
+            if (a[2] == 1 && a[3] == 1 && a[4] == 1) arr_depth[a[0]] = 1;   // 2D, depth, arrayed: the cascades
+            if (len == 9 && a[1] == f32 && a[2] == 1 && !a[3] && !a[4] && !a[5] && a[6] == 1 && !a[7]) img2d = a[0];
+        } else if (op == OP_TYPE_SAMPLED_IMAGE && len == 3 && a[0] < bound) {
+            simg_of[a[0]] = a[1] + 1;
+            if (img2d && a[1] == img2d) simg2d = a[0];
+        } else if (op == OP_TYPE_POINTER && len == 4 && a[0] < bound) {
+            pointee[a[0]] = a[2];
+            if (a[1] == SC_INPUT && v4f && a[2] == v4f) pin = a[0];
+            if (a[1] == SC_UNIFORM_CONSTANT && simg2d && a[2] == simg2d) puc = a[0];
+        } else if (op == OP_VARIABLE && len >= 4 && a[2] == SC_UNIFORM_CONSTANT && a[0] < bound) {
+            uint32_t st = pointee[a[0]];
+            if (st < bound && simg_of[st] && simg_of[st] - 1 < bound && arr_depth[simg_of[st] - 1]) shadow_var = a[1];
+        } else if (op == OP_DECORATE && len >= 4 && a[1] == DEC_BUILTIN && a[2] == BI_FRAG_COORD) {
+            fc = a[0];
+        } else if (op == OP_DECORATE && len == 4 && a[1] == DEC_SET && !has_set) {
+            set = a[2], has_set = 1;   // the shader's set (the translator puts everything in one)
+        }
+        i += len;
+    }
+    if (!f32 || !i32 || !v4f || !glsl || !fn_at || !dec_at || !shadow_var) goto out;
+    int found = 0;   // the compares on loads of the cascades
+    for (uint64_t i = fn_at; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (!len || i + len > n) goto out;
+        const uint32_t *a = w + i + 1;
+        if (op == OP_LOAD && len >= 4 && a[2] == shadow_var && a[1] < bound) shadow_load[a[1]] = 1;
+        if (op == OP_SAMPLE_DREF_EXPLICIT && len >= 6 && a[0] == f32 && a[2] < bound && shadow_load[a[2]]) found++;
+        i += len;
+    }
+    if (!found) goto out;
+    {   // TOTK_RT_LIGHT_SPV_DUMP=<dir> (debug): the original SPIR-V of each lighting shader patched, for offline study
+        static volatile int32_t n_dump;
+        const char *dd = cfg_get("TOTK_RT_LIGHT_SPV_DUMP");
+        if (dd && *dd) {
+            char fn[512];
+            snprintf(fn, sizeof fn, "%s/light_%02d_%d.spv", dd, (int)plat_inc32(&n_dump), found);
+            FILE *df = fopen(fn, "wb");
+            if (df) fwrite(w, 4, (size_t)n, df), fclose(df);
+        }
+    }
+    uint32_t binding = 1;   // one past the highest binding the shader uses (0 is the support buffer)
+    for (int kd = 0; kd < GFX_RES_KINDS; kd++)
+        for (int r = 0; r < s->nres[kd]; r++) {
+            uint32_t e = s->res[kd][r].binding + (s->res[kd][r].count ? s->res[kd][r].count : 1);
+            if (e > binding) binding = e;
+        }
+    GfxShaderRes *nr = realloc(s->res[GFX_RES_TEX], (size_t)(s->nres[GFX_RES_TEX] + 1) * sizeof *nr);
+    if (!nr) goto out;
+    s->res[GFX_RES_TEX] = nr;
+    o = malloc((n + 64 + (uint64_t)found * 72) * sizeof *o);
+    if (!o) goto out;
+    uint32_t next = w[3], var = next++;
+    uint32_t new_v2f = 0, new_v2i = 0, new_c0 = 0, new_img = 0, new_simg = 0, new_puc = 0, new_pin = 0, new_fc = 0;
+    if (!v2f) v2f = new_v2f = next++;
+    if (!v2i) v2i = new_v2i = next++;
+    if (!c0) c0 = new_c0 = next++;
+    if (!img2d) img2d = new_img = next++;
+    if (!simg2d) simg2d = new_simg = next++;
+    if (!puc) puc = new_puc = next++;
+    if (!fc) {
+        fc = new_fc = next++;
+        if (!pin) pin = new_pin = next++;
+    }
+    uint64_t k = 0;
+    for (uint64_t i = 0; i < 5; i++) o[k++] = w[i];
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        const uint32_t *a = w + i + 1;
+        if (i == dec_at) {
+            o[k++] = 4u << 16 | OP_DECORATE, o[k++] = var, o[k++] = DEC_SET, o[k++] = set;
+            o[k++] = 4u << 16 | OP_DECORATE, o[k++] = var, o[k++] = DEC_BINDING, o[k++] = binding;
+            if (new_fc) o[k++] = 4u << 16 | OP_DECORATE, o[k++] = fc, o[k++] = DEC_BUILTIN, o[k++] = BI_FRAG_COORD;
+        }
+        if (i == fn_at) {
+            if (new_v2f) o[k++] = 4u << 16 | OP_TYPE_VECTOR, o[k++] = v2f, o[k++] = f32, o[k++] = 2;
+            if (new_v2i) o[k++] = 4u << 16 | OP_TYPE_VECTOR, o[k++] = v2i, o[k++] = i32, o[k++] = 2;
+            if (new_c0) o[k++] = 4u << 16 | OP_CONSTANT, o[k++] = i32, o[k++] = c0, o[k++] = 0;
+            if (new_img)
+                o[k++] = 9u << 16 | OP_TYPE_IMAGE, o[k++] = img2d, o[k++] = f32, o[k++] = 1, o[k++] = 0, o[k++] = 0,
+                o[k++] = 0, o[k++] = 1, o[k++] = 0;
+            if (new_simg) o[k++] = 3u << 16 | OP_TYPE_SAMPLED_IMAGE, o[k++] = simg2d, o[k++] = img2d;
+            if (new_puc) o[k++] = 4u << 16 | OP_TYPE_POINTER, o[k++] = puc, o[k++] = SC_UNIFORM_CONSTANT, o[k++] = simg2d;
+            o[k++] = 4u << 16 | OP_VARIABLE, o[k++] = puc, o[k++] = var, o[k++] = SC_UNIFORM_CONSTANT;
+            if (new_pin) o[k++] = 4u << 16 | OP_TYPE_POINTER, o[k++] = pin, o[k++] = SC_INPUT, o[k++] = v4f;
+            if (new_fc) o[k++] = 4u << 16 | OP_VARIABLE, o[k++] = pin, o[k++] = fc, o[k++] = SC_INPUT;
+        }
+        if (op == OP_ENTRY_POINT && new_fc) {   // the interface lists the new input (SPIR-V 1.3: inputs and outputs)
+            o[k++] = (len + 1) << 16 | op;
+            for (uint32_t j = 1; j < len; j++) o[k++] = w[i + j];
+            o[k++] = fc;
+        } else if (i > fn_at && op == OP_SAMPLE_DREF_EXPLICIT && len >= 6 && a[0] == f32 && a[2] < bound && shadow_load[a[2]]) {
+            uint32_t r = a[1], rn = next++, fcv = next++, fxy = next++, ic = next++, si = next++, im = next++, t = next++,
+                     V = next++, G = next++, B = next++, mn = next++, x = next++;
+            for (uint32_t j = 0; j < len; j++) o[k++] = w[i + j];
+            o[k - len + 2] = rn;   // the compare gets a new id; its old one becomes the mixed result, so its uses stay
+            o[k++] = 4u << 16 | OP_LOAD, o[k++] = v4f, o[k++] = fcv, o[k++] = fc;
+            o[k++] = 7u << 16 | OP_VECTOR_SHUFFLE, o[k++] = v2f, o[k++] = fxy, o[k++] = fcv, o[k++] = fcv, o[k++] = 0, o[k++] = 1;
+            o[k++] = 4u << 16 | OP_CONVERT_F_TO_S, o[k++] = v2i, o[k++] = ic, o[k++] = fxy;
+            o[k++] = 4u << 16 | OP_LOAD, o[k++] = simg2d, o[k++] = si, o[k++] = var;
+            o[k++] = 4u << 16 | OP_IMAGE, o[k++] = img2d, o[k++] = im, o[k++] = si;
+            o[k++] = 7u << 16 | OP_IMAGE_FETCH, o[k++] = v4f, o[k++] = t, o[k++] = im, o[k++] = ic, o[k++] = IO_LOD, o[k++] = c0;
+            o[k++] = 5u << 16 | OP_COMPOSITE_EXTRACT, o[k++] = f32, o[k++] = V, o[k++] = t, o[k++] = 0;
+            o[k++] = 5u << 16 | OP_COMPOSITE_EXTRACT, o[k++] = f32, o[k++] = G, o[k++] = t, o[k++] = 1;
+            o[k++] = 5u << 16 | OP_COMPOSITE_EXTRACT, o[k++] = f32, o[k++] = B, o[k++] = t, o[k++] = 2;
+            o[k++] = 7u << 16 | OP_EXT_INST, o[k++] = f32, o[k++] = mn, o[k++] = glsl, o[k++] = GLSL_FMIN, o[k++] = V, o[k++] = rn;
+            o[k++] = 8u << 16 | OP_EXT_INST, o[k++] = f32, o[k++] = x, o[k++] = glsl, o[k++] = GLSL_FMIX, o[k++] = V, o[k++] = mn, o[k++] = G;
+            o[k++] = 8u << 16 | OP_EXT_INST, o[k++] = f32, o[k++] = r, o[k++] = glsl, o[k++] = GLSL_FMIX, o[k++] = rn, o[k++] = x, o[k++] = B;
+        } else {
+            for (uint32_t j = 0; j < len; j++) o[k++] = w[i + j];
+        }
+        i += len;
+    }
+    o[3] = next;
+    free(s->spirv);
+    s->spirv = o, s->words = k, o = NULL;
+    nr[s->nres[GFX_RES_TEX]++] = (GfxShaderRes){.set = 0, .binding = (uint16_t)binding, .slot = -1, .type = 3,
+                                                 .flags = GFX_RES_RT_SHADOW, .cbuf_slot = -1, .count = 1};
+    if (plat_inc32(&n_logged) <= 20)
+        rt_log("gfx_shader: a lighting shader's %d sun shadow compares read the ray-traced shadow (binding %u%s)", found,
+               binding, new_fc ? ", gl_FragCoord added" : "");
+out:
+    free(pointee), free(simg_of), free(arr_depth), free(shadow_load), free(o);
+}
+
+// Ray-traced shadows of the game's local lights (vk_rt.c, TOTK_RT_LIGHTS=1). The game draws each point light as a
+// volume into the half-resolution light buffer (frame dump: one draw per light, a fragment shader writing diffuse and
+// specular), and looks its shadow up in a cube map of its own, which in TotK is a 3x3 placeholder: the light goes
+// through walls. The shader holds, in function variables, the pixel's world position (each component a row of the
+// view-to-world matrix applied to the view position, plus that row's .w) and the vector from the light to the pixel in
+// world space (the same rows without .w), which it divides by its largest component for the cube lookup
+//     texture(cube, vec3(Lx, Ly, Lz) * (1 / max(|Lx|, |Ly|, |Lz|))).
+// This finds those variables from the cube lookup and, after they are written, traces one ray query from the pixel
+// toward the light against vk_rt.c's scene (an acceleration structure at a new binding, flag GFX_RES_RT_TLAS, which the
+// replay binds; a null descriptor while ray-traced light shadows are off, so every ray misses), stopping short of the
+// light by skip = max(skip_abs, skip_rel x distance) so the lamp's own housing does not shadow it. Every store to the
+// colour outputs at Locations 0 and 1 is multiplied by the result (0 or 1). Applied to the SPIR-V after it is loaded.
+enum { OP_EXTENSION = 10, OP_CAPABILITY = 17, OP_TYPE_BOOL = 20, OP_CONSTANT_ = 43, OP_STORE = 62, OP_ACCESS_CHAIN = 65,
+       OP_IN_BOUNDS_AC = 66, OP_SAMPLE_IMPLICIT = 87, OP_FNEGATE = 127, OP_FADD = 129, OP_FSUB = 131, OP_FMUL = 133,
+       OP_FDIV = 136, OP_VECTOR_TIMES_SCALAR = 142, OP_SELECT = 169, OP_INOTEQUAL = 171, OP_TYPE_AS = 5341,
+       OP_TYPE_RQ = 4472, OP_RQ_INIT = 4473, OP_RQ_PROCEED = 4477, OP_RQ_ITYPE = 4479, CAP_RAY_QUERY = 4472,
+       SC_UNIFORM = 2, SC_PRIVATE = 6, SC_FUNCTION = 7, GLSL_FMAX = 40, GLSL_LENGTH = 66, DIM_CUBE = 3,
+       OP_COPY_OBJECT_ = 83, OP_FORD_GT_ = 186, OP_SELECTION_MERGE_ = 247, OP_LABEL_ = 248, OP_BRANCH_ = 249,
+       OP_BRANCH_COND_ = 250, OP_RETURN_ = 253 };
+
+typedef struct {
+    const uint32_t *w;
+    uint64_t n;
+    uint32_t bound;
+    uint64_t *def;        // word index of the instruction defining each id (function section)
+    uint8_t *sc;          // storage class + 1 of each variable, 0: not a variable
+    uint32_t *nstore, *store;   // stores to each Private/Function variable: count, the last value
+    uint32_t *cval;       // OpConstant value + its presence in has_c
+    uint8_t *has_c;
+} LMod;
+
+static const uint32_t *lm_def(const LMod *m, uint32_t id, uint32_t op) {
+    if (id >= m->bound || !m->def[id]) return NULL;
+    const uint32_t *p = m->w + m->def[id];
+    return (p[0] & 0xffff) == op ? p : NULL;
+}
+
+// The variable a value was loaded from, when it is a Private or Function variable; else 0.
+static uint32_t lm_loaded_var(const LMod *m, uint32_t id) {
+    const uint32_t *p = lm_def(m, id, OP_LOAD);
+    if (!p || p[3] >= m->bound) return 0;
+    uint8_t sc = m->sc[p[3]];
+    return sc == SC_PRIVATE + 1 || sc == SC_FUNCTION + 1 ? p[3] : 0;
+}
+
+// A load of uniform[0][row][comp]: the uniform block variable, its row and component; 0: not one.
+static uint32_t lm_urow(const LMod *m, uint32_t id, uint32_t *row, uint32_t *comp) {
+    const uint32_t *p = lm_def(m, id, OP_LOAD);
+    if (!p || p[3] >= m->bound || !m->def[p[3]]) return 0;
+    const uint32_t *ac = m->w + m->def[p[3]];
+    uint32_t op = ac[0] & 0xffff, len = ac[0] >> 16;
+    if ((op != OP_ACCESS_CHAIN && op != OP_IN_BOUNDS_AC) || len != 7 || ac[3] >= m->bound || m->sc[ac[3]] != SC_UNIFORM + 1)
+        return 0;
+    for (int i = 4; i < 7; i++)
+        if (ac[i] >= m->bound || !m->has_c[ac[i]]) return 0;
+    *row = m->cval[ac[5]], *comp = m->cval[ac[6]];
+    return ac[3];
+}
+
+// The rows of uniform block reads (components x, y, z) in an arithmetic expression; -1 none, -2 several.
+static void lm_rows(const LMod *m, uint32_t id, int depth, uint32_t *blk, int64_t *row) {
+    uint32_t r, c, b;
+    if (depth > 12 || id >= m->bound) return;
+    if ((b = lm_urow(m, id, &r, &c))) {
+        if (c >= 3) return;
+        if (*row == -1) *blk = b, *row = r;
+        else if (*blk != b || *row != (int64_t)r) *row = -2;
+        return;
+    }
+    if (!m->def[id]) return;
+    const uint32_t *p = m->w + m->def[id];
+    uint32_t op = p[0] & 0xffff, len = p[0] >> 16;
+    if (op == OP_FMUL || op == OP_FADD || op == OP_FSUB) lm_rows(m, p[3], depth + 1, blk, row), lm_rows(m, p[4], depth + 1, blk, row);
+    else if (op == OP_FNEGATE) lm_rows(m, p[3], depth + 1, blk, row);
+    else if (op == OP_EXT_INST)
+        for (uint32_t i = 5; i < len; i++) lm_rows(m, p[i], depth + 1, blk, row);
+}
+
+static void patch_rt_lights(GfxShader *s) {
+    static int on = -1;
+    static float skip_abs = 0.25f, skip_rel = 0.08f, bias = 0.05f;
+    static int debug;
+    static volatile int32_t n_logged;
+    if (on < 0) {
+        on = vk_rt_light_patch_wanted();
+        const char *e = cfg_get("TOTK_RT_LIGHT_SKIP");   // "abs,rel": how far short of the light the ray stops
+        if (e && *e) sscanf(e, "%f,%f", &skip_abs, &skip_rel);
+        e = cfg_get("TOTK_RT_LIGHT_BIAS");   // metres the ray starts off the surface
+        if (e && *e) bias = (float)atof(e);
+        e = cfg_get("TOTK_RT_LIGHT_DEBUG");   // (debug) 1: only the light the rays found blocked is drawn
+        debug = e && *e ? atoi(e) : 0;   // 2: no local light at all (how much the volumes add)
+    }
+    const uint32_t *w = s->spirv;
+    uint64_t n = s->words;
+    if (!on || n < 5 || s->stage != GFX_STAGE_FS || !(s->out_mask & 3)) return;
+    LMod m = {w, n, w[3] < (1u << 20) ? w[3] : (1u << 20)};
+    uint32_t bound = m.bound;
+    uint32_t *ptr_sc = calloc(bound, 4), *ptr_to = calloc(bound, 4), *var_type = calloc(bound, 4), *img_dim = calloc(bound, 4),
+             *simg_of = calloc(bound, 4), *loc = calloc(bound, 4);
+    m.def = calloc(bound, 8), m.sc = calloc(bound, 1), m.nstore = calloc(bound, 4), m.store = calloc(bound, 4),
+    m.cval = calloc(bound, 4), m.has_c = calloc(bound, 1);
+    uint64_t *last_store = calloc(bound, 8);
+    uint8_t *is_type = calloc(bound, 1);
+    uint32_t *o = NULL;
+    if (!ptr_sc || !ptr_to || !var_type || !img_dim || !simg_of || !loc || !m.def || !m.sc || !m.nstore || !m.store ||
+        !m.cval || !m.has_c || !last_store || !is_type)
+        goto out;
+    uint32_t f32 = 0, u32 = 0, bool_t = 0, v3f = 0, glsl = 0, set = 0, has_set = 0;
+    uint64_t fn_at = 0, dec_at = 0, cap_end = 0;
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (!len || i + len > n) goto out;
+        const uint32_t *a = w + i + 1;
+        if (op == OP_CAPABILITY) cap_end = i + len;
+        if (((op >= 19 && op <= 39) || op == 322) && a[0] < bound) is_type[a[0]] = 1;
+        if (op == OP_FUNCTION && !fn_at) fn_at = i;
+        if (!fn_at) {
+            if ((op >= OP_DECORATE && op <= 75) || op == OP_DECORATE_ID) dec_at = i + len;
+            if (op == OP_EXT_INST_IMPORT && len >= 3 && !strncmp((const char *)(a + 1), "GLSL.std.450", (len - 2) * 4)) glsl = a[0];
+            else if (op == OP_TYPE_FLOAT && len == 3 && a[1] == 32) f32 = a[0];
+            else if (op == OP_TYPE_INT && len == 4 && a[1] == 32 && a[2] == 0) u32 = a[0];
+            else if (op == OP_TYPE_BOOL && len == 2) bool_t = a[0];
+            else if (op == OP_TYPE_VECTOR && len == 4 && f32 && a[1] == f32 && a[2] == 3) v3f = a[0];
+            else if (op == OP_CONSTANT_ && len == 4 && a[1] < bound) m.cval[a[1]] = a[2], m.has_c[a[1]] = 1;
+            else if (op == OP_TYPE_IMAGE && len >= 9 && a[0] < bound) img_dim[a[0]] = a[2] + 1;
+            else if (op == OP_TYPE_SAMPLED_IMAGE && len == 3 && a[0] < bound) simg_of[a[0]] = a[1];
+            else if (op == OP_TYPE_POINTER && len == 4 && a[0] < bound) ptr_sc[a[0]] = a[1] + 1, ptr_to[a[0]] = a[2];
+            else if (op == OP_DECORATE && len == 4 && a[1] == DEC_SET && !has_set) set = a[2], has_set = 1;
+            else if (op == OP_DECORATE && len == 4 && a[1] == DEC_LOCATION && a[0] < bound) loc[a[0]] = a[2] + 1;
+            if (op == OP_TYPE_AS || op == OP_TYPE_RQ) goto out;   // already has ray queries: leave it
+        }
+        if (op == OP_VARIABLE && len >= 4 && a[1] < bound) m.sc[a[1]] = (uint8_t)(a[2] + 1), var_type[a[1]] = a[0], m.def[a[1]] = i;
+        else if (fn_at && op == OP_STORE && len >= 3 && a[0] < bound) m.nstore[a[0]]++, m.store[a[0]] = a[1], last_store[a[0]] = i;
+        else if (fn_at && len >= 3 && a[0] < bound && is_type[a[0]] && a[1] < bound && op != OP_FUNCTION) m.def[a[1]] = i;
+        i += len;
+    }
+    if (!f32 || !glsl || !fn_at || !dec_at || !cap_end) goto out;
+    // the cube lookup: a sample of a cube texture at Select(IsNan(c), _, c) or c, c = (Lx * S, Ly * S, Lz * S)
+    uint32_t V[3] = {0}, W[3] = {0}, S = 0;
+    int found = 0;
+    for (uint64_t i = fn_at; i < n && !found;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        const uint32_t *a = w + i + 1;
+        i += len;
+        if (op != OP_SAMPLE_IMPLICIT && op != OP_SAMPLE_EXPLICIT) continue;
+        const uint32_t *ld = lm_def(&m, a[2], OP_LOAD);
+        if (!ld || ld[3] >= bound || m.sc[ld[3]] != SC_UNIFORM_CONSTANT + 1) continue;
+        uint32_t pt = var_type[ld[3]], st = pt < bound ? ptr_to[pt] : 0, im = st < bound ? simg_of[st] : 0;
+        if (!im || im >= bound || img_dim[im] != DIM_CUBE + 1) continue;
+        const uint32_t *cc = lm_def(&m, a[3], OP_SELECT);
+        if (cc) {
+            const uint32_t *x = lm_def(&m, cc[4], OP_COMPOSITE_CONSTRUCT), *y = lm_def(&m, cc[5], OP_COMPOSITE_CONSTRUCT);
+            cc = y ? y : x;
+        } else {
+            cc = lm_def(&m, a[3], OP_COMPOSITE_CONSTRUCT);
+        }
+        if (!cc || (cc[0] >> 16) < 6) continue;
+        int ok = 1;
+        for (int k = 0; k < 3 && ok; k++) {
+            const uint32_t *mul = lm_def(&m, cc[3 + k], OP_FMUL);
+            uint32_t v0 = mul ? lm_loaded_var(&m, mul[3]) : 0, v1 = mul ? lm_loaded_var(&m, mul[4]) : 0;
+            if (!v0 || !v1 || (S && v1 != S)) ok = 0;
+            else V[k] = v0, S = v1;
+        }
+        if (!ok) { S = 0; continue; }
+        // S = 1 / max(|Lx|, |Ly|, |Lz|): the hand-made cube face normalisation that marks a light's shadow lookup
+        const uint32_t *dv = m.nstore[S] == 1 ? lm_def(&m, m.store[S], OP_FDIV) : NULL;
+        if (!dv || dv[3] >= bound || !m.has_c[dv[3]] || m.cval[dv[3]] != 0x3f800000u) { S = 0; continue; }
+        // each L component: one row of a uniform block (x, y, z); the world position: a variable stored row . p + row.w
+        uint32_t blk = 0;
+        int64_t rows[3];
+        for (int k = 0; k < 3 && ok; k++) {
+            uint32_t b = 0;
+            rows[k] = -1;
+            if (m.nstore[V[k]] != 1) { ok = 0; break; }
+            lm_rows(&m, m.store[V[k]], 0, &b, &rows[k]);
+            if (rows[k] < 0 || (blk && b != blk)) ok = 0;
+            blk = b;
+        }
+        if (!ok) { S = 0; continue; }
+        memset(W, 0, sizeof W);
+        for (uint32_t v = 0; v < bound; v++) {
+            if ((m.sc[v] != SC_PRIVATE + 1 && m.sc[v] != SC_FUNCTION + 1) || m.nstore[v] != 1) continue;
+            const uint32_t *ad = lm_def(&m, m.store[v], OP_FADD);
+            if (!ad) continue;
+            for (int t = 0; t < 2; t++) {
+                uint32_t r, c, b = lm_urow(&m, ad[3 + t], &r, &c);
+                if (b == blk && c == 3)
+                    for (int k = 0; k < 3; k++)
+                        if (rows[k] == (int64_t)r) W[k] = v;
+            }
+        }
+        if (W[0] && W[1] && W[2]) found = 1;
+        else S = 0;
+    }
+    if (!found) goto out;
+    // the colour outputs at Locations 0 and 1 (diffuse and specular light) and the return after their last store,
+    // where the shadow goes: traced only where the light added something
+    uint32_t outv[2] = {0}, outt[2] = {0};
+    uint64_t last_out = 0, ret_at = 0;
+    for (uint32_t v = 0; v < bound; v++)
+        if (m.sc[v] == SC_OUTPUT + 1 && (loc[v] == 1 || loc[v] == 2)) {
+            uint32_t ty = var_type[v] < bound ? ptr_to[var_type[v]] : 0;
+            outv[loc[v] - 1] = v, outt[loc[v] - 1] = ty;
+        }
+    if (!outv[0] || !outt[0]) goto out;
+    for (uint64_t i = fn_at; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        const uint32_t *a = w + i + 1;
+        if (op == OP_STORE && len >= 3) {
+            uint32_t ov = a[0] < bound && m.sc[a[0]] == SC_OUTPUT + 1 ? a[0] : 0;
+            const uint32_t *ac = !ov && a[0] < bound && m.def[a[0]] ? w + m.def[a[0]] : NULL;
+            if (ac && ((ac[0] & 0xffff) == OP_ACCESS_CHAIN || (ac[0] & 0xffff) == OP_IN_BOUNDS_AC) && ac[3] < bound)
+                ov = ac[3];
+            if (ov && (ov == outv[0] || ov == outv[1])) last_out = i;
+        }
+        if (op == OP_RETURN_ && last_out && !ret_at && i > last_out) ret_at = i;
+        i += len;
+    }
+    if (!ret_at) goto out;
+    uint32_t binding = 1;   // one past the highest binding the shader uses
+    for (int kd = 0; kd < GFX_RES_KINDS; kd++)
+        for (int r = 0; r < s->nres[kd]; r++) {
+            uint32_t e = s->res[kd][r].binding + (s->res[kd][r].count ? s->res[kd][r].count : 1);
+            if (e > binding) binding = e;
+        }
+    GfxShaderRes *nr = realloc(s->res[GFX_RES_TEX], (size_t)(s->nres[GFX_RES_TEX] + 1) * sizeof *nr);
+    if (!nr) goto out;
+    s->res[GFX_RES_TEX] = nr;
+    o = malloc((2 * n + 4096) * sizeof *o);   // each patched store grows by 9 words; a store is 3 or more
+    if (!o) goto out;
+    uint32_t next = w[3];
+    uint32_t t_as = next++, t_rq = next++, p_as = next++, p_rq = next++, p_f = next++, v_as = next++, v_rq = next++,
+             c_one = next++, c_zero = next++, c_skip_abs = next++, c_skip_rel = next++, c_bias = next++,
+             c_tmin = next++, c_flags = next++, c_mask = next++, c_committed = next++, c_u0 = next++, c_eps = next++,
+             c_tminmax = next++, c_thr = next++;
+    uint32_t new_u32 = 0, new_bool = 0, new_v3f = 0;
+    if (!u32) u32 = new_u32 = next++;
+    if (!bool_t) bool_t = new_bool = next++;
+    if (!v3f) v3f = new_v3f = next++;
+    // existing Private float pointer type, else a new one
+    uint32_t pf_old = 0;
+    for (uint32_t t = 0; t < bound; t++)
+        if (ptr_sc[t] == SC_PRIVATE + 1 && ptr_to[t] == f32) { pf_old = t; break; }
+    if (pf_old) p_f = pf_old;
+    uint64_t k = 0;
+    static const char ext[] = "SPV_KHR_ray_query";   // 18 bytes with the terminator: 5 words
+    for (uint64_t i = 0; i < 5; i++) o[k++] = w[i];
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (i == cap_end) {
+            o[k++] = 2u << 16 | OP_CAPABILITY, o[k++] = CAP_RAY_QUERY;
+            o[k++] = 6u << 16 | OP_EXTENSION;
+            memset(o + k, 0, 5 * 4), memcpy(o + k, ext, sizeof ext), k += 5;
+        }
+        if (i == dec_at) {
+            o[k++] = 4u << 16 | OP_DECORATE, o[k++] = v_as, o[k++] = DEC_SET, o[k++] = set;
+            o[k++] = 4u << 16 | OP_DECORATE, o[k++] = v_as, o[k++] = DEC_BINDING, o[k++] = binding;
+        }
+        if (i == fn_at) {
+            if (new_u32) o[k++] = 4u << 16 | OP_TYPE_INT, o[k++] = u32, o[k++] = 32, o[k++] = 0;
+            if (new_bool) o[k++] = 2u << 16 | OP_TYPE_BOOL, o[k++] = bool_t;
+            if (new_v3f) o[k++] = 4u << 16 | OP_TYPE_VECTOR, o[k++] = v3f, o[k++] = f32, o[k++] = 3;
+            o[k++] = 2u << 16 | OP_TYPE_AS, o[k++] = t_as;
+            o[k++] = 2u << 16 | OP_TYPE_RQ, o[k++] = t_rq;
+            o[k++] = 4u << 16 | OP_TYPE_POINTER, o[k++] = p_as, o[k++] = SC_UNIFORM_CONSTANT, o[k++] = t_as;
+            o[k++] = 4u << 16 | OP_TYPE_POINTER, o[k++] = p_rq, o[k++] = SC_PRIVATE, o[k++] = t_rq;
+            if (!pf_old) o[k++] = 4u << 16 | OP_TYPE_POINTER, o[k++] = p_f, o[k++] = SC_PRIVATE, o[k++] = f32;
+            float fv[9] = {1.0f, 0.0f, skip_abs, skip_rel, bias, 0.01f, 1e-4f, 0.02f, 1e-3f};
+            uint32_t fid[9] = {c_one, c_zero, c_skip_abs, c_skip_rel, c_bias, c_tmin, c_eps, c_tminmax, c_thr};
+            for (int q = 0; q < 9; q++) {
+                uint32_t bits;
+                memcpy(&bits, &fv[q], 4);
+                o[k++] = 4u << 16 | OP_CONSTANT_, o[k++] = f32, o[k++] = fid[q], o[k++] = bits;
+            }
+            o[k++] = 4u << 16 | OP_CONSTANT_, o[k++] = u32, o[k++] = c_flags, o[k++] = 1u | 4u;   // opaque, first hit ends
+            o[k++] = 4u << 16 | OP_CONSTANT_, o[k++] = u32, o[k++] = c_mask, o[k++] = 0x01u;    // the captured scene
+            o[k++] = 4u << 16 | OP_CONSTANT_, o[k++] = u32, o[k++] = c_committed, o[k++] = 1u;
+            o[k++] = 4u << 16 | OP_CONSTANT_, o[k++] = u32, o[k++] = c_u0, o[k++] = 0u;
+            o[k++] = 4u << 16 | OP_VARIABLE, o[k++] = p_as, o[k++] = v_as, o[k++] = SC_UNIFORM_CONSTANT;
+            o[k++] = 4u << 16 | OP_VARIABLE, o[k++] = p_rq, o[k++] = v_rq, o[k++] = SC_PRIVATE;
+        }
+        if (op == OP_ENTRY_POINT && w[1] >= 0x00010400u) {   // SPIR-V 1.4: the interface lists every global used
+            o[k++] = (len + 2) << 16 | op;
+            for (uint32_t j = 1; j < len; j++) o[k++] = w[i + j];
+            o[k++] = v_as, o[k++] = v_rq;
+        } else if (i == ret_at) {   // before the return: the outputs' light, traced where there is any
+            uint32_t ov[2], ex[6], mx[6], cond = next++, lt = next++, merge = next++;
+            int no = outv[1] && outt[1] ? 2 : 1, ne = 0;
+            for (int q = 0; q < no; q++) {
+                ov[q] = next++;
+                o[k++] = 4u << 16 | OP_LOAD, o[k++] = outt[q], o[k++] = ov[q], o[k++] = outv[q];
+                for (int c = 0; c < 3; c++) {
+                    ex[ne] = next++;
+                    o[k++] = 5u << 16 | OP_COMPOSITE_EXTRACT, o[k++] = f32, o[k++] = ex[ne], o[k++] = ov[q], o[k++] = (uint32_t)c;
+                    ne++;
+                }
+            }
+            mx[0] = ex[0];
+            for (int q = 1; q < ne; q++) {
+                mx[q] = next++;
+                o[k++] = 7u << 16 | OP_EXT_INST, o[k++] = f32, o[k++] = mx[q], o[k++] = glsl, o[k++] = GLSL_FMAX, o[k++] = mx[q - 1], o[k++] = ex[q];
+            }
+            o[k++] = 5u << 16 | OP_FORD_GT_, o[k++] = bool_t, o[k++] = cond, o[k++] = mx[ne - 1], o[k++] = c_thr;
+            o[k++] = 3u << 16 | OP_SELECTION_MERGE_, o[k++] = merge, o[k++] = 0;
+            o[k++] = 4u << 16 | OP_BRANCH_COND_, o[k++] = cond, o[k++] = lt, o[k++] = merge;
+            o[k++] = 2u << 16 | OP_LABEL_, o[k++] = lt;
+            uint32_t l[3], p[3], L = next++, P = next++, d = next++, dm = next++, inv = next++, dir0 = next++,
+                     dir = next++, ofs = next++, org = next++, sk0 = next++, sk = next++, tm0 = next++, tmax = next++,
+                     asl = next++, pr = next++, ty = next++, hit = next++, vis = next++;
+            for (int q = 0; q < 3; q++) {
+                l[q] = next++, p[q] = next++;
+                o[k++] = 4u << 16 | OP_LOAD, o[k++] = f32, o[k++] = l[q], o[k++] = V[q];
+                o[k++] = 4u << 16 | OP_LOAD, o[k++] = f32, o[k++] = p[q], o[k++] = W[q];
+            }
+            o[k++] = 6u << 16 | OP_COMPOSITE_CONSTRUCT, o[k++] = v3f, o[k++] = L, o[k++] = l[0], o[k++] = l[1], o[k++] = l[2];
+            o[k++] = 6u << 16 | OP_COMPOSITE_CONSTRUCT, o[k++] = v3f, o[k++] = P, o[k++] = p[0], o[k++] = p[1], o[k++] = p[2];
+            o[k++] = 6u << 16 | OP_EXT_INST, o[k++] = f32, o[k++] = d, o[k++] = glsl, o[k++] = GLSL_LENGTH, o[k++] = L;
+            o[k++] = 7u << 16 | OP_EXT_INST, o[k++] = f32, o[k++] = dm, o[k++] = glsl, o[k++] = GLSL_FMAX, o[k++] = d, o[k++] = c_eps;
+            o[k++] = 5u << 16 | OP_FDIV, o[k++] = f32, o[k++] = inv, o[k++] = c_one, o[k++] = dm;
+            // toward the light: -L / |L| (L runs from the light to the pixel)
+            o[k++] = 5u << 16 | OP_VECTOR_TIMES_SCALAR, o[k++] = v3f, o[k++] = dir0, o[k++] = L, o[k++] = inv;
+            if (debug == 4) o[k++] = 4u << 16 | OP_COPY_OBJECT_, o[k++] = v3f, o[k++] = dir, o[k++] = dir0;   // (debug) away
+            else o[k++] = 4u << 16 | OP_FNEGATE, o[k++] = v3f, o[k++] = dir, o[k++] = dir0;
+            o[k++] = 5u << 16 | OP_VECTOR_TIMES_SCALAR, o[k++] = v3f, o[k++] = ofs, o[k++] = dir, o[k++] = c_bias;
+            o[k++] = 5u << 16 | OP_FADD, o[k++] = v3f, o[k++] = org, o[k++] = P, o[k++] = ofs;
+            o[k++] = 5u << 16 | OP_FMUL, o[k++] = f32, o[k++] = sk0, o[k++] = d, o[k++] = c_skip_rel;
+            o[k++] = 7u << 16 | OP_EXT_INST, o[k++] = f32, o[k++] = sk, o[k++] = glsl, o[k++] = GLSL_FMAX, o[k++] = sk0, o[k++] = c_skip_abs;
+            o[k++] = 5u << 16 | OP_FSUB, o[k++] = f32, o[k++] = tm0, o[k++] = d, o[k++] = sk;
+            o[k++] = 7u << 16 | OP_EXT_INST, o[k++] = f32, o[k++] = tmax, o[k++] = glsl, o[k++] = GLSL_FMAX, o[k++] = tm0, o[k++] = c_tminmax;
+            o[k++] = 4u << 16 | OP_LOAD, o[k++] = t_as, o[k++] = asl, o[k++] = v_as;
+            o[k++] = 9u << 16 | OP_RQ_INIT, o[k++] = v_rq, o[k++] = asl, o[k++] = c_flags, o[k++] = c_mask, o[k++] = org,
+            o[k++] = c_tmin, o[k++] = dir, o[k++] = tmax;
+            o[k++] = 4u << 16 | OP_RQ_PROCEED, o[k++] = bool_t, o[k++] = pr, o[k++] = v_rq;
+            o[k++] = 5u << 16 | OP_RQ_ITYPE, o[k++] = u32, o[k++] = ty, o[k++] = v_rq, o[k++] = c_committed;
+            o[k++] = 5u << 16 | OP_INOTEQUAL, o[k++] = bool_t, o[k++] = hit, o[k++] = ty, o[k++] = c_u0;
+            o[k++] = 6u << 16 | OP_SELECT, o[k++] = f32, o[k++] = vis, o[k++] = hit, o[k++] = debug == 1 || debug == 5 ? c_one : c_zero,
+            o[k++] = debug && debug != 4 && debug != 5 ? c_zero : c_one;   // (debug) 5: always lit, the trace unused
+            for (int q = 0; q < no; q++) {
+                uint32_t nv = next++;
+                o[k++] = 5u << 16 | OP_VECTOR_TIMES_SCALAR, o[k++] = outt[q], o[k++] = nv, o[k++] = ov[q], o[k++] = vis;
+                o[k++] = 3u << 16 | OP_STORE, o[k++] = outv[q], o[k++] = nv;
+            }
+            o[k++] = 2u << 16 | OP_BRANCH_, o[k++] = merge;
+            o[k++] = 2u << 16 | OP_LABEL_, o[k++] = merge;
+            for (uint32_t j = 0; j < len; j++) o[k++] = w[i + j];   // the return
+        } else {
+            for (uint32_t j = 0; j < len; j++) o[k++] = w[i + j];
+        }
+        i += len;
+    }
+    o[3] = next;
+    free(s->spirv);
+    s->spirv = o, s->words = k, o = NULL;
+    nr[s->nres[GFX_RES_TEX]++] = (GfxShaderRes){.set = 0, .binding = (uint16_t)binding, .slot = -1, .type = 3,
+                                                 .flags = GFX_RES_RT_TLAS, .cbuf_slot = -1, .count = 1};
+    if (plat_inc32(&n_logged) <= 20)
+        rt_log("gfx_shader: a light shader traces its shadow (binding %u, %d outputs, skip %.2f m / %.0f%%)", binding,
+               outv[1] && outt[1] ? 2 : 1, (double)skip_abs, (double)(skip_rel * 100.0f));
+out:
+    free(ptr_sc), free(ptr_to), free(var_type), free(img_dim), free(simg_of), free(loc), free(m.def), free(m.sc),
+        free(m.nstore), free(m.store), free(m.cval), free(m.has_c), free(last_store), free(is_type), free(o);
+}
+
 static void reflect(GfxShader *s) {
     static const char *const kinds[GFX_RES_KINDS] = {"cbufs", "sbufs", "textures", "images"};
     const char *js = s->reflection;
@@ -855,6 +1393,8 @@ static void reflect(GfxShader *s) {
     }
     reflect_spirv(s);
     patch_txd_transpose(s);
+    patch_rt_shadow(s);
+    patch_rt_lights(s);
 }
 
 // ---- use masks (see the cache key at the top)
@@ -1725,6 +2265,81 @@ const uint32_t *gfx_shader_spirv(const GfxShader *s, uint64_t *words) {
 }
 
 int gfx_shader_stage(const GfxShader *s) { return s->stage; }
+
+const GfxAlbedo *gfx_shader_albedo(const GfxShader *s) {
+    static PlatMutex lock = PLAT_MUTEX_INIT;
+    GfxShader *m = (GfxShader *)s;
+    if (__atomic_load_n(&m->albedo_done, __ATOMIC_ACQUIRE)) return &m->albedo;
+    plat_mutex_lock(&lock);
+    if (!m->albedo_done) {
+        GfxAlbedo a;
+        if (s->stage == GFX_STAGE_FS) gfx_albedo_analyse(s->spirv, s->words, 1, &a);
+        else memset(&a, 0, sizeof a), a.kind = GFX_ALB_FAILED, a.layer_loc = 0xff;
+        a.tex_res = a.layer_cbuf = -1;
+        a.discard = 0;
+        for (uint64_t i = 5; s->stage == GFX_STAGE_FS && i < s->words;) {
+            uint32_t op = s->spirv[i] & 0xffff, len = s->spirv[i] >> 16;
+            if (!len) break;
+            if (op == 252 || op == 4416 || op == 5380) { a.discard = 1; break; }
+            i += len;
+        }
+        for (int i = 0; i < s->nres[GFX_RES_TEX]; i++)
+            if (s->res[GFX_RES_TEX][i].binding == a.tex_binding) a.tex_res = (int8_t)i;
+        for (int i = 0; a.kind == GFX_ALB_ARRAY && a.layer_loc == 0xff && i < s->nres[GFX_RES_UBO]; i++)
+            if (s->res[GFX_RES_UBO][i].binding == a.layer_binding) a.layer_cbuf = (int8_t)s->res[GFX_RES_UBO][i].slot;
+        if ((a.kind == GFX_ALB_2D || a.kind == GFX_ALB_ARRAY) && a.tex_res < 0) a.kind = GFX_ALB_FAILED;
+        if (a.kind == GFX_ALB_ARRAY && a.layer_loc == 0xff && a.layer_cbuf < 0) a.kind = GFX_ALB_LAYER_UNKNOWN;
+        m->albedo = a;
+        __atomic_store_n(&m->albedo_done, 1, __ATOMIC_RELEASE);
+    }
+    plat_mutex_unlock(&lock);
+    return &m->albedo;
+}
+
+// The program of a fragment shader (gfx_prog.c): compiled once; textures and uniform blocks mapped to the shader's
+// resources. Wanted (its varyings captured at the draws) where one texture and a tint cannot hold the material:
+// TOTK_RT_PROG 1 (default) a glow from a texture, or three samples or more; 2 every program; 0 none.
+const GfxProg *gfx_shader_prog(const GfxShader *s) {
+    static PlatMutex lock = PLAT_MUTEX_INIT;
+    GfxShader *m = (GfxShader *)s;
+    if (__atomic_load_n(&m->prog_done, __ATOMIC_ACQUIRE)) return &m->prog;
+    plat_mutex_lock(&lock);
+    if (!m->prog_done) {
+        GfxProg *p = &m->prog;
+        extern int gfx_prog_no_peephole;
+        const char *np = cfg_get("TOTK_RT_PROG_NOPEEP");   // (debug) the compiler's peephole off
+        gfx_prog_no_peephole = np && *np == '1';
+        extern int gfx_prog_no_preload;
+        const char *npr = cfg_get("TOTK_RT_PROG_NOPRE");   // (debug) varyings and uniforms by instructions
+        gfx_prog_no_preload = npr && *npr == '1';
+        if (s->stage == GFX_STAGE_FS) gfx_prog_compile(s->spirv, s->words, p);
+        else memset(p, 0, sizeof *p), p->status = GFX_PROG_NOT_FS;
+        for (int i = 0; p->status == GFX_PROG_OK && i < p->ntex; i++) {
+            p->tex_res[i] = -1;
+            for (int r = 0; r < s->nres[GFX_RES_TEX]; r++)
+                if (s->res[GFX_RES_TEX][r].binding == p->tex_bind[i]) p->tex_res[i] = (int8_t)r;
+            if (p->tex_res[i] < 0) p->status = GFX_PROG_RESOURCE;
+        }
+        for (int i = 0; p->status == GFX_PROG_OK && i < p->nuni; i++) {
+            p->uni_res[i] = -1;
+            for (int r = 0; r < s->nres[GFX_RES_UBO]; r++)
+                if (s->res[GFX_RES_UBO][r].binding == (int)(p->uni_key[i] >> 12)) p->uni_res[i] = (int8_t)r;
+            if (p->uni_res[i] < 0) p->status = GFX_PROG_RESOURCE;
+        }
+        if (p->status == GFX_PROG_OK) {
+            const char *e = cfg_get("TOTK_RT_PROG");
+            int mode = e && *e ? atoi(e) : 1;
+            const GfxAlbedo *al = gfx_shader_albedo(s);
+            int need_alb = !al || (al->kind != GFX_ALB_2D && al->kind != GFX_ALB_ARRAY) || al->uv_math;
+            if (mode == 2 || (mode == 1 && ((p->flags & GFX_PROG_GLOW && p->nsmp) || p->nsmp >= 3 || (need_alb && p->nsmp >= 1))) ||
+                (mode == 3 && p->flags & GFX_PROG_GLOW && p->nsmp))   // 3: (test) glowing materials alone
+                p->flags |= GFX_PROG_WANTED;
+        }
+        __atomic_store_n(&m->prog_done, 1, __ATOMIC_RELEASE);
+    }
+    plat_mutex_unlock(&lock);
+    return &m->prog;
+}
 
 int gfx_shader_resources(const GfxShader *s, int kind, const GfxShaderRes **res) {
     if (kind < 0 || kind >= GFX_RES_KINDS) return 0;

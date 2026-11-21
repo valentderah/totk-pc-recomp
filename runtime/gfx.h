@@ -91,9 +91,13 @@ const GfxShader *gfx_shader_own(const uint32_t *spirv, uint64_t words, const cha
 // vk_hdr.c: with TOTK_HDR=1, replaces a fragment shader's SPIR-V (malloc'd, *words long) by the HDR tonemap when it is
 // the game's tonemap; gfx_shader.c calls it for every fragment shader entering the cache.
 void vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words);
+int vk_rt_shadow_patch_wanted(void);   // vk_rt.c: the lighting shaders read the ray-traced sun shadow (gfx_shader.c)
+int vk_rt_light_patch_wanted(void);    // vk_rt.c: the light shaders trace their shadows (gfx_shader.c patch_rt_lights)
 uint64_t gfx_shader_failures(void);                         // failed translations; feeds GfxStats.shader_failures
 // Reflection: parsed once per shader from the translator's .res.json and the SPIR-V before it enters the cache.
 enum { GFX_RES_UBO, GFX_RES_SSBO, GFX_RES_TEX, GFX_RES_IMG, GFX_RES_KINDS };
+#define GFX_RES_RT_SHADOW 0x80   // GfxShaderRes.flags of a TEX: the ray-traced sun shadow, bound by the replay (no slot)
+#define GFX_RES_RT_TLAS 0x40     // GfxShaderRes.flags of a TEX: vk_rt.c's scene for a light shader's ray query (no slot)
 typedef struct {
     uint16_t set, binding;      // as the SPIR-V decorates them: set 0, bindings from 1 per shader (0: support buffer)
     int16_t slot;               // UBO: c[slot]; SSBO: storage buffer index; TEX: c2 combined slot (handle at 0x20 + 8 slot)
@@ -115,6 +119,58 @@ uint32_t gfx_shader_inputs(const GfxShader *s, GfxShaderIo io[32]);    // Input 
 uint32_t gfx_shader_outputs(const GfxShader *s, GfxShaderIo io[32]);
 uint32_t gfx_shader_mvprev_banks(const GfxShader *s);   // a last-frame variant: the banks (bit n: cn) its position reads   // Output Locations (VS varyings, FS colour targets)
 void gfx_shader_local_size(const GfxShader *s, uint32_t local[3]);     // CS: the LocalSize execution mode; 1, 1, 1 otherwise
+// Where a G-buffer fragment shader's albedo (colour target 1) comes from (gfx_albedo.c; docs/raytracing.md, materials step 1).
+enum { GFX_ALB_UNKNOWN, GFX_ALB_2D, GFX_ALB_ARRAY, GFX_ALB_NO_OUTPUT, GFX_ALB_NO_SAMPLE, GFX_ALB_NESTED, GFX_ALB_NO_VARYING,
+       GFX_ALB_UV_MATH, GFX_ALB_LAYER_UNKNOWN, GFX_ALB_OTHER_TYPE, GFX_ALB_FAILED, GFX_ALB_KINDS };
+typedef struct {
+    uint8_t kind;               // GFX_ALB_*: 2D and ARRAY found the texture and its UV; the others say why not
+    uint8_t tex_binding;        // SPIR-V binding of the albedo texture
+    int8_t tex_res;             // its index in the shader's GFX_RES_TEX resources, -1 none
+    uint8_t uv_loc, uv_comp;    // the varying (Input Location) and its components u | v << 4
+    uint8_t uv_math;            // the coordinate also does arithmetic or reads uniforms (a UV scale/offset)
+    uint8_t layer_binding;      // ARRAY, layer from a uniform: SPIR-V binding of the uniform block holding it
+    int8_t layer_cbuf;          // its constant buffer c[n], -1 none
+    uint16_t layer_off;         // byte offset of the layer (a float, rounded to the nearest) in c[n]
+    uint8_t layer_loc;          // ARRAY, layer from a varying (terrain): its Input Location, 0xff none
+    uint8_t layer_comp;         // the component
+    uint8_t layer_shift, layer_bits;   // bits > 0: (floatBitsToUint(v) >> shift) & (2^bits - 1); 0: round(v)
+    uint8_t discard;                    // the shader can discard (Kill, TerminateInvocation, DemoteToHelperInvocation):
+                                        // alpha-tested, taken as the albedo's alpha below 0.5
+} GfxAlbedo;
+void gfx_albedo_analyse(const uint32_t *spirv, uint64_t words, int out_location, GfxAlbedo *out);
+const GfxAlbedo *gfx_shader_albedo(const GfxShader *s);   // a fragment shader's, analysed once on first use
+
+// A G-buffer fragment shader's albedo and glow as a register program for ray hits (gfx_prog.c; docs/raytracing.md, materials step 6).
+// The opcodes are rt_gi.comp prog_run's: keep the two in step.
+enum { GP_NOP, GP_MOV, GP_LDV, GP_LDU, GP_FADD, GP_FSUB, GP_FMUL, GP_FDIV, GP_FMOD, GP_FREM, GP_FNEG, GP_FMA,
+       GP_IADD, GP_ISUB, GP_IMUL, GP_UDIV, GP_SDIV, GP_UMOD, GP_SREM, GP_SMOD, GP_AND, GP_OR, GP_XOR, GP_NOT, GP_SHL,
+       GP_SHR, GP_SAR, GP_F2U, GP_F2S, GP_U2F, GP_S2F, GP_ISNAN, GP_ISINF, GP_FEQ, GP_FNE, GP_FLT, GP_FGT, GP_FLE, GP_FGE,
+       GP_IEQ, GP_INE, GP_UGT, GP_SGT, GP_UGE, GP_SGE, GP_ULT, GP_SLT, GP_ULE, GP_SLE, GP_LAND, GP_LOR, GP_LNOT, GP_SEL,
+       GP_BFEU, GP_BFES, GP_BFI, GP_EXT1, GP_EXT2, GP_EXT3, GP_SMP, GP_FETCH, GP_TSIZE, GP_ARG, GP_OPS };
+enum { GFX_PROG_NONE, GFX_PROG_OK, GFX_PROG_UNSUPPORTED, GFX_PROG_CONTROL_FLOW, GFX_PROG_TOO_BIG, GFX_PROG_NO_ALBEDO,
+       GFX_PROG_NOT_FS, GFX_PROG_RESOURCE, GFX_PROG_KINDS };
+enum { GFX_PROG_GLOW = 1, GFX_PROG_WANTED = 2 };
+#define GFX_PROG_LOCS 10    // varyings (vec4 Locations) a program reads: captured per corner (vk_rt.c ext pool)
+#define GFX_PROG_TEX 8      // textures
+#define GFX_PROG_UNI 54     // uniform floats (snapshot per material at its draws)
+typedef struct {
+    uint8_t status;                 // GFX_PROG_*: OK compiled, else why not
+    uint8_t flags;                  // GFX_PROG_GLOW writes target 5; GFX_PROG_WANTED worth capturing (gfx_shader_prog)
+    uint8_t nloc, flat;             // varyings: Locations in slot order; flat (provoking corner) by slot bit
+    uint8_t loc[GFX_PROG_LOCS];
+    uint8_t ntex, nsmp;             // textures; samples in the program
+    uint8_t tex_bind[GFX_PROG_TEX], tex_arr[GFX_PROG_TEX];   // SPIR-V binding, 2D array
+    int8_t tex_res[GFX_PROG_TEX];   // gfx_shader_prog: the GFX_RES_TEX index per texture, -1 none
+    uint16_t nuni;
+    uint32_t uni_key[GFX_PROG_UNI]; // SPIR-V binding << 12 | float index (element x 4 + component) in the block
+    int8_t uni_res[GFX_PROG_UNI];   // gfx_shader_prog: the GFX_RES_UBO index
+    uint16_t nins, nregs, ncon;
+    uint16_t fail_op, fail_line;    // (debug) the SPIR-V opcode and compiler line that failed
+    uint32_t words;                 // code: header, instructions, constants (uint32 words, a multiple of 4)
+    uint32_t *code;
+} GfxProg;
+void gfx_prog_compile(const uint32_t *spirv, uint64_t words, GfxProg *out);
+const GfxProg *gfx_shader_prog(const GfxShader *s);   // a fragment shader's, compiled once on first use
 
 // ---- back end (gfx_null.c, vk_*.c). Called by the NVN front end (nvn_api_*.c, nvn_ext.c) on guest threads.
 typedef struct {

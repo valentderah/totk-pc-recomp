@@ -1,0 +1,191 @@
+#version 460
+// Ray tracing geometry version 1 (runtime/vk_rt.c): the G-buffer draws' clip-space corners, captured by transform
+// feedback, back to world space through the inverse view-projection, one triangle per thread; the capture is reset
+// to NaN behind it, so a range a draw reserved but did not fill (strips with restarts) is an inactive triangle next
+// frame. A triangle is left out (NaN) when a corner was culled by its shader (clip z pushed past the far plane), when
+// an edge is longer than lim.x metres (the far terrain's kilometre-wide triangles) or when all of it is farther than
+// lim.y from the camera.
+// mode 0: unproject and reset; mode 1: reset only (the first frame, the buffer's contents undefined).
+// A triangle left out is not NaN but dead: its three corners at one point (w 0), at its first corner when that is near,
+// else at DEAD. The BLAS of the capture is refit from frame to frame (vk_rt.c), and a refit must keep every triangle
+// active; a dead one has no area, so no ray hits it. rt_cache.comp turns dead triangles into NaN in the cache.
+// Geometry version 2: a draw from the sun's shadow passes (facing bit 4) is unprojected through its cascade's camera
+// (bits 8-11: 1-15, cams[]); both its sides are shown.
+layout(local_size_x = 256) in;
+
+layout(binding = 0, std430) buffer Clip { vec4 clip[]; };
+layout(binding = 1, std430) buffer World { vec4 world[]; };
+// the frame's captured draws by first triangle: (first triangle, facing: bit 0 clockwise front, bit 1 front culled,
+// bit 2 no culling; bit 3 a capture for the mesh cache, kept whatever the view: no drawn test, no distance limit;
+// bit 5 a mesh the game draws without a pixel surviving (vk_rt.c invis): all of it left out, its drawn test still counted;
+// bit 6 the sun's cascades draw its geometry (the game shadows it): its triangles kept though never drawn on the screen;
+// bits 16-31 the draw's mesh + 1 (a capture for the cache, or any G-buffer draw with an identity: its drawn test counted);
+// material words, vk_exec_draw.c rt_mat_words: UV and layer, the layer constant; then the albedo texture word, 3 unused);
+// two uvec4 a draw, sorted
+layout(binding = 2, std430) readonly buffer Draws { uvec4 draws[]; };
+layout(binding = 3) uniform sampler2D lin_depth;   // the game's linear depth ((view distance - near) / far) after the G-buffer
+layout(binding = 4, std430) readonly buffer Cams { vec4 cams[]; };   // per camera index: inverse view-projection rows
+// the mesh cache's per-mesh counts (after its bounds and deviations): a cached capture's triangles the drawn test could
+// judge, and those never drawn; the draw's mesh + 1 is in bits 16-31 of its facing (vk_rt.c never_drawn_mesh)
+layout(binding = 5, std430) buffer Bnd { uint bnd[]; };
+const uint MESH_MAX = 16384u;
+// Materials (vk_rt.c, mat.y): the captured attributes (two vec4 a vertex: the UV varying, the layer's varying) and the
+// triangles' UVs out, two vec4 a triangle indexed like world: (uv0, uv1), (uv2, layer | flags << 16 bits: flags 1 UV,
+// 2 array layer, 4 alpha-tested, 8 flat (a material without UV: its measured colour); the material word, vk_rt.c
+// vk_rt_mat_tex / vk_rt_mat_flat)
+layout(binding = 6, std430) readonly buffer AClip { vec4 aclip[]; };
+layout(binding = 7, std430) buffer WAttr { vec4 wattr[]; };
+// Step 6 (mat.w): a draw with a program recorded its varyings (vk_rt.c ext word in its second uvec4's y: the first
+// corner's vec4 | slots - 1 << 28 | 1 << 31; z: the UV's slot | the layer's << 4 | 0x100 the UV and layer are there);
+// each triangle's pointer out (wext: its first corner's vec4 | 1 << 27 corners 1 and 2 swapped | slots - 1 << 28 | 1 << 31)
+layout(binding = 8, std430) readonly buffer PExt { vec4 pext[]; };
+layout(binding = 9, std430) buffer PWext { uint wext[]; };
+
+const vec3 DEAD = vec3(0.0, -20000.0, 0.0);
+
+layout(push_constant) uniform Params {
+    vec4 r0, r1, r2, r3;   // inverse view-projection rows
+    uvec4 n;               // triangle count, mode, draws, triangles at the top
+    vec4 cam;              // camera position (xyz), the projection's facing sign (w: the clip (x, y, w) determinant of a
+                           // triangle facing the camera)
+    vec4 lim;              // longest edge, farthest distance, the near plane (metres)
+    vec4 scr;              // projection x scale, y scale, far plane, the drawn test on
+    vec4 scr2;             // uv signs (x, y), scene width, height
+    uvec4 mat;             // the frame's vertices (the attributes' top part follows them), materials on, the clip
+                           // buffer's top part's first vertex
+} pc;
+
+// a clip buffer vertex's attributes: the top part moved down after the frame's (vk_rt.c vk_rt_xfb_begin)
+uint aclip_vert(uint v) { return v >= pc.mat.z ? v - pc.mat.z + pc.mat.x : v; }
+
+// A triangle the game drew but none of whose pixels survived: its shown side faces the camera, and at every one of seven
+// points across it that is on the screen (centre, near the corners, near the edges' middles) the depth buffer shows
+// something farther than the triangle there. Dithered fades near the camera, cut-outs and hidden objects do this;
+// rays should not see them either. A point of the triangle is the same mix of its clip-space corners, whose w is its
+// view depth.
+// 0: not judged (facing away, off the screen, the test off); 1: drawn (at a point the depth buffer holds the triangle's
+// depth); 2: never drawn; 3: hidden (no point in front of the depth buffer, none at it: behind something nearer, which
+// says nothing of whether it is drawn: the geometry verdict (vk_rt.c VisEnt) counts only 1 and 2)
+int drawn_test(vec4 c0, vec4 c1, vec4 c2, bool shown_faces_camera) {
+    if (pc.scr.w < 0.5 || !shown_faces_camera) return 0;
+    const vec3 B[7] = vec3[7](vec3(1.0 / 3.0), vec3(0.8, 0.1, 0.1), vec3(0.1, 0.8, 0.1), vec3(0.1, 0.1, 0.8),
+                              vec3(0.45, 0.45, 0.1), vec3(0.1, 0.45, 0.45), vec3(0.45, 0.1, 0.45));
+    ivec2 hi = ivec2(pc.scr2.zw) - 1;
+    int seen = 0, hid = 0;
+    for (int k = 0; k < 7; k++) {
+        vec4 m = c0 * B[k].x + c1 * B[k].y + c2 * B[k].z;
+        if (m.w < 0.05) continue;
+        vec2 uv = 0.5 + 0.5 * pc.scr2.xy * m.xy / m.w;
+        if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) continue;
+        ivec2 p = ivec2(uv * pc.scr2.zw);
+        // the nearest depth over the 3x3 texels around p: four gathers of the 2x2 quads meeting at p's corners (the
+        // sampler clamps to the edge, as the fetches clamped), a quarter of the 9 fetches' cost; empty texels (0) skipped
+        vec2 rs = 1.0 / pc.scr2.zw;
+        float dm = 1e30;
+        for (int k2 = 0; k2 < 4; k2++) {
+            vec4 g = textureGather(lin_depth, (vec2(p) + vec2(k2 & 1, k2 >> 1)) * rs, 0);
+            g = mix(g, vec4(1e30), lessThanEqual(g, vec4(0.0)));
+            dm = min(dm, min(min(g.x, g.y), min(g.z, g.w)));
+        }
+        float nearest = dm >= 1e30 ? 1e30 : dm * pc.scr.z + pc.lim.z;
+        if (m.w < nearest * 0.97 - 0.1) seen++;           // in front of what the depth buffer holds
+        else if (m.w > nearest * 1.03 + 0.1) hid++;     // behind something nearer
+        else return 1;                                  // drawn here
+    }
+    return hid > 0 ? 3 : seen > 0 ? 2 : 0;
+}
+
+void main() {
+    // n.x triangles from the start (the frame's scene), then n.w from the top of the buffer (captures for the cache only)
+    uint t = gl_GlobalInvocationID.x;
+    if (t >= pc.n.x + pc.n.w) return;
+    if (t >= pc.n.x) t = uint(clip.length()) / 3u - pc.n.w + (t - pc.n.x);
+    float nan = uintBitsToFloat(0x7fc00000u);
+    vec4 c[3];
+    for (int k = 0; k < 3; k++) c[k] = clip[t * 3 + k], clip[t * 3 + k] = vec4(nan);
+    if (pc.n.y != 0u) return;
+    // Facing: the corners in an order whose normal cross(p1 - p0, p2 - p0) points to the side the draw shows (its
+    // front, or its back when it culls front faces); w 1, or 2 for a draw that culls nothing (both sides show).
+    uint face = 4u;
+    uvec2 mw = uvec2(0u);
+    uint tw = 0u, xw = 0u, xs = 0u, first = 0u;
+    if (pc.n.z > 0u) {
+        uint lo = 0u, hi = pc.n.z - 1u;
+        while (lo < hi) { uint m = (lo + hi + 1u) >> 1; if (draws[m * 2u].x <= t) lo = m; else hi = m - 1u; }
+        face = draws[lo * 2u].y, mw = draws[lo * 2u].zw, tw = draws[lo * 2u + 1u].x;
+        first = draws[lo * 2u].x, xw = draws[lo * 2u + 1u].y, xs = draws[lo * 2u + 1u].z;
+    }
+    if (pc.mat.w == 0u || xw == 0u || t < first) xw = 0u;
+    uint slm = (xw >> 27) & 15u, nsl = (slm == 15u ? 0u : slm) + 1u, xb = (xw & 0x07ffffffu) + (t - first) * 3u * nsl;   // the first corner's vec4
+    uint ci = (face >> 8) & 15u;
+    vec4 r0 = pc.r0, r1 = pc.r1, r2 = pc.r2, r3 = pc.r3;
+    if (ci != 0u) r0 = cams[ci * 4u], r1 = cams[ci * 4u + 1u], r2 = cams[ci * 4u + 2u], r3 = cams[ci * 4u + 3u];
+    vec3 p[3];
+    bool bad = false, dist_bad = false;
+    for (int k = 0; k < 3; k++) {
+        vec4 h = vec4(dot(r0, c[k]), dot(r1, c[k]), dot(r2, c[k]), dot(r3, c[k]));
+        // culled corners: pushed beyond the far plane (TotK's terrain adds 1e5 to z, other shaders set 1e7)
+        bad = bad || isnan(c[k].x) || isnan(c[k].w) || c[k].z > c[k].w + 0.01 * abs(c[k].w) + 1.0 || abs(h.w) < 1e-20;
+        p[k] = h.xyz / h.w;
+    }
+    if (!bad) {
+        float e = max(distance(p[0], p[1]), max(distance(p[1], p[2]), distance(p[2], p[0])));
+        float d = min(distance(p[0], pc.cam.xyz), min(distance(p[1], pc.cam.xyz), distance(p[2], pc.cam.xyz)));
+        bad = e > pc.lim.x || any(isnan(p[0] + p[1] + p[2]));
+        dist_bad = d > pc.lim.y;
+    }
+    float f = ((face & 1u) != 0u ? -1.0 : 1.0) * ((face & 2u) != 0u ? -1.0 : 1.0);   // the shown side's raster winding
+    bool cached = (face & 8u) != 0u;
+    bad = bad || (dist_bad && !cached);
+    uint mesh = face >> 16;
+    if (!bad && (!cached || (mesh != 0u && ci == 0u))) {
+        float D = determinant(mat3(c[0].xyw, c[1].xyw, c[2].xyw));
+        int r = drawn_test(c[0], c[1], c[2], (face & 4u) != 0u || D * f > 0.0);
+        if (!cached) {
+            bad = r == 2 && (face & 64u) == 0u;   // bit 6: the game shadows it (vk_rt.c gcas): kept for the rays
+            if (mesh != 0u && (r == 1 || r == 2)) {   // the geometry's drawn test, cumulative (vk_rt.c VisEnt, read every 4 frames)
+                atomicAdd(bnd[MESH_MAX * 9u + (mesh - 1u) * 2u], 1u);
+                if (r == 2) atomicAdd(bnd[MESH_MAX * 9u + (mesh - 1u) * 2u + 1u], 1u);
+            }
+        } else if (r != 0) {   // a cached capture keeps its triangles; its mesh is judged as a whole (vk_rt.c)
+            atomicAdd(bnd[MESH_MAX * 7u + (mesh - 1u) * 2u], 1u);
+            if (r == 2) atomicAdd(bnd[MESH_MAX * 7u + (mesh - 1u) * 2u + 1u], 1u);
+        }
+    }
+    bad = bad || (face & 32u) != 0u;
+    // the UVs and the layer (rt_mat_words): read before the corners are reordered, and reordered with them
+    vec2 uv[3] = vec2[3](vec2(nan), vec2(nan), vec2(nan));
+    uint layer = 0u, mflags = 0u;
+    if (pc.mat.y != 0u && (mw.x & 0x80000000u) != 0u) {
+        uint uc = mw.x & 3u, vc = (mw.x >> 4) & 3u, lmode = (mw.x >> 8) & 3u;
+        bool fx = xw != 0u && (xs & 0x100u) != 0u;   // step 6: the UV with the program's varyings
+        for (int k = 0; k < 3; k++) {
+            vec4 a = fx ? pext[xb + uint(k) * nsl + (xs & 15u)] : aclip[aclip_vert(t * 3u + uint(k)) * 2u];
+            uv[k] = vec2(a[uc], a[vc]);
+        }
+        mflags = (mw.x & 0x1000000u) != 0u ? 5u : 1u;
+        if (lmode == 1u) {
+            layer = mw.y, mflags |= 2u;
+        } else if (lmode == 2u) {   // the first corner's
+            uint av = aclip_vert(t * 3u) * 2u + ((mw.x & 0x800000u) != 0u ? 1u : 0u);
+            float lv = fx ? pext[xb + ((xs >> 4) & 15u)][(mw.x >> 10) & 3u] : aclip[av][(mw.x >> 10) & 3u];
+            uint bits = (mw.x >> 17) & 63u;
+            layer = bits == 0u ? uint(max(roundEven(lv), 0.0)) : bitfieldExtract(floatBitsToUint(lv), int((mw.x >> 12) & 31u), int(min(bits, 32u)));
+            mflags |= 2u;
+        }
+        if (any(isnan(vec4(uv[0], uv[1]))) || any(isnan(uv[2])) || any(isinf(vec4(uv[0], uv[1]))) || any(isinf(uv[2]))) mflags = 0u;
+    } else if (pc.mat.y != 0u && (tw & 0x80000000u) != 0u) {
+        mflags = 8u;   // a flat material (rt_mat_words found no texture or UV for the draw)
+    }
+    if (mflags == 0u) tw = 0u;
+    bool swp = f * pc.cam.w < 0.0;
+    if (swp) { vec3 s = p[1]; p[1] = p[2]; p[2] = s; vec2 q = uv[1]; uv[1] = uv[2]; uv[2] = q; }
+    if (pc.mat.y != 0u && pc.mat.w != 0u)
+        wext[t] = xw != 0u && mflags != 0u ? xb | (nsl - 1u) << 27 | (xb == 0u && nsl == 1u ? 0x78000000u : 0u) | (swp ? 0x80000000u : 0u) : 0u;
+    if (pc.mat.y != 0u)
+        wattr[t * 2u] = vec4(uv[0], uv[1]),
+        wattr[t * 2u + 1u] = vec4(uv[2], uintBitsToFloat(min(layer, 65535u) | mflags << 16), uintBitsToFloat(tw));
+    float sw = (face & 4u) != 0u || ci != 0u ? 2.0 : 1.0;
+    vec3 dead = !any(isnan(p[0])) && !any(isinf(p[0])) && distance(p[0], pc.cam.xyz) < 4000.0 ? p[0] : DEAD;
+    for (int k = 0; k < 3; k++) world[t * 3 + k] = bad ? vec4(dead, 0.0) : vec4(p[k], sw);
+}

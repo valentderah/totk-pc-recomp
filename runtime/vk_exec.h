@@ -322,6 +322,21 @@ void vk_contact_pass_begin(VkExec *ex);
 void vk_contact_flush(VkExec *ex);
 int vk_contact_plan(const VkExec *ex, int pass, VkExecJob *j);
 void vk_contact_exec(VkExec *ex, const VkExecJob *j);
+void vk_rt_exec(VkExec *ex, const VkExecJob *j);   // vk_rt.c: the ray tracing passes, from vk_contact_exec
+void vk_rt_note_aot(int k, const VkExecTarget *t);   // vk_rt.c: the game's AO target for camera slot k
+void vk_rt_note_alb(int k, const VkExecTarget *t);   // vk_rt.c: the G-buffer's albedo for camera slot k (GI)
+// vk_rt.c: the G-buffer's material targets for camera slot k: target 3 (RGBA8: packed normal, baked AO, smoothness in
+// alpha bits 2-7) and target 0 (RGBA8: shading class in R and G)
+void vk_rt_note_mtl(int k, const VkExecTarget *mtl, const VkExecTarget *mid);
+int vk_rt_tone_scene(VkCommandBuffer cb, const VkTexImage *img, VkFormat fmt, uint32_t level, uint32_t layer, uint32_t w,
+                     uint32_t h);   // vk_rt.c: the night tone on the finished scene (vk_dlaa.c)
+int vk_rt_gi(void);                                  // vk_rt.c: a GI pass after the composite
+void vk_rt_live(void);                              // vk_rt.c: the menu's AO and shadow switches, read again in play
+int vk_rt_shadows(void);                             // vk_rt.c: a sun shadow pass before the half-resolution lighting
+int vk_rt_shadow_desc(VkDescriptorImageInfo *o, uint32_t w, uint32_t h);   // vk_rt.c: the shadow image for a patched lighting shader, 0: none yet
+void vk_rt_note_shadow_use(uint32_t w, uint32_t h, const float *blk);   // debug: a lighting pass's camera vs the main one
+uint64_t vk_rt_light_tlas(void);   // vk_rt.c: the acceleration structure the light shaders trace, 0 (null) when off
+int vk_rt_ao_inject(void);                           // vk_rt.c: the pass runs before the composite, into the game's AO
 // vk_exec_xfer.c, samples-passed counting: a draw about to be recorded in the open pass (begins an occlusion query
 // when counting and none is active), and the open pass about to end (ends the active query).
 void vk_exec_oq_draw(VkExec *ex);

@@ -69,7 +69,7 @@ enum {
     R_SetRasterizerDiscardEnable, R_SetScissorWithCount, R_SetStencilCompareMask, R_SetStencilOp, R_SetStencilReference,
     R_SetStencilTestEnable, R_SetStencilWriteMask, R_SetViewportWithCount, R_WriteTimestamp, R_WriteTimestamp2,
     R_PushTpl, R_Push, R_VertexInput, R_Bool, R_PolygonMode, R_BlendEnable, R_BlendEquation, R_WriteMask, R_EndCb,
-    R_PassMark, R_BeginCb, R_Submit,
+    R_PassMark, R_BeginCb, R_Submit, R_Xfb,
 };
 
 static uint64_t now_ns(void) { return plat_now_ns(); }
@@ -801,6 +801,27 @@ void rec_bool(PFN_vkCmdSetDepthClampEnableEXT fn, VkCommandBuffer cb, VkBool32 v
     pub();
 }
 
+// Transform feedback around one draw (vk_rt.c): bind buffer 0 at off/size (and buffer 1, the attributes, when buf1 is
+// not null) and begin (end 0), or end (end 1)
+typedef struct { void *bind, *begin, *end_fn; VkBuffer buf[3]; VkDeviceSize off[3], size[3]; int end; } A_Xfb;
+void rec_xfb(void *bind, void *begin, void *end_fn, VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off, VkDeviceSize size,
+             VkBuffer buf1, VkDeviceSize off1, VkDeviceSize size1, VkBuffer buf2, VkDeviceSize off2, VkDeviceSize size2, int end) {
+    VkBuffer b[3] = {buf, buf1, buf2};
+    VkDeviceSize o[3] = {off, off1, off2}, z[3] = {size, size1, size2};
+    uint32_t n = buf1 && buf2 ? 3 : buf1 ? 2 : 1;
+    if (!OWNED(cb)) {
+        if (end) ((PFN_vkCmdEndTransformFeedbackEXT)end_fn)(cb, 0, 0, NULL, NULL);
+        else {
+            ((PFN_vkCmdBindTransformFeedbackBuffersEXT)bind)(cb, 0, n, b, o, z);
+            ((PFN_vkCmdBeginTransformFeedbackEXT)begin)(cb, 0, 0, NULL, NULL);
+        }
+        return;
+    }
+    A_Xfb *a = put(R_Xfb, sizeof *a);
+    *a = (A_Xfb){bind, begin, end_fn, {buf, buf1, buf2}, {off, off1, off2}, {size, size1, size2}, end};
+    pub();
+}
+
 typedef struct { PFN_vkCmdSetPolygonModeEXT fn; VkPolygonMode m; } A_PolygonMode;
 void rec_polygon_mode(PFN_vkCmdSetPolygonModeEXT fn, VkCommandBuffer cb, VkPolygonMode m) {
     if (!OWNED(cb)) { fn(cb, m); return; }
@@ -908,6 +929,15 @@ static void exec_packet(uint32_t op, void *p) {
     case R_Push: { A_Push *a = p; a->fn(cb, a->bp, a->l, a->set, a->n, a->w); break; }
     case R_VertexInput: { A_VertexInput *a = p; a->fn(cb, a->nb, a->b, a->na, a->v); break; }
     case R_Bool: { A_Bool *a = p; a->fn(cb, a->v); break; }
+    case R_Xfb: {
+        A_Xfb *a = p;
+        if (a->end) ((PFN_vkCmdEndTransformFeedbackEXT)a->end_fn)(cb, 0, 0, NULL, NULL);
+        else {
+            ((PFN_vkCmdBindTransformFeedbackBuffersEXT)a->bind)(cb, 0, a->buf[1] && a->buf[2] ? 3 : a->buf[1] ? 2 : 1, a->buf, a->off, a->size);
+            ((PFN_vkCmdBeginTransformFeedbackEXT)a->begin)(cb, 0, 0, NULL, NULL);
+        }
+        break;
+    }
     case R_PolygonMode: { A_PolygonMode *a = p; a->fn(cb, a->m); break; }
     case R_BlendEnable: { A_Targets *a = p; ((PFN_vkCmdSetColorBlendEnableEXT)a->fn)(cb, a->first, a->n, a->v); break; }
     case R_BlendEquation: { A_Targets *a = p; ((PFN_vkCmdSetColorBlendEquationEXT)a->fn)(cb, a->first, a->n, a->v); break; }
