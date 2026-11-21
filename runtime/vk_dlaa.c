@@ -1762,9 +1762,12 @@ void vk_dlaa_frame(void) {
 // stretched over the whole screen.
 static const uint64_t FXAA_FS[] = {0xf450003ebeb3dc52ull, 0x0a12f4bc2a9a4fbeull, 0x5c43ae18948d52cbull,
                                    0xaad42238801d31d8ull, 0xde20aef90fea4ce6ull, 0x755964e8dce7f34dull};
-// The fragment shader of the FXAA's first pass, the copy of the scene target into the scratch target (this build's
-// translator; another hash leaves the draw alone). See vk_dlaa_skip_draw for why FSR's frames skip it.
-static const uint64_t FXAA_COPY_FS[] = {0xa0fd34391f2af811ull};
+// The fragment shader of the FXAA's first pass, the copy of the scene target into the scratch target (another hash
+// leaves the draw alone). See vk_dlaa_skip_draw for why FSR's frames skip it. The translator with patches 0010 and
+// 0011, then that one with patch 0017, whose two support buffer fields change every fragment shader's hash (as with
+// FXAA_FS above); the second was read from a 1.4.3 run with FSR on, from the draw that copies the scene target onto
+// itself.
+static const uint64_t FXAA_COPY_FS[] = {0xa0fd34391f2af811ull, 0x9d065204aac9766bull};
 
 // Chunks of one submission look shaders up side by side: an entry's hash is stored before its shader, and entries are
 // added under the lock.
