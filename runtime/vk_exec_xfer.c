@@ -277,6 +277,7 @@ static void signal_event(VkExec *ex, const p_signal_event *p) {
     EventWrite *e = malloc(sizeof *e);
     if (!e) rt_fatal("vk: out of memory");
     *e = (EventWrite){p->val, p->mode, p->value};
+    if (vk_ahead_on) vk_ahead_gpu_write((uintptr_t)p->val, sizeof *p->val, AHW_EVENT, ex->fence);
     vk_completion_add(ex->fence, event_cb, e);
 }
 
@@ -290,6 +291,8 @@ static void report_counter(VkExec *ex, const p_report_counter *p) {
     if (!vk_mem_resolve(p->addr, sizeof(NVNcounterData), &m))
         rt_fatal("vk: counter report at %#llx is in no memory pool", (unsigned long long)p->addr);
     vk_mem_count(m.cls, VK_MUSE_GPU_WRITE, sizeof(NVNcounterData));
+    if (vk_ahead_on) vk_ahead_gpu_write(p->addr, sizeof(NVNcounterData), samples ? AHW_SAMPLES : AHW_COUNTER, ex->fence);
+    if (samples && vk_ahead_g.queries) vk_ahead_query(ex->fence);   // the in-place frame wait waits up to it
     if (samples) oq_report(ex, p->addr);
     else {
         uint64_t *a = malloc(sizeof *a);
@@ -432,6 +435,7 @@ static void copy_buffer_image(VkExec *ex, const p_copy_b2t *p, int to_image) {
     VkBufferImageCopy c;
     VkMemSpan m;
     if (!buffer_side(ex, &s, p->src, &size, &c, &m)) return;
+    VK_AHEAD_READ(m, p->src, size, to_image ? VK_MUSE_COPY_SRC : VK_MUSE_GPU_WRITE);
     vk_mem_count(m.cls, to_image ? VK_MUSE_COPY_SRC : VK_MUSE_GPU_WRITE, size);
     vk_exec_pass_end(ex);
     vk_exec_barrier(ex);
@@ -497,6 +501,8 @@ static void copy_b2b(VkExec *ex, const p_copy_b2b *p) {
         if (n > d.avail) n = d.avail;
         VK_MEM_PICK(s);
         VK_MEM_PICK(d);
+        VK_AHEAD_READ(s, src, n, VK_MUSE_COPY_SRC);
+        VK_AHEAD_READ(d, dst, n, VK_MUSE_GPU_WRITE);
         if (s.buffer == d.buffer && s.offset < d.offset + n && d.offset < s.offset + n) {
             warn_once(W_OVERLAP, "buffer copy %#llx -> %#llx overlaps within one buffer: skipped",
                       (unsigned long long)p->src, (unsigned long long)p->dst);
@@ -537,6 +543,7 @@ static void clear_buf(VkExec *ex, const p_clear_buf *p) {
         if (!n) break;
         if (!started) vk_exec_pass_end(ex), vk_exec_barrier(ex), started = 1;
         VK_MEM_PICK(d);
+        VK_AHEAD_READ(d, dst, n, VK_MUSE_GPU_WRITE);
         vkCmdFillBuffer(ex->cb, d.buffer, d.offset, n, p->value);
         vk_mem_gpu_wrote(&d, n);
         ex->recorded++;

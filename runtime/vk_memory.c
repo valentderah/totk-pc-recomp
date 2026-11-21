@@ -982,6 +982,58 @@ static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
     }
 }
 
+// ---------------------------------------------------------------- TOTK_SYNC_AHEAD=check (vk_ahead.c)
+int vk_mem_span_inplace(const VkMemSpan *sp) {
+    const PoolRec *r = sp->pool;
+    if (!r || sp->alloc || r->kind != POOL_IMPORT || r->smap) return 0;
+    return sp->buffer == r->buf ? 1 : r->mbuf && sp->buffer == r->mbuf ? 2 : 0;
+}
+
+uint32_t vk_mem_ahead_observe(const uint64_t (*iv)[2], int n, uint8_t *untracked) {
+    plat_mutex_lock(&gen_lock);
+    uint32_t g = ++gen_now;
+    for (int i = 0; i < n; i++) {
+        uint64_t lo = iv[i][0] & ~0xfffull, hi = (iv[i][1] + 0xfff) & ~0xfffull;
+        int frozen = hi > lo && hi <= RT_ADDRESS_LIMIT;   // a frozen region changed in no page since its freeze
+        for (uint64_t a = lo & ~((1ull << REG_SHIFT) - 1); a < hi && frozen; a += 1ull << REG_SHIFT) frozen = mem_frozen(a);
+        untracked[i] = (uint8_t)(!frozen && (hi <= lo || hi > RT_ADDRESS_LIMIT || !query_stamp(lo, hi, g)));
+    }
+    g = gen_now;
+    plat_mutex_unlock(&gen_lock);
+    return g;
+}
+
+uint64_t vk_mem_ahead_written(uint64_t lo, uint64_t hi, uint32_t since, void (*fn)(uint64_t, uint64_t, void *),
+                              void *arg) {
+    uint64_t bytes = 0;
+    if (hi <= lo || hi > RT_ADDRESS_LIMIT) return 0;
+    plat_mutex_lock_shared(&gen_lock);
+    for (uint64_t r = lo >> REG_SHIFT; r <= (hi - 1) >> REG_SHIFT; r++) {
+        if (reg_max[r] <= since) continue;
+        uint64_t a = r << REG_SHIFT > lo ? r << REG_SHIFT : lo & ~0xfffull;
+        uint64_t b = (r + 1) << REG_SHIFT < hi ? (r + 1) << REG_SHIFT : hi;
+        const uint32_t *ch = gen_chunk[a >> GEN_CHUNK_SHIFT];   // a 2 MiB region lies in one chunk
+        if (!ch) continue;
+        for (uint64_t x = a; x < b; x += 1ull << GEN_PAGE_SHIFT) {
+            if (ch[(x >> GEN_PAGE_SHIFT) & (GEN_PER_CHUNK - 1)] <= since) continue;
+            uint64_t s = x > lo ? x : lo, e = x + (1ull << GEN_PAGE_SHIFT) < hi ? x + (1ull << GEN_PAGE_SHIFT) : hi;
+            if (fn) fn(s, e, arg);
+            bytes += e - s;
+        }
+    }
+    plat_mutex_unlock_shared(&gen_lock);
+    return bytes;
+}
+
+int vk_mem_pool_info(uint64_t addr, uint64_t *lo, uint64_t *size, uint32_t *flags, int *mirrored) {
+    plat_mutex_lock_shared(&pool_lock);
+    const pidx_ent *e = pidx_find(&pool_index, (uintptr_t)addr, 1);
+    const PoolRec *r = e ? e->buf : NULL;
+    if (r) *lo = r->lo, *size = r->size, *flags = r->flags, *mirrored = r->mstate == MS_ON;
+    plat_mutex_unlock_shared(&pool_lock);
+    return r != NULL;
+}
+
 // ---------------------------------------------------------------- shadow storage
 // Where importing guest memory costs too much (Linux: re-protecting pages that amdgpu imported as a userptr
 // invalidates the buffer, about 1.3 ms per 16 MiB at the next submit, and the import's write pinning clears the
@@ -1321,7 +1373,81 @@ static SRead sread[SREAD_N];                  // shadow_lock: the ranges the gam
 static uint64_t s_read_waits, s_read_ticks;   // shadow_lock: since the last log
 static uint64_t r_read_waits, r_read_ticks, r_read_max;   // shadow_lock: over the run (vk_mem_shadow_read_log)
 
+// ---------------------------------------------------------------- TOTK_SYNC_AHEAD=1 in place (vk_ahead.h)
+// Without shadow storage a GPU write into CPU-visible memory lands in guest memory on the GPU timeline: directly, or
+// through the mirror's write-back at the end of its submission (vk_mem_mirror_end). Once the frame wait returns a frame
+// early those bytes can still be on their way. aw: the writes recorded and not known done, {lo, hi, fence}; pruned
+// when a value completes (aw_prune), bounded: a full list joins a new write with its nearest entry (wider, never
+// narrower, so a reader waits for at least what it must). Used by the invalidates below and the staged mirror syncs.
+#define AW_N 2048
+typedef struct { uint64_t lo, hi, fence; } AWrite;
+static PlatMutex aw_lock = PLAT_MUTEX_INIT;   // after every other lock of this file
+static AWrite aw[AW_N];
+static int naw, aw_peak;
+static uint64_t aw_joined;
+// Run totals (aw_lock): invalidate waits, staged sync bytes and calls, CPU time of the copies, waits for an earlier
+// write-back into a synced range
+static uint64_t ah_rd_waits, ah_rd_ns, ah_rd_max, ah_stage_bytes, ah_stage_n, ah_stage_ns, ah_ov_waits, ah_ov_ns, ah_ov_max;
+static uint64_t ah_inplace_bytes;   // mirror sync bytes still copied from guest memory on the GPU (TOTK_SYNC_AHEAD_MSYNC=0)
+
+static void aw_prune(uint64_t done) {   // aw_lock
+    int k = 0;
+    for (int i = 0; i < naw; i++)
+        if (aw[i].fence > done) aw[k++] = aw[i];
+    naw = k;
+}
+
+static void aw_add(uint64_t lo, uint64_t hi, uint64_t fence) {
+    if (hi <= lo) return;
+    plat_mutex_lock(&aw_lock);
+    for (int i = naw; i-- > 0 && i >= naw - 16;)   // the same range again, as the replay notes it draw after draw
+        if (aw[i].lo == lo && aw[i].hi == hi) {
+            if (fence > aw[i].fence) aw[i].fence = fence;
+            plat_mutex_unlock(&aw_lock);
+            return;
+        }
+    if (naw == AW_N) aw_prune(vk_sync_fence_done());
+    if (naw == AW_N) {
+        int m = 0;
+        uint64_t best = UINT64_MAX;
+        for (int i = 0; i < naw; i++) {
+            uint64_t d = aw[i].hi < lo ? lo - aw[i].hi : aw[i].lo > hi ? aw[i].lo - hi : 0;
+            if (d < best) best = d, m = i;
+        }
+        if (lo < aw[m].lo) aw[m].lo = lo;
+        if (hi > aw[m].hi) aw[m].hi = hi;
+        if (fence > aw[m].fence) aw[m].fence = fence;
+        aw_joined++;
+    } else {
+        aw[naw++] = (AWrite){lo, hi, fence};
+        if (naw > aw_peak) aw_peak = naw;
+    }
+    plat_mutex_unlock(&aw_lock);
+}
+
+// aw_lock: the newest value in (done, below) that writes into [lo, hi), 0: none
+static uint64_t aw_writer(uint64_t lo, uint64_t hi, uint64_t done, uint64_t below) {
+    uint64_t w = 0;
+    for (int i = 0; i < naw; i++)
+        if (aw[i].fence > done && aw[i].fence < below && aw[i].fence > w && aw[i].lo < hi && aw[i].hi > lo) w = aw[i].fence;
+    return w;
+}
+
+static void ah_time(uint64_t *n, uint64_t *ns, uint64_t *mx, uint64_t dt) {
+    plat_mutex_lock(&aw_lock);
+    (*n)++, *ns += dt;
+    if (mx && dt > *mx) *mx = dt;
+    plat_mutex_unlock(&aw_lock);
+}
+
+// The in-place form's vk_mem_shadow_read: the rule of the shadow form (below), with the writer's own value waited for
+// instead of the guard, which the writer may be far behind of. Only values up to the guard: a write of a value the game
+// was not told is done is the game reading ahead of its own wait.
+static void ahead_read(uint64_t addr, uint64_t size);
+
 void vk_mem_shadow_read(uint64_t addr, uint64_t size) {
+    if (vk_ahead_g.reads && size) ahead_read(addr, size);
+    if (vk_ahead_on) vk_ahead_invalidate(addr, size);
     if (!shadow_on || !size || !nvn_sync_ahead_guard()) return;
     plat_mutex_lock(&shadow_lock);
     uint64_t now = vk_sync_issued();
@@ -1351,6 +1477,81 @@ void vk_mem_shadow_read(uint64_t addr, uint64_t size) {
     plat_mutex_unlock(&shadow_lock);
 }
 
+static void ahead_read(uint64_t addr, uint64_t size) {
+    uint64_t g = nvn_sync_ahead_guard();
+    if (!g) return;
+    uint64_t done = vk_sync_fence_done();
+    plat_mutex_lock(&shadow_lock);   // sread: the shadow form's table, unused without shadow storage
+    uint64_t now = vk_sync_issued();
+    SRead *e = &sread[0];
+    for (int i = 0; i < SREAD_N; i++) {
+        if (sread[i].addr == addr && sread[i].size == size) { e = &sread[i]; break; }
+        if (sread[i].at < e->at) e = &sread[i];
+    }
+    int known = e->addr == addr && e->size == size && e->at + SREAD_AGE >= now;
+    plat_mutex_lock(&aw_lock);
+    aw_prune(done);
+    uint64_t w = aw_writer(addr, addr + size, done, UINT64_MAX), wait = !known && w && w <= g ? w : 0;
+    plat_mutex_unlock(&aw_lock);
+    if (known || !w || wait) *e = (SRead){addr, size, now};
+    plat_mutex_unlock(&shadow_lock);
+    if (!wait) return;
+    uint64_t t0 = qpc();
+    {
+        NVN_BLOCKING();
+        vk_sync_fence_wait(wait, UINT64_MAX);
+    }
+    ah_time(&ah_rd_waits, &ah_rd_ns, &ah_rd_max, qpc() - t0);
+}
+
+// --probe-vkmem: the pending-write list with values no submission has: the newest overlapping writer below a bound,
+// pruning at completion, and a full list joining a write into its nearest entry, which still covers it. The list is
+// restored after. 0: passed, else the failed check.
+int vk_mem_ahead_selftest(void) {
+    static AWrite saved[AW_N];
+    plat_mutex_lock(&aw_lock);
+    int n0 = naw, peak0 = aw_peak, bad = 0;
+    uint64_t joined0 = aw_joined, f = vk_sync_issued() + 1000000, a = 0x10000000;
+    memcpy(saved, aw, sizeof aw);
+    naw = 0;
+    plat_mutex_unlock(&aw_lock);
+    aw_add(a, a + 0x100, f);
+    aw_add(a + 0x80, a + 0x200, f + 1);
+    aw_add(a, a + 0x100, f);   // the same range again: no new entry
+    plat_mutex_lock(&aw_lock);
+    if (naw != 2) bad = 1;
+    else if (aw_writer(a, a + 0x40, 0, UINT64_MAX) != f) bad = 2;
+    else if (aw_writer(a + 0xc0, a + 0xd0, 0, UINT64_MAX) != f + 1) bad = 3;
+    else if (aw_writer(a + 0xc0, a + 0xd0, 0, f + 1) != f) bad = 4;   // below the value being recorded
+    else if (aw_writer(a + 0x200, a + 0x300, 0, UINT64_MAX)) bad = 5;   // touching, not overlapping
+    if (!bad) {
+        aw_prune(f);
+        if (naw != 1 || aw_writer(a, a + 0x40, f, UINT64_MAX)) bad = 6;
+    }
+    int fill = AW_N - naw;   // the entry check 6 left stays: fill up to exactly AW_N, so only the next add joins
+    plat_mutex_unlock(&aw_lock);
+    for (int i = 0; !bad && i < fill; i++) aw_add(a + 0x1000 * (uint64_t)(i + 1), a + 0x1000 * (uint64_t)(i + 1) + 0x10, f + 2);
+    uint64_t lo = a + 0x1000 * (AW_N + 8);
+    if (!bad) aw_add(lo, lo + 0x10, f + 3);   // full: joined with the nearest
+    plat_mutex_lock(&aw_lock);
+    if (!bad && (naw != AW_N || aw_joined != joined0 + 1 || aw_writer(lo, lo + 0x10, 0, UINT64_MAX) != f + 3)) bad = 7;
+    memcpy(aw, saved, sizeof aw);
+    naw = n0, aw_peak = peak0, aw_joined = joined0;
+    plat_mutex_unlock(&aw_lock);
+    return bad;
+}
+
+void vk_mem_ahead_log(void) {
+    plat_mutex_lock(&aw_lock);
+    rt_log("mem: sync-ahead in place: the game waited for a GPU write it reads %llu times, %.1f ms in all, longest "
+           "%.2f ms; mirror syncs staged on the CPU %.1f MiB in %llu prologues, %.1f ms, waited for an earlier "
+           "write-back %llu times, %.1f ms, longest %.2f ms; synced in place %.1f MiB; pending writes at most %d, %llu "
+           "joined", (unsigned long long)ah_rd_waits, qpc_ms(ah_rd_ns), qpc_ms(ah_rd_max), ah_stage_bytes / 1048576.0,
+           (unsigned long long)ah_stage_n, qpc_ms(ah_stage_ns), (unsigned long long)ah_ov_waits, qpc_ms(ah_ov_ns),
+           qpc_ms(ah_ov_max), ah_inplace_bytes / 1048576.0, aw_peak, (unsigned long long)aw_joined);
+    plat_mutex_unlock(&aw_lock);
+}
+
 // The run total of the waits above, once at exit, while frame-ahead is in effect: without TOTK_TRACE=perf the shadow
 // log lines come only at frames 600 and 1800.
 void vk_mem_shadow_read_log(void) {
@@ -1363,6 +1564,7 @@ void vk_mem_shadow_read_log(void) {
 }
 
 int vk_mem_shadow_on(void) { return shadow_on; }
+int vk_mem_mirror_on(void) { return vk_mirror_on; }
 
 void vk_mem_shadow_sync(uint64_t fence) {
     if (!shadow_on) return;
@@ -1396,6 +1598,11 @@ int vk_mem_shadow_deferred(void) { return ndq; }
 // Record time: the range's base is the shadow's bytes, except where an overlapping pending range has one: the GPU may
 // have written those shadow bytes since.
 void vk_mem_gpu_pending(uint64_t addr, uint64_t size) {
+    if (vk_ahead_on) vk_ahead_gpu_write(addr, size, AHW_WRITE, 0);
+    if (vk_ahead_g.lag && size) {
+        uint64_t f = vk_exec_recording_fence();
+        aw_add(addr, addr + size, f ? f : vk_sync_issued() + 1);
+    }
     if (!shadow_on || !size) return;
     uint64_t lo = addr, hi = addr + size;
     plat_mutex_lock_shared(&pool_lock);
@@ -1695,12 +1902,14 @@ static void mirror_mode(int discrete) {
 #else
     shadow_on = !sh || !*sh || strcmp(sh, "0");
 #endif
-    defer_on = shadow_on && cfg_bool("TOTK_SYNC_AHEAD") && cfg_bool("TOTK_SHADOW_DEFER");
+    defer_on = shadow_on && cfg_bool("TOTK_SYNC_AHEAD") && strcmp(cfg_value("TOTK_SYNC_AHEAD"), "check") &&
+               cfg_bool("TOTK_SHADOW_DEFER");   // check: the wait stays exact, nothing is deferred
     if (defer_on) rt_log("mem: TOTK_SHADOW_DEFER: shadow updates that wait for a reader are queued for the GPU instead");
     if (shadow_on) rt_log("mem: shadow storage: CPU-visible pools are host-visible copies of guest memory, not imports%s",
                           sh && *sh ? " (TOTK_SHADOW)" : "");
     rt_log("mem: mode %s (%s): %s", mode == 2 ? "verify" : mode ? "mirror" : "import", why,
            mode ? "pools used as buffers get a device-local mirror" : "every CPU-visible pool is imported host memory");
+    vk_ahead_init();
     // Import is the integrated-GPU mode. On a discrete card every draw reads the pools over PCIe (the comment above
     // this section has the measurements), which is the difference between playable and 5 fps when it is not intended.
     if (!mode && discrete)
@@ -2217,8 +2426,11 @@ static void gpu_wrote(const VkMemSpan *sp, uint64_t size, int shader) {
     if (r && size) gpu_writes(r, sp->offset, size);
     if (!r || r->mstate != MS_ON || sp->buffer != r->mbuf || !size) return;
     plat_mutex_lock(&mirror_lock);
-    // A binding to the end of its pool (no size) can span hundreds of MiB: those stay copies.
-    if (shader && !(sp->offset & 3) && !(size & 3) && size <= MERGE_MAX && merging() && snap_add(r, sp->offset, size)) {
+    // A binding to the end of its pool (no size) can span hundreds of MiB: those stay copies. TOTK_SYNC_AHEAD=1 in place
+    // (vk_ahead_g.wbmerge): the copies' and updates' writes merge too. A plain copy back lands when the GPU runs it, after
+    // the game, told the value is done a frame early, may have written other words of the range for the next frame,
+    // and would put the older words back; the merge writes only the words this value changed.
+    if ((shader || vk_ahead_g.wbmerge) && !(sp->offset & 3) && !(size & 3) && size <= MERGE_MAX && merging() && snap_add(r, sp->offset, size)) {
         plat_mutex_unlock(&mirror_lock);
         return;
     }
@@ -2315,6 +2527,9 @@ static void freeze_pass(void) {
 
 void vk_mem_mirror_begin(void) {
     if (!vk_mirror_on) {   // import mode: the texture checks' snapshots still skip frozen regions
+        // TOTK_SYNC_AHEAD=check notes in-place bindings where the replay resolves them: a new generation per submission
+        // makes it resolve them again in each, as mirror mode does.
+        if (vk_ahead_on) __atomic_add_fetch(&mirror_gen, 1, __ATOMIC_RELEASE);
         if (!freeze_idle) return;
         plat_mutex_lock(&gen_lock);
         ww_ep++;
@@ -2376,15 +2591,111 @@ int vk_mem_mirror_pending(void) {
     return n;
 }
 
-void vk_mem_mirror_prologue(VkCommandBuffer cb) {
+#define STG_BLOCK (64ull << 20)   // staging pool blocks (vk_staging)
+typedef struct { VkBuffer b; VmaAllocation a; } StgFree;
+static void free_shadow_stg(void *arg) {
+    StgFree *f = arg;
+    vmaDestroyBuffer(vk_ctx()->vma, f->b, f->a);
+    free(f);
+}
+
+// TOTK_SYNC_AHEAD=1 in place (vk_ahead_g.msync): the sealed sync ranges a[0..n) are copied out of guest memory into
+// staging now, on the replay thread, and the GPU copies the staging into the mirrors: the frame wait returns only after
+// the replay submitted the value (nvn_api_core.c gfx_replay_wait_value), so the GPU gets this frame's bytes even when
+// it runs the copy after the game wrote the next frame's. A range an earlier value still writes back into (aw) would
+// lose those GPU words, which a copy on the GPU timeline would have read after them: that value is waited for first
+// (mirror_lock released meanwhile; the sealed entries stay, as only the prologue takes them). Staging buffers of at
+// most STG_BLOCK / 2, freed when fence completes. Replay thread, mirror_lock held.
+static void stage_ranges(VkCommandBuffer cb, MRange *a, int n, uint64_t fence) {
+    uint64_t done = vk_sync_fence_done(), w = 0;
+    plat_mutex_lock(&aw_lock);
+    aw_prune(done);
+    for (int i = 0; i < n && naw; i++) {
+        uint64_t lo = a[i].r->import_lo + a[i].off, x = aw_writer(lo, lo + a[i].size, done, fence);
+        if (x > w) w = x;
+    }
+    plat_mutex_unlock(&aw_lock);
+    if (w) {
+        plat_mutex_unlock(&mirror_lock);
+        uint64_t t0 = qpc();
+        vk_sync_fence_wait(w, UINT64_MAX);
+        ah_time(&ah_ov_waits, &ah_ov_ns, &ah_ov_max, qpc() - t0);
+        plat_mutex_lock(&mirror_lock);
+        a = pend;   // the list may have grown meanwhile
+    }
+    uint64_t t0 = qpc(), bytes = 0;
+    qsort(a, (size_t)n, sizeof *a, range_cmp);
+    const uint64_t lim = STG_BLOCK / 2;
+    int i = 0;
+    uint64_t at_i = 0;   // bytes of a[i] already staged
+    while (i < n) {
+        uint64_t total = 0, jo = at_i;
+        for (int j = i; j < n && total < lim;) {
+            uint64_t lim_j = a[j].r->import_hi - a[j].r->import_lo, sz = a[j].off >= lim_j ? 0
+                           : a[j].off + a[j].size > lim_j ? lim_j - a[j].off : a[j].size;
+            uint64_t left = sz - jo, take = left < lim - total ? left : lim - total;
+            total += take;
+            if (take == left) j++, jo = 0;
+            else jo += take;
+        }
+        if (!total) break;
+        VkBuffer sb;
+        VmaAllocation sa;
+        uint8_t *p = vk_staging(total, &sb, &sa);
+        int k = 0;
+        PoolRec *kr = NULL;
+        for (uint64_t at = 0; at < total;) {
+            PoolRec *r = a[i].r;
+            uint64_t lim_i = r->import_hi - r->import_lo, sz = a[i].off >= lim_i ? 0
+                           : a[i].off + a[i].size > lim_i ? lim_i - a[i].off : a[i].size;
+            uint64_t left = sz - at_i, take = left < total - at ? left : total - at;
+            if (take) {
+                if (kr != r && k) vkCmdCopyBuffer(cb, sb, kr->mbuf, (uint32_t)k, mregions), k = 0;
+                kr = r;
+                memcpy(p + at, (const void *)(uintptr_t)(r->import_lo + a[i].off + at_i), take);
+                if (k == cregions) grow((void **)&mregions, &cregions, sizeof *mregions);
+                mregions[k++] = (VkBufferCopy){at, a[i].off + at_i, take};
+            }
+            at += take, at_i += take;
+            if (at_i == sz) i++, at_i = 0;
+        }
+        if (k) vkCmdCopyBuffer(cb, sb, kr->mbuf, (uint32_t)k, mregions);
+        vmaFlushAllocation(vk_ctx()->vma, sa, 0, VK_WHOLE_SIZE);
+        StgFree *f = malloc(sizeof *f);
+        if (!f) rt_fatal("vk: out of memory");
+        f->b = sb, f->a = sa;
+        vk_completion_add(fence, free_shadow_stg, f);
+        bytes += total;
+        mrep.upload_copies += (uint64_t)k;
+    }
+    mrep.upload_bytes += bytes;
+    uint64_t dt = qpc() - t0;
+    plat_mutex_lock(&aw_lock);
+    ah_stage_bytes += bytes, ah_stage_n++, ah_stage_ns += dt;
+    plat_mutex_unlock(&aw_lock);
+}
+
+void vk_mem_mirror_prologue(VkCommandBuffer cb, uint64_t fence) {
     plat_mutex_lock(&mirror_lock);
     if (!pend_seal && snl_copied == snl_seal) {
         plat_mutex_unlock(&mirror_lock);
         return;
     }
+    int staged = vk_ahead_g.msync && pend_seal;
+    if (vk_ahead_on && !staged)   // the copies read guest memory when the GPU runs them
+        for (int i = 0; i < pend_seal; i++) vk_ahead_read(pend[i].r->import_lo + pend[i].off, pend[i].size, AH_MSYNC, fence);
     mbarrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
              VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    copy_ranges(cb, pend, pend_seal, 1, &mrep.upload_bytes, &mrep.upload_copies);
+    if (staged) stage_ranges(cb, pend, pend_seal, fence);
+    else {
+        uint64_t b0 = mrep.upload_bytes;
+        copy_ranges(cb, pend, pend_seal, 1, &mrep.upload_bytes, &mrep.upload_copies);
+        if (vk_ahead_g.lag) {
+            plat_mutex_lock(&aw_lock);
+            ah_inplace_bytes += mrep.upload_bytes - b0;
+            plat_mutex_unlock(&aw_lock);
+        }
+    }
     if (snl_copied < snl_seal) {   // the snapshots read what the uploads above wrote
         if (pend_seal) mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
                             VK_ACCESS_2_TRANSFER_READ_BIT);
@@ -2495,6 +2806,11 @@ int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence) {
         mbarrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
         int m = wb_merge_record(cb);
+        if (m && vk_ahead_g.lag)
+            for (int i = 0; i < nsnl; i++)
+                aw_add(snl[i].r->import_lo + snl[i].off, snl[i].r->import_lo + snl[i].off + snl[i].size, fence);
+        if (m && vk_ahead_on)   // the merge writes guest memory when the GPU runs it
+            for (int i = 0; i < nsnl; i++) vk_ahead_read(snl[i].r->import_lo + snl[i].off, snl[i].size, AH_WBM, fence);
         if (!m) {   // no range list: copy them plainly
             for (int i = 0; i < nsnl; i++) range_add(&wbl, &nwbl, &cwbl, 0, snl[i].r, snl[i].off, snl[i].size);
         }
@@ -2514,6 +2830,11 @@ int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence) {
         mbarrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
                  VK_ACCESS_2_TRANSFER_READ_BIT);
         for (int i = 0; i < nwbl; i++) wbl[i].r->wb_sub = msub;
+        if (vk_ahead_g.lag)
+            for (int i = 0; i < nwbl; i++)
+                aw_add(wbl[i].r->import_lo + wbl[i].off, wbl[i].r->import_lo + wbl[i].off + wbl[i].size, fence);
+        if (vk_ahead_on)
+            for (int i = 0; i < nwbl; i++) vk_ahead_read(wbl[i].r->import_lo + wbl[i].off, wbl[i].size, AH_WB, fence);
         mrep.wb_ranges += (uint64_t)nwbl;
         rec += copy_ranges(cb, wbl, nwbl, 0, &mrep.wb_bytes, &mrep.wb_copies) + 2;
         mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -2784,7 +3105,6 @@ void vk_upload_end(void) { plat_rmutex_unlock(&cmd_lock); }
 // the headroom thread (vk_headroom.c) or a burst of uploads held every staging allocation of the render thread: one
 // took 47-50 ms, for a few bytes, in the first frame after a save load. Larger buffers than a block go to the default
 // pool.
-#define STG_BLOCK (64ull << 20)
 #define STG_MIN_BLOCKS 2
 static VmaPool stg_pool;
 static int stg_pool_tried;
@@ -2852,12 +3172,6 @@ void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc) {
     return info.pMappedData;
 }
 
-typedef struct { VkBuffer b; VmaAllocation a; } StgFree;
-static void free_shadow_stg(void *arg) {
-    StgFree *f = arg;
-    vmaDestroyBuffer(vk_ctx()->vma, f->b, f->a);
-    free(f);
-}
 
 // Records the deferred shadow copies (vk_mem_shadow_sync queued the ranges): the guest bytes go into staging buffers
 // now, the GPU copies them into the pools' shadows. The barrier before waits for every earlier command, writes and

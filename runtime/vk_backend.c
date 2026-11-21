@@ -478,6 +478,8 @@ void gfx_exit_log(void) {
     if (!plat_xchg32(&fs_done, 1)) fs_log(&fs_run, "over the run");
     vk_texture_eager_log();
     vk_mem_shadow_read_log();
+    vk_ahead_log_final();
+    vk_ahead_log_guards();
     if (gfx_replay_async() && r_started && !plat_xchg32(&done, 1)) replay_log(game_frames, 1);
 }
 

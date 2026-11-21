@@ -1277,6 +1277,7 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
     }
     if (sp.offset % align == 0) {
         VK_MEM_USE(sp);
+        VK_AHEAD_READ(sp, addr, n, use);
         if (written) ub_written(ex, addr, n);
         *out = (VkDescriptorBufferInfo){sp.buffer, sp.offset, n};
         if (written)
@@ -2966,6 +2967,7 @@ static void bind_vertex_buffers(VkExec *ex) {
                 if (r->address && vk_mem_resolve(r->address, 1, &sp)) {
                     VK_MEM_USE(sp);
                     nb = sp.buffer, no = sp.offset, nsz = r->size && r->size < sp.avail ? r->size : sp.avail;
+                    VK_AHEAD_READ(sp, r->address, nsz, VK_MUSE_VB);
                     ncls = sp.cls, npool = sp.pool;
                 }
                 D->B.vin[b] = *r, D->B.vres |= 1u << b;
@@ -3788,6 +3790,7 @@ static uint32_t mo_vertex_buffers(VkExec *ex) {
         if (!r->address || !vk_mem_resolve(r->address, 1, &sp)) continue;
         VK_MEM_USE(sp);
         v->b[b] = sp.buffer, v->o[b] = sp.offset, v->sz[b] = r->size && r->size < sp.avail ? r->size : sp.avail;
+        VK_AHEAD_READ(sp, r->address, v->sz[b], VK_MUSE_VB);
     }
     memcpy(MQ.vin, ex->vbuf, sizeof MQ.vin);
     MQ.vgen = gen;
@@ -4422,6 +4425,7 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
         return warn_once(W_INDEX, "index buffer %#llx is not aligned to its index size: draw skipped", (unsigned long long)d->ibuf);
     } else {
         VK_MEM_USE(sp);
+        VK_AHEAD_READ(sp, d->ibuf, bytes, VK_MUSE_IB);
         vkCmdBindIndexBuffer(ex->cb, sp.buffer, sp.offset, d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
         ex->recorded++;
         vk_mem_count(sp.cls, VK_MUSE_IB, bytes);
@@ -4450,6 +4454,8 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
     ex->fr.draws++;
     VK_MEM_USE(ip);
     VK_MEM_USE(ib);
+    VK_AHEAD_READ(ip, d->ind, sizeof(VkDrawIndexedIndirectCommand), VK_MUSE_IND);
+    VK_AHEAD_READ(ib, d->ibuf, ib.avail < 0x10000 ? ib.avail : 0x10000, VK_MUSE_IB);   // the count is the GPU's: 64 KiB
     vkCmdBindIndexBuffer(ex->cb, ib.buffer, ib.offset, d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexedIndirect(ex->cb, ip.buffer, ip.offset, 1, sizeof(VkDrawIndexedIndirectCommand));
     ex->recorded += 2;
@@ -4504,6 +4510,7 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
     if (!p || !info) return warn_once(W_PIPELINE, "a compute pipeline could not be created: dispatches with it are skipped");
     vk_exec_barrier(ex);
     VK_MEM_USE(ip);
+    VK_AHEAD_READ(ip, d->ind, sizeof(VkDispatchIndirectCommand), VK_MUSE_IND);
     bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, p);
     D->c0_dim[0] = D->c0_dim[1] = D->c0_dim[2] = 0;
     D->B.c0_valid[2] = 0;   // a fresh c0 range: the copy below must not change one an earlier dispatch reads
@@ -4759,6 +4766,7 @@ static void op_update_ub(VkExec *ex, const p_update_ub *u) {
             uint8_t *d = scratch(ex, u->size, &b, &o);
             MX_CPY(d, u->data, u->size);
             VK_MEM_PICK(sp);
+            VK_AHEAD_READ(sp, u->dst, u->size, VK_MUSE_GPU_WRITE);
             ov_add(u->dst, u->dst + u->size, b, o, &sp);
             vk_mem_gpu_wrote(&sp, u->size);
             vk_usnap_drop(u->dst, u->size);
@@ -4776,6 +4784,7 @@ static void op_update_ub(VkExec *ex, const p_update_ub *u) {
     vk_exec_barrier(ex);   // earlier draws finished with the old contents; overlaid updates' copies go first
     MX_CPY(scratch(ex, u->size, &b, &o), u->data, u->size);
     VK_MEM_PICK(sp);
+    VK_AHEAD_READ(sp, u->dst, u->size, VK_MUSE_GPU_WRITE);
     VkBufferCopy cp = {o, sp.offset, u->size};
     vkCmdCopyBuffer(ex->cb, b, sp.buffer, 1, &cp);
     vk_mem_gpu_wrote(&sp, u->size);

@@ -295,7 +295,7 @@ static void start(void) {
     }
     g.win_fmt = VK_FORMAT_R8G8B8A8_UNORM;
     g.workers = cfg_int("TOTK_REPLAY_WORKERS");
-    g.sync_ahead = cfg_bool("TOTK_SYNC_AHEAD");
+    g.sync_ahead = cfg_bool("TOTK_SYNC_AHEAD") && strcmp(cfg_value("TOTK_SYNC_AHEAD"), "check") != 0;   // check: exact
     g.hdr = vk_hdr_wanted();
     g.test = knob_int("TOTK_FG_TEST");
     g.debug = knob_int("TOTK_FG_DEBUG");
