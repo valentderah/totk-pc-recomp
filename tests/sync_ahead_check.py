@@ -1,4 +1,4 @@
-"""Exercise the production sync-ahead wait selection with a deterministic back end.
+"""Exercise the production sync-ahead wait selection with a deterministic back end (TOTK_SYNC_AHEAD 0, 1, check).
 
     python tests/sync_ahead_check.py [--cc path/to/clang]
 """
@@ -35,7 +35,19 @@ static int wait_for(uint64_t value, uint64_t timeout) {
 typedef struct { uint64_t (*fence_done)(void); void (*cpu_synced)(uint64_t); int (*fence_wait)(uint64_t, uint64_t); } GfxBackend;
 static const GfxBackend backend = {done, cpu_synced, wait_for};
 static const GfxBackend *gfx_backend(void) { return &backend; }
-static int cfg_bool(const char *name) { assert(!strcmp(name, "TOTK_SYNC_AHEAD")); return enabled; }
+// enabled: 0 off, 1 on, 2 check (the wait stays exact; vk_ahead.c is told what the late wait would have waited for)
+static const char *cfg_value(const char *name) {
+    assert(!strcmp(name, "TOTK_SYNC_AHEAD"));
+    return enabled == 2 ? "check" : enabled ? "1" : "0";
+}
+static int entry_calls, lag_calls, done_calls, done_ok;
+static uint64_t lag_asked, lag_value;
+static void vk_ahead_frame_entry(void) { assert(!lag_calls && !done_calls); entry_calls++; }
+static void vk_ahead_frame_lag(uint64_t asked, uint64_t lagged) {
+    assert(entry_calls == 1 && !sync_calls);   // before cpu_synced: the small write-backs see the lag
+    lag_calls++, lag_asked = asked, lag_value = lagged;
+}
+static void vk_ahead_frame_done(int ok) { assert(lag_calls == 1); done_calls++, done_ok = ok; }
 static int vk_mem_shadow_on(void) { return shadow; }
 static uint64_t nvn_fence_last(void) { return last; }
 static void rt_log(const char *format, ...) { (void)format; }
@@ -66,9 +78,10 @@ int main(int argc, char **argv) {
     qstamp_on = rt_game_version == 143 && enabled;
     last = 20; nvn_sync_ahead_present();
     last = 40; nvn_sync_ahead_present();
-    assert(pa_fence[0] == (enabled && shadow && supported ? 40 : 0));
-    assert(pa_fence[1] == (enabled && shadow && supported ? 20 : 0));
-    assert(qstamp_on == (rt_game_version == 143 && enabled && shadow));   // a refused switch leaves the game's check
+    int on = enabled == 1 && shadow && supported, check = enabled == 2 && supported;
+    assert(pa_fence[0] == (on || check ? 40 : 0));
+    assert(pa_fence[1] == (on || check ? 20 : 0));
+    assert(qstamp_on == (rt_game_version == 143 && on));   // a refused switch and check leave the game's check
     int relaxed_cases = 0, polls = 0, other_waits = 0;
     for (int i = 0; i < 100000; i++) {
         sync_t sync = {.fenced = random_word() % 2, .fence = random_word() % 65};
@@ -77,16 +90,23 @@ int main(int argc, char **argv) {
         completed = random_word() % 65;
         uint64_t initial_done = completed, target = sync.fence;
         succeed = random_word() % 2;
-        relaxed = sync.fenced && enabled && shadow && supported && timeout && lr == site &&
-                  completed < target && target > 20 && target <= 40;
+        int lagcase = sync.fenced && timeout && lr == site && completed < target && target > 20 && target <= 40;
+        relaxed = on && lagcase;
+        int checked = check && sync.fenced && timeout && lr == site;
         relaxed_cases += relaxed; polls += timeout == 0; other_waits += lr != site;
         if (relaxed) target = 20;
         replay_calls = shadow_calls = sync_calls = wait_calls = 0;
+        entry_calls = lag_calls = done_calls = 0;
         synced = waited = waited_timeout = replay_value = UINT64_MAX;
         pa_guard = 0;
         Cpu cpu = {0}; cpu.x[0] = (uintptr_t)&sync; cpu.x[1] = timeout; cpu.x[30] = lr;
         nvnSyncWait(&cpu);
         assert(replay_calls == relaxed && shadow_calls == relaxed);
+        assert(entry_calls == checked && lag_calls == checked && done_calls == checked);
+        if (checked) {   // exact wait, the late one's value told to the check
+            assert(lag_asked == sync.fence && lag_value == (lagcase ? 20 : sync.fence));
+            assert(done_ok == (initial_done >= target || succeed));
+        }
         assert(pa_guard == (relaxed ? sync.fence : 0));
         if (relaxed) assert(replay_value == sync.fence);
         if (!sync.fenced) {
@@ -102,9 +122,9 @@ int main(int argc, char **argv) {
         }
     }
     assert(polls > 0 && other_waits > 0);
-    assert((relaxed_cases > 0) == (enabled && shadow && supported));
+    assert((relaxed_cases > 0) == on);
     // Raising the guard for an older request must not lower a guard already published by another waiter.
-    if (enabled && shadow && supported) {
+    if (on) {
         sync_t sync = {.fenced = 1, .fence = 35};
         completed = 25; pa_guard = 39; relaxed = 1;
         Cpu cpu = {0}; cpu.x[0] = (uintptr_t)&sync; cpu.x[1] = UINT64_MAX; cpu.x[30] = site;
@@ -130,7 +150,7 @@ def main():
         path.write_text(HARNESS.replace("PRODUCTION", source[start:end]))
         subprocess.run([args.cc, "-std=c11", "-O2", "-Wall", "-Werror", str(path), "-o", str(exe)], check=True)
         for version in (110, 121, 143, 999):
-            for enabled in (0, 1):
+            for enabled in (0, 1, 2):
                 for shadow in (0, 1):
                     subprocess.run([str(exe), str(version), str(enabled), str(shadow)], check=True)
 

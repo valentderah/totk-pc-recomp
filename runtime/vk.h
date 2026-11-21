@@ -8,6 +8,7 @@
 #pragma clang diagnostic pop
 #include "nvn_obj.h"   // pool_t, tex_t, view_t, samp_par, NVNcopyRegion (memory and textures block)
 #include "gfx.h"       // GfxShader, GfxShaderRes, GfxShaderAnswers (pipelines block)
+#include "vk_ahead.h"  // TOTK_SYNC_AHEAD=check hooks (vk_ahead_on)
 
 // Required (device choice fails without them): Vulkan 1.3; VK_KHR_swapchain, VK_KHR_push_descriptor,
 // VK_EXT_depth_clip_control, VK_EXT_external_memory_host; features timelineSemaphore, dynamicRendering,
@@ -265,6 +266,19 @@ void vk_mem_use(VkMemSpan *sp);
 void vk_mem_pick(VkMemSpan *sp);
 #define VK_MEM_USE(sp) do { if (vk_mirror_on && (sp).pool) vk_mem_use(&(sp)); } while (0)
 #define VK_MEM_PICK(sp) do { if (vk_mirror_on && (sp).pool) vk_mem_pick(&(sp)); } while (0)
+// TOTK_SYNC_AHEAD=check (vk_ahead.c): VK_AHEAD_READ after VK_MEM_USE / VK_MEM_PICK notes a binding or copy of
+// [addr, addr+size) that the GPU reads (use: VK_MUSE_*; GPU_WRITE for a write) in place in guest memory: an imported
+// pool without a mirror or shadow. One test of vk_ahead_on when the mode is off.
+void vk_ahead_span(const VkMemSpan *sp, uint64_t addr, uint64_t size, int use);
+#define VK_AHEAD_READ(sp, addr, size, use) \
+    do { if (__builtin_expect(vk_ahead_on, 0)) vk_ahead_span(&(sp), (addr), (size), (use)); } while (0)
+int vk_mem_span_inplace(const VkMemSpan *sp);   // the span is guest memory itself (no mirror, no shadow, no device memory)
+// The write watch over the ranges: every write made so far stamped into the page generations; untracked[i] 1 where
+// range i has no write watch. Returns the newest generation.
+uint32_t vk_mem_ahead_observe(const uint64_t (*iv)[2], int n, uint8_t *untracked);
+// Bytes of [lo, hi) in pages stamped after generation since; *first: the first such byte.
+uint64_t vk_mem_ahead_written(uint64_t lo, uint64_t hi, uint32_t since, uint64_t *first);
+int vk_mem_pool_info(uint64_t addr, uint64_t *lo, uint64_t *size, uint32_t *flags, int *mirrored);   // 0: no pool
 void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size);
 // A shader's storage-buffer write: goes back through the write-back merge (vk_memory.c), which keeps the words the GPU
 // did not change.
@@ -303,7 +317,7 @@ void vk_mem_mirror_begin(void);
 int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence);
 void vk_mem_mirror_seal(void);   // before vk_mem_shadow_sync: the copies the next vk_mem_mirror_prologue takes
 int vk_mem_mirror_pending(void);
-void vk_mem_mirror_prologue(VkCommandBuffer cb);
+void vk_mem_mirror_prologue(VkCommandBuffer cb, uint64_t fence);   // fence: the value of the part it precedes
 // Shadow storage (vk_memory.c): vk_sync.c calls vk_mem_shadow_sync right before each submit; the replay notes every GPU
 // write into CPU-visible memory at record time (vk_mem_gpu_pending) and reports it at the fence with vk_gpu_written,
 // which copies the bytes back into guest memory before telling the texture cache (vk_guest_written).

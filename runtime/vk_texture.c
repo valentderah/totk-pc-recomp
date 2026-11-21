@@ -1203,6 +1203,7 @@ static int upload_gpu(Tex *e) {
     vk_upload_end();
     if (vk_upload_held() > UPLOAD_HELD_MAX) vk_upload_flush(0);
     free(dr), free(rg), free(ar);
+    if (vk_ahead_on) vk_ahead_read(e->pub.addr, t->L.size, AH_DESWZ, 0);   // the batch reads the pool when it runs
     return 1;
 }
 
@@ -2584,6 +2585,8 @@ void vk_texture_write_back_small(uint64_t fence) {
         }
     write_back_n(hit, k);
     for (int i = 0; i < k; i++) perf_count(PERF_CNT_WB);
+    if (vk_ahead_on)
+        for (int i = 0; i < k; i++) vk_ahead_small(hit[i]->pub.addr, hit[i]->gpu_fence);
     for (int i = k; i < n; i++) perf_count(PERF_CNT_WB_SKIP);
     free(hit);
     unlock();

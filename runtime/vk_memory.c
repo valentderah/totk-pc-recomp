@@ -982,6 +982,56 @@ static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
     }
 }
 
+// ---------------------------------------------------------------- TOTK_SYNC_AHEAD=check (vk_ahead.c)
+int vk_mem_span_inplace(const VkMemSpan *sp) {
+    const PoolRec *r = sp->pool;
+    return r && !sp->alloc && r->kind == POOL_IMPORT && !r->smap && sp->buffer == r->buf;
+}
+
+uint32_t vk_mem_ahead_observe(const uint64_t (*iv)[2], int n, uint8_t *untracked) {
+    plat_mutex_lock(&gen_lock);
+    uint32_t g = ++gen_now;
+    for (int i = 0; i < n; i++) {
+        uint64_t lo = iv[i][0] & ~0xfffull, hi = (iv[i][1] + 0xfff) & ~0xfffull;
+        int frozen = hi > lo && hi <= RT_ADDRESS_LIMIT;   // a frozen region changed in no page since its freeze
+        for (uint64_t a = lo & ~((1ull << REG_SHIFT) - 1); a < hi && frozen; a += 1ull << REG_SHIFT) frozen = mem_frozen(a);
+        untracked[i] = (uint8_t)(!frozen && (hi <= lo || hi > RT_ADDRESS_LIMIT || !query_stamp(lo, hi, g)));
+    }
+    g = gen_now;
+    plat_mutex_unlock(&gen_lock);
+    return g;
+}
+
+uint64_t vk_mem_ahead_written(uint64_t lo, uint64_t hi, uint32_t since, uint64_t *first) {
+    uint64_t bytes = 0;
+    if (hi <= lo || hi > RT_ADDRESS_LIMIT) return 0;
+    plat_mutex_lock_shared(&gen_lock);
+    for (uint64_t r = lo >> REG_SHIFT; r <= (hi - 1) >> REG_SHIFT; r++) {
+        if (reg_max[r] <= since) continue;
+        uint64_t a = r << REG_SHIFT > lo ? r << REG_SHIFT : lo & ~0xfffull;
+        uint64_t b = (r + 1) << REG_SHIFT < hi ? (r + 1) << REG_SHIFT : hi;
+        const uint32_t *ch = gen_chunk[a >> GEN_CHUNK_SHIFT];   // a 2 MiB region lies in one chunk
+        if (!ch) continue;
+        for (uint64_t x = a; x < b; x += 1ull << GEN_PAGE_SHIFT) {
+            if (ch[(x >> GEN_PAGE_SHIFT) & (GEN_PER_CHUNK - 1)] <= since) continue;
+            uint64_t s = x > lo ? x : lo, e = x + (1ull << GEN_PAGE_SHIFT) < hi ? x + (1ull << GEN_PAGE_SHIFT) : hi;
+            if (!bytes && first) *first = s;
+            bytes += e - s;
+        }
+    }
+    plat_mutex_unlock_shared(&gen_lock);
+    return bytes;
+}
+
+int vk_mem_pool_info(uint64_t addr, uint64_t *lo, uint64_t *size, uint32_t *flags, int *mirrored) {
+    plat_mutex_lock_shared(&pool_lock);
+    const pidx_ent *e = pidx_find(&pool_index, (uintptr_t)addr, 1);
+    const PoolRec *r = e ? e->buf : NULL;
+    if (r) *lo = r->lo, *size = r->size, *flags = r->flags, *mirrored = r->mstate == MS_ON;
+    plat_mutex_unlock_shared(&pool_lock);
+    return r != NULL;
+}
+
 // ---------------------------------------------------------------- shadow storage
 // Where importing guest memory costs too much (Linux: re-protecting pages that amdgpu imported as a userptr
 // invalidates the buffer, about 1.3 ms per 16 MiB at the next submit, and the import's write pinning clears the
@@ -1322,6 +1372,7 @@ static uint64_t s_read_waits, s_read_ticks;   // shadow_lock: since the last log
 static uint64_t r_read_waits, r_read_ticks, r_read_max;   // shadow_lock: over the run (vk_mem_shadow_read_log)
 
 void vk_mem_shadow_read(uint64_t addr, uint64_t size) {
+    if (vk_ahead_on) vk_ahead_invalidate(addr, size);
     if (!shadow_on || !size || !nvn_sync_ahead_guard()) return;
     plat_mutex_lock(&shadow_lock);
     uint64_t now = vk_sync_issued();
@@ -1396,6 +1447,7 @@ int vk_mem_shadow_deferred(void) { return ndq; }
 // Record time: the range's base is the shadow's bytes, except where an overlapping pending range has one: the GPU may
 // have written those shadow bytes since.
 void vk_mem_gpu_pending(uint64_t addr, uint64_t size) {
+    if (vk_ahead_on) vk_ahead_gpu_write(addr, size, AHW_WRITE, 0);
     if (!shadow_on || !size) return;
     uint64_t lo = addr, hi = addr + size;
     plat_mutex_lock_shared(&pool_lock);
@@ -1689,12 +1741,14 @@ static void mirror_mode(int discrete) {
 #else
     shadow_on = !sh || !*sh || strcmp(sh, "0");
 #endif
-    defer_on = shadow_on && cfg_bool("TOTK_SYNC_AHEAD") && cfg_bool("TOTK_SHADOW_DEFER");
+    defer_on = shadow_on && cfg_bool("TOTK_SYNC_AHEAD") && strcmp(cfg_value("TOTK_SYNC_AHEAD"), "check") &&
+               cfg_bool("TOTK_SHADOW_DEFER");   // check: the wait stays exact, nothing is deferred
     if (defer_on) rt_log("mem: TOTK_SHADOW_DEFER: shadow updates that wait for a reader are queued for the GPU instead");
     if (shadow_on) rt_log("mem: shadow storage: CPU-visible pools are host-visible copies of guest memory, not imports%s",
                           sh && *sh ? " (TOTK_SHADOW)" : "");
     rt_log("mem: mode %s (%s): %s", mode == 2 ? "verify" : mode ? "mirror" : "import", why,
            mode ? "pools used as buffers get a device-local mirror" : "every CPU-visible pool is imported host memory");
+    vk_ahead_init();
     // Import is the integrated-GPU mode. On a discrete card every draw reads the pools over PCIe (the comment above
     // this section has the measurements), which is the difference between playable and 5 fps when it is not intended.
     if (!mode && discrete)
@@ -2309,6 +2363,9 @@ static void freeze_pass(void) {
 
 void vk_mem_mirror_begin(void) {
     if (!vk_mirror_on) {   // import mode: the texture checks' snapshots still skip frozen regions
+        // TOTK_SYNC_AHEAD=check notes in-place bindings where the replay resolves them: a new generation per submission
+        // makes it resolve them again in each, as mirror mode does.
+        if (vk_ahead_on) __atomic_add_fetch(&mirror_gen, 1, __ATOMIC_RELEASE);
         if (!freeze_idle) return;
         plat_mutex_lock(&gen_lock);
         ww_ep++;
@@ -2370,12 +2427,14 @@ int vk_mem_mirror_pending(void) {
     return n;
 }
 
-void vk_mem_mirror_prologue(VkCommandBuffer cb) {
+void vk_mem_mirror_prologue(VkCommandBuffer cb, uint64_t fence) {
     plat_mutex_lock(&mirror_lock);
     if (!pend_seal && snl_copied == snl_seal) {
         plat_mutex_unlock(&mirror_lock);
         return;
     }
+    if (vk_ahead_on)   // the copies read guest memory when the GPU runs them
+        for (int i = 0; i < pend_seal; i++) vk_ahead_read(pend[i].r->import_lo + pend[i].off, pend[i].size, AH_MSYNC, fence);
     mbarrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
              VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
     copy_ranges(cb, pend, pend_seal, 1, &mrep.upload_bytes, &mrep.upload_copies);
@@ -2489,6 +2548,8 @@ int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence) {
         mbarrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
         int m = wb_merge_record(cb);
+        if (m && vk_ahead_on)   // the merge writes guest memory when the GPU runs it
+            for (int i = 0; i < nsnl; i++) vk_ahead_read(snl[i].r->import_lo + snl[i].off, snl[i].size, AH_WBM, fence);
         if (!m) {   // no range list: copy them plainly
             for (int i = 0; i < nsnl; i++) range_add(&wbl, &nwbl, &cwbl, 0, snl[i].r, snl[i].off, snl[i].size);
         }
@@ -2508,6 +2569,8 @@ int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence) {
         mbarrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
                  VK_ACCESS_2_TRANSFER_READ_BIT);
         for (int i = 0; i < nwbl; i++) wbl[i].r->wb_sub = msub;
+        if (vk_ahead_on)
+            for (int i = 0; i < nwbl; i++) vk_ahead_read(wbl[i].r->import_lo + wbl[i].off, wbl[i].size, AH_WB, fence);
         mrep.wb_ranges += (uint64_t)nwbl;
         rec += copy_ranges(cb, wbl, nwbl, 0, &mrep.wb_bytes, &mrep.wb_copies) + 2;
         mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,

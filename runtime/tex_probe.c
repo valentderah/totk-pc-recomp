@@ -372,6 +372,10 @@ static int test_import(pool_t *pool) {
     GCHECK(vk_mem_changed(RT_KERNEL_BASE, 0x1000, 0, &g3) == -1, "the kernel region is reported as tracked");
     printf("probe-vkmem: write watch: CPU writes reported page-exact; generations see CPU and explicit writes\n");
     g_gpu_checks += 7;
+    int ah = vk_ahead_selftest(a, pool->size);
+    GCHECK(!ah, "sync-ahead check self test failed at check %d", ah);
+    printf("probe-vkmem: sync-ahead check: a write after the frame wait into the read set is flagged, one before it is not\n");
+    g_gpu_checks++;
     return 0;
 }
 

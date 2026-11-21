@@ -385,7 +385,7 @@ static VkCommandBuffer prologue(VkCtx *c, uint64_t fence, int direct) {
     }
     int pair = ts_open(cb);
     vk_mem_shadow_prologue(cb, fence);   // before the mirror copies, which read the shadow these bring up to date
-    vk_mem_mirror_prologue(cb);
+    vk_mem_mirror_prologue(cb, fence);
     ts_close(cb, pair, fence);
     if (direct || !rec_end_cb(cb, 0, 0)) vkEndCommandBuffer(cb);
     return cb;

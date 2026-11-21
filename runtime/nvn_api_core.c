@@ -15,6 +15,7 @@
 #include "host.h"
 #include "nvn_api.h"
 #include "nvn_pool_index.h"
+#include "vk_ahead.h"
 #include "platform/platform.h"
 
 #define DEV_MAGIC MAGIC('D', 'E', 'V', 0)
@@ -494,10 +495,13 @@ static uint64_t frame_wait_lr(void) {
     if (rt_game_version == 110) return 0x7000b39aa4ull;
     return rt_game_version == 121 ? 0x7000b23dfcull : rt_game_version == 143 ? 0x70002db99cull : 0;
 }
-static int sync_ahead(void) {
-    static int on = -1;
-    if (on < 0) {
-        on = cfg_bool("TOTK_SYNC_AHEAD");
+// TOTK_SYNC_AHEAD=check (vk_ahead.c): the wait stays exact; the presents and the wait note what the one-frame-late
+// wait would have waited for, and the back end counts what that would have raced. sync_mode: 0 off, 1 on, 2 check.
+static int sync_mode(void) {
+    static int mode = -1;
+    if (mode < 0) {
+        const char *v = cfg_value("TOTK_SYNC_AHEAD");
+        int on = strcmp(v, "0") != 0 && strcmp(v, "check") != 0, check = !strcmp(v, "check");
         // Without shadow storage the GPU reads the game's own memory, which the game writes ahead: nothing guards
         // that. The Vulkan back end sets the mode while it starts, before the game's first present or wait; the null
         // back end never does.
@@ -506,20 +510,22 @@ static int sync_ahead(void) {
                    "the game waits for the GPU as before");
             on = 0;
         }
-        if (on && !frame_wait_lr()) {
+        if ((on || check) && !frame_wait_lr()) {
             rt_log("nvn: TOTK_SYNC_AHEAD: no frame wait site is known for this game version; the game waits for the "
                    "GPU as before");
-            on = 0;
+            on = check = 0;
         }
         // The depth query patch (set qstamp, patches-v143.txt) is switched by TOTK_SYNC_AHEAD too: a refused switch
         // leaves the game's own frame number check, as with the switch off.
         if (!on) rt_patch_switch(rt_patch_set("qstamp"), 0);
         if (on) rt_log("nvn: TOTK_SYNC_AHEAD: a wait for the frame presented last waits for the frame before it");
+        mode = on ? 1 : check ? 2 : 0;
     }
-    return on;
+    return mode;
 }
+static int sync_ahead(void) { return sync_mode() == 1; }
 void nvn_sync_ahead_present(void) {
-    if (!sync_ahead()) return;
+    if (!sync_mode()) return;
     __atomic_store_n(&pa_fence[1], __atomic_load_n(&pa_fence[0], __ATOMIC_RELAXED), __ATOMIC_RELEASE);
     __atomic_store_n(&pa_fence[0], nvn_fence_last(), __ATOMIC_RELEASE);
 }
@@ -533,12 +539,15 @@ NVN_API(nvnSyncWait) {
     uint64_t timeout = arg_x(c, 1);
     if (!s->fenced) { ret_x(c, NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED); return; }
     const GfxBackend *b = gfx_backend();
-    uint64_t want = s->fence;
+    uint64_t want = s->fence, lag = s->fence;
     // Only the game's per-frame wait lags, and not a poll (timeout 0).
-    if (timeout && c->x[30] == frame_wait_lr() && sync_ahead() && b->fence_done() < want) {
+    int mode = timeout && c->x[30] == frame_wait_lr() ? sync_mode() : 0;
+    if (mode == 2) vk_ahead_frame_entry();
+    if (mode && b->fence_done() < want) {
         uint64_t p0 = __atomic_load_n(&pa_fence[0], __ATOMIC_ACQUIRE);
         uint64_t p1 = __atomic_load_n(&pa_fence[1], __ATOMIC_ACQUIRE);
-        if (want <= p0 && want > p1) want = p1;
+        if (want <= p0 && want > p1) lag = p1;
+        if (mode == 1) want = lag;
     }
     if (want != s->fence) {   // the replay of the asked value is done first: the guard then covers every copy of it
         {
@@ -551,7 +560,9 @@ NVN_API(nvnSyncWait) {
         vk_mem_shadow_fence();   // a shadow sync that read the old guard finishes before the game writes again
     }
     if (b->fence_done() >= want) {
+        if (mode == 2) vk_ahead_frame_lag(s->fence, lag);
         b->cpu_synced(want == s->fence ? s->fence : b->fence_done());
+        if (mode == 2) vk_ahead_frame_done(1);
         ret_x(c, NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED);
         return;
     }
@@ -560,7 +571,9 @@ NVN_API(nvnSyncWait) {
         NVN_BLOCKING();
         ok = b->fence_wait(want, timeout);
     }
+    if (mode == 2) vk_ahead_frame_lag(s->fence, lag);
     if (ok) b->cpu_synced(want == s->fence ? s->fence : b->fence_done());
+    if (mode == 2) vk_ahead_frame_done(ok);
     ret_x(c, ok ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED);
 }
 // void nvnEventBuilderSetDefaults(NVNeventBuilder *b)
