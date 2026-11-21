@@ -50,7 +50,8 @@ static const char *const cls_name[AH_N + 1] = {"vb", "ib", "ubo", "ssbo", "ind",
 #define COPY_MAX (32ull << 20)   // bytes of a set's union copied at its snap, for the byte compare
 
 typedef struct { uint64_t lo, hi, fence; uint8_t cls; } Note;
-typedef struct { uint64_t lo, hi, coff; uint8_t cls, untracked; uint32_t hash0, nhash; } SetR;   // coff: in copybuf
+// coff: in copybuf; rd: union ranges, readable at the check (-1 not looked at yet: one VirtualQuery walk per range)
+typedef struct { uint64_t lo, hi, coff; uint8_t cls, untracked; int8_t rd; uint32_t hash0, nhash; } SetR;
 typedef struct { uint64_t lo, hi, fence; uint8_t kind; } GWrite;
 
 static PlatMutex ah_lock = PLAT_MUTEX_INIT;   // notes, gw, rd, small, lag context
@@ -84,7 +85,7 @@ typedef struct {
     // hit: bytes in pages written after the wait; hitb: bytes that changed; mb: MSYNC bytes N also binds (BOUND)
     uint64_t frames, lagged, behind, read[AH_N + 1], hit[AH_N + 1], hit_frames[AH_N + 1], hit_max[AH_N + 1];
     uint64_t hitb[AH_N + 1], hitb_frames[AH_N + 1], hitb_max[AH_N + 1], read_mb, hit_mb, hit_mb_frames, hit_mb_max;
-    uint64_t uncopied;
+    uint64_t uncopied, notes, t_check, t_build, t_snap;   // notes taken; ns in the three steps
     uint64_t inval, inval_stale, inval_stale_unknown, inval_stale_bytes, late[AHW_N], small, small_stale, small_oneoff;
     uint64_t cost_ns, set_joined, set_lost, untracked, hashed, hash_skipped, ivq;
 } Stat;
@@ -144,9 +145,17 @@ static void compact(void) {
     }
 }
 
+// Per thread: the notes made last, by range, so a binding the replay resolves again in the same submission (most do,
+// draw after draw) costs no lock and no entry in the list.
+#define SEEN_N 1024
+static _Thread_local Note seen[SEEN_N];
+
 void vk_ahead_read(uint64_t addr, uint64_t size, int cls, uint64_t fence) {
     if (!vk_ahead_on || !size || (unsigned)cls >= AH_N || addr + size < addr) return;
     fence = note_fence(fence);
+    Note *sn = &seen[((addr * 0x9E3779B97F4A7C15ull) ^ size ^ (uint64_t)cls << 7) >> 54 & (SEEN_N - 1)];
+    if (sn->lo == addr && sn->hi == addr + size && sn->fence == fence && sn->cls == cls) return;
+    *sn = (Note){addr, addr + size, fence, (uint8_t)cls};
     plat_mutex_lock(&ah_lock);
     Note *l = nnotes ? &notes[nnotes - 1] : NULL;
     if (l && l->cls == cls && l->fence == fence && addr <= l->hi && addr + size >= l->lo) {
@@ -303,7 +312,7 @@ static void offender(int cls, uint64_t addr, uint64_t bytes, uint64_t changed) {
 }
 
 // The union range holding a (set[nclass, nset) by address), NULL: none.
-static const SetR *union_at(uint64_t a) {
+static SetR *union_at(uint64_t a) {
     int lo = nclass, hi = nset;
     while (lo < hi) {
         int m = (lo + hi) / 2;
@@ -315,8 +324,10 @@ static const SetR *union_at(uint64_t a) {
 
 // Bytes of [x, y) that differ from the copy taken at the snap (0 where there is none or the memory is gone).
 static uint64_t changed_bytes(uint64_t x, uint64_t y) {
-    const SetR *u = union_at(x);
-    if (!u || u->coff == UINT64_MAX || y > u->hi || !readable(x, y)) return 0;
+    SetR *u = union_at(x);
+    if (!u || u->coff == UINT64_MAX || y > u->hi) return 0;
+    if (u->rd < 0) u->rd = (int8_t)readable(u->lo, u->hi);
+    if (!u->rd) return 0;
     const uint8_t *m = (const uint8_t *)(uintptr_t)x, *c = copybuf + u->coff + (x - u->lo);
     uint64_t n = y - x, d = 0, i = 0;
     for (; i + 8 <= n; i += 8) {
@@ -394,7 +405,7 @@ static void build_set(int n) {
             } else win.set_lost += take[i].hi - take[i].lo;
             continue;
         }
-        set[nset++] = (SetR){take[i].lo, take[i].hi, UINT64_MAX, take[i].cls, 0, 0, 0};
+        set[nset++] = (SetR){take[i].lo, take[i].hi, UINT64_MAX, take[i].cls, 0, -1, 0, 0};
     }
     int nc = nset;
     nclass = nc, bound0 = bound1 = 0;
@@ -423,7 +434,7 @@ static void build_set(int n) {
     for (int i = 0; i < nr; i++) {
         if (nu && u[i].lo <= u[nu - 1].hi) {
             if (u[i].hi > u[nu - 1].hi) u[nu - 1].hi = u[i].hi;
-        } else u[nu++] = (SetR){u[i].lo, u[i].hi, UINT64_MAX, AH_N, 0, 0, 0};
+        } else u[nu++] = (SetR){u[i].lo, u[i].hi, UINT64_MAX, AH_N, 0, -1, 0, 0};
     }
     nset = nc + nu;
     for (int i = 0; i < nu; i++) win.read[AH_N] += u[i].hi - u[i].lo;
@@ -505,9 +516,11 @@ static void log_line(const Stat *s, const char *what) {
                   (unsigned long long)s->small_stale, (unsigned long long)s->small, (unsigned long long)s->small_oneoff);
     snprintf(b + k, sizeof b - (size_t)k, "; game-thread cost %.3f ms/frame, %.1f queries/frame, untracked %.1f "
              "KiB/frame (hashed %.1f, skipped %.1f), not copied %.1f KiB, set over its size: %.1f KiB joined, %.1f KiB "
-             "left out; note compactions %llu, gpu-write list overflow %llu", s->cost_ns / 1e6 / f, s->ivq / f,
+             "left out; note compactions %llu, gpu-write list overflow %llu; per frame %.0f notes, check %.3f ms, build %.3f ms, "
+             "snap %.3f ms", s->cost_ns / 1e6 / f, s->ivq / f,
              s->untracked / 1024.0 / f, s->hashed / 1024.0 / f, s->hash_skipped / 1024.0 / f, s->uncopied / 1024.0,
-             s->set_joined / 1024.0, s->set_lost / 1024.0, (unsigned long long)n_compact, (unsigned long long)gw_over);
+             s->set_joined / 1024.0, s->set_lost / 1024.0, (unsigned long long)n_compact, (unsigned long long)gw_over,
+             s->notes / f, s->t_check / 1e6 / f, s->t_build / 1e6 / f, s->t_snap / 1e6 / f);
     rt_log("%s", b);
 }
 
@@ -526,7 +539,8 @@ void vk_ahead_frame_entry(void) {
     if (!vk_ahead_on || !armed) return;
     uint64_t t0 = plat_now_ns();
     check_set();
-    win.cost_ns += plat_now_ns() - t0;
+    uint64_t dt = plat_now_ns() - t0;
+    win.cost_ns += dt, win.t_check += dt;
 }
 
 void vk_ahead_frame_lag(uint64_t asked, uint64_t lagged, int behind) {
@@ -563,8 +577,11 @@ void vk_ahead_frame_done(int ok) {
     if (ok) {
         win.frames++;
         if (l < a) win.lagged++;
+        uint64_t t1 = plat_now_ns();
         build_set(n);
+        uint64_t t2 = plat_now_ns();
         snap_set();
+        win.notes += (uint64_t)n, win.t_build += t2 - t1, win.t_snap += plat_now_ns() - t2;
     }
     uint64_t now = plat_now_ns();
     win.cost_ns += now - t0;
