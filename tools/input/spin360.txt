@@ -1,0 +1,47 @@
+# Title screen to the latest save, then 89 s of a slow camera turn on the spot in one direction (one full turn at this
+# rate), so a measuring run draws everything around wherever the save was made without moving Link and without the
+# reversal of spin.txt.
+# The A presses go on every 5 s of game time for 200 s, as the title screen can take two minutes to appear when
+# the shader cache is empty, and stop once the world clock starts.
+300 A 4
+520 A 4
+700 A 4
+900 A 4
+1200 A 4
+1500 A 4
+1800 A 4
+2100 A 4
+2400 A 4
+2700 A 4
+3000 A 4
+3300 A 4
+3600 A 4
+3900 A 4
+4200 A 4
+4500 A 4
+4800 A 4
+5100 A 4
+5400 A 4
+5700 A 4
+6000 A 4
+6300 A 4
+6600 A 4
+6900 A 4
+7200 A 4
+7500 A 4
+7800 A 4
+8100 A 4
+8400 A 4
+8700 A 4
+9000 A 4
+9300 A 4
+9600 A 4
+9900 A 4
+10200 A 4
+10500 A 4
+10800 A 4
+11100 A 4
+11400 A 4
+11700 A 4
+12000 A 4
+@1000 RSTICK 9000 0 89000
