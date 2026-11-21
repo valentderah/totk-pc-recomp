@@ -91,7 +91,7 @@ typedef struct {
 } Stat;
 static Stat win, tot;   // ah_lock for the readback counters, game thread for the rest (summed under ah_lock)
 
-typedef struct { uint64_t pool, size, bytes, changed, frames, first; uint32_t flags; int cls, mirrored; } Offender;
+typedef struct { uint64_t pool, size, bytes, changed, frames, first, last; uint32_t flags; int cls, mirrored; } Offender;
 static Offender off[OFF_N];
 static int noff, nofflog;
 static uint64_t last_log_ns;
@@ -301,14 +301,15 @@ static void offender(int cls, uint64_t addr, uint64_t bytes, uint64_t changed) {
             for (int k = 1; k < noff; k++) if (off[k].bytes < off[m].bytes) m = k;
             i = m;
         } else noff++;
-        off[i] = (Offender){lo, size, 0, 0, 0, addr - lo, flags, cls, mirrored};
+        off[i] = (Offender){lo, size, 0, 0, 0, addr - lo, 0, flags, cls, mirrored};
         if (nofflog++ < OFF_LOG)
             rt_log("sync-ahead check: frame %llu: %s range written after the wait: pool %#llx (%.1f MiB, flags %#x, %s) "
                    "+%#llx, %llu bytes in written pages, %llu changed", (unsigned long long)frame_no, cls_name[cls],
                    (unsigned long long)lo, size / 1048576.0, flags, mirrored ? "mirrored" : "in place",
                    (unsigned long long)(addr - lo), (unsigned long long)bytes, (unsigned long long)changed);
     }
-    off[i].bytes += bytes, off[i].changed += changed, off[i].frames++;
+    off[i].bytes += bytes, off[i].changed += changed;
+    if (off[i].last != frame_no || !off[i].frames) off[i].frames++, off[i].last = frame_no;   // once per frame
 }
 
 // The union range holding a (set[nclass, nset) by address), NULL: none.
