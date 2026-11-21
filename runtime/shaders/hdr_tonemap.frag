@@ -27,8 +27,8 @@ layout(location = 0) in vec4 uv;
 layout(location = 0) out vec4 color;
 
 layout(set = 0, binding = 0, std140) uniform SupportBuffer {
-    vec4 pad[90];
-    vec4 hdr;   // byte 1440 (vk_exec_draw.c support_fill): game white / HUD white, peak / game white, hue correction
+    vec4 pad[92];
+    vec4 hdr;   // byte 1472 (vk_exec_draw.c support_fill): game white / HUD white, peak / game white, hue correction
 } support_buffer;
 layout(set = 0, binding = 1) uniform sampler2D fp_t_tcb_8;
 layout(set = 0, binding = 2) uniform sampler2D fp_t_tcb_A;

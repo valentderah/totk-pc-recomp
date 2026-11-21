@@ -1754,11 +1754,14 @@ void vk_dlaa_frame(void) {
 // is always drawn, whatever fxaa says (skipping it would leave the 3D picture out), unless DLSS already wrote that
 // target this frame.
 // The stock translator's hash, the one with tools/xlate patch 0010 (PCSS, PR #89) applied, the one with patches 0010
-// and 0011 (the shadow filter spread) applied, and that one with the zero_locals job flag (Mesa, vk_caps.c).
-// A scaling draw this list misses still scales DLSS's picture, not
-// the jittered scene: after DLSS ran, passes larger than the light target sample DLSS's output (vk_dlaa_swap_img).
+// and 0011 (the shadow filter spread) applied, and that one with the zero_locals job flag (Mesa, vk_caps.c). Patch 0017
+// (soft shadows per cascade) adds two support buffer fields, which every translated shader declares, so the last two
+// change with it: the two after them. A scaling draw this list misses still scales DLSS's picture, not the jittered
+// scene: after DLSS ran, passes larger than the light target sample DLSS's output (vk_dlaa_swap_img). That draw then
+// scales an output-sized picture as if it were the scene, and the screen shows the scene's share of it, the top left,
+// stretched over the whole screen.
 static const uint64_t FXAA_FS[] = {0xf450003ebeb3dc52ull, 0x0a12f4bc2a9a4fbeull, 0x5c43ae18948d52cbull,
-                                   0xaad42238801d31d8ull};
+                                   0xaad42238801d31d8ull, 0xde20aef90fea4ce6ull, 0x755964e8dce7f34dull};
 // The fragment shader of the FXAA's first pass, the copy of the scene target into the scratch target (this build's
 // translator; another hash leaves the draw alone). See vk_dlaa_skip_draw for why FSR's frames skip it.
 static const uint64_t FXAA_COPY_FS[] = {0xa0fd34391f2af811ull};

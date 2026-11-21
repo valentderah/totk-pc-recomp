@@ -122,6 +122,8 @@ static const char *pad_label(int p) {
     return menu_text((UiTextId)(UI_PAD_SOUTH + (p - PAD_SOUTH)));
 }
 
+const char *binds_pad_label(int pad) { return pad_label(pad); }
+
 // The layout the gamepad cells show: the one in effect, or without a gamepad the one the setting names (Xbox for auto).
 static int shown_layout(void) {
     int l = input_pad_layout();

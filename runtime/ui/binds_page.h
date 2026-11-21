@@ -15,3 +15,5 @@ bool binds_modal(void);
 // A key setting (TOTK_ name) as a row of one key cell, set by pressing the key as a binding's cell is; Delete sets it
 // to none. note (NULL none) follows the description.
 void binds_key_row(const char *setting, UiTextId label, UiTextId desc, const char *note);
+// A gamepad input by position (PAD_*): the label the open pad has on a face button, else its place on the pad.
+const char *binds_pad_label(int pad);

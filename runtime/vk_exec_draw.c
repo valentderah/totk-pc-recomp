@@ -16,6 +16,7 @@
 // 9365-9488, 9489-9921, 10013-10079 @ b75be8cf (MIT, Copyright (c) 2026 jhaizhou); the uniform-buffer spans, texture and
 // sampler descriptor lookups and the dispatch flow follow LAS Recomp runtime/nvn/vulkan/exec.c:1851-1908, 2300-2516
 // @ da35b83a (MIT, Copyright (c) 2026 Peiikai). The support buffer layout is Ryujinx's SupportBuffer.cs (MIT).
+#include <math.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -36,8 +37,10 @@
 #define MAX_DESC 1024
 #define CHUNK_BYTES (4u << 20)
 #define ZERO_BYTES 65536u
-#define SUPPORT_BYTES 1456u   // Ryujinx SupportBuffer (std140): alpha_test, is_bgra[8], viewport_inverse, viewport_size, ...;
-                              // 1408 pcss and 1424 shadow_spread (translator patches 0010, 0011), 1440 HDR (support_fill)
+#define SUPPORT_BYTES 1488u   // Ryujinx SupportBuffer (std140): alpha_test, is_bgra[8], viewport_inverse, viewport_size, ...;
+                              // 1408 pcss, 1424 shadow_spread, 1440 pcss_depth and 1456 pcss_scale (translator patches 0010,
+                              // 0011, 0017), 1472 HDR (support_fill)
+#define SUP_IN 11             // support_in: viewport size, point size, then pcss_depth and pcss_scale per cascade
 #define NVN_STAGE_VS 0
 #define NVN_STAGE_FS 1
 #define NVN_STAGE_CS 5
@@ -245,7 +248,7 @@ typedef struct {
     uint64_t vgen;
     int vb_valid;
     uint8_t support[SUPPORT_BYTES];      // last support buffer and where it lives
-    float sup_in[3];                     // the support_fill arguments it was filled from
+    float sup_in[SUP_IN];                // the support_fill arguments it was filled from
     VkBuffer sup_buf;
     VkDeviceSize sup_off;
     int sup_valid;
@@ -286,7 +289,7 @@ static struct { int mode; uint64_t calls, cmds, empty; } DD = {-1};
 typedef struct { int cls, use; uint64_t bytes; } RsCount;
 typedef struct {
     uint32_t hn;                         // words of h the last signature filled; 0: none
-    uint64_t h[24];                      // generations, feedback images, support inputs, base instance
+    uint64_t h[28];                      // generations, feedback images, support inputs, base instance
     const VkPipeInfo *info;              // the pipeline whose RsList ranges body holds, as of bind op generation gen
     uint64_t gen;
     uint8_t body[RS_BYTES];
@@ -510,6 +513,7 @@ typedef struct VkExecDraw {
     VkDescSlot d[MAX_DESC];
     VkBufferView bv[MAX_DESC];
     RsRange rs_tmp[MAX_DESC];               // rs_list's
+    struct { uint64_t addr; float key[8], out[8]; int valid; } PCSS;   // pcss_cascades' last camera block and answer
 } VkExecDraw;
 
 static VkExecDraw *draw_new(VkExec *ex) {
@@ -2060,17 +2064,23 @@ static VkDescriptorSet alloc_set_batched(VkExec *ex, VkDescriptorSetLayout layou
     return alloc_set(ex, layout);
 }
 
-static void support_in(const VkExec *ex, float in[3]) {   // what support_fill reads: viewport size, point size
+static const float *pcss_params(void);
+static void pcss_cascades(const VkExec *ex, float out[8]);
+
+// What support_fill reads: viewport size, point size, and the soft shadows' per-cascade factors (pcss_cascades).
+static void support_in(const VkExec *ex, float in[SUP_IN]) {
     float k = ex->pass_scale > 1 ? (float)ex->pass_scale : 1.0f;
     in[0] = ex->in_pass && ex->has_vp ? ex->vp[0][2] * k : (float)ex->pass_w;
     in[1] = ex->in_pass && ex->has_vp ? ex->vp[0][3] * k : (float)ex->pass_h;
     in[2] = ex->point_size > 0 ? ex->point_size : 1.0f;
+    pcss_cascades(ex, in + 3);
 }
 
 // TOTK_PCSS (percent, 0 = off): the pcss field of the support buffer, which translator patch 0010 reads in every
 // explicit-LOD compare on a 2D array texture (the sun cascades). x: penumbra width in UV per unit of light-space depth
 // between receiver and blocker (0 keeps the game's single compare), y and z: the narrowest and widest disc radius,
-// w: the blocker search radius, all in UV of the cascade map. Radii are in UV, so they hold at any TOTK_SHADOW_SCALE.
+// w: the blocker search radius, all in UV of the second cascade's map (pcss_cascades scales them for the others).
+// Radii are in UV, so they hold at any TOTK_SHADOW_SCALE.
 // TOTK_PCSS_K overrides the depth-to-penumbra factor at 100 percent, for tuning.
 static const float *pcss_params(void) {
     static float p[4] = {-1, 0, 0, 0};
@@ -2084,6 +2094,86 @@ static const float *pcss_params(void) {
         if (pct) rt_log("vk: soft shadows (PCSS) at %d%% (depth factor %g)", pct, p[0]);
     }
     return p;
+}
+
+// The pcss_depth and pcss_scale fields (translator patch 0017): per sun cascade, what turns the pcss values into that
+// cascade's. The pcss radii are in UV of whichever cascade map a pixel reads, and the game's cascades differ a lot in
+// how much ground a UV spans: the measured cascades (1.4.3, Gerudo and Hyrule Field) end at about 4 to 8, 27 to 31, 120
+// and 450 m, and each map spans 3.5 to 5 times the ground of the one before. With the same UV radius everywhere a shadow
+// turned that much softer at every cascade step, a step that moves with the camera (issue #1291). The pcss values keep
+// their meaning in the second cascade, which holds most of the shadows on screen (from a few metres in front of Link
+// to about 30 m) and so is the softness players chose with pcss; the other cascades are measured against it.
+//
+// The lighting shaders read the cascades from the camera block c4 (fragment stage, 0x940 bytes, the block
+// runtime/vk_contact.c reads): rows 42 + 4c to 45 + 4c take a view-space position to cascade c's map as a projective
+// matrix (u, v, depth, w; the first cascade's w row is 0 0 0 1, the others' are not: the far maps are warped to give
+// more texels near the camera), and row 58 holds the distances where the cascades end. For each cascade the
+// derivatives of its u, v and depth along the ground are taken at the view axis (view space looks along -z) where the
+// cascade begins and where it ends, and averaged geometrically over those two points:
+//   scale = s_c / s_1, with s the geometric mean of |du/dp| and |dv/dp| (UV per metre): the search and widest radius
+//           cover the same ground as in the second cascade;
+//   depth = (s_c / d_c) / (s_1 / d_1), with d = |d depth/dp| (depth per metre): the same penumbra per metre between
+//           blocker and receiver.
+// The narrowest radius stays in texels (the shader keeps it), so the far cascades come back to about the game's own
+// filter. A draw without that block, or with values that do not make a cascade, gets 1 everywhere: the same UV values in
+// every cascade, as before this field.
+static int pcss_measure(const float *u, int c, float dist, float *s, float *d) {
+    const float *m = u + 4 * (42 + 4 * c);   // rows u, v, depth, w
+    float p[3] = {0, 0, -dist}, h[4];
+    for (int r = 0; r < 4; r++) h[r] = m[4 * r] * p[0] + m[4 * r + 1] * p[1] + m[4 * r + 2] * p[2] + m[4 * r + 3];
+    if (!(h[3] > 1e-6f)) return 0;
+    float len[3];
+    for (int r = 0; r < 3; r++) {   // d(h_r / h_3)/dp = (row_r - (h_r / h_3) row_w) / h_3
+        float q = h[r] / h[3], g[3];
+        for (int k = 0; k < 3; k++) g[k] = (m[4 * r + k] - q * m[12 + k]) / h[3];
+        len[r] = sqrtf(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+    }
+    *s = sqrtf(len[0] * len[1]), *d = len[2];
+    return *s > 1e-7f && *s < 1e4f && *d > 1e-7f && *d < 1e4f;
+}
+
+static void pcss_measure_all(const float *u, float out[8]) {
+    const float *end = u + 4 * 58;
+    float s[4], d[4];
+    for (int c = 0; c < 4; c++) {
+        float near = c ? end[c - 1] : 0.0f, far = end[c];
+        if (!(far > near) || !(far < 1e5f)) return;
+        float s0, d0, s1, d1;
+        if (!pcss_measure(u, c, c ? near : 0.5f * far, &s0, &d0) || !pcss_measure(u, c, far, &s1, &d1)) return;
+        s[c] = sqrtf(s0 * s1), d[c] = sqrtf(d0 * d1);
+    }
+    float r[8];
+    for (int c = 0; c < 4; c++) {
+        float sc = s[c] / s[1], dc = (s[c] / d[c]) / (s[1] / d[1]);
+        if (!(sc > 1e-4f && sc < 1e2f) || !(dc > 1e-3f && dc < 1e3f)) return;
+        r[c] = dc, r[4 + c] = sc;
+    }
+    memcpy(out, r, sizeof r);
+    static volatile int32_t logged;
+    if (!__atomic_exchange_n(&logged, 1, __ATOMIC_RELAXED))
+        rt_log("vk: soft shadows per cascade (cascades end at %.1f, %.1f, %.1f and %.1f m): ground scale %.3f, 1, %.3f, "
+               "%.3f; penumbra factor %.3f, 1, %.3f, %.3f", end[0], end[1], end[2], end[3], out[4], out[6], out[7], out[0],
+               out[2], out[3]);
+}
+
+// support_in asks for every draw that binds the support buffer, twice (bind_sig and bind_resources), and the camera
+// block changes once a frame: the answer is kept with the block's address and its first cascade's u row and cascade
+// ends, which move whenever the camera or the sun does.
+static void pcss_cascades(const VkExec *ex, float out[8]) {
+    for (int i = 0; i < 8; i++) out[i] = 1.0f;
+    if (!(pcss_params()[0] > 0)) return;
+    const p_bind_buf *b = &ex->ubo[NVN_STAGE_FS][1];
+    if (!b->addr || b->size != 0x940) return;
+    const float *u = (const float *)(uintptr_t)b->addr;
+    float key[8];
+    memcpy(key, u + 4 * 42, 16), memcpy(key + 4, u + 4 * 58, 16);
+    VkExecDraw *D = ex->draw;
+    if (D && D->PCSS.valid && D->PCSS.addr == b->addr && !memcmp(key, D->PCSS.key, sizeof key)) {
+        memcpy(out, D->PCSS.out, sizeof D->PCSS.out);
+        return;
+    }
+    pcss_measure_all(u, out);
+    if (D) D->PCSS.addr = b->addr, memcpy(D->PCSS.key, key, sizeof key), memcpy(D->PCSS.out, out, sizeof D->PCSS.out), D->PCSS.valid = 1;
 }
 
 // The shadow_spread field of the support buffer: the factor translator patch 0011 applies to the lighting shaders' sun
@@ -2102,7 +2192,8 @@ static const float *shadow_spread_params(void) {
     return p;
 }
 
-static void support_fill(uint8_t *b, float w, float h, float point_size) {
+static void support_fill(uint8_t *b, const float in[SUP_IN]) {
+    float w = in[0], h = in[1], point_size = in[2];
     memset(b, 0, SUPPORT_BYTES);
     float inv[4] = {w > 0 ? 2.0f / w : 0, h > 0 ? 2.0f / h : 0, 0, 0}, size[4] = {w, h, 0, 0};
     memcpy(b + 144, inv, 16);
@@ -2111,11 +2202,12 @@ static void support_fill(uint8_t *b, float w, float h, float point_size) {
     memcpy(b + 1392, &point_size, 4);   // point_size (translator patch 0008): vertex shaders that write none output it
     memcpy(b + 1408, pcss_params(), 16);   // pcss (translator patch 0010): soft sun shadows in the cascade compares
     memcpy(b + 1424, shadow_spread_params(), 16);    // shadow_spread (translator patch 0011): sun shadow filter width
+    memcpy(b + 1440, in + 3, 32);   // pcss_depth and pcss_scale (translator patch 0017): soft shadows per cascade
     for (int i = 0; i < 73; i++) memcpy(b + 192 + 16 * i, &one, 4);   // render scale 1: the host renders at guest size
     if (vk_hdr_wanted()) {   // read by the HDR tonemap only (shaders/hdr_tonemap.frag), which declares it past the translator's
         float hdr[4];
         vk_hdr_support(hdr);
-        memcpy(b + 1440, hdr, 16);
+        memcpy(b + 1472, hdr, 16);
     }
 }
 
@@ -2396,13 +2488,13 @@ static int bind_sig(const VkExec *ex, const VkPipeInfo *info) {
     PUT(vk_mem_gen() + vk_usnap_gen() + ex->drop_n);   // all only grow in a submission; drop_n: copies a chunk passed
     for (int i = 0; i < ex->nfbl && i < 9; i++) PUT((uintptr_t)ex->fbl_img[i]);
     if (l->sup) {
-        float in[3];
+        float in[SUP_IN + 1] = {0};
         support_in(ex, in);
-        uint64_t a;
-        uint32_t ps;
-        memcpy(&a, in, 8), memcpy(&ps, &in[2], 4);
-        PUT(a);
-        PUT(ps);
+        for (int i = 0; i < SUP_IN; i += 2) {
+            uint64_t a;
+            memcpy(&a, &in[i], 8);
+            PUT(a);
+        }
     }
     if (l->c0) PUT(D->c0_binst);
     for (int i = 0; i < l->np; i++) PUT(ubo_ptr(ex, l->p[i].st, l->p[i].res));
@@ -2587,11 +2679,11 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info, const uint64_t *b
         if (meta) memset(&meta[nd], 0, cnt * sizeof *meta);
 #define BI_CUR(k) (D->BI.cur = meta ? &meta[nd + (k)] : NULL)
         if (b->kind == VK_PIPE_SUPPORT) {
-            float in[3];
+            float in[SUP_IN];
             support_in(ex, in);
             if (!D->B.sup_valid || MX_NE(in, D->B.sup_in, sizeof in)) {   // support_fill reads only these
                 uint8_t tmp[SUPPORT_BYTES];
-                support_fill(tmp, in[0], in[1], in[2]);
+                support_fill(tmp, in);
                 MX_CPY(D->B.sup_in, in, sizeof in);
                 if (!D->B.sup_valid || MX_NE(tmp, D->B.support, SUPPORT_BYTES)) {   // a new buffer only when the contents changed
                     VkBuffer sb;
@@ -3517,7 +3609,7 @@ static struct {
     uint32_t ndesc, cdesc;
     NVNbufferRange vin[17];      // the vertex ranges MQ.vb[nvb - 1] was resolved from, under vk_mem_gen vgen
     uint64_t vgen;
-    float sup_in[3];             // the support buffer last filled for the list and its inputs
+    float sup_in[SUP_IN];        // the support buffer last filled for the list and its inputs
     VkDescriptorBufferInfo sup;
     float par_in[4];             // the fragment shader's parameters last written and their inputs
     VkDescriptorBufferInfo par;
@@ -3617,12 +3709,12 @@ static int mo_desc(VkExec *ex, const VkPipeInfo *info, MoDraw *q) {
         VkDescSlot *o = &d[nd];
         int st = nvn_stage_of(b->stage);
         if (b->kind == VK_PIPE_SUPPORT) {
-            float in[3];
+            float in[SUP_IN];
             support_in(ex, in);
             if (!MQ.sup.buffer || memcmp(in, MQ.sup_in, sizeof in)) {
                 VkBuffer sb;
                 VkDeviceSize so;
-                support_fill(scratch(ex, SUPPORT_BYTES, &sb, &so), in[0], in[1], in[2]);
+                support_fill(scratch(ex, SUPPORT_BYTES, &sb, &so), in);
                 MQ.sup = (VkDescriptorBufferInfo){sb, so, SUPPORT_BYTES};
                 memcpy(MQ.sup_in, in, sizeof in);
             }
