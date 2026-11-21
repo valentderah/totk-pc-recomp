@@ -376,6 +376,11 @@ static int test_import(pool_t *pool) {
     GCHECK(!ah, "sync-ahead check self test failed at check %d", ah);
     printf("probe-vkmem: sync-ahead check: a write after the frame wait into the read set is flagged, one before it is not\n");
     g_gpu_checks++;
+    int aw = vk_mem_ahead_selftest();
+    GCHECK(!aw, "sync-ahead pending-write list self test failed at check %d", aw);
+    printf("probe-vkmem: sync-ahead in place: the pending-write list names the newest writer below a bound, prunes at "
+           "completion and joins when full\n");
+    g_gpu_checks++;
     return 0;
 }
 

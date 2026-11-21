@@ -16,11 +16,12 @@ enum { AHW_WRITE, AHW_COUNTER, AHW_SAMPLES, AHW_EVENT, AHW_N };
 extern int vk_ahead_on;
 // The in-place form's switches, read once by vk_ahead_init; every guard is 0 without lag. A/B: TOTK_SYNC_AHEAD_<NAME>.
 // msync: the mirror syncs copy the synced pages into staging on the CPU at submit (vk_memory.c vk_mem_mirror_prologue);
+// wbmerge: every GPU write into a mirror goes back through the word merge, not only a shader's (vk_memory.c gpu_wrote);
 // deswz: a texture re-uploaded after the CPU rewrote it takes the CPU deswizzle (vk_texture.c upload_gpu); reads: an
 // invalidate of a range not read lately waits for the pending GPU write into it (vk_memory.c vk_mem_shadow_read);
 // oneshot: a one-off small target is waited for, up to its value (vk_ahead_oneshot); queries (default 0): so is a
 // samples-passed report.
-typedef struct { int lag, msync, deswz, reads, oneshot, queries; } VkAheadGuards;
+typedef struct { int lag, msync, wbmerge, deswz, reads, oneshot, queries; } VkAheadGuards;
 extern VkAheadGuards vk_ahead_g;
 void vk_ahead_init(void);   // vk_memory.c mirror_mode, once at device start, shadow mode known: reads TOTK_SYNC_AHEAD
 // The newest value in (lo, hi] whose GPU result the game reads right after the frame wait (0: none): the in-place

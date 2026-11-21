@@ -56,7 +56,9 @@ static void vk_ahead_frame_lag(uint64_t asked, uint64_t lagged, int behind) {
     lag_calls++, lag_asked = asked, lag_value = lagged, lag_behind = behind;
 }
 static void vk_ahead_frame_done(int ok) { assert(lag_calls == 1); done_calls++, done_ok = ok; }
+static int mirror;
 static int vk_mem_shadow_on(void) { return shadow; }
+static int vk_mem_mirror_on(void) { return mirror; }
 static uint64_t nvn_fence_last(void) { return last; }
 static void rt_log(const char *format, ...) { (void)format; }
 // The patch table: set qstamp exists on 1.4.3 only and starts as TOTK_SYNC_AHEAD says (runtime/patches.c).
@@ -77,9 +79,10 @@ PRODUCTION
 static uint32_t seed = 0x19ed634b;
 static uint32_t random_word(void) { seed ^= seed << 13; seed ^= seed >> 17; return seed ^= seed << 5; }
 int main(int argc, char **argv) {
-    assert(argc == 5);
+    assert(argc == 6);
     rt_game_version = atoi(argv[1]); enabled = atoi(argv[2]); shadow = atoi(argv[3]);
     int det = atoi(argv[4]);
+    mirror = atoi(argv[5]);
     int supported = rt_game_version == 110 || rt_game_version == 121 || rt_game_version == 143;
     uint64_t site = rt_game_version == 110 ? 0x7000b39aa4ull : rt_game_version == 121 ? 0x7000b23dfcull :
                     rt_game_version == 143 ? 0x70002db99cull : 0;
@@ -87,7 +90,8 @@ int main(int argc, char **argv) {
     qstamp_on = rt_game_version == 143 && enabled;
     last = 20; nvn_sync_ahead_present();
     last = 40; nvn_sync_ahead_present();
-    int on = enabled == 1 && supported, check = enabled == 2 && supported;   // shadow off: the in-place form
+    // shadow off: the in-place form, which needs the VRAM mirrors
+    int on = enabled == 1 && supported && (shadow || mirror), check = enabled == 2 && supported;
     vk_ahead_on = check || (on && det);
     assert(pa_fence[0] == (on || check ? 40 : 0));
     assert(pa_fence[1] == (on || check ? 20 : 0));
@@ -155,8 +159,8 @@ int main(int argc, char **argv) {
         nvnSyncWait(&cpu);
         assert(pa_guard == 39);
     }
-    printf("sync-ahead version %d enabled %d shadow %d detector %d: 100000 wait selections passed (%d relaxed, %d up "
-           "to a one-off value)\n", rt_game_version, enabled, shadow, det, relaxed_cases, oneshot_cases);
+    printf("sync-ahead version %d enabled %d shadow %d detector %d mirror %d: 100000 wait selections passed (%d relaxed, %d up "
+           "to a one-off value)\n", rt_game_version, enabled, shadow, det, mirror, relaxed_cases, oneshot_cases);
 }
 '''
 
@@ -178,7 +182,9 @@ def main():
             for enabled in (0, 1, 2):
                 for shadow in (0, 1):
                     for det in (0, 1):
-                        subprocess.run([str(exe), str(version), str(enabled), str(shadow), str(det)], check=True)
+                        for mirror in (0, 1):
+                            subprocess.run([str(exe), str(version), str(enabled), str(shadow), str(det), str(mirror)],
+                                           check=True)
 
 
 if __name__ == "__main__":

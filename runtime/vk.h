@@ -283,6 +283,7 @@ uint64_t vk_mem_ahead_written(uint64_t lo, uint64_t hi, uint32_t since, void (*f
                               void *arg);
 int vk_mem_pool_info(uint64_t addr, uint64_t *lo, uint64_t *size, uint32_t *flags, int *mirrored);   // 0: no pool
 void vk_mem_ahead_log(void);   // TOTK_SYNC_AHEAD=1 in place: the guards' waits and copies over the run, at exit
+int vk_mem_ahead_selftest(void);   // --probe-vkmem: the in-place form's pending-write list; 0 passed
 void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size);
 // A shader's storage-buffer write: goes back through the write-back merge (vk_memory.c), which keeps the words the GPU
 // did not change.

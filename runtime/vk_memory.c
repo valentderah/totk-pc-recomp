@@ -1504,6 +1504,43 @@ static void ahead_read(uint64_t addr, uint64_t size) {
     ah_time(&ah_rd_waits, &ah_rd_ns, &ah_rd_max, qpc() - t0);
 }
 
+// --probe-vkmem: the pending-write list with values no submission has: the newest overlapping writer below a bound,
+// pruning at completion, and a full list joining a write into its nearest entry, which still covers it. The list is
+// restored after. 0: passed, else the failed check.
+int vk_mem_ahead_selftest(void) {
+    static AWrite saved[AW_N];
+    plat_mutex_lock(&aw_lock);
+    int n0 = naw, peak0 = aw_peak, bad = 0;
+    uint64_t joined0 = aw_joined, f = vk_sync_issued() + 1000000, a = 0x10000000;
+    memcpy(saved, aw, sizeof aw);
+    naw = 0;
+    plat_mutex_unlock(&aw_lock);
+    aw_add(a, a + 0x100, f);
+    aw_add(a + 0x80, a + 0x200, f + 1);
+    aw_add(a, a + 0x100, f);   // the same range again: no new entry
+    plat_mutex_lock(&aw_lock);
+    if (naw != 2) bad = 1;
+    else if (aw_writer(a, a + 0x40, 0, UINT64_MAX) != f) bad = 2;
+    else if (aw_writer(a + 0xc0, a + 0xd0, 0, UINT64_MAX) != f + 1) bad = 3;
+    else if (aw_writer(a + 0xc0, a + 0xd0, 0, f + 1) != f) bad = 4;   // below the value being recorded
+    else if (aw_writer(a + 0x200, a + 0x300, 0, UINT64_MAX)) bad = 5;   // touching, not overlapping
+    if (!bad) {
+        aw_prune(f);
+        if (naw != 1 || aw_writer(a, a + 0x40, f, UINT64_MAX)) bad = 6;
+    }
+    int fill = AW_N - naw;   // the entry check 6 left stays: fill up to exactly AW_N, so only the next add joins
+    plat_mutex_unlock(&aw_lock);
+    for (int i = 0; !bad && i < fill; i++) aw_add(a + 0x1000 * (uint64_t)(i + 1), a + 0x1000 * (uint64_t)(i + 1) + 0x10, f + 2);
+    uint64_t lo = a + 0x1000 * (AW_N + 8);
+    if (!bad) aw_add(lo, lo + 0x10, f + 3);   // full: joined with the nearest
+    plat_mutex_lock(&aw_lock);
+    if (!bad && (naw != AW_N || aw_joined != joined0 + 1 || aw_writer(lo, lo + 0x10, 0, UINT64_MAX) != f + 3)) bad = 7;
+    memcpy(aw, saved, sizeof aw);
+    naw = n0, aw_peak = peak0, aw_joined = joined0;
+    plat_mutex_unlock(&aw_lock);
+    return bad;
+}
+
 void vk_mem_ahead_log(void) {
     plat_mutex_lock(&aw_lock);
     rt_log("mem: sync-ahead in place: the game waited for a GPU write it reads %llu times, %.1f ms in all, longest "
@@ -1527,6 +1564,7 @@ void vk_mem_shadow_read_log(void) {
 }
 
 int vk_mem_shadow_on(void) { return shadow_on; }
+int vk_mem_mirror_on(void) { return vk_mirror_on; }
 
 void vk_mem_shadow_sync(uint64_t fence) {
     if (!shadow_on) return;
@@ -2382,8 +2420,11 @@ static void gpu_wrote(const VkMemSpan *sp, uint64_t size, int shader) {
     if (r && size) gpu_writes(r, sp->offset, size);
     if (!r || r->mstate != MS_ON || sp->buffer != r->mbuf || !size) return;
     plat_mutex_lock(&mirror_lock);
-    // A binding to the end of its pool (no size) can span hundreds of MiB: those stay copies.
-    if (shader && !(sp->offset & 3) && !(size & 3) && size <= MERGE_MAX && merging() && snap_add(r, sp->offset, size)) {
+    // A binding to the end of its pool (no size) can span hundreds of MiB: those stay copies. TOTK_SYNC_AHEAD=1 in place
+    // (vk_ahead_g.wbmerge): the copies' and updates' writes merge too. A plain copy back lands when the GPU runs it, after
+    // the game, told the value is done a frame early, may have written other words of the range for the next frame,
+    // and would put the older words back; the merge writes only the words this value changed.
+    if ((shader || vk_ahead_g.wbmerge) && !(sp->offset & 3) && !(size & 3) && size <= MERGE_MAX && merging() && snap_add(r, sp->offset, size)) {
         plat_mutex_unlock(&mirror_lock);
         return;
     }

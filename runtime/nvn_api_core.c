@@ -509,6 +509,14 @@ static int sync_mode(void) {
     if (mode < 0) {
         const char *v = cfg_value("TOTK_SYNC_AHEAD");
         int on = strcmp(v, "0") != 0 && strcmp(v, "check") != 0, check = !strcmp(v, "check");
+        // In place (no shadow storage) the guards cover the VRAM mirrors' copies; with memory = import the GPU reads
+        // vertex, index and storage data straight from the game's memory, and a check run (TOTK_MEMORY=import,
+        // islands) saw the game rewrite ~10 KiB of them a frame after the wait, particles mostly.
+        if (on && !vk_mem_shadow_on() && !vk_mem_mirror_on()) {
+            rt_log("nvn: TOTK_SYNC_AHEAD needs shadow storage or the VRAM mirrors (memory = import reads the game's "
+                   "vertex and storage data in place); the game waits for the GPU as before");
+            on = 0;
+        }
         if ((on || check) && !frame_wait_lr()) {
             rt_log("nvn: TOTK_SYNC_AHEAD: no frame wait site is known for this game version; the game waits for the "
                    "GPU as before");

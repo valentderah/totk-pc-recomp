@@ -107,6 +107,7 @@ void vk_ahead_init(void) {
         VkAheadGuards *g = &vk_ahead_g;
         g->lag = 1;
         g->msync = rt_knob("SYNC_AHEAD_MSYNC", "1");
+        g->wbmerge = rt_knob("SYNC_AHEAD_WBMERGE", "1");
         g->deswz = rt_knob("SYNC_AHEAD_DESWZ", "1");
         g->reads = rt_knob("SYNC_AHEAD_READS", "1");
         g->oneshot = rt_knob("SYNC_AHEAD_ONESHOT", "1");
@@ -114,13 +115,10 @@ void vk_ahead_init(void) {
         // goes 1 -> 2 or 3 at one update, 2 -> 3 at the next, and the report is read in state 3), by then the frame
         // wait one frame late has covered that frame. Savage Wind (BOTW reads them right after the wait) has it on Mali.
         g->queries = rt_knob("SYNC_AHEAD_QUERIES", "0");
-        rt_log("sync-ahead: in place (no shadow storage), memory %s; guards: mirror syncs staged %d, deswizzle of "
-               "rewritten textures on the CPU %d, invalidates wait for the writer %d, one-off small targets %d, "
-               "samples-passed reports %d", vk_mirror_on ? "mirror" : "import", g->msync, g->deswz, g->reads, g->oneshot,
-               g->queries);
-        if (!vk_mirror_on)
-            rt_log("sync-ahead: warning: import memory: vertex, index and storage data are read in place on the GPU, "
-                   "no guard covers them");
+        rt_log("sync-ahead: in place (no shadow storage), memory %s; guards: mirror syncs staged %d, write-backs "
+               "merged %d, deswizzle of rewritten textures on the CPU %d, invalidates wait for the writer %d, one-off "
+               "small targets %d, samples-passed reports %d", vk_mirror_on ? "mirror" : "import", g->msync, g->wbmerge,
+               g->deswz, g->reads, g->oneshot, g->queries);
     }
     vk_ahead_on = check || (vk_ahead_g.lag && rt_knob("SYNC_AHEAD_CHECK", "0"));
     if (!vk_ahead_on) return;
