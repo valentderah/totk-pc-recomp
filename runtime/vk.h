@@ -185,6 +185,7 @@ void vk_contact_release(void);   // before the device goes away
 // them the scene colour, the linear depth and the camera block).
 int vk_rt_wanted(void);                          // the setting asks for ray tracing: device creation enables it
 void vk_rt_device_caps(int rq, int pos_fetch);   // vk_device.c: what the device enabled
+void vk_rt_device_null(int null_desc);           // vk_device.c: null descriptors (robustness2) are on
 int vk_rt_on(void);                              // wanted and enabled
 int vk_rt_note_camera(const float *c4);          // vk_contact.c: the camera block when the pass is planned
 int vk_rt_capturing(void);                       // G-buffer draws capture their triangles (vk_exec_draw.c)

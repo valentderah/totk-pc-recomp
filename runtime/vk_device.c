@@ -440,6 +440,7 @@ static int create_device(void) {
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
     if (vk_rt_wanted()) {
         c->as.accelerationStructureCaptureReplay = c->as.accelerationStructureHostCommands = VK_FALSE;
+        vk_rt_device_null(g_vk.has_robustness2 && c->rob2.nullDescriptor);
         // the scene is captured with transform feedback (vk_pipeline.c vk_pipeline_xfb): without it, no ray tracing
         vk_rt_device_caps(has_as && c->as.accelerationStructure && c->rq.rayQuery && c->f12.bufferDeviceAddress &&
                               g_vk.has_transform_feedback && c->xfb.transformFeedback,

@@ -92,10 +92,12 @@ const GfxShader *gfx_shader_own(const uint32_t *spirv, uint64_t words, const cha
 // the game's tonemap; gfx_shader.c calls it for every fragment shader entering the cache.
 void vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words);
 int vk_rt_shadow_patch_wanted(void);   // vk_rt.c: the lighting shaders read the ray-traced sun shadow (gfx_shader.c)
+int vk_rt_light_patch_wanted(void);    // vk_rt.c: the light shaders trace their shadows (gfx_shader.c patch_rt_lights)
 uint64_t gfx_shader_failures(void);                         // failed translations; feeds GfxStats.shader_failures
 // Reflection: parsed once per shader from the translator's .res.json and the SPIR-V before it enters the cache.
 enum { GFX_RES_UBO, GFX_RES_SSBO, GFX_RES_TEX, GFX_RES_IMG, GFX_RES_KINDS };
 #define GFX_RES_RT_SHADOW 0x80   // GfxShaderRes.flags of a TEX: the ray-traced sun shadow, bound by the replay (no slot)
+#define GFX_RES_RT_TLAS 0x40     // GfxShaderRes.flags of a TEX: vk_rt.c's scene for a light shader's ray query (no slot)
 typedef struct {
     uint16_t set, binding;      // as the SPIR-V decorates them: set 0, bindings from 1 per shader (0: support buffer)
     int16_t slot;               // UBO: c[slot]; SSBO: storage buffer index; TEX: c2 combined slot (handle at 0x20 + 8 slot)

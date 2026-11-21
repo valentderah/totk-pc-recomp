@@ -318,6 +318,9 @@
 # 1: ray hits take their surface's texture colour (and, for glowing or animated materials, the game's own shader run at
 # the hit) instead of a cache of earlier frames: better bounced light and reflections, about 1 ms. Needs rt_gi.
 # rt_mat = 0
+# 1: the game's local lights (lamps, lanterns, torches) cast ray-traced shadows: each pixel a light reaches traces one
+# ray toward it, so the light stops at walls instead of shining through. Needs one of the features above on.
+# rt_lights = 0
 # low, medium, high or ultra: shadow range and rate, GI and reflection ray lengths, AO rays (docs/raytracing.md).
 # rt_quality = high
 

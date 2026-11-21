@@ -312,6 +312,7 @@ typedef enum {
     UI_MENU_RT_SHADOW_ONLY, UI_MENU_RT_SHADOW_ONLY_DESC,   // no game shadow map where traced
     UI_MENU_RT_MAT, UI_MENU_RT_MAT_DESC,   // materials for ray hits
     UI_MENU_RT_QUALITY, UI_MENU_RT_QUALITY_DESC, UI_MENU_RT_Q_LOW, UI_MENU_RT_Q_MEDIUM, UI_MENU_RT_Q_HIGH, UI_MENU_RT_Q_ULTRA,
+    UI_MENU_RT_LIGHTS, UI_MENU_RT_LIGHTS_DESC,   // ray-traced shadows of the game's local lights
     UI_MENU_OV_RT_BUILD, UI_MENU_OV_RT_TRACE,   // the full overlay's ray tracing GPU times (vk_rt_overlay)
     UI_MENU_LAST_ID = UI_MENU_OV_RT_TRACE,
     UI_TEXT_COUNT

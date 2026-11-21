@@ -1,7 +1,7 @@
 # Ray tracing
 
-Hardware ray-traced ambient occlusion, sun shadows, one-bounce global illumination (GI), reflections and a night
-tone, on GPUs with Vulkan ray queries. Everything is off by default; the settings are the `rt_*` keys of `totk.ini`
+Hardware ray-traced ambient occlusion, sun shadows, shadows of the game's local lights, one-bounce global illumination
+(GI), reflections and a night tone, on GPUs with Vulkan ray queries. Everything is off by default; the settings are the `rt_*` keys of `totk.ini`
 (described in [totk.ini.example](../totk.ini.example)) and the "Ray tracing" group at the top of the menu's Screen
 tab.
 
@@ -60,11 +60,30 @@ In replay order:
 | G-buffer draws | capture | as above |
 | before the quarter-resolution lighting | `rt_shadow.comp` (first) | sun shadows from last frame's scene, so the quarter-resolution lighting reads this frame's shadow |
 | before the half-resolution lighting | scene build, `rt_shadow.comp` (second) | builds the scene with all of this frame's draws, traces the shadows again; the game's lighting shaders are patched (`gfx_shader.c`, `patch_rt_shadow`) to read the traced shadow where it is traced, in place of the cascade compare |
+| the game's local lights (half resolution, one draw per light) | patched light shaders | with `rt_lights`, each light shader traces one ray query toward its light (below) |
 | before the composite | `rt_ao.comp`, `rt_aoinj.comp` | AO traced at half resolution and written into the game's own AO target (the wide SSAO term), so the composite applies it as its own |
 | after the composite | `rt_gi.comp` | one-bounce diffuse GI, the sky visibility that dims the ambient light, reflections, and the night tone's measurement |
 | before DLSS / the bloom (`vk_dlaa.c`) | `rt_late.comp`, `rt_tone.comp` | the appearance measure that feeds the light cache (minus what the GI itself added), and the night tone |
 
 Each pass that writes a game image marks it (`vk_texture_storage_written`) as the contact shadows do.
+
+## Local light shadows (`rt_lights`)
+
+TotK draws each point light as a volume into a half-resolution diffuse and specular light buffer, and looks the light's
+shadow up in a cube map of its own, which is a 3x3 placeholder: lamp and torch light goes through walls. When the light
+shaders load, `gfx_shader.c` `patch_rt_lights` finds them by that cube lookup (its vector divided by its own largest
+component) and, from it, the function variables holding the pixel's world position and the world vector to the light.
+After the shader has written its outputs, where they hold any light, it traces one ray query from the pixel toward the
+light against the traced scene, stopping short of the light by max(0.25 m, 8 % of the distance) so the lamp's own
+housing does not shadow it, and scales both outputs by the result. The scene's TLAS is bound at a new binding (flag
+`GFX_RES_RT_TLAS`, `vk_exec_draw.c`), through push descriptor templates; while `rt_lights` is off, or before the first
+scene is built, the binding is a null descriptor (robustness2 `nullDescriptor`) and every ray misses. Without null
+descriptors or push descriptor templates the light shaders are left as they are.
+
+Measured in the Kakariko inn at night: about half of the local light on screen is shadowed (the counters shadow the
+floor below them, baskets and beams cast shadows), with no measurable GPU cost, since pixels a light does not reach trace
+nothing. The shadows are hard (one ray to the light's centre) and at the light buffer's half resolution. Lights drawn
+with the other light shader (no cube lookup; 5 of 33 in that frame) are not covered yet.
 
 ## Denoising
 
@@ -130,6 +149,8 @@ The full overlay (`perf_overlay = full`) shows "RT scene build (GPU)" and "RT tr
 - **Caves**: a mesh the game stops drawing behind mist or an overhang while its box is still in the view is dropped
   after 3 frames (there are no sun cascades to keep it), so a reflected rock can pop out of a water reflection on a
   small camera move.
+- Local light shadows cover the point lights with a cube lookup only, are hard edged, and need another ray tracing
+  feature on (they trace that scene).
 - Cut-out foliage is solid to the rays; `rt_shadow_only = 0` keeps the game's shadow map for it.
 - Fixed capacities are sized for a 6 GB GPU; they do not scale with the VRAM budget yet.
 
@@ -145,6 +166,8 @@ The full overlay (`perf_overlay = full`) shows "RT scene build (GPU)" and "RT tr
 | `TOTK_RT_GI_GLOW=0` | the GI's lights by brightness over albedo instead of the glow copy |
 | `TOTK_RT_TEST=1` | the first test pass: hard sun shadow and AO from the captured scene, in place of the contact shadows |
 | `TOTK_RT_LIVE_SET="<s>:KEY=V,...;..."` | sets those settings (TOTK_ prefixed, never saved) that many seconds after start, as the menu would, to test live switching |
+| `TOTK_RT_LIGHT_SKIP=<abs>,<rel>` | how far short of a local light its shadow ray stops (default `0.25,0.08`) |
+| `TOTK_RT_LIGHT_DEBUG=<n>` | local light shadows: 1 only the blocked light is drawn, 2 none, 5 traced but not applied |
 | `TOTK_RT_SURVEY=1` | logs what the game draws per pass (no capture) |
 
 Every other `TOTK_RT_*` read in `vk_rt.c` is a tuning or debug knob documented at the line that reads it.

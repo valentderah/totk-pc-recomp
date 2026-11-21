@@ -192,6 +192,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                             "game showed it, so bounced light and reflections from things off the screen or hidden take "
                             "their real colours (without it they come from a coarse cache of earlier frames). Needs "
                             "ray-traced GI; costs about 1 ms and some video memory. Applies at once.",
+    [UI_MENU_RT_LIGHTS] = "Ray-traced light shadows",
+    [UI_MENU_RT_LIGHTS_DESC] = "Lamps, lanterns, torches and other local lights cast ray-traced shadows: their light stops at walls and "
+                               "objects instead of shining through them. Needs another ray tracing feature on (it traces that scene); "
+                               "costs little, as only pixels a light reaches trace a ray. Applies at once.",
     [UI_MENU_OV_RT_BUILD] = "RT scene build (GPU)", [UI_MENU_OV_RT_TRACE] = "RT trace (GPU)",
     [UI_MENU_CONTACT_SHADOWS] = "Contact shadows",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Small sun shadows the shadow maps miss: at feet, under stones, in grass and creases. "
@@ -891,6 +895,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                             "предметов за экраном или скрытых получают их настоящие цвета (без этого — из грубого кэша "
                             "прошлых кадров). Нужно GI с трассировкой; стоит около 1 мс и немного видеопамяти. "
                             "Действует сразу.",
+    [UI_MENU_RT_LIGHTS] = "Тени от ламп с трассировкой",
+    [UI_MENU_RT_LIGHTS_DESC] = "Лампы, фонари, факелы и другие местные источники света отбрасывают тени, рассчитанные трассировкой "
+                               "лучей: их свет останавливается на стенах и предметах, а не проходит сквозь них. Нужна ещё одна "
+                               "функция трассировки (она даёт сцену); стоит мало, так как луч пускают только пиксели, до которых "
+                               "доходит свет. Действует сразу.",
     [UI_MENU_OV_RT_BUILD] = "Сборка сцены RT (GPU)", [UI_MENU_OV_RT_TRACE] = "Трассировка RT (GPU)",
     [UI_MENU_CONTACT_SHADOWS] = "Контактные тени",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Мелкие тени от солнца, которых нет на картах теней: у ног, под камнями, в траве и "
@@ -2061,6 +2070,10 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                             "coisas fora da tela ou escondidas têm suas cores reais (sem isso vêm de um cache grosseiro "
                             "de quadros anteriores). Precisa da GI com ray tracing; custa cerca de 1 ms e um pouco de "
                             "memória de vídeo. Aplica na hora.",
+    [UI_MENU_RT_LIGHTS] = "Sombras das luzes com ray tracing",
+    [UI_MENU_RT_LIGHTS_DESC] = "Lâmpadas, lanternas, tochas e outras luzes locais projetam sombras com ray tracing: a luz para nas "
+                               "paredes e nos objetos em vez de atravessá-los. Precisa de outro recurso de ray tracing ligado (ele "
+                               "traça essa cena); custa pouco, pois só os pixels que a luz alcança traçam um raio. Aplica na hora.",
     [UI_MENU_OV_RT_BUILD] = "Montagem da cena RT (GPU)", [UI_MENU_OV_RT_TRACE] = "Traçado RT (GPU)",
     [UI_MENU_CONTACT_SHADOWS] = "Sombras de contato",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Pequenas sombras do sol que os mapas de sombra não pegam: nos pés, sob pedras, "
@@ -2865,6 +2878,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_RT_MAT_DESC] = "光线命中点使用表面自身的纹理颜色，由太阳和天空照亮并与游戏显示的效果匹配，因此屏幕外或被遮挡物体的"
                             "反弹光和反射呈现真实颜色（关闭时来自前几帧的粗略缓存）。需要光追 GI；约耗时 1 毫秒并占用少量显存。"
                             "立即生效。",
+    [UI_MENU_RT_LIGHTS] = "光线追踪灯光阴影",
+    [UI_MENU_RT_LIGHTS_DESC] = "灯、灯笼、火把等局部光源投射光线追踪阴影：光会被墙壁和物体挡住，而不再穿透它们。"
+                               "需要同时开启另一项光线追踪功能（使用其场景）；开销很小，只有被灯光照到的像素才发射光线。立即生效。",
     [UI_MENU_OV_RT_BUILD] = "光追场景构建（GPU）", [UI_MENU_OV_RT_TRACE] = "光线追踪（GPU）",
     [UI_MENU_CONTACT_SHADOWS] = "接触阴影",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "阴影贴图遗漏的细小太阳阴影：脚下、石头下、草丛和褶皱中。在光照之后于屏幕空间追踪。下次启动时生效。",

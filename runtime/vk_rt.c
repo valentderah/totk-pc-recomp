@@ -308,6 +308,7 @@ static struct {
     // phase 6 sun shadows (TOTK_RT_SHADOWS): settings, pipeline, the half-res shadow image the lighting reads and its
     // two histories (2 vec4 per half-res pixel, rt_shadow.comp), last frame's view-projection
     int shadows, simg_ready, simg_init;
+    int lights, null_desc, tlas_built;   // TOTK_RT_LIGHTS (the light shaders trace their shadows); null AS descriptors; a TLAS built
     int test, ao_ok, sh_ok, sr_env;      // the test on; AO and shadow pipelines built (live switching); radius from the env
     int sh_rate;                         // TOTK_RT_SHADOW_RATE: 1 every ray every frame, 2 checkerboard (rt_shadow.comp)
     int sh_pct;                          // TOTK_RT_SHADOW_STRENGTH: 0 the game's shadow .. 100 ours
@@ -556,6 +557,8 @@ static void read_settings(void) {
     R.shadows = sh && !strcmp(sh, "1");
     e = cfg_get("TOTK_RT_GI");   // rt_gi, the menu's "Ray-traced global illumination": one-bounce GI after the composite
     R.gi = e && !strcmp(e, "1");
+    e = cfg_get("TOTK_RT_LIGHTS");   // rt_lights: the game's local lights get ray-traced shadows (needs a scene)
+    R.lights = e && !strcmp(e, "1");
     R.wanted = test || (a && !strcmp(a, "1")) || R.shadows || R.gi;
     read_quality();
     e = cfg_get("TOTK_RT_GI_CACHE");     // 0: off-screen GI hits bring nothing (no world light cache)
@@ -753,6 +756,22 @@ static void rt_poll(void) {
 // any ray tracing on at start: the lighting shaders are patched, so the sun shadows can be switched on in play (with
 // the image not ready they read a blank: the game's own shadow, exactly)
 int vk_rt_shadow_patch_wanted(void) { read_settings(); return R.rq; }
+
+// gfx_shader.c patch_rt_lights: the light shaders trace a ray query toward their light, against R.tlas bound by the
+// replay. Needs null acceleration structure descriptors (the binding while the shadows are off or before the first
+// scene) and push descriptor templates, which carry the handle (vk_exec_draw.c).
+void vk_rt_device_null(int null_desc) { R.null_desc = null_desc; }
+int vk_rt_light_patch_wanted(void) {
+    read_settings();
+    int ok = R.rq && R.null_desc && vk_pipeline_push_tpl_fn();
+    static int logged;
+    if (R.rq && !logged++)
+        rt_log("vk: ray-traced light shadows %s", ok ? "available" : "unavailable (needs null descriptors and push descriptor templates)");
+    return ok;
+}
+uint64_t vk_rt_light_tlas(void) {
+    return R.ok && R.lights && R.tlas_built && (R.ao || R.shadows || R.gi) ? (uint64_t)(uintptr_t)R.tlas : 0;
+}
 
 // vk_contact.c: a shadow pass runs before the half-resolution lighting (shown normally or as views 9-11)
 int vk_rt_shadows(void) { read_settings(); return R.wanted && R.rq && R.shadows && (R.view == 0 || (R.view >= 9 && R.view != 15 && R.view != 16 && R.view != 17)); }
@@ -3416,6 +3435,11 @@ void vk_rt_live(void) {
         R.shadows = s, R.sprev_ok = 0;
         rt_log("vk: ray traced sun shadows switched %s", s ? "on" : "off");
     }
+    {
+        const char *l = cfg_get("TOTK_RT_LIGHTS");
+        int lt = l && !strcmp(l, "1");
+        if (lt != R.lights) R.lights = lt, rt_log("vk: ray-traced light shadows switched %s", lt ? "on" : "off");
+    }
     if (!R.sr_env) R.shadow_radius = R.shadows ? 80.0f : R.ao ? 15.0f : R.max_dist;
     if (rt_quality() != R.qual) {   // the menu's quality: its values again, the histories restarted
         read_quality();
@@ -4189,6 +4213,7 @@ void vk_rt_exec(VkExec *ex, const VkExecJob *j) {
         build_as(cb, VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
                  &g, ninst, R.tlas);
         mem_barrier(cb);
+        R.tlas_built = 1;   // the light shaders may bind it from now on (vk_rt_light_tlas)
     }
     if (!R.geom) ts(cb, 1), ts(cb, 2);
 trace_only:

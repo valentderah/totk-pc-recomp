@@ -335,6 +335,7 @@ void vk_rt_live(void);                              // vk_rt.c: the menu's AO an
 int vk_rt_shadows(void);                             // vk_rt.c: a sun shadow pass before the half-resolution lighting
 int vk_rt_shadow_desc(VkDescriptorImageInfo *o, uint32_t w, uint32_t h);   // vk_rt.c: the shadow image for a patched lighting shader, 0: none yet
 void vk_rt_note_shadow_use(uint32_t w, uint32_t h, const float *blk);   // debug: a lighting pass's camera vs the main one
+uint64_t vk_rt_light_tlas(void);   // vk_rt.c: the acceleration structure the light shaders trace, 0 (null) when off
 int vk_rt_ao_inject(void);                           // vk_rt.c: the pass runs before the composite, into the game's AO
 // vk_exec_xfer.c, samples-passed counting: a draw about to be recorded in the open pass (begins an occlusion query
 // when counting and none is active), and the open pass about to end (ends the active query).

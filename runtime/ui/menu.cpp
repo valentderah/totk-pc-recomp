@@ -805,6 +805,7 @@ static void tab_screen(float scale) {
     opt_slider("TOTK_RT_TONE", UI_MENU_RT_TONE, 0, 100, UI_MENU_RT_TONE_DESC, 10, "%.0f %%");
     opt_toggle("TOTK_RT_SHADOW_ONLY", UI_MENU_RT_SHADOW_ONLY, UI_MENU_RT_SHADOW_ONLY_DESC);
     opt_toggle("TOTK_RT_MAT", UI_MENU_RT_MAT, UI_MENU_RT_MAT_DESC);
+    opt_toggle("TOTK_RT_LIGHTS", UI_MENU_RT_LIGHTS, UI_MENU_RT_LIGHTS_DESC);
     opt_group(UI_MENU_WINDOW_GROUP);
     opt_toggle("TOTK_FULLSCREEN", UI_MENU_FULLSCREEN, UI_MENU_FULLSCREEN_DESC);
     row_window_size();

@@ -2717,6 +2717,10 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info, const uint64_t *b
                     if (img) h = slot >= 0 && slot < 32 ? ex->img[st][slot] : 0;
                     else h = slot >= 0 && slot < 128 ? ex->tex[st][slot] : 0;
                     BI_CUR(k);
+                    if (r->flags & GFX_RES_RT_TLAS) {   // a light shader's scene (gfx_shader.c patch_rt_lights): the
+                        o[k].w[0] = vk_rt_light_tlas(), o[k].w[1] = o[k].w[2] = 0;   // template reads a handle; null: no shadow
+                        continue;
+                    }
                     // the ray-traced sun shadow a lighting shader was patched to read (gfx_shader.c patch_rt_shadow);
                     // until it exists, a blank texture (weight 0: the game's own shadow)
                     if (!img && (r->flags & GFX_RES_RT_SHADOW) && vk_rt_shadow_desc(&o[k].image, ex->pass_w, ex->pass_h)) {

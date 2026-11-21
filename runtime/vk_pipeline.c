@@ -995,6 +995,7 @@ static VkDescriptorType descriptor_type(int kind, const GfxShaderRes *r) {
     case GFX_RES_UBO: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     case GFX_RES_SSBO: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     case GFX_RES_TEX:
+        if (r->flags & GFX_RES_RT_TLAS) return VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;   // gfx_shader.c patch_rt_lights
         if (buffer) return VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
         if (r->separate) LOG_ONCE("vk_pipeline: a separate texture handle: bound as SAMPLED_IMAGE");
         return r->separate ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
