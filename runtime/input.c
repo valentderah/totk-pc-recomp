@@ -55,6 +55,15 @@ static uint16_t steam_hidden[STEAM_HIDDEN_MAX][2];   // vendor, product
 static int steam_hidden_n;
 static SDL_Gamepad *motion_extra;    // the hidden controller opened for its sensors only, NULL none
 static int pad_hidden;               // the open gamepad is a controller Steam hid (scan_pads' fallback)
+// The other connected gamepads, held open so that a press on one is seen: the one the player picks up becomes `pad`
+// (pad_follow). Without this a USB receiver whose controller is off, a handheld's built-in pad or a second controller
+// listed first keeps the game on itself until it disconnects (#968, #1193). Controllers Steam hid are not listed: their
+// buttons come through Steam's virtual gamepad.
+enum { SPARE_MAX = 8 };
+static SDL_Gamepad *spare[SPARE_MAX];
+static uint8_t spare_used[SPARE_MAX];   // ... in use at the last look, or not seen at rest yet (pad_follow)
+static int spare_n;
+static uint64_t next_spare_scan;
 static uint64_t next_motion_scan;
 static SDL_JoystickID sensor_pad;    // the gamepad whose sensors the motion thread set up, 0 none
 static int sensor_ok;                // ... and it has both sensors, enabled
@@ -517,6 +526,23 @@ static int unhidden_pad_present(void) {
     return found;
 }
 
+// Under lock: closes spare i and moves the last one into its place.
+static void spare_remove(int i) {
+    SDL_CloseGamepad(spare[i]);
+    spare_n--;
+    spare[i] = spare[spare_n];
+    spare_used[i] = spare_used[spare_n];
+}
+
+// Under lock: closes the spare handle on id. SDL_OpenGamepad of an id that is already open returns the same object with
+// its reference count raised, so a `pad` opened from a spare's id keeps its own reference.
+static void spare_drop(SDL_JoystickID id) {
+    for (int i = 0; i < spare_n; i++)
+        if (SDL_GetGamepadID(spare[i]) == id) spare_remove(i--);
+}
+
+static void pad_adopt(void);
+
 // Open the first gamepad when none is open or the open one went away; logs once per change. A controller Steam hid
 // (steam_hidden) is taken only when no other gamepad is there, e.g. while Steam's virtual pad is not up yet, and gives
 // way to the virtual pad once it is (pad_physical looks again every RESCAN_MS while pad_hidden): otherwise Steam's
@@ -555,6 +581,12 @@ static void scan_pads(void) {
             }
     SDL_free(ids);
     if (!pad) return;
+    spare_drop(SDL_GetGamepadID(pad));
+    pad_adopt();
+}
+
+// Under lock: reads the new `pad`'s rumble, button labels and layout and logs it (scan_pads, pad_follow).
+static void pad_adopt(void) {
     pad_hidden = steam_hidden_n && steam_hidden_id(SDL_GetGamepadID(pad));
     pad_rumble = SDL_GetBooleanProperty(SDL_GetGamepadProperties(pad), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false);
     plat_xchg32(&rumble_ready, pad_rumble);
@@ -794,10 +826,88 @@ static void wheel_route(uint64_t *bp, int32_t sl[2], int32_t sr[2]) {
     else pick(&sl[0], &sl[1], 0, v);
 }
 
+// Under lock, once a RESCAN_MS: closes the spares that went away and opens the gamepads that are not `pad`, a spare,
+// the controller held for its sensors (motion_extra) or a controller Steam hid. A gamepad SDL lists but cannot open is
+// not tried again until it reconnects (a new id), so a failing open does not repeat on the poll path every second.
+static void spares_scan(void) {
+    static SDL_JoystickID rejected[8];
+    uint64_t now = plat_now_ns() / 1000000u;
+    if (now < next_spare_scan) return;
+    next_spare_scan = now + RESCAN_MS;
+    for (int i = 0; i < spare_n; i++)
+        if (!SDL_GamepadConnected(spare[i])) spare_remove(i--);
+    int n = 0;
+    SDL_JoystickID *ids = SDL_GetGamepads(&n);
+    for (int i = 0; ids && i < n && spare_n < SPARE_MAX; i++) {
+        int known = (pad && SDL_GetGamepadID(pad) == ids[i]) ||
+                    (motion_extra && SDL_GetGamepadID(motion_extra) == ids[i]) || steam_hidden_id(ids[i]);
+        for (int s = 0; s < spare_n && !known; s++) known = SDL_GetGamepadID(spare[s]) == ids[i];
+        for (int r = 0; r < 8 && !known; r++) known = rejected[r] == ids[i];
+        if (known) continue;
+        SDL_Gamepad *g = SDL_OpenGamepad(ids[i]);
+        if (!g) {
+            memmove(rejected + 1, rejected, sizeof rejected - sizeof rejected[0]);
+            rejected[0] = ids[i];
+            continue;
+        }
+        spare_used[spare_n] = 1;   // it has to be seen at rest before a press on it counts
+        spare[spare_n++] = g;
+        rt_log("input: gamepad \"%s\" is connected too: a button or a stick pushed on it makes it the one the game reads",
+               SDL_GetGamepadName(g));
+    }
+    SDL_free(ids);
+}
+
+// Under lock: the player is using g. A button is down, or a stick or a trigger is past half way (PAD_USED, as for
+// input_kbm_last), so a resting or slightly drifting stick never counts.
+static int pad_in_use(SDL_Gamepad *g) {
+    for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; b++)
+        if (SDL_GetGamepadButton(g, (SDL_GamepadButton)b)) return 1;
+    for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; a++)
+        if (abs(SDL_GetGamepadAxis(g, (SDL_GamepadAxis)a)) > PAD_USED) return 1;
+    return 0;
+}
+
+// Under lock, after SDL_UpdateGamepads: a spare that goes from at rest to in use becomes `pad`, and the old `pad` takes
+// its place among the spares with its sensors off. Only the change counts: a device that never rests (a pedal or a
+// joystick axis that reads full at rest) is never seen at rest and takes nothing, and the old `pad`, held when the
+// player picked up the other one, has to be let go before a press on it takes the game back. The new pad's sensors come
+// on with its own saved bias and a fresh orientation at the sensor thread's next look (sensors_ready, which sees another
+// id), as after a reconnect; a rumble request not sent yet is dropped. Not while `pad` is a controller Steam hid:
+// scan_pads moves the buttons to Steam's virtual pad then.
+static void pad_follow(void) {
+    int to = -1;
+    for (int i = 0; i < spare_n; i++) {
+        int used = SDL_GamepadConnected(spare[i]) && pad_in_use(spare[i]);
+        if (used && !spare_used[i] && to < 0) to = i;
+        spare_used[i] = (uint8_t)used;
+    }
+    if (to < 0 || pad_hidden) return;
+    SDL_Gamepad *old = pad;
+    pad = spare[to];
+    if (old && SDL_GamepadConnected(old)) {
+        SDL_SetGamepadSensorEnabled(old, SDL_SENSOR_GYRO, false);   // false without sensors: ignored
+        SDL_SetGamepadSensorEnabled(old, SDL_SENSOR_ACCEL, false);
+        spare[to] = old;
+        spare_used[to] = 1;
+    } else {   // none or gone: its handle is closed (SDL_CloseGamepad ignores NULL)
+        spare[to] = old;
+        spare_remove(to);
+    }
+    sensor_pad = 0;   // as scan_pads: the sensors are set up again for the new pad
+    sensor_ok = 0;
+    plat_xchg32(&rumble_ready, 0);
+    rumble_cancel();
+    rt_log("input: \"%s\" is in use: the game reads it now", SDL_GetGamepadName(pad));
+    pad_adopt();
+}
+
 // Under lock, state 1: the open gamepad's inputs by position (pd[PAD_*] != 0 held); 0 without a connected gamepad.
 static int pad_physical(uint8_t pd[PAD_COUNT]) {
     if ((!pad || !SDL_GamepadConnected(pad) || pad_hidden) && plat_now_ns() / 1000000u >= next_scan) { next_scan = plat_now_ns() / 1000000u + RESCAN_MS; scan_pads(); }
+    spares_scan();
     SDL_UpdateGamepads();
+    pad_follow();
     if (!pad || !SDL_GamepadConnected(pad)) return 0;
     for (int p = PAD_SOUTH; p < PAD_ZL; p++) pd[p] = SDL_GetGamepadButton(pad, pad_sdl[p]);
     pd[PAD_ZL] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > TRIGGER_ON;
