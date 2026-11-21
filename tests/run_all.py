@@ -83,6 +83,7 @@ TESTS = {
     'patches_v110_check':       ('.venv', 'cc', [], 'compiles synthetic patch contracts for comparison with Unicorn'),
     'patches_v110_highfps_check': ('.venv', 'cc', [], 'compiles synthetic high-fps contracts for comparison with Unicorn'),
     'patches_v110_lightning_check': ('.venv', 'cc', [], 'compiles synthetic lightning contracts for comparison with Unicorn'),
+    'configurator_check':       ('.venv', 'cc', [], 'builds the settings window with clang and runs its commands'),
     'diff/atomic':              ('.venv', 'cc', [], 'compiles generated atomic checks for comparison with Unicorn'),
     'diff/simd':                ('.venv', 'cc', [], 'compiles generated SIMD checks for comparison with Unicorn'),
     # ---- read the game or a build ----

@@ -13,7 +13,8 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
     runtime/   libtotkrt.a and libtotkrt-v2.a (build_game.py --make-runtime-lib with llvm/, x86-64-v3 and v2), the
                runtime headers, the INSTALL_SIDE sources of build_game.py (compiled per install), deps/ (headers and import
                libraries of SDL3, Opus, libvpx, Vulkan and VMA)
-    bin/       totk_xlate.exe (+ .id), hactool.exe, SDL3.dll (upstream), libopus-0.dll, ninja.exe
+    bin/       totk_xlate.exe (+ .id), hactool.exe, SDL3.dll (upstream), libopus-0.dll, ninja.exe, totk-config.exe
+               (the settings window the setup puts next to totk.exe, tools/build_configurator.py)
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, totk.ini.example
     data/pgo-<v>.profdata  build/pgo's execution profile of an update (tools/pgo.py) and its .json record: the
                install compiles that update's code and the runtime libraries with it
@@ -370,6 +371,7 @@ def collect_licenses(out):
         (ROOT / 'runtime' / 'shaders' / 'ffx' / 'LICENSE.txt', 'FidelityFX-FSR-LICENSE.txt'),
         (ROOT / 'runtime' / 'third_party' / 'FidelityFX' / 'LICENSE.txt', 'FidelityFX-SDK-LICENSE.txt'),
         (MAIN_ROOT / 'toolchain' / 'hactool' / 'LICENSE', 'hactool-LICENSE.txt'),
+        (MAIN_ROOT / 'toolchain' / 'nuklear' / 'LICENSE', 'Nuklear-LICENSE.txt'),   # in bin/totk-config.exe
         (MAIN_ROOT / 'refs' / 'MacNativeGames' / 'LICENSE', 'MacNativeGames-LICENSE.txt'),
     ]
     for src, name in pairs:
@@ -443,6 +445,15 @@ def runtime_lib(out, llvm, pgo):
             shutil.copy2(p, rt / p.relative_to(ROOT / 'runtime'))
     for name in sorted(build_game.INSTALL_SIDE):   # compiled at install, so left out of libtotkrt.a
         shutil.copy2(ROOT / 'runtime' / name, rt / name)
+
+
+def build_config_window(out, llvm):
+    """bin/totk-config.exe: the settings window, built once here with the folder's llvm/ and deps; the setup copies it
+    into the install folder (installer/steps.py compile)."""
+    build = MAIN_ROOT / 'build' / 'release-check' / 'configurator'
+    run([sys.executable, ROOT / 'tools' / 'build_configurator.py', '--toolchain', llvm, '--deps', out / 'runtime' / 'deps',
+         '--out', build], env=clean_env(llvm / 'bin', out / 'bin'))
+    shutil.copy2(build / 'totk-config.exe', out / 'bin' / 'totk-config.exe')
 
 
 def build_sources(out, pgo):
@@ -622,6 +633,7 @@ def main():
     build_deps(out)
     pgo = profiles()
     runtime_lib(out, llvm, pgo)
+    build_config_window(out, llvm)
     build_sources(out, pgo)
     build_launcher(out, llvm)
     collect_licenses(out)

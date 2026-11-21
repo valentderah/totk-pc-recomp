@@ -60,6 +60,11 @@ typedef struct { const char *key, *def, *values; int live; } CfgMeta;
 const CfgMeta *cfg_meta(const char *key);
 // The i-th row (0-based, table order); NULL past the last.
 const CfgMeta *cfg_meta_at(int i);
+// 1 when the runtime reads key (prefix and case ignored): a name of known[] or a cheat switch. The settings window
+// (runtime/configurator) lists the other keys of totk.ini on a tab of their own.
+int cfg_known(const char *key);
+// The i-th setting of the Steam Deck device profile (0-based) and the value it gets there; 0 past the last.
+int cfg_deck_at(int i, const char **key, const char **value);
 
 // The setting's value for consumers: the environment or totk.ini value, else the CfgMeta default. name has the TOTK_
 // prefix, like cfg_get; a name without a row is a bug (rt_fatal). A row with an empty default has no fixed value: its

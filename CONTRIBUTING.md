@@ -59,7 +59,7 @@ Run every row that matches your diff and list the results in the description. Co
 | `recomp/`, `runtime/cpu.h`, `runtime/simd.h` | the differential tests against Unicorn: `tests\diff\lift.py`, `simd.py`, `atomic.py`, `func.py`, `tests\flags_check.py`, `tests\excl_mt.py`; the same with a `--cpu v2` build |
 | `recomp/jumptables.py` | `tests\jumptables_check.py`: 0 disagreements on 1.2.1 and 1.4.3 |
 | `runtime/` | `--probe-kernel`, `--probe-vkexec`, `--probe-nvn-tex`, `--probe-shader`, plus the probe for the file you touched (list at the top of `runtime/main.c`) |
-| settings | `totk.exe --probe-cfg`; `python tests\settings_doc_check.py` |
+| settings | `totk.exe --probe-cfg`; `python tests\settings_doc_check.py`; `python tests\configurator_check.py` (the settings window reads the new rows, [docs/configurator.md](docs/configurator.md)) |
 | button prompts | `.venv-py314\Scripts\python tests\romfs_prompts_test.py` |
 | mods, ExeFS patches | `.venv\Scripts\python tests\exefs_patches_test.py`; `totk.exe --probe-mods` |
 | `installer/` | `python tests\installer_test.py`; `python tests\installer_gui_test.py` |

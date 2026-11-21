@@ -125,7 +125,8 @@ of them.
    instead of all of them. The build prints `reused N of M generated objects`; `--verbose` lists the others with the
    reason, and `--full-build` compiles everything.
    `--patches` builds in the frame-rate, resolution and other patch sets, switchable at run time. The link copies
-   `SDL3.dll`, `libiconv-2.dll` and `libopus-0.dll` next to the exe.
+   `SDL3.dll`, `libiconv-2.dll` and `libopus-0.dll` next to the exe, and the build then makes `totk-config.exe`, the
+   settings window, beside it (`tools/build_configurator.py`, [configurator.md](configurator.md)).
    For Xbox and PlayStation button prompts, run `make_romfs_patches.py` twice more for each, with `--prompts xbox`,
    `--prompts xbox-label`, `--prompts playstation` and `--prompts playstation-xbox`: they write
    `build\<ver>\romfs-patches-xbox`, `-xbox-label`, `-playstation` and `-playstation-xbox`

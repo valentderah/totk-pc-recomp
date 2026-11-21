@@ -85,6 +85,7 @@ class Layout:
     sysroot: Path | None = None       # Linux release: what the game links against, instead of the host's
     runtime_lib_v2: Path | None = None   # libtotkrt-v2.a: the runtime for CPUs without AVX2 (build_game.py --cpu v2)
     pgo_dir: Path | None = None       # pgo-<v>.profdata (tools/pgo.py); None: no profiles (Linux)
+    config_window: Path | None = None   # totk-config, the settings window; None: the build's own (build_game.py)
 
     @property
     def clang(self):
@@ -153,6 +154,7 @@ def release_layout(root):
         ninja=root / 'bin' / ('ninja' + EXE), hactool=root / 'bin' / ('hactool' + EXE),
         xlate=root / 'bin' / ('totk_xlate' + EXE),
         dlls=(root / 'bin' / 'SDL3.dll', root / 'bin' / 'libopus-0.dll') if WIN else (root / 'bin' / 'libSDL3.so.0',),
+        config_window=root / 'bin' / ('totk-config' + EXE),
         shader_list=root / 'data' / 'shader_list.tsv', ini_example=root / 'totk.ini.example',
         pgo_dir=root / 'data' if WIN else None,
         # None: the install folder's TEMP_IN_DEST (temp_for). Windows: the rebuild's working state stays with the install
