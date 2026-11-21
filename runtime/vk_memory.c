@@ -544,7 +544,7 @@ void vk_mem_census(uint64_t frame) {
     mirror_frame = frame;
     static uint64_t window_start;
     if ((rt_trace & RT_TRACE_PERF) && frame % 600 == 0) vram_log(frame);
-    if ((rt_trace & RT_TRACE_PERF) && !vk_mirror_on) dirty_frame(frame);
+    if (vk_mem_census_on) dirty_frame(frame);
     if ((rt_trace & RT_TRACE_PERF) ? frame % 60 == 0 : frame == 600 || frame == 1800)
         mirror_log(frame), shadow_log(frame);   // mirror_log also logs the write-watch line
     if (frame == 1200) {   // loading is over: the first window starts here
@@ -1476,7 +1476,7 @@ static void shadow_log(uint64_t frame) {
 }
 
 void vk_mem_dirty_submit(void) {
-    if (!(rt_trace & RT_TRACE_PERF) || vk_mirror_on) return;   // the mirror's own line replaces the census
+    if (!vk_mem_census_on) return;   // tracing off, TOTK_PERF_CENSUS=0, or a mirror (its own line replaces the census)
     uint64_t t0 = kern_now_ns();
     uint32_t prev = dirty_sub;   // the submit whose replay noted the bindings
     dirty_sub = prev + 1 ? prev + 1 : 1;
@@ -1627,6 +1627,7 @@ static void dirty_frame(uint64_t frame) {
 enum { MR_BUDGET, MR_UNTRACKED, MR_OVERLAP, MR_ALLOC, MR_N };
 
 int vk_mirror_on;
+int vk_mem_census_on;   // vk.h: the TOTK_TRACE=perf dirty census runs (mirror_mode)
 static int mirror_verify;
 static int mirror_gap = 2;             // pre-snap: hot pools at most this many 2 MiB regions apart share one query
 static PoolRec **mlist;                // pool_lock: mirrored pools by import_lo
@@ -1671,6 +1672,11 @@ static void mirror_mode(int discrete) {
     }
     vk_mirror_on = mode > 0;
     mirror_verify = mode == 2;
+    // The dirty census is a measurement of its own (what a mirror would upload), not part of the frame: with
+    // TOTK_PERF_CENSUS=0 a perf trace measures the frame without its write-watch queries.
+    vk_mem_census_on = (rt_trace & RT_TRACE_PERF) && !vk_mirror_on && rt_knob("PERF_CENSUS", "1");
+    if ((rt_trace & RT_TRACE_PERF) && !vk_mirror_on && !vk_mem_census_on)
+        rt_log("mem: dirty census off (TOTK_PERF_CENSUS=0): no `mem: dirty` lines, no write-watch queries for them");
     const char *g = cfg_get("TOTK_MIRROR_GAP");
     mirror_gap = g && *g ? atoi(g) : 2;
     if (mirror_gap < 0) mirror_gap = 0;
