@@ -2986,7 +2986,7 @@ static void bind_vertex_buffers(VkExec *ex) {
     ex->recorded++;
     for (int b = lo; b <= hi; b++) {
         if (D->B.vcls[b]) vk_mem_count(D->B.vcls[b], VK_MUSE_VB, D->B.vsz[b]);
-        if ((rt_trace & RT_TRACE_PERF) && D->B.vpool[b]) vk_mem_bound_note(D->B.vpool[b]);
+        if (vk_mem_census_on && D->B.vpool[b]) vk_mem_bound_note(D->B.vpool[b]);
     }
     D->B.vb_valid = 1;
 }

@@ -244,9 +244,12 @@ void vk_mem_count_flush(int64_t (*acc)[VK_MUSE_N]);
 // TOTK_TRACE=perf dirty census (vk_memory.c): the replay notes each imported pool it binds as a vertex, index, uniform,
 // storage or indirect buffer; at the start of every submit the pages the CPU wrote in such pools since the previous
 // submit are counted from the shared page generations and logged as `mem: dirty` every 60 frames. Nothing when tracing
-// is off: VK_MEM_BOUND is one flag test at the call site.
+// is off: VK_MEM_BOUND is one flag test at the call site. vk_mem_census_on: tracing perf, no mirror, and
+// TOTK_PERF_CENSUS not 0 (set at device selection). The census queries the write watch at every submit, which costs
+// the replay thread 3.5-5 ms a frame on a Steam Deck (#946), so measurements of the frame turn it off.
+extern int vk_mem_census_on;
 void vk_mem_bound_note(void *pool);
-#define VK_MEM_BOUND(sp) do { if ((rt_trace & RT_TRACE_PERF) && (sp).pool) vk_mem_bound_note((sp).pool); } while (0)
+#define VK_MEM_BOUND(sp) do { if (vk_mem_census_on && (sp).pool) vk_mem_bound_note((sp).pool); } while (0)
 void vk_mem_dirty_submit(void);                   // vk_sync_submit, under its lock, before the replay
 // VRAM mirror of buffer-bound pools (vk_memory.c). vk_mirror_on: TOTK_MEMORY=mirror|verify, or the
 // device class is discrete and TOTK_MEMORY is unset or auto; set at device selection. The replay (submitting thread
