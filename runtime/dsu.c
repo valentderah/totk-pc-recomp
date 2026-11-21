@@ -67,12 +67,21 @@ int dsu_init(socket_t* sock, struct sockaddr_in* server_addr) {
         return 1;
     }
 
+#ifdef _WIN32
     u_long nonblocking = 1;
     if (ioctlsocket(*sock, FIONBIO, &nonblocking) == SOCKET_ERROR) {
         rt_log("dsu: failed to set non-blocking socket_t");
         dsu_close(sock);
         return 1;
     }
+#else
+    int flags = fcntl(*sock, F_GETFL, 0);
+    if (flags < 0 || fcntl(*sock, F_SETFL, flags | O_NONBLOCK) < 0) {
+        rt_log("dsu: failed to set non-blocking socket_t");
+        dsu_close(sock);
+        return 1;
+    }
+#endif
 
     return 0;
 }
@@ -276,10 +285,17 @@ void dsu_process_incoming_packets(socket_t sock, DsuClientState* state) {
     while (1) {
         int bytes = recvfrom(sock, (char*)buffer, sizeof(buffer), 0, NULL, NULL);
         if (bytes == SOCKET_ERROR) {
+#ifdef _WIN32
             int err = WSAGetLastError();
             if (err != WSAEWOULDBLOCK) {
                 rt_logf("Receive error: %d\n", err);
             }
+#else
+            int err = errno;
+            if (err != EAGAIN && err != EWOULDBLOCK) {
+                rt_logf("Receive error: %d\n", err);
+            }
+#endif
             break;
         }
 
