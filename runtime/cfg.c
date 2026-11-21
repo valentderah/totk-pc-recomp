@@ -344,9 +344,12 @@ int cfg_load(const char *path) {
 // romfs-patches-1280x800 overlay the HUD's);
 // fullscreen and vsync, as gamescope composes Game Mode; 40 fps, which divides 40 Hz (and 120 Hz on the OLED).
 // Starting points to replace with measured ones (docs/tester-guide.md, Steam Deck).
+// Measured: the chunked replay on 4 threads (vk_exec.c, chunked_on). The Deck's 4 cores and 8 threads are the limit
+// in the world, with the render thread busy for the whole frame; 4 recording threads cut the replay by about a third
+// (Lookout Landing, 60 cap: 15-17 to 11 ms a frame) at the same power.
 static const struct { const char *key, *value; } DECK[] = {
     {"FULLSCREEN", "1"}, {"WINDOW_SIZE", "1280x800"}, {"OUTPUT_RES", "1280x800"}, {"RENDER_SCALE", "game"},
-    {"VK_PRESENT", "fifo"}, {"FPS_LIMIT", "40"},
+    {"VK_PRESENT", "fifo"}, {"FPS_LIMIT", "40"}, {"REPLAY_WORKERS", "4"},
 };
 static int profile = -1;   // 0 none, 1 Steam Deck
 

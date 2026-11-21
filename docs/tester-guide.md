@@ -84,7 +84,8 @@ mode; for Game Mode, add `totk` from the install folder to Steam as a non-Steam 
 
 The game recognises the Deck (LCD and OLED) and uses its device profile for every setting `totk.ini` does not set:
 fullscreen, the screen's own 1280x800 (16:10: the camera and interface take that shape), the game's own 3D scale,
-vsync and a 40 fps limit. These are starting points, not measurements. What helps most:
+vsync and a 40 fps limit, and the replay recorded on 4 threads (`replay_workers = 4`). All but the last are starting
+points, not measurements. What helps most:
 
 1. The performance overlay (F10, or both stick clicks L3 + R3) in full mode: the frame rate, mean and longest frame
    time over a minute in Lookout Landing, in the Depths and in the Sky, with the settings named.
