@@ -985,7 +985,8 @@ static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
 // ---------------------------------------------------------------- TOTK_SYNC_AHEAD=check (vk_ahead.c)
 int vk_mem_span_inplace(const VkMemSpan *sp) {
     const PoolRec *r = sp->pool;
-    return r && !sp->alloc && r->kind == POOL_IMPORT && !r->smap && sp->buffer == r->buf;
+    if (!r || sp->alloc || r->kind != POOL_IMPORT || r->smap) return 0;
+    return sp->buffer == r->buf ? 1 : r->mbuf && sp->buffer == r->mbuf ? 2 : 0;
 }
 
 uint32_t vk_mem_ahead_observe(const uint64_t (*iv)[2], int n, uint8_t *untracked) {
@@ -1002,7 +1003,8 @@ uint32_t vk_mem_ahead_observe(const uint64_t (*iv)[2], int n, uint8_t *untracked
     return g;
 }
 
-uint64_t vk_mem_ahead_written(uint64_t lo, uint64_t hi, uint32_t since, uint64_t *first) {
+uint64_t vk_mem_ahead_written(uint64_t lo, uint64_t hi, uint32_t since, void (*fn)(uint64_t, uint64_t, void *),
+                              void *arg) {
     uint64_t bytes = 0;
     if (hi <= lo || hi > RT_ADDRESS_LIMIT) return 0;
     plat_mutex_lock_shared(&gen_lock);
@@ -1015,7 +1017,7 @@ uint64_t vk_mem_ahead_written(uint64_t lo, uint64_t hi, uint32_t since, uint64_t
         for (uint64_t x = a; x < b; x += 1ull << GEN_PAGE_SHIFT) {
             if (ch[(x >> GEN_PAGE_SHIFT) & (GEN_PER_CHUNK - 1)] <= since) continue;
             uint64_t s = x > lo ? x : lo, e = x + (1ull << GEN_PAGE_SHIFT) < hi ? x + (1ull << GEN_PAGE_SHIFT) : hi;
-            if (!bytes && first) *first = s;
+            if (fn) fn(s, e, arg);
             bytes += e - s;
         }
     }

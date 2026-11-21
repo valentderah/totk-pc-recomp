@@ -42,10 +42,11 @@ static const char *cfg_value(const char *name) {
 }
 static int entry_calls, lag_calls, done_calls, done_ok;
 static uint64_t lag_asked, lag_value;
+static int lag_behind;
 static void vk_ahead_frame_entry(void) { assert(!lag_calls && !done_calls); entry_calls++; }
-static void vk_ahead_frame_lag(uint64_t asked, uint64_t lagged) {
+static void vk_ahead_frame_lag(uint64_t asked, uint64_t lagged, int behind) {
     assert(entry_calls == 1 && !sync_calls);   // before cpu_synced: the small write-backs see the lag
-    lag_calls++, lag_asked = asked, lag_value = lagged;
+    lag_calls++, lag_asked = asked, lag_value = lagged, lag_behind = behind;
 }
 static void vk_ahead_frame_done(int ok) { assert(lag_calls == 1); done_calls++, done_ok = ok; }
 static int vk_mem_shadow_on(void) { return shadow; }
@@ -93,6 +94,7 @@ int main(int argc, char **argv) {
         int lagcase = sync.fenced && timeout && lr == site && completed < target && target > 20 && target <= 40;
         relaxed = on && lagcase;
         int checked = check && sync.fenced && timeout && lr == site;
+        int checkcase = checked && target > 20 && target <= 40;   // check: as if the GPU were behind
         relaxed_cases += relaxed; polls += timeout == 0; other_waits += lr != site;
         if (relaxed) target = 20;
         replay_calls = shadow_calls = sync_calls = wait_calls = 0;
@@ -104,7 +106,8 @@ int main(int argc, char **argv) {
         assert(replay_calls == relaxed && shadow_calls == relaxed);
         assert(entry_calls == checked && lag_calls == checked && done_calls == checked);
         if (checked) {   // exact wait, the late one's value told to the check
-            assert(lag_asked == sync.fence && lag_value == (lagcase ? 20 : sync.fence));
+            assert(lag_asked == sync.fence && lag_value == (checkcase ? 20 : sync.fence));
+            assert(lag_behind == (initial_done < sync.fence));
             assert(done_ok == (initial_done >= target || succeed));
         }
         assert(pa_guard == (relaxed ? sync.fence : 0));

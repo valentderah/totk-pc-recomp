@@ -541,9 +541,10 @@ NVN_API(nvnSyncWait) {
     const GfxBackend *b = gfx_backend();
     uint64_t want = s->fence, lag = s->fence;
     // Only the game's per-frame wait lags, and not a poll (timeout 0).
-    int mode = timeout && c->x[30] == frame_wait_lr() ? sync_mode() : 0;
+    int mode = timeout && c->x[30] == frame_wait_lr() ? sync_mode() : 0, behind = b->fence_done() < want;
     if (mode == 2) vk_ahead_frame_entry();
-    if (mode && b->fence_done() < want) {
+    // check: every frame as if the GPU were behind (the question is what the game writes, not this machine's timing)
+    if (mode == 2 || (mode && behind)) {
         uint64_t p0 = __atomic_load_n(&pa_fence[0], __ATOMIC_ACQUIRE);
         uint64_t p1 = __atomic_load_n(&pa_fence[1], __ATOMIC_ACQUIRE);
         if (want <= p0 && want > p1) lag = p1;
@@ -560,7 +561,7 @@ NVN_API(nvnSyncWait) {
         vk_mem_shadow_fence();   // a shadow sync that read the old guard finishes before the game writes again
     }
     if (b->fence_done() >= want) {
-        if (mode == 2) vk_ahead_frame_lag(s->fence, lag);
+        if (mode == 2) vk_ahead_frame_lag(s->fence, lag, behind);
         b->cpu_synced(want == s->fence ? s->fence : b->fence_done());
         if (mode == 2) vk_ahead_frame_done(1);
         ret_x(c, NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED);
@@ -571,7 +572,7 @@ NVN_API(nvnSyncWait) {
         NVN_BLOCKING();
         ok = b->fence_wait(want, timeout);
     }
-    if (mode == 2) vk_ahead_frame_lag(s->fence, lag);
+    if (mode == 2) vk_ahead_frame_lag(s->fence, lag, behind);
     if (ok) b->cpu_synced(want == s->fence ? s->fence : b->fence_done());
     if (mode == 2) vk_ahead_frame_done(ok);
     ret_x(c, ok ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED);

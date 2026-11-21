@@ -272,12 +272,15 @@ void vk_mem_pick(VkMemSpan *sp);
 void vk_ahead_span(const VkMemSpan *sp, uint64_t addr, uint64_t size, int use);
 #define VK_AHEAD_READ(sp, addr, size, use) \
     do { if (__builtin_expect(vk_ahead_on, 0)) vk_ahead_span(&(sp), (addr), (size), (use)); } while (0)
-int vk_mem_span_inplace(const VkMemSpan *sp);   // the span is guest memory itself (no mirror, no shadow, no device memory)
+// 1: the span is guest memory itself (no mirror, no shadow, no device memory); 2: an imported pool's VRAM mirror; else 0
+int vk_mem_span_inplace(const VkMemSpan *sp);
 // The write watch over the ranges: every write made so far stamped into the page generations; untracked[i] 1 where
 // range i has no write watch. Returns the newest generation.
 uint32_t vk_mem_ahead_observe(const uint64_t (*iv)[2], int n, uint8_t *untracked);
-// Bytes of [lo, hi) in pages stamped after generation since; *first: the first such byte.
-uint64_t vk_mem_ahead_written(uint64_t lo, uint64_t hi, uint32_t since, uint64_t *first);
+// Bytes of [lo, hi) in pages stamped after generation since; fn (may be NULL) gets each such page's part of the range,
+// in address order.
+uint64_t vk_mem_ahead_written(uint64_t lo, uint64_t hi, uint32_t since, void (*fn)(uint64_t, uint64_t, void *),
+                              void *arg);
 int vk_mem_pool_info(uint64_t addr, uint64_t *lo, uint64_t *size, uint32_t *flags, int *mirrored);   // 0: no pool
 void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size);
 // A shader's storage-buffer write: goes back through the write-back merge (vk_memory.c), which keeps the words the GPU

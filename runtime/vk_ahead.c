@@ -33,7 +33,7 @@
 int vk_ahead_on;
 
 static const char *const cls_name[AH_N + 1] = {"vb", "ib", "ubo", "ssbo", "ind", "copy", "msync", "deswz", "wb", "wbm",
-                                               "all"};
+                                               "bound", "all"};
 
 #define NOTE_MAX 65536    // notes not yet taken by a frame wait
 #define SET_MAX 8192      // merged ranges of one frame set, per class and the union together
@@ -47,9 +47,10 @@ static const char *const cls_name[AH_N + 1] = {"vb", "ib", "ubo", "ssbo", "ind",
 #define SMALL_FRAMES 16
 #define OFF_N 32          // offender table
 #define OFF_LOG 24        // first-sighting lines
+#define COPY_MAX (32ull << 20)   // bytes of a set's union copied at its snap, for the byte compare
 
 typedef struct { uint64_t lo, hi, fence; uint8_t cls; } Note;
-typedef struct { uint64_t lo, hi; uint8_t cls, untracked; uint32_t hash0, nhash; } SetR;
+typedef struct { uint64_t lo, hi, coff; uint8_t cls, untracked; uint32_t hash0, nhash; } SetR;   // coff: in copybuf
 typedef struct { uint64_t lo, hi, fence; uint8_t kind; } GWrite;
 
 static PlatMutex ah_lock = PLAT_MUTEX_INIT;   // notes, gw, rd, small, lag context
@@ -72,19 +73,24 @@ static SetR set[SET_MAX];
 static int nset;
 static uint64_t iv[IV_MAX][2];
 static uint8_t iv_untr[IV_MAX];
-static int niv, armed;
+static int niv, armed, nclass;   // set: [0, nclass) per class by (class, address), then the union by address
+static int bound0, bound1;        // set[bound0, bound1): the BOUND ranges
+static uint8_t *copybuf;
 static uint32_t set_gen;
 static uint64_t hashes[HASH_MAX];
 static int nhash;
 
 typedef struct {
-    uint64_t frames, lagged, read[AH_N + 1], hit[AH_N + 1], hit_frames[AH_N + 1], hit_max[AH_N + 1];
+    // hit: bytes in pages written after the wait; hitb: bytes that changed; mb: MSYNC bytes N also binds (BOUND)
+    uint64_t frames, lagged, behind, read[AH_N + 1], hit[AH_N + 1], hit_frames[AH_N + 1], hit_max[AH_N + 1];
+    uint64_t hitb[AH_N + 1], hitb_frames[AH_N + 1], hitb_max[AH_N + 1], read_mb, hit_mb, hit_mb_frames, hit_mb_max;
+    uint64_t uncopied;
     uint64_t inval, inval_stale, inval_stale_unknown, inval_stale_bytes, late[AHW_N], small, small_stale, small_oneoff;
     uint64_t cost_ns, set_joined, set_lost, untracked, hashed, hash_skipped, ivq;
 } Stat;
 static Stat win, tot;   // ah_lock for the readback counters, game thread for the rest (summed under ah_lock)
 
-typedef struct { uint64_t pool, size, bytes, frames, first; uint32_t flags; int cls, mirrored; } Offender;
+typedef struct { uint64_t pool, size, bytes, changed, frames, first; uint32_t flags; int cls, mirrored; } Offender;
 static Offender off[OFF_N];
 static int noff, nofflog;
 static uint64_t last_log_ns;
@@ -154,7 +160,9 @@ void vk_ahead_read(uint64_t addr, uint64_t size, int cls, uint64_t fence) {
 }
 
 void vk_ahead_span(const VkMemSpan *sp, uint64_t addr, uint64_t size, int use) {
-    if (!vk_mem_span_inplace(sp)) return;
+    int k = vk_mem_span_inplace(sp);
+    if (!k || (k == 2 && use == VK_MUSE_GPU_WRITE)) return;   // a mirror's writes go back as WB / WBM
+    if (k == 2) { vk_ahead_read(addr, size, AH_BOUND, 0); return; }
     int cls = use == VK_MUSE_VB ? AH_VB : use == VK_MUSE_IB ? AH_IB : use == VK_MUSE_UBO ? AH_UBO
             : use == VK_MUSE_IND ? AH_IND : use == VK_MUSE_COPY_SRC ? AH_COPY : use == VK_MUSE_GPU_WRITE ? AH_WB : AH_SSBO;
     vk_ahead_read(addr, size, cls, 0);
@@ -271,7 +279,7 @@ static uint64_t hash_pass(SetR *s, int check) {
     return changed;
 }
 
-static void offender(int cls, uint64_t addr, uint64_t bytes) {
+static void offender(int cls, uint64_t addr, uint64_t bytes, uint64_t changed) {
     uint64_t lo = 0, size = 0;
     uint32_t flags = 0;
     int mirrored = 0;
@@ -284,33 +292,88 @@ static void offender(int cls, uint64_t addr, uint64_t bytes) {
             for (int k = 1; k < noff; k++) if (off[k].bytes < off[m].bytes) m = k;
             i = m;
         } else noff++;
-        off[i] = (Offender){lo, size, 0, 0, addr - lo, flags, cls, mirrored};
+        off[i] = (Offender){lo, size, 0, 0, 0, addr - lo, flags, cls, mirrored};
         if (nofflog++ < OFF_LOG)
             rt_log("sync-ahead check: frame %llu: %s range written after the wait: pool %#llx (%.1f MiB, flags %#x, %s) "
-                   "+%#llx, %llu bytes", (unsigned long long)frame_no, cls_name[cls], (unsigned long long)lo,
-                   size / 1048576.0, flags, mirrored ? "mirrored" : "in place", (unsigned long long)(addr - lo),
-                   (unsigned long long)bytes);
+                   "+%#llx, %llu bytes in written pages, %llu changed", (unsigned long long)frame_no, cls_name[cls],
+                   (unsigned long long)lo, size / 1048576.0, flags, mirrored ? "mirrored" : "in place",
+                   (unsigned long long)(addr - lo), (unsigned long long)bytes, (unsigned long long)changed);
     }
-    off[i].bytes += bytes, off[i].frames++;
+    off[i].bytes += bytes, off[i].changed += changed, off[i].frames++;
 }
+
+// The union range holding a (set[nclass, nset) by address), NULL: none.
+static const SetR *union_at(uint64_t a) {
+    int lo = nclass, hi = nset;
+    while (lo < hi) {
+        int m = (lo + hi) / 2;
+        if (set[m].hi <= a) lo = m + 1;
+        else hi = m;
+    }
+    return lo < nset && set[lo].lo <= a ? &set[lo] : NULL;
+}
+
+// Bytes of [x, y) that differ from the copy taken at the snap (0 where there is none or the memory is gone).
+static uint64_t changed_bytes(uint64_t x, uint64_t y) {
+    const SetR *u = union_at(x);
+    if (!u || u->coff == UINT64_MAX || y > u->hi || !readable(x, y)) return 0;
+    const uint8_t *m = (const uint8_t *)(uintptr_t)x, *c = copybuf + u->coff + (x - u->lo);
+    uint64_t n = y - x, d = 0, i = 0;
+    for (; i + 8 <= n; i += 8) {
+        uint64_t a, b;
+        memcpy(&a, m + i, 8), memcpy(&b, c + i, 8);
+        if (a == b) continue;
+        for (int k = 0; k < 8; k++) d += m[i + k] != c[i + k];
+    }
+    for (; i < n; i++) d += m[i] != c[i];
+    return d;
+}
+
+typedef struct { int cls; uint64_t first, changed, changed_bound; } Seg;
+
+// A written page's part [x, y) of a set range: its changed bytes, and for MSYNC those inside a BOUND range too.
+static void seg_cb(uint64_t x, uint64_t y, void *arg) {
+    Seg *g = arg;
+    if (g->first == UINT64_MAX) g->first = x;
+    g->changed += changed_bytes(x, y);
+    if (g->cls != AH_MSYNC) return;
+    int a = bound0, b = bound1;   // the first BOUND range ending after x
+    while (a < b) {
+        int m = (a + b) / 2;
+        if (set[m].hi <= x) a = m + 1;
+        else b = m;
+    }
+    for (int i = a; i < bound1 && set[i].lo < y; i++) {
+        uint64_t p = set[i].lo > x ? set[i].lo : x, q = set[i].hi < y ? set[i].hi : y;
+        if (p < q) g->changed_bound += changed_bytes(p, q);
+    }
+}
+
+static void max_into(uint64_t *m, uint64_t v) { if (v > *m) *m = v; }
 
 // The armed set against the writes since its snap.
 static void check_set(void) {
     vk_mem_ahead_observe((const uint64_t(*)[2])iv, niv, iv_untr);
     win.ivq += (uint64_t)niv;
-    uint64_t hit[AH_N + 1] = {0};
+    uint64_t hit[AH_N + 1] = {0}, hitb[AH_N + 1] = {0}, mb = 0;
     for (int i = 0; i < nset; i++) {
         SetR *s = &set[i];
-        uint64_t first = s->lo, b = s->untracked ? hash_pass(s, 1) : vk_mem_ahead_written(s->lo, s->hi, set_gen, &first);
+        if (s->cls == AH_BOUND) continue;
+        Seg g = {s->cls, UINT64_MAX, 0, 0};
+        uint64_t b;
+        if (s->untracked) b = g.changed = hash_pass(s, 1), g.first = s->lo;
+        else b = vk_mem_ahead_written(s->lo, s->hi, set_gen, seg_cb, &g);
         if (!b) continue;
-        hit[s->cls] += b;
-        if (s->cls != AH_N) offender(s->cls, first, b);
+        hit[s->cls] += b, hitb[s->cls] += g.changed, mb += g.changed_bound;
+        if (s->cls != AH_N) offender(s->cls, g.first, b, g.changed);
     }
     for (int c = 0; c <= AH_N; c++) {
-        win.hit[c] += hit[c];
-        if (hit[c]) win.hit_frames[c]++;
-        if (hit[c] > win.hit_max[c]) win.hit_max[c] = hit[c];
+        win.hit[c] += hit[c], win.hitb[c] += hitb[c];
+        win.hit_frames[c] += hit[c] != 0, win.hitb_frames[c] += hitb[c] != 0;
+        max_into(&win.hit_max[c], hit[c]), max_into(&win.hitb_max[c], hitb[c]);
     }
+    win.hit_mb += mb, win.hit_mb_frames += mb != 0;
+    max_into(&win.hit_mb_max, mb);
     armed = 0;
 }
 
@@ -331,19 +394,36 @@ static void build_set(int n) {
             } else win.set_lost += take[i].hi - take[i].lo;
             continue;
         }
-        set[nset++] = (SetR){take[i].lo, take[i].hi, take[i].cls, 0, 0, 0};
+        set[nset++] = (SetR){take[i].lo, take[i].hi, UINT64_MAX, take[i].cls, 0, 0, 0};
     }
     int nc = nset;
-    for (int i = 0; i < nc; i++) win.read[set[i].cls] += set[i].hi - set[i].lo;
-    // The union over all classes, after them.
-    SetR *u = set + nc;
-    memcpy(u, set, sizeof *set * (size_t)nc);
-    qsort(u, (size_t)nc, sizeof *u, lo_cmp);
-    int nu = 0;
+    nclass = nc, bound0 = bound1 = 0;
     for (int i = 0; i < nc; i++) {
+        win.read[set[i].cls] += set[i].hi - set[i].lo;
+        if (set[i].cls == AH_BOUND) bound1 = i + 1;
+        else if (set[i].cls < AH_BOUND) bound0 = i + 1;
+    }
+    if (bound1 < bound0) bound1 = bound0;
+    // MSYNC bytes N also binds: both lists are sorted by address.
+    for (int i = 0, j = bound0; i < nc && j < bound1; i++) {
+        if (set[i].cls != AH_MSYNC) continue;
+        while (j < bound1 && set[j].hi <= set[i].lo) j++;
+        for (int k = j; k < bound1 && set[k].lo < set[i].hi; k++) {
+            uint64_t p = set[k].lo > set[i].lo ? set[k].lo : set[i].lo, q = set[k].hi < set[i].hi ? set[k].hi : set[i].hi;
+            if (p < q) win.read_mb += q - p;
+        }
+    }
+    // The union over the classes that race (not BOUND), after them.
+    SetR *u = set + nc;
+    int nr = 0;
+    for (int i = 0; i < nc; i++)
+        if (set[i].cls != AH_BOUND) u[nr++] = set[i];
+    qsort(u, (size_t)nr, sizeof *u, lo_cmp);
+    int nu = 0;
+    for (int i = 0; i < nr; i++) {
         if (nu && u[i].lo <= u[nu - 1].hi) {
             if (u[i].hi > u[nu - 1].hi) u[nu - 1].hi = u[i].hi;
-        } else u[nu++] = (SetR){u[i].lo, u[i].hi, AH_N, 0, 0, 0};
+        } else u[nu++] = (SetR){u[i].lo, u[i].hi, UINT64_MAX, AH_N, 0, 0, 0};
     }
     nset = nc + nu;
     for (int i = 0; i < nu; i++) win.read[AH_N] += u[i].hi - u[i].lo;
@@ -377,8 +457,19 @@ static void snap_set(void) {
     set_gen = vk_mem_ahead_observe((const uint64_t(*)[2])iv, niv, iv_untr);
     win.ivq += (uint64_t)niv;
     nhash = 0;
+    if (!copybuf && !(copybuf = malloc(COPY_MAX))) rt_fatal("vk: out of memory (sync-ahead check)");
+    uint64_t used = 0;
+    for (int i = nclass; i < nset; i++) {
+        SetR *s = &set[i];
+        uint64_t n = s->hi - s->lo;
+        if (used + n <= COPY_MAX && readable(s->lo, s->hi)) {
+            memcpy(copybuf + used, (const void *)(uintptr_t)s->lo, n);
+            s->coff = used, used += n;
+        } else win.uncopied += n;
+    }
     for (int i = 0; i < nset; i++) {
         SetR *s = &set[i];
+        if (s->cls == AH_BOUND) continue;
         s->untracked = (uint8_t)untracked_at(s->lo);
         if (!s->untracked) continue;
         win.untracked += s->cls == AH_N ? s->hi - s->lo : 0;
@@ -391,15 +482,20 @@ static void log_line(const Stat *s, const char *what) {
     char b[2048];   // about 1,200 bytes with every class
     int k = 0;
     double f = s->frames ? (double)s->frames : 1;
-    k += snprintf(b + k, sizeof b - (size_t)k, "sync-ahead check: %s %llu frames (%llu lagged): written after the wait "
-                  "KiB/frame", what, (unsigned long long)s->frames, (unsigned long long)s->lagged);
+    k += snprintf(b + k, sizeof b - (size_t)k, "sync-ahead check: %s %llu frames (%llu lagged, the GPU "
+                  "behind in %llu): written after the wait KiB/frame", what, (unsigned long long)s->frames,
+                  (unsigned long long)s->lagged, (unsigned long long)s->behind);
     for (int c = 0; c <= AH_N; c++)
         if (s->hit[c] || c == AH_N)
-            k += snprintf(b + k, sizeof b - (size_t)k, " %s %.1f (in %llu frames, max %.0f)", cls_name[c],
-                          s->hit[c] / 1024.0 / f, (unsigned long long)s->hit_frames[c], s->hit_max[c] / 1024.0);
+            k += snprintf(b + k, sizeof b - (size_t)k, " %s %.1f (in %llu frames, max %.0f; changed %.1f in %llu, max %.0f)",
+                          cls_name[c], s->hit[c] / 1024.0 / f, (unsigned long long)s->hit_frames[c], s->hit_max[c] / 1024.0,
+                          s->hitb[c] / 1024.0 / f, (unsigned long long)s->hitb_frames[c], s->hitb_max[c] / 1024.0);
+    k += snprintf(b + k, sizeof b - (size_t)k, " msync&bound changed %.1f (in %llu, max %.0f)", s->hit_mb / 1024.0 / f,
+                  (unsigned long long)s->hit_mb_frames, s->hit_mb_max / 1024.0);
     k += snprintf(b + k, sizeof b - (size_t)k, "; read KiB/frame");
     for (int c = 0; c <= AH_N; c++)
         if (s->read[c] || c == AH_N) k += snprintf(b + k, sizeof b - (size_t)k, " %s %.1f", cls_name[c], s->read[c] / 1024.0 / f);
+    k += snprintf(b + k, sizeof b - (size_t)k, " msync&bound %.1f", s->read_mb / 1024.0 / f);
     k += snprintf(b + k, sizeof b - (size_t)k,
                   "; stale: invalidates %llu of %llu (%llu not read lately, %.1f KiB), late reports counter %llu samples "
                   "%llu event %llu, writes %llu, small write-backs %llu of %llu (%llu one-off)",
@@ -408,10 +504,10 @@ static void log_line(const Stat *s, const char *what) {
                   (unsigned long long)s->late[AHW_EVENT], (unsigned long long)s->late[AHW_WRITE],
                   (unsigned long long)s->small_stale, (unsigned long long)s->small, (unsigned long long)s->small_oneoff);
     snprintf(b + k, sizeof b - (size_t)k, "; game-thread cost %.3f ms/frame, %.1f queries/frame, untracked %.1f "
-             "KiB/frame (hashed %.1f, skipped %.1f), set over its size: %.1f KiB joined, %.1f KiB left out; note compactions %llu, gpu-write list "
-             "overflow %llu", s->cost_ns / 1e6 / f, s->ivq / f, s->untracked / 1024.0 / f, s->hashed / 1024.0 / f,
-             s->hash_skipped / 1024.0 / f, s->set_joined / 1024.0, s->set_lost / 1024.0, (unsigned long long)n_compact,
-             (unsigned long long)gw_over);
+             "KiB/frame (hashed %.1f, skipped %.1f), not copied %.1f KiB, set over its size: %.1f KiB joined, %.1f KiB "
+             "left out; note compactions %llu, gpu-write list overflow %llu", s->cost_ns / 1e6 / f, s->ivq / f,
+             s->untracked / 1024.0 / f, s->hashed / 1024.0 / f, s->hash_skipped / 1024.0 / f, s->uncopied / 1024.0,
+             s->set_joined / 1024.0, s->set_lost / 1024.0, (unsigned long long)n_compact, (unsigned long long)gw_over);
     rt_log("%s", b);
 }
 
@@ -420,9 +516,10 @@ static void stat_add(Stat *d, const Stat *s) {
     uint64_t *y = (uint64_t *)d;
     for (size_t i = 0; i < sizeof *s / sizeof(uint64_t); i++) y[i] += x[i];
     for (int c = 0; c <= AH_N; c++) {   // maxima, not sums
-        d->hit_max[c] -= s->hit_max[c];
-        if (s->hit_max[c] > d->hit_max[c]) d->hit_max[c] = s->hit_max[c];
+        d->hit_max[c] -= s->hit_max[c], max_into(&d->hit_max[c], s->hit_max[c]);
+        d->hitb_max[c] -= s->hitb_max[c], max_into(&d->hitb_max[c], s->hitb_max[c]);
     }
+    d->hit_mb_max -= s->hit_mb_max, max_into(&d->hit_mb_max, s->hit_mb_max);
 }
 
 void vk_ahead_frame_entry(void) {
@@ -432,8 +529,9 @@ void vk_ahead_frame_entry(void) {
     win.cost_ns += plat_now_ns() - t0;
 }
 
-void vk_ahead_frame_lag(uint64_t asked, uint64_t lagged) {
+void vk_ahead_frame_lag(uint64_t asked, uint64_t lagged, int behind) {
     if (!vk_ahead_on) return;
+    if (behind && lagged < asked) win.behind++;
     plat_mutex_lock(&ah_lock);
     frame_no++;
     cur_asked = asked, cur_lagged = lagged, lag_live = 1;
@@ -496,9 +594,10 @@ void vk_ahead_log_final(void) {
     log_line(&tot, "run:");
     qsort(off, (size_t)noff, sizeof *off, off_cmp);
     for (int i = 0; i < noff && i < 12; i++)
-        rt_log("sync-ahead check: offender %d: %s pool %#llx (%.1f MiB, flags %#x, %s) first at +%#llx: %.1f KiB in %llu "
-               "frames", i + 1, cls_name[off[i].cls], (unsigned long long)off[i].pool, off[i].size / 1048576.0, off[i].flags,
-               off[i].mirrored ? "mirrored" : "in place", (unsigned long long)off[i].first, off[i].bytes / 1024.0,
+        rt_log("sync-ahead check: offender %d: %s pool %#llx (%.1f MiB, flags %#x, %s) first at +%#llx: %.1f KiB in written "
+               "pages, %.1f KiB changed, in %llu frames", i + 1, cls_name[off[i].cls], (unsigned long long)off[i].pool,
+               off[i].size / 1048576.0, off[i].flags, off[i].mirrored ? "mirrored" : "in place",
+               (unsigned long long)off[i].first, off[i].bytes / 1024.0, off[i].changed / 1024.0,
                (unsigned long long)off[i].frames);
 }
 
@@ -527,9 +626,10 @@ int vk_ahead_selftest(uint64_t a, uint64_t size) {
     vk_ahead_read(a + 0x10000, 0x8000, AH_MSYNC, f);
     vk_ahead_read(a + 0x20000, 0x1000, AH_VB, f);
     vk_ahead_read(a + 0x28000, 0x1000, AH_VB, f + 1);   // a later frame's: stays in the list
+    vk_ahead_read(a + 0x12300, 0x100, AH_BOUND, f);     // N binds 256 bytes of the synced range
     vk_ahead_gpu_write(a + 0x30000, 16, AHW_COUNTER, f);
     m[0x10010] = (uint8_t)(m[0x10010] + 1);   // before the wait: the frame wrote it before the GPU read it
-    vk_ahead_frame_lag(f, f - 1);
+    vk_ahead_frame_lag(f, f - 1, 1);
     vk_ahead_frame_done(1);
     if (!armed || win.read[AH_MSYNC] != 0x8000 || win.read[AH_VB] != 0x1000 || win.read[AH_N] != 0x9000) bad = 2;
     else if (win.late[AHW_COUNTER] != 1) bad = 3;
@@ -539,11 +639,12 @@ int vk_ahead_selftest(uint64_t a, uint64_t size) {
     m[0x3a000] = (uint8_t)(m[0x3a000] + 1);   // after the wait, outside the set
     vk_ahead_frame_entry();
     if (!bad && (armed || win.hit[AH_MSYNC] != 0x1000 || win.hit[AH_VB] || win.hit[AH_N] != 0x1000)) bad = 5;
+    if (!bad && (win.hitb[AH_MSYNC] != 1 || win.hitb[AH_N] != 1 || win.hit_mb != 1 || win.read_mb != 0x100)) bad = 9;
     plat_mutex_lock(&ah_lock);
     int left = nnotes;
     plat_mutex_unlock(&ah_lock);
     if (!bad && left != 1) bad = 6;
-    vk_ahead_frame_lag(f + 1, f + 1);   // not lagged: nothing at risk
+    vk_ahead_frame_lag(f + 1, f + 1, 0);   // not lagged: nothing at risk
     vk_ahead_frame_done(1);
     if (!bad && win.read[AH_N] != 0x9000) bad = 7;
     m[0x28010] = (uint8_t)(m[0x28010] + 1);
