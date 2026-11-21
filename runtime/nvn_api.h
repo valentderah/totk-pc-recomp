@@ -49,7 +49,7 @@ uint64_t nvn_new_serial(void);                             // next tex_t / prog_
 // that assumption too early.
 void nvn_sync_ahead_present(void);
 uint64_t nvn_sync_ahead_guard(void);
-int nvn_sync_ahead_on(void);   // 1 when the frame-ahead wait is in effect: TOTK_SYNC_AHEAD on and not refused (no shadow storage, no known wait site)
+int nvn_sync_ahead_on(void);   // 1 when the frame-ahead wait is in effect: TOTK_SYNC_AHEAD=1 and a wait site known for this version
 int vk_mem_shadow_on(void);   // vk_memory.c: 1 with shadow storage on (valid once the Vulkan back end is up)
 void vk_mem_shadow_fence(void);   // vk_memory.c: returns once every shadow sync that read the old guard is done
 // vk_memory.c: the game is about to read [addr, addr+size) of pool storage; waits for a GPU write into it that the game

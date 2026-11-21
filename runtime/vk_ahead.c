@@ -96,15 +96,70 @@ static Offender off[OFF_N];
 static int noff, nofflog;
 static uint64_t last_log_ns;
 
+VkAheadGuards vk_ahead_g;
+static uint64_t oneshot_q;   // the newest value with a samples-passed report (TOTK_SYNC_AHEAD_QUERIES)
+static uint64_t n_oneshot_tex, n_oneshot_q;   // game thread: frame waits made exact up to a one-off value
+
 void vk_ahead_init(void) {
-    vk_ahead_on = !strcmp(cfg_value("TOTK_SYNC_AHEAD"), "check");
+    int check = !strcmp(cfg_value("TOTK_SYNC_AHEAD"), "check");
+    memset(&vk_ahead_g, 0, sizeof vk_ahead_g);
+    if (!check && !vk_mem_shadow_on() && nvn_sync_ahead_on()) {
+        VkAheadGuards *g = &vk_ahead_g;
+        g->lag = 1;
+        g->msync = rt_knob("SYNC_AHEAD_MSYNC", "1");
+        g->deswz = rt_knob("SYNC_AHEAD_DESWZ", "1");
+        g->reads = rt_knob("SYNC_AHEAD_READS", "1");
+        g->oneshot = rt_knob("SYNC_AHEAD_ONESHOT", "1");
+        // Off: TotK reads its samples-passed reports two updates after it asked (1.2.1 f_70010c3298: a query's state
+        // goes 1 -> 2 or 3 at one update, 2 -> 3 at the next, and the report is read in state 3), by then the frame
+        // wait one frame late has covered that frame. Savage Wind (BOTW reads them right after the wait) has it on Mali.
+        g->queries = rt_knob("SYNC_AHEAD_QUERIES", "0");
+        rt_log("sync-ahead: in place (no shadow storage), memory %s; guards: mirror syncs staged %d, deswizzle of "
+               "rewritten textures on the CPU %d, invalidates wait for the writer %d, one-off small targets %d, "
+               "samples-passed reports %d", vk_mirror_on ? "mirror" : "import", g->msync, g->deswz, g->reads, g->oneshot,
+               g->queries);
+        if (!vk_mirror_on)
+            rt_log("sync-ahead: warning: import memory: vertex, index and storage data are read in place on the GPU, "
+                   "no guard covers them");
+    }
+    vk_ahead_on = check || (vk_ahead_g.lag && rt_knob("SYNC_AHEAD_CHECK", "0"));
     if (!vk_ahead_on) return;
     notes = malloc(sizeof *notes * NOTE_MAX);
     take = malloc(sizeof *take * NOTE_MAX);
     if (!notes || !take) rt_fatal("vk: out of memory (sync-ahead check)");
-    rt_log("sync-ahead check: the frame wait stays exact; logging what a one-frame-late wait without shadow storage "
-           "would race (%s)", vk_mem_shadow_on() ? "shadow storage is on: the counts describe the in-place form only "
-           "approximately" : "in place");
+    if (vk_ahead_g.lag)
+        rt_log("sync-ahead check: with the late wait itself: logging what the CPU writes after the wait into memory "
+               "frames in flight still read on the GPU timeline, after the guards");
+    else
+        rt_log("sync-ahead check: the frame wait stays exact; logging what a one-frame-late wait without shadow storage "
+               "would race (%s)", vk_mem_shadow_on() ? "shadow storage is on: the counts describe the in-place form only "
+                                                      "approximately" : "in place");
+}
+
+void vk_ahead_query(uint64_t fence) {
+    uint64_t v = __atomic_load_n(&oneshot_q, __ATOMIC_RELAXED);
+    while (fence > v && !__atomic_compare_exchange_n(&oneshot_q, &v, fence, 1, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {}
+}
+
+uint64_t vk_ahead_oneshot(uint64_t lo, uint64_t hi) {
+    if (!vk_ahead_g.lag) return 0;
+    uint64_t v = 0;
+    if (vk_ahead_g.queries) {
+        uint64_t q = __atomic_load_n(&oneshot_q, __ATOMIC_ACQUIRE);
+        if (q > lo && q <= hi && q > vk_sync_fence_done()) v = q, n_oneshot_q++;
+    }
+    if (vk_ahead_g.oneshot && v < hi) {
+        uint64_t t = vk_texture_oneshot(v > lo ? v : lo, hi);
+        if (t) v = t, n_oneshot_tex++;
+    }
+    return v;
+}
+
+void vk_ahead_log_guards(void) {
+    if (!vk_ahead_g.lag) return;
+    vk_mem_ahead_log();
+    rt_log("sync-ahead: frame waits made exact up to a one-off value: %llu for small targets, %llu for "
+           "samples-passed reports", (unsigned long long)n_oneshot_tex, (unsigned long long)n_oneshot_q);
 }
 
 static uint64_t note_fence(uint64_t fence) {
@@ -198,9 +253,10 @@ void vk_ahead_gpu_write(uint64_t addr, uint64_t size, int kind, uint64_t fence) 
 void vk_ahead_invalidate(uint64_t addr, uint64_t size) {
     if (!vk_ahead_on || !size) return;
     plat_mutex_lock(&ah_lock);
-    uint64_t now = vk_sync_issued(), stale = 0;
+    // with the late wait itself, after the guard: a write done by now is no stale read
+    uint64_t now = vk_sync_issued(), stale = 0, done = vk_ahead_g.lag ? vk_sync_fence_done() : 0;
     for (int i = 0; i < ngw; i++)
-        if (gw[i].fence > win_lo && gw[i].fence <= win_hi && gw[i].lo < addr + size && gw[i].hi > addr) {
+        if (gw[i].fence > win_lo && gw[i].fence <= win_hi && gw[i].fence > done && gw[i].lo < addr + size && gw[i].hi > addr) {
             uint64_t a = gw[i].lo > addr ? gw[i].lo : addr, b = gw[i].hi < addr + size ? gw[i].hi : addr + size;
             stale += b - a;
         }

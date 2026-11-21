@@ -1035,9 +1035,11 @@ static void upload_cpu(Tex *e) {
 #define DESWZ_CHUNK (32ull << 20)
 
 // Uploads by path since the last perf summary (TOTK_TRACE=perf): 0 GPU, else why the CPU took it.
-enum { UP_GPU, UP_MODE, UP_LINEAR, UP_RGB, UP_ASTC_CPU, UP_BPB, UP_NOT_LIVE, UP_GEOM, UP_LIMITS, UP_SCRATCH, UP_WHY };
+enum { UP_GPU, UP_MODE, UP_LINEAR, UP_RGB, UP_ASTC_CPU, UP_BPB, UP_NOT_LIVE, UP_GEOM, UP_LIMITS, UP_SCRATCH, UP_AHEAD,
+       UP_WHY };
 static const char *const up_why_name[UP_WHY] = {"gpu", "cpu mode", "linear", "rgb", "astc on cpu", "bytes per block",
-                                                "not an imported pool", "layout", "device limits", "scratch"};
+                                                "not an imported pool", "layout", "device limits", "scratch",
+                                                "frame ahead"};
 static uint64_t up_n[UP_WHY], up_bytes[UP_WHY], up_ns[UP_WHY];
 static int up_why;   // upload_gpu's reason for returning 0 (texture lock held)
 
@@ -1049,6 +1051,10 @@ static int upload_gpu(Tex *e) {
     int mode = vk_deswz_mode();
     up_why = mode == VK_DESWZ_CPU ? UP_MODE : nvn_tex_is_linear(d) ? UP_LINEAR : e->f.expand_rgb ? UP_RGB : UP_GPU;
     if (up_why) return 0;
+    // TOTK_SYNC_AHEAD=1 in place (vk_ahead.h): the batch reads the pool when the GPU runs it, which can be after the
+    // game was told the frame is done and writes the storage again. A texture the CPU rewrote after its last upload is
+    // one the game writes while the game runs: deswizzled on the CPU now, from the bytes of this frame.
+    if (vk_ahead_g.deswz && e->uploaded) return up_why = UP_AHEAD, 0;
     int astc = e->f.astc_bw != 0, agpu = astc && vk_astc_gpu();
     if (astc && (!agpu || vk_astc_mode() == VK_ASTC_CHECK)) return up_why = UP_ASTC_CPU, 0;   // or ASTC's check mode
     int bw, bh, bpb = nvn_fmt_bpb(d->format, &bw, &bh);
@@ -2489,6 +2495,41 @@ uint64_t vk_texture_dirty_fence(uint64_t addr, uint64_t size) {
     return f;
 }
 
+// TOTK_SYNC_AHEAD=1 in place: the small targets written back lately, with the frame of the write-back. A target not in
+// the table within ONEOFF_FRAMES is a one-off read (a photo, a pick), which the frame wait waits for up to the value
+// that rendered it (vk_texture_oneshot); a target read back every frame or in turns gets the frame before. Adapted from
+// Savage Wind Recomp runtime/nvn/vulkan/exec.c readback_schedule (https://github.com/Revivedx/SavageWindRecomp @
+// bf6146c14c37fee8781a601e5a544b93dff6d75e, MIT, Copyright (c) 2026 Revivedx and the Savage Wind Recomp contributors,
+// Copyright (c) 2026 Peiikai). tex_lock.
+#define ONEOFF_N 64
+#define ONEOFF_FRAMES 16
+static struct { uint64_t addr, frame; } oneoff_last[ONEOFF_N];
+
+static int oneoff_streaming(uint64_t addr, uint64_t fr, int note) {
+    int k = 0;
+    while (k < ONEOFF_N - 1 && oneoff_last[k].addr && oneoff_last[k].addr != addr) k++;
+    int streaming = oneoff_last[k].addr == addr && oneoff_last[k].frame + ONEOFF_FRAMES >= fr;
+    if (note) oneoff_last[k].addr = addr, oneoff_last[k].frame = fr;
+    return streaming;
+}
+
+uint64_t vk_texture_oneshot(uint64_t lo, uint64_t hi) {
+    if (!__atomic_load_n(&small_pending, __ATOMIC_ACQUIRE)) return 0;   // nothing dirty left for a later value
+    uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), v = 0;
+    lock();
+    wb_cfg_init();
+    plat_mutex_lock_shared(&owned_lock);
+    for (int i = 0; i < nowned; i++) {
+        const Tex *e = owned[i];
+        if (e->gpu_dirty && e->gpu_fence > lo && e->gpu_fence <= hi && e->gpu_fence > v && wb_wanted(e) &&
+            !oneoff_streaming(e->pub.addr, fr, 0))
+            v = e->gpu_fence;
+    }
+    plat_mutex_unlock_shared(&owned_lock);
+    unlock();
+    return v;
+}
+
 // The image is the newest content only while nothing wrote the storage since the GPU render: TotK finalizes grass maps,
 // reuses their storage for new data and memcpys that data on, and writing the old image back first handed the copy
 // a stale map or stale resource bytes (wrong textures in the distance). Every hit is checked before any is written
@@ -2511,6 +2552,10 @@ void vk_texture_write_back(uint64_t addr, uint64_t size) {
         }
     write_back_n(hit, k);
     for (int i = 0; i < k; i++) perf_count(PERF_CNT_WB);
+    if (vk_ahead_g.oneshot) {
+        uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+        for (int i = 0; i < k; i++) oneoff_streaming(hit[i]->pub.addr, fr, 1);
+    }
     for (int i = k; i < n; i++) perf_count(PERF_CNT_WB_SKIP);
     free(hit);
     unlock();
@@ -2585,6 +2630,10 @@ void vk_texture_write_back_small(uint64_t fence) {
         }
     write_back_n(hit, k);
     for (int i = 0; i < k; i++) perf_count(PERF_CNT_WB);
+    if (vk_ahead_g.oneshot) {
+        uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+        for (int i = 0; i < k; i++) oneoff_streaming(hit[i]->pub.addr, fr, 1);
+    }
     if (vk_ahead_on)
         for (int i = 0; i < k; i++) vk_ahead_small(hit[i]->pub.addr, hit[i]->gpu_fence);
     for (int i = k; i < n; i++) perf_count(PERF_CNT_WB_SKIP);

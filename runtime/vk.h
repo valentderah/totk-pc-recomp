@@ -282,6 +282,7 @@ uint32_t vk_mem_ahead_observe(const uint64_t (*iv)[2], int n, uint8_t *untracked
 uint64_t vk_mem_ahead_written(uint64_t lo, uint64_t hi, uint32_t since, void (*fn)(uint64_t, uint64_t, void *),
                               void *arg);
 int vk_mem_pool_info(uint64_t addr, uint64_t *lo, uint64_t *size, uint32_t *flags, int *mirrored);   // 0: no pool
+void vk_mem_ahead_log(void);   // TOTK_SYNC_AHEAD=1 in place: the guards' waits and copies over the run, at exit
 void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size);
 // A shader's storage-buffer write: goes back through the write-back merge (vk_memory.c), which keeps the words the GPU
 // did not change.
@@ -531,6 +532,9 @@ uint64_t vk_texture_last_write(const tex_t *t);    // timeline value of the newe
 size_t vk_texture_texel_span(const tex_t *t, const view_t *v, const NVNcopyRegion *r, uint64_t row, uint64_t img);   // bytes ReadTexels spans; 0 for a bad region
 int vk_texture_small_dirty(void);                   // a small mirrored target holds GPU texels its storage lacks
 void vk_texture_write_back_small(uint64_t fence);   // writes those rendered by work up to fence back to storage
+// TOTK_SYNC_AHEAD=1 in place: the newest value in (lo, hi] that rendered a dirty small target not written back in the
+// last 16 frames (a one-off read), else 0
+uint64_t vk_texture_oneshot(uint64_t lo, uint64_t hi);
 // vk_sync_submit, after the replay recorded value fence into cb (no render pass open, cb the recorder's part): copies
 // the small targets that value rendered into staging so their write-back later needs no GPU wait (TOTK_WB_EAGER).
 // cb VK_NULL_HANDLE: the value recorded no part, the candidates for it are dropped.

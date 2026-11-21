@@ -292,6 +292,7 @@ static void report_counter(VkExec *ex, const p_report_counter *p) {
         rt_fatal("vk: counter report at %#llx is in no memory pool", (unsigned long long)p->addr);
     vk_mem_count(m.cls, VK_MUSE_GPU_WRITE, sizeof(NVNcounterData));
     if (vk_ahead_on) vk_ahead_gpu_write(p->addr, sizeof(NVNcounterData), samples ? AHW_SAMPLES : AHW_COUNTER, ex->fence);
+    if (samples && vk_ahead_g.queries) vk_ahead_query(ex->fence);   // the in-place frame wait waits up to it
     if (samples) oq_report(ex, p->addr);
     else {
         uint64_t *a = malloc(sizeof *a);

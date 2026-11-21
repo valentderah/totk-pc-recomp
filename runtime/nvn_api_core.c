@@ -483,10 +483,17 @@ NVN_API(nvnQueueFenceSync) {
 // GPU (about 11 ms from the submit), and the wait sets the frame time. With the switch on, that wait, and only that
 // one, waits for the frame before it instead. What the game reads back of GPU results after the wait can then be a
 // frame old; a buffer that holds no older result is waited for when the game invalidates it (vk_memory.c
-// vk_mem_shadow_read). The game's CPU writes to memory the GPU still reads reach the GPU only through shadow copies, which are
-// queued for the GPU or wait (nvn_sync_ahead_guard). The wait still lasts until the replay thread submitted the asked
-// value, so no copy of that value itself picks up those writes. pa_fence: the newest fence at the latest present and
-// the one before, present thread only for writes. pa_guard: the newest value the game was told is done early.
+// vk_mem_shadow_read). The wait still lasts until the replay thread submitted the asked value, so every copy the
+// replay makes of the game's memory at record time (uniform snapshots, CPU texture uploads, the staged mirror syncs)
+// holds the asked frame's bytes before the game writes the next. Two forms, by shadow storage:
+// - shadow on: the game's CPU writes to memory the GPU still reads reach the GPU only through shadow copies, which are
+//   queued for the GPU or wait (nvn_sync_ahead_guard).
+// - shadow off (in place, Savage Wind's form): the GPU reads the game's own memory; the back end's guards (vk_ahead.c
+//   vk_ahead_init) keep its GPU-timeline reads off memory the game writes after the wait, and a value whose result the
+//   game reads at once (vk_ahead_oneshot: a one-off small target, a samples-passed report with
+//   TOTK_SYNC_AHEAD_QUERIES) is waited for, only up to that value.
+// pa_fence: the newest fence at the latest present and the one before, present thread only for writes. pa_guard: the
+// newest value the game was told is done early.
 static uint64_t pa_fence[2], pa_guard;
 // The return address of that wait. 1.1.0: 0x7000b39aa4, 1.2.1: 0x7000b23dfc, 1.4.3: 0x70002db99c. The second
 // nvnSyncWait in 1.1.0 f_7000b39a00 and 1.4.3 f_70002db8ac uses the per-frame sync, like on 1.2.1; the first
@@ -502,14 +509,6 @@ static int sync_mode(void) {
     if (mode < 0) {
         const char *v = cfg_value("TOTK_SYNC_AHEAD");
         int on = strcmp(v, "0") != 0 && strcmp(v, "check") != 0, check = !strcmp(v, "check");
-        // Without shadow storage the GPU reads the game's own memory, which the game writes ahead: nothing guards
-        // that. The Vulkan back end sets the mode while it starts, before the game's first present or wait; the null
-        // back end never does.
-        if (on && !vk_mem_shadow_on()) {
-            rt_log("nvn: TOTK_SYNC_AHEAD needs shadow storage (shadow = 1 in totk.ini or TOTK_SHADOW=1 on native Windows); "
-                   "the game waits for the GPU as before");
-            on = 0;
-        }
         if ((on || check) && !frame_wait_lr()) {
             rt_log("nvn: TOTK_SYNC_AHEAD: no frame wait site is known for this game version; the game waits for the "
                    "GPU as before");
@@ -518,7 +517,11 @@ static int sync_mode(void) {
         // The depth query patch (set qstamp, patches-v143.txt) is switched by TOTK_SYNC_AHEAD too: a refused switch
         // leaves the game's own frame number check, as with the switch off.
         if (!on) rt_patch_switch(rt_patch_set("qstamp"), 0);
-        if (on) rt_log("nvn: TOTK_SYNC_AHEAD: a wait for the frame presented last waits for the frame before it");
+        // The Vulkan back end decides the mode while it starts (vk_memory.c mirror_mode), after it knows whether shadow
+        // storage is on, before the game's first present or wait.
+        if (on)
+            rt_log("nvn: TOTK_SYNC_AHEAD: a wait for the frame presented last waits for the frame before it (%s)",
+                   vk_mem_shadow_on() ? "shadow storage" : "in place, with the back end's guards");
         mode = on ? 1 : check ? 2 : 0;
     }
     return mode;
@@ -542,12 +545,18 @@ NVN_API(nvnSyncWait) {
     uint64_t want = s->fence, lag = s->fence;
     // Only the game's per-frame wait lags, and not a poll (timeout 0).
     int mode = timeout && c->x[30] == frame_wait_lr() ? sync_mode() : 0, behind = b->fence_done() < want;
-    if (mode == 2) vk_ahead_frame_entry();
+    // The detector (vk_ahead.c): check mode, or the switch on with TOTK_SYNC_AHEAD_CHECK=1.
+    int det = mode && vk_ahead_on;
+    if (det) vk_ahead_frame_entry();
     // check: every frame as if the GPU were behind (the question is what the game writes, not this machine's timing)
     if (mode == 2 || (mode && behind)) {
         uint64_t p0 = __atomic_load_n(&pa_fence[0], __ATOMIC_ACQUIRE);
         uint64_t p1 = __atomic_load_n(&pa_fence[1], __ATOMIC_ACQUIRE);
         if (want <= p0 && want > p1) lag = p1;
+        if (mode == 1 && lag < want) {   // a value in (lag, want] whose result the game reads at once: up to it
+            uint64_t o = vk_ahead_oneshot(lag, want);
+            if (o > lag) lag = o;
+        }
         if (mode == 1) want = lag;
     }
     if (want != s->fence) {   // the replay of the asked value is done first: the guard then covers every copy of it
@@ -561,9 +570,9 @@ NVN_API(nvnSyncWait) {
         vk_mem_shadow_fence();   // a shadow sync that read the old guard finishes before the game writes again
     }
     if (b->fence_done() >= want) {
-        if (mode == 2) vk_ahead_frame_lag(s->fence, lag, behind);
+        if (det) vk_ahead_frame_lag(s->fence, lag, behind);
         b->cpu_synced(want == s->fence ? s->fence : b->fence_done());
-        if (mode == 2) vk_ahead_frame_done(1);
+        if (det) vk_ahead_frame_done(1);
         ret_x(c, NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED);
         return;
     }
@@ -572,9 +581,9 @@ NVN_API(nvnSyncWait) {
         NVN_BLOCKING();
         ok = b->fence_wait(want, timeout);
     }
-    if (mode == 2) vk_ahead_frame_lag(s->fence, lag, behind);
+    if (det) vk_ahead_frame_lag(s->fence, lag, behind);
     if (ok) b->cpu_synced(want == s->fence ? s->fence : b->fence_done());
-    if (mode == 2) vk_ahead_frame_done(ok);
+    if (det) vk_ahead_frame_done(ok);
     ret_x(c, ok ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED);
 }
 // void nvnEventBuilderSetDefaults(NVNeventBuilder *b)
