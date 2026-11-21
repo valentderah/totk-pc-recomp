@@ -1279,3 +1279,10 @@ site lightning main 62b3d8 bd4ccd09 bd4ccd09 f001a52a f943e54a f940654a bd403942
 site lightning main 62b51c bd4ccd01 bd4ccd01 f001a52a f943e54a f940654a bd403942 1e2e1003 1e237842 1e220821   # ldr s1, [x8, #0xccc] (0.01)
 #   each: the game's load; adrp x10, main+0x3ad2000; ldr x10, [x10, #0x7c8]; ldr x10, [x10, #0xc8];
 #   ldr s3 (s2), [x10, #0x38] (ratio); fmov s4 (s3), #1.0; fminnm (ratio, 1.0); fmul (chance * ratio)
+
+# Measured GPU time in the dynamic resolution controller (issue #1123): as in patches-v121.txt. The controller
+# (main+0x584300) loads the reading at 0x584408 and takes the model's terms off it from 0x5844a4 on; the reader of the
+# timestamp pair is main+0xa1a50 (0xa1b8c subtracts). The site makes the controller read 0; the field +8 it keeps the
+# reading in (0x58441c) is then always 0. Switched on by the runtime while sync_ahead is in effect.
+set gputime  TOTK_GPU_TIME_PATCH 0
+site gputime main 584408 bd400d42 1e2703e2   # ldr s2, [x10, #0xc] -> fmov s2, wzr

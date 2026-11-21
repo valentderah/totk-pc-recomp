@@ -1221,3 +1221,23 @@ site lightning main ab9014 bd46f109 bd46f109 b001dbaa f9401d4a f940014a f940654a
 site lightning main ab8f90 bd46f101 bd46f101 d001dbaa f9401d4a f940014a f940654a bd403942 1e2e1003 1e237842 1e220821   # ldr s1, [x8, #0x6f0] (0.01)
 #   each: the game's load; adrp x10, main+0x462e000; ldr x10, [x10, #0x38]; ldr x10, [x10]; ldr x10, [x10, #0xc8];
 #   ldr s2, [x10, #0x38] (ratio); fmov s3, #1.0; fminnm s2, s2, s3; fmul (chance * ratio)
+
+# Measured GPU time in the dynamic resolution controller (issue #1123). The controller (main+0xcc26f4, set fixres above)
+# also takes a measured "GPU time" percent, the float at +0xc of the singleton at main+0x4718da0 (0xcc27d0). The game
+# gets it from a pair of timestamp reports it reads back two reader calls after issuing them (main+0x972bac; 0x972c0c
+# subtracts the two unsigned). The controller takes its cost model's terms off the reading, at least 8 (0xcc2858 to
+# 0xcc2880), and puts the rest into a history. Its regression over the history leaves out the entries below 0
+# (0xcc29e4), and the load it predicts is the larger of the regression and the last entry (0xcc2a8c). So only a reading
+# above the model raises the predicted load, and a reading of 0 gives an entry below 0 that does not. With
+# sync_ahead = 1 the scene goes soft for about half a second at a time, again and again, also with dynamic_res = 0
+# (measured, #1123), and in the same runs with this set on it did not. Most likely the game then reads a pair that is
+# only half written, so that the difference is huge; such a read was not captured. Two calls over budget in a row take
+# the game to its lowest quality level (the reduce counter's maximum is 1, main+0xc7eba8), which besides the scale
+# turns FXAA on and super resolution off, and set fixres holds only the scale; the way back up takes 60 good calls.
+# The site makes the controller read 0. The value stays in the singleton for the game's other readers (0x98080c). The
+# controller also keeps a reading below 1000 in its field +8 (0xcc27e4), which is then always 0; nothing in the
+# controller reads that field back, other readers were not searched for outside the code around it. What the reading
+# is without frame-ahead was not measured, so the set is for frame-ahead only: it is off at start, and the runtime
+# switches it on while sync_ahead is in effect unless TOTK_GPU_TIME_FIX is 0 (runtime/nvn_api_core.c sync_ahead).
+set gputime  TOTK_GPU_TIME_PATCH 0
+site gputime main cc27d0 bd400d41 1e2703e1   # ldr s1, [x10, #0xc] -> fmov s1, wzr
