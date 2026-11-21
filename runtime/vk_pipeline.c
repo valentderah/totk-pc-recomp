@@ -169,12 +169,20 @@ static void cache_path_init(void) {
     snprintf(P.cache_path, sizeof P.cache_path, "%s/pipeline-cache.bin", exe);
 }
 
+static int fast_only(void);
+
 // Cache data whose header names another device or driver is dropped before Vulkan sees it.
+//
+// pipe_fast_only leaves nothing in that file to hit, and a cache loaded anyway is not dropped: the driver carries every
+// entry it was handed into the next save, so a session under the setting would copy the tens of megabytes of optimised
+// builds an earlier session wrote back out at every autosave and at exit, for pipelines it never builds. Such a session
+// starts empty instead, and its file holds only the fast links it wrote, under two megabytes.
 static void cache_load(VkCtx *c) {
     cache_path_init();
+    int load = !fast_only();
     void *data = NULL;
     size_t size = 0;
-    FILE *f = P.cache_path[0] ? fopen(P.cache_path, "rb") : NULL;
+    FILE *f = (load && P.cache_path[0]) ? fopen(P.cache_path, "rb") : NULL;
     if (f) {
         fseek(f, 0, SEEK_END);
         long len = ftell(f);
@@ -191,6 +199,8 @@ static void cache_load(VkCtx *c) {
             size = 0;
         }
     }
+    if (!load && P.cache_path[0])
+        rt_log("vk_pipeline: %s not read: pipe_fast_only builds no pipeline an entry of it could hit", P.cache_path);
     VkPipelineCacheCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO, .initialDataSize = size,
                                     .pInitialData = size ? data : NULL};
     if (vkCreatePipelineCache(c->device, &ci, NULL, &P.cache) != VK_SUCCESS) {
@@ -2086,6 +2096,17 @@ static void keys_open(void) {
 
 static double now_ms(void) { return (double)plat_now_ns() / 1e6; }
 
+// A graphics pipeline is the fast link of its four stage libraries and nothing more, at boot (the prewarm) and during
+// play alike; the optimised build never replaces it. A recorded pipeline then costs a library lookup and a link
+// instead of a full compile: the prewarm drops from 37 s to 2.9 s on the target machine, and the frames it feeds render
+// the same, because the game is bound by its submits and not by the optimised codegen (TOTK-perf-findings.md).
+// TOTK_PIPE_FAST_ONLY=0 (pipe_fast_only, Advanced) gets the optimised builds back, for a comparison run.
+static int fast_only(void) {
+    static int v = -1;
+    if (v < 0) v = cfg_bool("TOTK_PIPE_FAST_ONLY");   // a restart setting: the value is fixed for the session
+    return v;
+}
+
 // Caller holds P.lock.
 static void prebuild_report(void) {
     rt_log("vk_pipeline: prebuild done: %u built, %u failed, %u asked for by a draw first; %.0f ms after the device was "
@@ -2132,32 +2153,40 @@ static void pipe_worker(void *arg) {
         }
         // Step 1 for a job a draw waits for: its stage libraries and the fast link. Step 2, the optimised build, goes to
         // the head of the low queue, so a burst of new pipelines gets every fast link before any optimised build.
-        if (P.gpl && (!j->prebuild || j->demanded) && !j->p->info.pipeline && !j->p->fast_tried && j->p->lay) {
+        int linked = 0;   // TOTK_PIPE_FAST_ONLY: the job ends with the fast link, no optimised build behind it
+        if (P.gpl && (!j->prebuild || j->demanded || fast_only()) && !j->p->info.pipeline && !j->p->fast_tried &&
+            j->p->lay) {
             int final;
             VkPipeline f = gpl_link(&j->s, &j->k, j->p->lay, 1, &final);   // releases P.lock while building
             j->p->fast_tried = 1;
             if (f && !j->p->info.pipeline) {
                 j->p->fast = j->p->info.pipeline = f, P.g.wlinks++;
                 plat_cond_broadcast(&done_cv);
-                j->low = 1, j->worker = -1, P.g.requeued++;
-                j->prev = NULL, j->next = A.low;
-                if (A.low) A.low->prev = j;
-                else A.low_tail = j;
-                A.low = j;
-                A.low_running -= lowrun;
-                continue;
+                linked = 1;
+                if (!fast_only()) {
+                    j->low = 1, j->worker = -1, P.g.requeued++;
+                    j->prev = NULL, j->next = A.low;
+                    if (A.low) A.low->prev = j;
+                    else A.low_tail = j;
+                    A.low = j;
+                    A.low_running -= lowrun;
+                    continue;
+                }
             } else if (f) {
                 vkDestroyPipeline(P.device, f, NULL);
             }
         }
-        plat_mutex_unlock(&P.lock);
-        VkPipeline pipe = create_graphics(&j->s, &j->k, j->l, j->fs_off);
-        plat_mutex_lock(&P.lock);
-        if (pipe || !j->p->fast) j->p->info.pipeline = pipe;   // a failed optimised build keeps the fast-linked one
-        if (pipe && j->p->fast) P.g.swaps++;
+        VkPipeline pipe = VK_NULL_HANDLE;
+        if (!linked) {
+            plat_mutex_unlock(&P.lock);
+            pipe = create_graphics(&j->s, &j->k, j->l, j->fs_off);
+            plat_mutex_lock(&P.lock);
+            if (pipe || !j->p->fast) j->p->info.pipeline = pipe;   // a failed optimised build keeps the fast-linked one
+            if (pipe && j->p->fast) P.g.swaps++;
+        }
         j->p->building = 0;
         j->p->job = NULL;
-        if (pipe) {
+        if (linked || pipe) {
             P.stats.graphics++, P.stats.async_built++;
             if (!j->prebuild) keys_note(&j->s);
         } else {
@@ -2165,7 +2194,7 @@ static void pipe_worker(void *arg) {
             rt_log("vk_pipeline: graphics pipeline not built: pipeline creation failed");
         }
         if (j->prebuild) {
-            if (pipe) K.built++;
+            if (linked || pipe) K.built++;
             else K.failed++;
             K.promoted += j->demanded;
             if (!--K.left && !K.loading) prebuild_report();
@@ -2173,7 +2202,7 @@ static void pipe_worker(void *arg) {
         A.low_running -= lowrun;
         if (!--A.inflight) plat_cond_broadcast(&A.idle);
         plat_cond_broadcast(&done_cv);
-        if (pipe && (!j->prebuild || j->demanded)) perf_count(PERF_CNT_PIPE_ASYNC);   // a draw waited for it
+        if ((linked || pipe) && (!j->prebuild || j->demanded)) perf_count(PERF_CNT_PIPE_ASYNC);   // a draw waited
         free(j);
     }
     return;
@@ -2217,6 +2246,9 @@ static void workers_drain(void) {
 
 void vk_pipeline_async_enable(void) {
     U.on = strcmp(cfg_value("TOTK_PIPE_WAIT"), "draw") != 0;
+    if (fast_only())
+        rt_log("vk_pipeline: fast link only (TOTK_PIPE_FAST_ONLY=0 builds the optimised pipelines instead): a graphics "
+               "pipeline is the fast link of its stage libraries, the optimised build never replaces it");
     const char *e = cfg_get("TOTK_PIPE_SYNC");
     if (e && *e && strcmp(e, "0")) return;
     A.on = 1;
@@ -2475,14 +2507,25 @@ static void warm_builder(void *arg) {
         else A.low_tail = NULL;
         j->next = j->prev = NULL;
         j->low = 0;                    // not on a pool thread: promote() has nothing to raise
-        plat_mutex_unlock(&P.lock);
-        VkPipeline pipe = create_graphics(&j->s, &j->k, j->l, j->fs_off);
-        plat_mutex_lock(&P.lock);
-        if (pipe || !j->p->fast) j->p->info.pipeline = pipe;   // a failed optimised build keeps the fast-linked one
-        if (pipe && j->p->fast) P.g.swaps++;
+        int linked = 0;
+        VkPipeline pipe = VK_NULL_HANDLE;
+        if (fast_only() && P.gpl && j->p->lay && !j->p->info.pipeline && !j->p->fast_tried) {
+            int final;
+            VkPipeline f = gpl_link(&j->s, &j->k, j->p->lay, 1, &final);   // releases P.lock while building a library
+            j->p->fast_tried = 1;
+            if (f && !j->p->info.pipeline) j->p->fast = j->p->info.pipeline = f, P.g.wlinks++, linked = 1;
+            else if (f) vkDestroyPipeline(P.device, f, NULL);
+        }
+        if (!linked) {
+            plat_mutex_unlock(&P.lock);
+            pipe = create_graphics(&j->s, &j->k, j->l, j->fs_off);
+            plat_mutex_lock(&P.lock);
+            if (pipe || !j->p->fast) j->p->info.pipeline = pipe;   // a failed optimised build keeps the fast-linked one
+            if (pipe && j->p->fast) P.g.swaps++;
+        }
         j->p->building = 0;
         j->p->job = NULL;
-        if (pipe) {
+        if (linked || pipe) {
             P.stats.graphics++, P.stats.async_built++, K.built++;
         } else {
             P.stats.failures++, K.failed++;
@@ -3447,6 +3490,20 @@ static void cache_save(int wait) {
                    (unsigned long long)P.g.pre_used[LIB_FS], (unsigned long long)LB.cs_draw);
     }
     gfx_shader_record_flush(1);
+    // pipe_fast_only leaves nothing in the cache worth saving: a fast link is a library lookup and a link, about 0.1 ms,
+    // and no build reads back what the driver recorded for one (TOTK-perf-findings.md, the probe against 6035 prebuilt
+    // pipelines: 0 found the driver's cache useful). Saving it still copies out every entry this session built, 69 MB on
+    // the target machine and the copy alone 320 ms, every 20 s and again at exit, into a file the next session does not
+    // read either. The file is left as it is; the pipeline keys beside it are what carries a prewarm over from a run that
+    // ended, and those are still written.
+    if (fast_only()) {
+        static int said;
+        if (!said && P.cache_path[0]) {
+            said = 1;
+            rt_log("vk_pipeline: cache not saved under pipe_fast_only: no build reads %s back", P.cache_path);
+        }
+        return;
+    }
     if (!P.ready || !P.cache || !P.cache_path[0]) return;
     // Not under P.lock: holding it through the copy and the file write (about 60 ms on the 1.4.3 fight) stopped every
     // pipeline lookup of the replay, a freeze at each 20 s autosave. Only the copy takes cache_use, so no pipeline is
