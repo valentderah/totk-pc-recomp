@@ -59,6 +59,8 @@ typedef struct Tex {
     uint8_t run;                  // frames in a row up to run_frame with a GPU write, counted up to WB_RUN
     uint64_t wr_fence;            // any entry: newest submission recorded to write its image (render, copy, clear,
                                   // storage binding); ReadTexels waits for it instead of draining the replay queue
+    uint64_t wr_seq;              // order of the newest GPU write into its image among all entries (gpu_written_seq),
+                                  // or of the one whose content alias_copy took; 0: never written by the GPU
     uint8_t listed;               // in owned[]
     uint8_t eager_cand;           // in eager_c[]: rendered by the value being recorded, snapshot not taken yet
     struct EagerSnap *eager;      // wb_eager: the staging copy of the image that value eager->value ended with
@@ -116,6 +118,7 @@ static Tex **owned;
 static int nowned, cowned;
 static uint64_t max_owned;   // largest storage size in owned[]
 static uint64_t gpu_writes;  // GPU writes into mirrored textures so far: Tex.gpu_seq
+static uint64_t gpu_written_seq;   // GPU writes into any texture so far: Tex.wr_seq
 // Bumped whenever the entry a slot resolves to can change: an entry created or destroyed, released or taken back into
 // use (the slot lookup and the follow of a finalized slot read only by_key, by_addr and the released flags).
 static uint32_t tex_gen = 1;
@@ -1457,6 +1460,7 @@ static Tex *entry_of(const tex_t *t) {
         if (tex_alias) {
             if (src && alias_copy(e, src)) {
                 n_alias_copied++;
+                e->wr_seq = src->wr_seq;
                 if (e->pub.mirrored) {   // the content is src's GPU render, newer than the storage bytes
                     vk_mem_changed(e->pub.addr, e->t.L.size, 0, &e->wgen);
                     e->uploaded = 1;
@@ -1612,6 +1616,7 @@ void vk_texture_gpu_written(const tex_t *t) {
             e->own_epoch = pos == UINT32_MAX ? 0 : submit_epoch, e->own_pos = pos;
         }
         e->pub.gpu_owned = 1;
+        e->wr_seq = ++gpu_written_seq;
         uint64_t f = vk_exec_recording_fence();
         if (f > e->wr_fence) e->wr_fence = f;
         if (e->pub.mirrored) {
@@ -1721,14 +1726,19 @@ static Tex *slot_resolve(TexSlot *s, view_t *view, int *has_view, uint32_t pos) 
         // thumbnail of the fused object, RGBA8 at the same storage, was the live entry, and the menu drew it behind
         // the wheel (the object's silhouette, or garbled colours). Without such an entry the released one keeps the
         // slot: its image holds what was last written through that descriptor.
+        // Another live entry of the format takes the slot only when the GPU wrote it after the released one (wr_seq),
+        // the newest written of them: the storage holds what was written last. A shrine monk's message box renders the
+        // glow of each phrase into a 435x113 R8 target and finalizes it, and before the last phrase another UI filter
+        // left a live 386x71 R8 target at the same storage; the glow slot followed it, and the 386x71 image read the
+        // 435x113 render in its own block layout: rectangles of shuffled 64x64 blocks around the monk's last words.
         Tex *own = e, *any = NULL;
         e = NULL;
         for (Tex *p = nvn_hm_get(&by_addr, &k.addr); p; p = p->next_at) {
             if (!live_at(p, pos) || linear_format(p->key.d.format) != linear_format(k.d.format)) continue;
-            if (!any) any = p;
             if (same_but_swizzle(&p->key, &k)) { e = p; break; }
+            if (!any || p->wr_seq > any->wr_seq) any = p;
         }
-        if (!e) e = any ? any : own;
+        if (!e) e = any && (!own || any->wr_seq >= own->wr_seq) ? any : own;
     }
     TexSlot copy;   // entry_of may release the lock (a chunk's wait), and a registration then moves tslots
     if (!e && s->t.mem) copy = *s, s = &copy, e = entry_of(&s->t);
