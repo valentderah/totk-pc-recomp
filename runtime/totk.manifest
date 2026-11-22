@@ -5,7 +5,11 @@
      dpiAwareness PerMonitorV2 (dpiAware true/pm on Windows 10 before 1607): window, monitor and cursor sizes are physical
      pixels and the swapchain matches the screen. A DPI-unaware process gets them divided by the display scale and its
      image stretched back up by Windows, so 4K at 150% presented a 2560x1440 image, blurred. gfx_window.c follows a
-     change of the window's DPI (WM_GETDPISCALEDSIZE, WM_DPICHANGED). -->
+     change of the window's DPI (WM_GETDPISCALEDSIZE, WM_DPICHANGED).
+     consoleAllocationPolicy detached (Windows 11 24H2, build 26100, and later; earlier versions ignore it): a run
+     started without a console (Explorer, a shortcut, a frontend) gets none, so no console window flashes up before the
+     loading window; a run from a terminal still uses the terminal's console. Where a console is wanted after all
+     (console = 1, or the loading window did not open), loadwin_win.c lw_wsys_want_console makes one. -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
@@ -19,6 +23,7 @@
       <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
       <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
       <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, PerMonitor</dpiAwareness>
+      <consoleAllocationPolicy xmlns="http://schemas.microsoft.com/SMI/2024/WindowsSettings">detached</consoleAllocationPolicy>
     </windowsSettings>
   </application>
 </assembly>

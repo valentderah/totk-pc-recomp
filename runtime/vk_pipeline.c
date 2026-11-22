@@ -49,6 +49,7 @@
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
+#include "loadwin.h"
 #include "memx.h"
 #include "nvn_hmap.h"
 #include "platform/platform.h"
@@ -2500,17 +2501,29 @@ static void warm_builder(void *arg) {
 
 static void lb_start(const uint32_t pr_hist[16], const uint32_t fs_hist[4]);
 
+// The loading window's count of the boot prewarm's pipelines (loadwin.h lw_count): read without the lock, as a
+// progress figure only.
+static uint64_t prewarm_done(void *ctx) {
+    (void)ctx;
+    return (uint64_t)__atomic_load_n(&K.built, __ATOMIC_RELAXED) + __atomic_load_n(&K.failed, __ATOMIC_RELAXED);
+}
+
 void vk_pipeline_prewarm(void) {
     const char *gpu = rt_config()->gpu;
     uint32_t pr_hist[16] = {0}, fs_hist[4] = {0};   // library state of the recorded pipelines (lb_start)
     if (!A.on || (gpu && !strcmp(gpu, "null"))) return;
+    lw_begin(LW_GPU);
     if (!cfg_bool("TOTK_PIPE_PREBUILD")) {   // prebuild_start logs the off case
-        if (ensure_init()) lb_start(pr_hist, fs_hist);
+        int ready = ensure_init();
+        lw_end(LW_GPU);
+        if (ready) lb_start(pr_hist, fs_hist);
         return;
     }
     double t0 = now_ms();
     K.warm = 1;
-    if (!ensure_init() || !K.file_n) {
+    int ready = ensure_init();
+    lw_end(LW_GPU);
+    if (!ready || !K.file_n) {
         rt_log("vk_pipeline: prewarm: no pipeline keys (%s)", K.path[0] ? K.path : "<none>");
         if (P.ready) lb_start(pr_hist, fs_hist);
         return;
@@ -2578,6 +2591,8 @@ void vk_pipeline_prewarm(void) {
     plat_mutex_unlock(&P.lock);
     free(ids), free(sh);
 
+    lw_begin(LW_PIPELINES);
+    lw_count(LW_PIPELINES, queued, prewarm_done, NULL);
     PlatThread *t[64];
     int nt = 0;
     for (int i = 0; i < cpus && i < 64 && queued; i++)
@@ -2594,6 +2609,8 @@ void vk_pipeline_prewarm(void) {
     free(K.file);
     K.file = NULL;
     plat_mutex_unlock(&P.lock);
+    lw_count_end(LW_PIPELINES);
+    lw_end(LW_PIPELINES);
     lb_start(pr_hist, fs_hist);
 }
 

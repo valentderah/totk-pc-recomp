@@ -19,6 +19,7 @@
 #include "gfx_wsys.h"
 #include "input.h"
 #include "input_win.h"
+#include "loadwin.h"
 #include "nvn_api.h"
 #include "ui/menu.h"
 #include "vk.h"
@@ -340,6 +341,7 @@ static void window_main(void *arg) {
             FLASHWINFO fw = {.cbSize = sizeof fw, .hwnd = g_hwnd, .dwFlags = FLASHW_TRAY | FLASHW_TIMERNOFG};
             FlashWindowEx(&fw);
         }
+        lw_game_window();   // the loading window closes now that the game's is on the screen
         note_applied();
         refresh_rate_update(g_hwnd, 1);
         keep_awake(1);

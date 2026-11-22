@@ -18,6 +18,7 @@
 #include "cheats.h"
 #include "fs.h"
 #include "gfx.h"
+#include "loadwin.h"
 #include "mods.h"
 #include "nvn_api.h"
 #include "platform/platform.h"
@@ -391,10 +392,12 @@ void rt_boot(void) {
     cb_addr[1] = hostfn_register("<rtld module_inits>", cb_module_inits);
     cb_addr[2] = hostfn_register("<rtld module_finis>", cb_module_finis);
     hostfn_seal();
+    lw_end(LW_START);
     uint64_t held = plat_now_ms();
     if (warm) plat_thread_join(warm);
     else vk_pipeline_prewarm();
     held = plat_now_ms() - held;
+    lw_begin(LW_GAME);   // to the game window (gfx_window_win.c window_main, lw_game_window)
     rt_log("boot: guest starts %llu ms after process start (%llu ms of it waiting for the prewarm)",
            (unsigned long long)(plat_process_uptime_ns() / 1000000), (unsigned long long)held);
     rt_guest_start_ns = kern_now_ns();

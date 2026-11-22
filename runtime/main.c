@@ -31,6 +31,7 @@
 #include "cfg.h"
 #include "host.h"
 #include "layout.h"
+#include "loadwin.h"
 #include "platform/platform.h"
 #include "sha256.h"
 
@@ -56,6 +57,7 @@ static uint64_t g_log_bytes;
 
 void rt_log_raw(const char *p, size_t n) {
     fwrite(p, 1, n, stderr);
+    if (lw_taking_log) lw_log(p, n);   // the loading window's Details view (loadwin.c)
     int state = __atomic_load_n(&g_log_state, __ATOMIC_ACQUIRE);
     if (state == LOG_EARLY) {
         size_t at = __atomic_fetch_add(&g_log_early_n, n, __ATOMIC_RELAXED);
@@ -398,6 +400,7 @@ static void crash_handler(const PlatCrash *x) {
     crash_compound_shape(c);
     kern_free_cores_note();
     fflush(stderr);
+    lw_fatal(NULL);   // a crash before the game window: the loading window shows it until the player closes it
     plat_exit(71);
 }
 
@@ -712,6 +715,10 @@ int main(int argc, char **argv) {
     }
     if (cfg.shot && !cfg.seconds) return usage(argv[0]);
     if (cfg.seconds && mode) return usage(argv[0]);
+    if (!mode) {   // the loading window (loadwin.c), with the lines logged so far
+        size_t early_n = g_log_early_n < sizeof g_log_early ? g_log_early_n : sizeof g_log_early;
+        lw_start(g_log_early, early_n);
+    }
     log_open(!mode);
     if (!mode) {
         cfg.boot = cfg.seconds > 0;   // --seconds starts the game like --boot, with its checkpoints
