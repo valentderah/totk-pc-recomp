@@ -201,6 +201,58 @@ class RunnerTest(unittest.TestCase):
             state.load(self.bed.dest)
         self.assertEqual(e.exception.id, 'state.newer_format')
 
+    def test_invalid_state_format_is_reported_as_unreadable(self):
+        self.bed.dest.mkdir()
+        path = self.bed.dest / state.NAME
+        for value in ('1', None, [], {}, True, 1.5, -1):
+            with self.subTest(value=value):
+                data = state.empty('r0') | {'format': value}
+                path.write_text(json.dumps(data))
+                before = path.read_bytes()
+                with self.assertRaises(state.StateError) as error:
+                    state.load(self.bed.dest)
+                self.assertEqual(error.exception.id, 'state.unreadable')
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_invalid_state_records_are_reported_as_unreadable(self):
+        self.bed.dest.mkdir()
+        for field in ('inputs', 'steps'):
+            for value in (None, [], 'bad', {'entry': None}, {'entry': 'bad'}):
+                with self.subTest(field=field, value=value):
+                    path = self.bed.dest / state.NAME
+                    path.write_text(json.dumps(state.empty('r0') | {field: value}))
+                    with self.assertRaises(state.StateError) as error:
+                        state.load(self.bed.dest)
+                    self.assertEqual(error.exception.id, 'state.unreadable')
+
+    def test_invalid_state_text_fields_are_reported_as_unreadable(self):
+        self.bed.dest.mkdir()
+        for field in ('release', 'lang', 'version'):
+            for value in (None, [], {}, 1):
+                with self.subTest(field=field, value=value):
+                    (self.bed.dest / state.NAME).write_text(json.dumps(state.empty('r0') | {field: value}))
+                    with self.assertRaises(state.StateError) as error:
+                        state.load(self.bed.dest)
+                    self.assertEqual(error.exception.id, 'state.unreadable')
+
+    def test_legacy_state_without_inputs_can_be_resumed(self):
+        self.bed.run()
+        path = self.bed.dest / state.NAME
+        data = json.loads(path.read_text())
+        del data['format'], data['inputs']
+        path.write_text(json.dumps(data))
+        self.assertEqual(state.load(self.bed.dest)['inputs'], {})
+        result = self.bed.run()
+        self.assertEqual((result.result, result.ran), ('ok', ['check', 'cleanup']))
+
+    def test_newer_state_format_is_not_validated_as_the_current_schema(self):
+        self.bed.dest.mkdir()
+        data = {'format': state.FORMAT + 1, 'steps': {}, 'inputs': [], 'lang': {}}
+        (self.bed.dest / state.NAME).write_text(json.dumps(data))
+        with self.assertRaises(state.StateError) as error:
+            state.load(self.bed.dest)
+        self.assertEqual(error.exception.id, 'state.newer_format')
+
 
 class ReleaseFilesTest(unittest.TestCase):
     def test_release_ships_every_tool_the_steps_run(self):
