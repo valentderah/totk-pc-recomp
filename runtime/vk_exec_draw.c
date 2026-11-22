@@ -1696,9 +1696,9 @@ static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
 }
 
 // By-region barrier inside the pass: earlier writes of the attachments m (bit 8 depth/stencil) become visible to this
-// draw's fragment shader reads. It waits only for the kind of attachment output m names: waiting for depth writes when
-// only colour targets are sampled cost a third of the barrier's GPU time on an RTX 5070 (feedback_split records
-// hundreds of these a frame in Hyrule Castle).
+// draw's fragment shader reads. It waits only for the kind of attachment output m names: with the depth writes waited
+// for as well, the barriers feedback_split adds in Hyrule Castle's dining hall cost 2.4 ms of GPU time a frame on an
+// RTX 5070 at 3840x2160 instead of 0.9 ms.
 static void feedback_barrier(VkExec *ex, uint32_t m) {
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                            .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
@@ -1744,9 +1744,10 @@ static uint32_t feedback_written(VkExec *ex, const VkPipeState *s) {
 // that changed from frame to frame. The draw is recorded as runs of triangles that share vertices with each other, a
 // feedback_barrier between runs: a piece connected through its vertices is one surface, which does not cover itself on
 // the screen, so a run needs no barrier inside. That is 290 barriers a frame in the dining hall instead of 3,900 for one
-// per triangle (GPU time 6.2 ms without any, 7.0 ms with these, 13.1 ms with one per triangle, at 3840x2160). A draw
-// cut into more than FB_SPLIT_MAX runs (separate quads, such as particles) is recorded whole, as before: a barrier per
-// piece would cost more than the frame.
+// per triangle. At 3840x2160 on an RTX 5070 the frame's GPU time stayed at 6.2 ms there (7.1-7.2 ms in the field, from
+// 7.4 ms), as the colour-only feedback_barrier saves what the runs' barriers cost; one barrier per triangle took it to
+// 13.1 ms. A draw cut into more than FB_SPLIT_MAX runs (separate quads, such as particles) is recorded whole, as
+// before: a barrier per piece would cost more than the frame.
 enum { FB_SPLIT_MAX = 64 };
 
 static uint32_t find_root(uint32_t *par, uint32_t a) {
