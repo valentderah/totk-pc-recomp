@@ -170,9 +170,85 @@ static void cache_path_init(void) {
     snprintf(P.cache_path, sizeof P.cache_path, "%s/pipeline-cache.bin", exe);
 }
 
+// A full cache. A driver keeps a pipeline cache up to a size of its own: on an RTX 4080 SUPER (driver 616.92) a
+// pipeline-cache.bin that had grown to 820.8 MB over many translator updates stayed at that size, and every start
+// compiled the 8,009 recorded pipelines again in 5.5 s (11 ms each a thread); the same pipelines from a new cache took
+// 0.5 s at the next start (224 MB). The boot prewarm notes a start whose builds ran at compile speed although the
+// cache came with data (cache_note_prewarm); when the cache it then saves has not grown, the start counts as one whose
+// cache did not keep its builds, in <cache>.full ("full_starts N"). After two such starts in a row the next one starts
+// an empty cache and keeps the old file as <cache>.old. Off by default until AMD and Intel drivers are measured:
+// TOTK_PIPELINE_CACHE_RESET=1 turns it on.
+#define CACHE_SLOW_MS 4.0     // a prewarm build slower than this, per pipeline and thread, compiled
+#define CACHE_FULL_STARTS 2
+static struct {
+    uint64_t loaded;           // bytes of cache data given to the driver at start
+    int slow;                  // the prewarm built at compile speed with that data: the next save checks the growth
+    int counted;               // the save after the prewarm has counted this start
+} CF;
+
+static void cache_full_path(char *out, size_t cap) { snprintf(out, cap, "%s.full", P.cache_path); }
+
+static int cache_full_read(void) {
+    char path[sizeof P.cache_path + 8];
+    cache_full_path(path, sizeof path);
+    uint64_t n = 0;
+    char *s = (char *)plat_file_read(path, &n);
+    int v = 0;
+    if (s && sscanf(s, "full_starts %d", &v) != 1) v = 0;
+    free(s);
+    return v;
+}
+
+static void cache_full_write(int v) {
+    char path[sizeof P.cache_path + 8], line[32];
+    cache_full_path(path, sizeof path);
+    if (!v) {
+        if (plat_file_exists(path)) plat_file_delete(path);
+        return;
+    }
+    int n = snprintf(line, sizeof line, "full_starts %d\n", v);
+    if (!plat_file_write_atomic(path, line, (size_t)n)) rt_log("vk_pipeline: cannot write %s", path);
+}
+
+// The boot prewarm's builds: built pipelines in ms on threads.
+static void cache_note_prewarm(uint32_t built, double ms, int threads) {
+    if (built < 1000 || !rt_knob("PIPELINE_CACHE_RESET", "0")) return;
+    double each = ms * (threads > 0 ? threads : 1) / built;
+    if (each > CACHE_SLOW_MS && CF.loaded) {
+        CF.slow = 1;
+        rt_log("vk_pipeline: the prewarm built at compile speed (%.1f ms a pipeline and thread) with %.1f MB of cache "
+               "data; the next cache save checks whether the cache kept them", each, (double)CF.loaded / 1e6);
+    } else if (each <= CACHE_SLOW_MS) {
+        cache_full_write(0);
+    }
+}
+
+// The first cache save after a slow prewarm: a cache that did not grow did not keep the new builds.
+static void cache_note_save(size_t size) {
+    if (!CF.slow || CF.counted) return;
+    CF.counted = 1;
+    if (size > CF.loaded + CF.loaded / 100) {
+        cache_full_write(0);
+        return;
+    }
+    int n = cache_full_read() + 1;
+    cache_full_write(n);
+    rt_log("vk_pipeline: the cache stayed at %.1f MB although the prewarm compiled its pipelines (%d of %d starts in a "
+           "row); %s", (double)size / 1e6, n, CACHE_FULL_STARTS,
+           n >= CACHE_FULL_STARTS ? "the next start begins a new cache" : "watching the next start");
+}
+
 // Cache data whose header names another device or driver is dropped before Vulkan sees it.
 static void cache_load(VkCtx *c) {
     cache_path_init();
+    if (P.cache_path[0] && rt_knob("PIPELINE_CACHE_RESET", "0") && cache_full_read() >= CACHE_FULL_STARTS) {
+        char old[sizeof P.cache_path + 8];
+        snprintf(old, sizeof old, "%s.old", P.cache_path);
+        int moved = plat_file_replace(P.cache_path, old);
+        cache_full_write(0);
+        rt_log("vk_pipeline: %s kept no new pipelines over %d starts (full); %s, this start begins a new cache",
+               P.cache_path, CACHE_FULL_STARTS, moved ? "moved to .old" : "it could not be moved");
+    }
     void *data = NULL;
     size_t size = 0;
     FILE *f = P.cache_path[0] ? fopen(P.cache_path, "rb") : NULL;
@@ -192,6 +268,7 @@ static void cache_load(VkCtx *c) {
             size = 0;
         }
     }
+    CF.loaded = size;
     VkPipelineCacheCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO, .initialDataSize = size,
                                     .pInitialData = size ? data : NULL};
     if (vkCreatePipelineCache(c->device, &ci, NULL, &P.cache) != VK_SUCCESS) {
@@ -2647,11 +2724,14 @@ void vk_pipeline_prewarm(void) {
     rt_log("vk_pipeline: prewarm: %zu records in %s: %u pipelines built, %u failed, %u already built, %u dropped "
            "(shader neither cached nor stored); shaders %.0f ms, pipelines %.0f ms on %d threads, total %.0f ms",
            n, K.path, K.built, K.failed, known, dropped, t1 - t0, now_ms() - t1, nt, now_ms() - t0);
+    uint32_t warm_built = K.built;
+    double warm_ms = now_ms() - t1;
     free(K.file);
     K.file = NULL;
     plat_mutex_unlock(&P.lock);
     lw_count_end(LW_PIPELINES);
     lw_end(LW_PIPELINES);
+    cache_note_prewarm(warm_built, warm_ms, nt);
     lb_start(pr_hist, fs_hist);
 }
 
@@ -3540,6 +3620,7 @@ static void cache_save(int wait) {
     rt_log("vk_pipeline: cache %s: %.1f MB copied in %.1f ms, after %.1f ms waiting for builds", wait ? "save" : "autosave",
            (double)size / 1e6, ms_since(t1), (double)(t1 - t0) / 1e6);
     if (ok && !plat_file_write_atomic(P.cache_path, data, size)) rt_log("vk_pipeline: cannot write %s", P.cache_path);
+    else if (ok) cache_note_save(size);
     free(data);
     plat_mutex_unlock(&save_lock);
 }
