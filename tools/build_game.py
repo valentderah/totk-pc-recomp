@@ -70,6 +70,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -269,10 +270,12 @@ def flag_path(p):
 
 
 def cmd_arg(s):
-    """s for a Ninja command line: Ninja-escaped, and quoted when it holds a space (a user or folder name), as clang and
-    lld split their Windows command line at unquoted spaces."""
-    s = s.replace('$', '$$')
-    return f'"{s}"' if ' ' in s else s
+    """One command argument: quote for the host's command parser, then escape Ninja's dollar signs."""
+    if not WIN:   # Ninja runs Unix commands through sh: double quotes alone still expand $ and command substitutions
+        s = shlex.quote(s)
+    elif ' ' in s:
+        s = f'"{s}"'
+    return s.replace('$', '$$')
 
 
 def cmd_path(p):
