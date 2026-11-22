@@ -129,6 +129,11 @@ def b(src, dst, link=False):
     return (0x94000000 if link else 0x14000000) | ((dst - src) >> 2) & 0x3FFFFFF
 
 
+def quad(v):
+    """The two words of a .quad v."""
+    return [v & 0xFFFFFFFF, v >> 32]
+
+
 def record(original=0x94000010, trampoline_first=None, stub=None, writes=None, **extra):
     """A record of one inline hook at main+SITE_OFF whose original is `original` (default bl main+SITE_OFF+0x40)."""
     site, stub_at, tramp = MAIN + SITE_OFF, PLUGIN + STUB_OFF, PLUGIN + TRAMP_OFF
@@ -270,6 +275,65 @@ class Check(unittest.TestCase):
 
     def test_indirect_original(self):
         self.refused(record(original=0xD65F03C0), 'is a br, blr or ret')
+
+    # exlaunch's long forms (tools/exefs_plugins.py relocation_end, returns_to): the trampoline at plugin0+off
+    def long_form(self, original, off, words):
+        rec = record(original=original)
+        img = bytearray(rec['images']['plugin0'])
+        struct.pack_into('<I', img, STUB_OFF + 12, b(PLUGIN + STUB_OFF + 12, PLUGIN + off))
+        struct.pack_into(f'<{len(words)}I', img, off, *words)
+        rec['images']['plugin0'] = bytes(img)
+        return rec
+
+    def test_trampoline_tbnz_long(self):   # Challenge: tbnz w0, #0 out of the plugin's reach
+        site, t = MAIN + SITE_OFF, PLUGIN + TRAMP_OFF
+        words = [0x37000040, 0x14000005, xp.LDR_X17_8, xp.BR_X17, *quad(site + 0x14), b(t + 24, site + 4)]
+        hooks, reasons = xp.check_record(self.long_form(0x370000A0, TRAMP_OFF, words), IMPLS)
+        self.assertEqual(reasons, [])
+        self.assertEqual(hooks[0]['relocated'], '0x37000040 +5 words')
+
+    def test_trampoline_long_nop(self):   # the .quad 8-byte aligned by one nop before the form
+        site, t = MAIN + SITE_OFF, PLUGIN + TRAMP_OFF + 4
+        form = [0x37000040, 0x14000005, xp.LDR_X17_8, xp.BR_X17, *quad(site + 0x14)]
+        self.assertEqual(self.reasons(self.long_form(0x370000A0, TRAMP_OFF + 4,
+                                                     [xp.NOP, *form, b(t + 28, site + 4)])), [])
+        self.refused(self.long_form(0x370000A0, TRAMP_OFF + 4, [*form, b(t + 24, site + 4)]), 'not the original')
+
+    def test_trampoline_long_wrong_target(self):
+        site, t = MAIN + SITE_OFF, PLUGIN + TRAMP_OFF
+        words = [0x37000040, 0x14000005, xp.LDR_X17_8, xp.BR_X17, *quad(site + 0x18), b(t + 24, site + 4)]
+        self.refused(self.long_form(0x370000A0, TRAMP_OFF, words), 'not the original')
+
+    def test_trampoline_bl_long(self):   # ldr x17, #12; adr x30, #16; br x17; .quad, behind a nop here
+        site, t = MAIN + SITE_OFF, PLUGIN + TRAMP_OFF
+        words = [xp.NOP, xp.LDR_X17_12, xp.ADR_X30_16, xp.BR_X17, *quad(site + 0x40), b(t + 24, site + 4)]
+        self.assertEqual(self.reasons(self.long_form(0x94000010, TRAMP_OFF, words)), [])
+
+    def test_trampoline_adrp_long(self):   # adrp x8: ldr x8, #8; b #12; .quad <page>
+        site, t = MAIN + SITE_OFF, PLUGIN + TRAMP_OFF
+        words = [0x58000048, 0x14000003, *quad(site & ~0xFFF), b(t + 16, site + 4)]
+        self.assertEqual(self.reasons(self.long_form(0x90000008, TRAMP_OFF, words)), [])
+
+    def test_trampoline_ldr_literal_long(self):   # ldr x1, <literal>: ldr x1, #8; b over the 8 bytes; the bytes
+        site, t = MAIN + SITE_OFF, PLUGIN + TRAMP_OFF
+        words = [0x58000041, 0x14000003, 0x11223344, 0x55667788, b(t + 16, site + 4)]
+        self.assertEqual(self.reasons(self.long_form(0x58000801, TRAMP_OFF, words)), [])
+
+    def test_trampoline_absolute_return(self):   # back to the site + 4 by ldr x17, #8; br x17; .quad, nop-aligned
+        site = MAIN + SITE_OFF
+        words = [0xAA0003F3, xp.NOP, xp.LDR_X17_8, xp.BR_X17, *quad(site + 4)]
+        self.assertEqual(self.reasons(self.long_form(0xAA0003F3, TRAMP_OFF, words)), [])
+        words[-2:] = quad(site + 8)
+        self.refused(self.long_form(0xAA0003F3, TRAMP_OFF, words), 'no b to the site + 4')
+
+    def test_replace_hook_adrp_orig(self):   # a function starting with adrp: its Orig trampoline is the long form
+        site, t, adrp = MAIN + SITE_OFF, PLUGIN + TRAMP_OFF, 0x90000008
+        w = [{'module': 'main', 'offset': SITE_OFF, 'old': adrp, 'new': b(site, PLUGIN + THUNK_OFF), 'fn_start': True}]
+        rec = self.long_form(adrp, TRAMP_OFF, [0x58000048, 0x14000003, *quad(site & ~0xFFF), b(t + 16, site + 4)])
+        rec['writes'] = w
+        hooks, reasons = xp.check_record(rec, IMPLS)
+        self.assertEqual(reasons, [])
+        self.assertEqual(hooks[0]['trampoline'], f'plugin0+{TRAMP_OFF:#x}')
 
 
 class Diff(unittest.TestCase):

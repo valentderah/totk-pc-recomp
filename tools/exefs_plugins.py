@@ -39,11 +39,13 @@ The check (check_record) accepts a record only when every rule holds; each broke
     - an inline hook (MSFix, Full Inventory Expansion): `b <stub>` into a plugin's .text, the stub in exlaunch's
       shape (stur x30, [sp, #-0x10]; bl exl_inline_hook_impl or the float one; ldur x30, [sp, #-0x10];
       b <trampoline>; .quad <callback in the plugin's .text>), the trampoline the site's original relocated (the
-      same word, or the same PC-relative target) and `b <site + 4>`;
+      same word, the same PC-relative target, or exlaunch's long form of it, relocation_end) and its jump back to
+      the site + 4 (returns_to);
     - a call-site rewrite (Quick Weapon Durability): `bl` straight to a function start of the plugin's lift (the
       record lists them), which the generator can emit as a patch site whose replacement is that branch;
     - a replace hook (Full Inventory Expansion's Sort Fixer): `b` from a function start of main to a function start of
-      the plugin's lift; the Orig trampoline (the original relocated, b site+4) is listed when the pool holds one.
+      the plugin's lift; the Orig trampoline (the original relocated, back to site+4) is listed when the pool holds
+      one.
   - the code the hooks reach (the stubs, exlaunch's hook impls, the callbacks, the replace and call targets, and what
     they reach by direct branches and calls, reach()) has no svc but OutputDebugString and calls only the imports
     REACH_IMPORTS. An indirect call (blr) is not followed: what it reaches cannot be known before the run.
@@ -153,6 +155,86 @@ def relocated(orig, site, word, at):
     return b is not None and a == b
 
 
+# exlaunch's trampolines: its relocation of a hooked instruction (exlaunch source/lib/hook/nx64/hook_impl.cpp,
+# __fix_instructions and the __fix_* helpers it calls, after And64InlineHook, MIT). A PC-relative original whose target
+# the trampoline cannot reach in one word becomes a long form that keeps the target in a .quad; exlaunch puts one nop
+# before the form when the .quad would not be 8-byte aligned. The generated code never runs a trampoline (an inline
+# hook's site calls the stub and runs main's own original after it, recomp/patches.py @call; a replace hook's Orig
+# reaches an unpatched copy of the function, `orig`), so these forms only tell an exlaunch hook from other code.
+NOP = 0xD503201F
+LDR_X17_8 = 0x58000051   # ldr x17, #8
+LDR_X17_12 = 0x58000071  # ldr x17, #12
+ADR_X30_16 = 0x1000009E  # adr x30, #16
+BR_X17 = 0xD61F0220      # br x17
+
+
+def quad(word, a):
+    """The .quad at absolute a of word(a) (the plugin word there, None outside its .text), else None."""
+    lo, hi = word(a), word(a + 4)
+    return None if lo is None or hi is None else lo | hi << 32
+
+
+def literal_end(word, orig, at):
+    """End of exlaunch's relocation of the load-literal original at `at` (__fix_loadlit), else None. A prfm is dropped
+    (no words); an ldr or ldrsw becomes the same load from #8 and a b over the literal's bytes, which follow it aligned
+    to their size by leading nops. The bytes are not compared: the record holds no image of main."""
+    simd, opc = orig >> 26 & 1, orig >> 30
+    if not simd and opc == 3:
+        return at
+    size = (4, 8, 16)[opc] if simd else (4, 8, 4)[opc]
+    p = at
+    while word(p) == NOP and p < at + 12:
+        p += 4
+    if (p + 8) % size or word(p + 4 + size) is None:
+        return None
+    if word(p) != (orig & 0xFF00001F) | 2 << 5 or word(p + 4) != 0x14000001 + size // 4:
+        return None
+    return p + 8 + size
+
+
+def relocation_end(word, orig, site, at):
+    """End (absolute) of exlaunch's relocation of the original `orig` at `site` when it starts at `at`, else None:
+    the same word or a PC-relative one re-encoded to the same target (one word), or one of the long forms:
+      b.cond / cbz / tbz:  <the same with offset 8>; b #20; ldr x17, #8; br x17; .quad <target>
+      b:                   ldr x17, #8; br x17; .quad <target>
+      bl:                  ldr x17, #12; adr x30, #16; br x17; .quad <target>
+      adr / adrp:          ldr <rd>, #8; b #12; .quad <its value>
+      ldr / ldrsw literal: literal_end
+    word(a) is the plugin word at absolute a, None outside its .text."""
+    w0 = word(at)
+    if w0 is None:
+        return None
+    if relocated(orig, site, w0, at):
+        return at + 4
+    rel = pc_relative(orig, site)
+    if rel is None:
+        return None
+    (kind, _), target = rel
+    if kind == 'ldr':
+        return literal_end(word, orig, at)
+    p = at + 4 if w0 == NOP else at
+    w = [word(p + 4 * i) for i in range(4)]
+    if kind in ('b.cond', 'cbz', 'tbz'):
+        form, data = pc_relative(w[0], p) == (rel[0], p + 8) and w[1:] == [0x14000005, LDR_X17_8, BR_X17], p + 16
+    elif kind == 'b' and orig >> 31:
+        form, data = w[:3] == [LDR_X17_12, ADR_X30_16, BR_X17], p + 12
+    elif kind == 'b':
+        form, data = w[:2] == [LDR_X17_8, BR_X17], p + 8
+    else:   # adr, adrp
+        form, data = w[:2] == [0x58000040 | orig & 0x1F, 0x14000003], p + 8
+    return data + 8 if form and data % 8 == 0 and quad(word, data) == target else None
+
+
+def returns_to(word, at, back):
+    """The trampoline jumps back to `back` from `at`: b <back>, or out of its range the nop-aligned
+    ldr x17, #8; br x17; .quad <back> (exlaunch __fix_instructions)."""
+    w = word(at)
+    if w is not None and w >> 26 == 0x05 and branch_target(w, at) == back:
+        return True
+    p = at + 4 if w == NOP else at
+    return p % 8 == 0 and word(p) == LDR_X17_8 and word(p + 4) == BR_X17 and quad(word, p + 8) == back
+
+
 def inline_stub(img, o, p):
     """The words at image offset o of plugin p have exlaunch's inline-hook entry shape: stur x30; bl; ldur x30; b;
     and the .quad after them lies inside the plugin's .text."""
@@ -162,14 +244,19 @@ def inline_stub(img, o, p):
     return s[0] == STUR_X30 and s[2] == LDUR_X30 and s[1] >> 26 == 0x25 and s[3] >> 26 == 0x05
 
 
+def text_words(img, p):
+    """word(a): the word of plugin p's .text image img at absolute a, None outside that .text."""
+    base, end = p['base'], p['text_end']
+    return lambda a: struct.unpack_from('<I', img, a - base)[0] if base <= a <= base + end - 4 else None
+
+
 def orig_trampoline(img, p, original, site):
-    """Image offset of a pair in the plugin's .text that runs the site's original instruction relocated, then b site+4
-    (exlaunch's Orig trampoline of a replace hook), else None."""
-    base = p['base']
+    """Image offset of code in the plugin's .text that runs the site's original instruction relocated, then jumps back
+    to site+4 (exlaunch's Orig trampoline of a replace hook, relocation_end and returns_to), else None."""
+    base, word = p['base'], text_words(img, p)
     for o in range(0, p['text_end'] - 4, 4):
-        t1 = struct.unpack_from('<I', img, o + 4)[0]
-        if t1 >> 26 == 0x05 and branch_target(t1, base + o + 4) == site + 4 and \
-                relocated(original, site, struct.unpack_from('<I', img, o)[0], base + o):
+        end = relocation_end(word, original, site, base + o)
+        if end is not None and returns_to(word, end, site + 4):
             return o
     return None
 
@@ -276,17 +363,21 @@ def check_record(rec, impls):
             reasons.append(f'{where}: the stub calls {impl:#x}, not {" or ".join(HOOK_IMPLS)}')
         if not p['base'] <= cb < p['base'] + p['text_end']:
             reasons.append(f'{where}: the stub\'s callback {cb:#x} is outside {p["name"]}\'s .text')
-        tp, t0 = plugin_word(tramp)
-        _, t1 = plugin_word(tramp + 4)
-        if tp is None or t1 is None:
+        tp, t0 = plugin_word(tramp) if tramp is not None else (None, None)
+        if tp is None:
             reasons.append(f'{where}: the trampoline {tramp:#x} is outside a plugin\'s .text')
             continue
-        hook['relocated'] = f'{t0:#010x}'
-        if not relocated(w['old'], site, t0, tramp):
+        word = text_words(rec['images'][tp['name']], tp)
+        end = relocation_end(word, w['old'], site, tramp)
+        hook['relocated'] = f'{t0:#010x}' + (f' +{(end - tramp) // 4 - 1} words' if end and end != tramp + 4 else '')
+        if end is None:
             reasons.append(f'{where}: the trampoline {hook["trampoline"]} starts with {t0:#010x}, not the original '
                            f'{w["old"]:#010x} relocated')
-        if branch_target(t1, tramp + 4) != site + 4 or t1 >> 31:
-            reasons.append(f'{where}: the trampoline\'s second word {t1:#010x} is no b to the site + 4')
+        elif not returns_to(word, end, site + 4):
+            back = word(end)
+            reasons.append(f'{where}: the trampoline\'s word after the relocated original, '
+                           f'{back if back is not None else 0:#010x} at {tp["name"]}+{end - tp["base"]:#x}, is no b '
+                           f'to the site + 4')
     return hooks, reasons
 
 
@@ -583,7 +674,7 @@ def report(rec, label):
     for h in hooks:
         if h['kind'] == 'inline':
             print(f'  inline hook {h["site"]} (was {h["original"]}) -> stub {h["stub"]} -> {h["impl"]}, callback '
-                  f'{h["callback"]}, trampoline {h["trampoline"]} ({h.get("relocated")}; b site+4)')
+                  f'{h["callback"]}, trampoline {h["trampoline"]} ({h.get("relocated")}; back to site+4)')
         else:
             print(f'  {h["kind"]} {h["site"]} (was {h["original"]}) -> {"bl" if h["kind"] == "call" else "b"} '
                   f'{h["target"]}' + (f', Orig trampoline {h["trampoline"]}' if h.get('trampoline') else ''))
