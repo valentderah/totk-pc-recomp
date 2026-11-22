@@ -27,8 +27,10 @@ results without flooding its context. Setting names and file formats live in [se
 
 - `--seconds` is game time since the world loaded (the log line `frame step: world clock starts` marks the start), at
   any frame rate. Measure and script by game time; a frame count at another fps is another scene.
-- `--script` replays input ([controls.md](../controls.md), "Scripted input"). A new script starts with the presses of
-  `tools/input/load_save.txt`, which load the first save from the title. `TOTK_INPUT_RECORD` turns a person's play into
+- `--script` replays input ([controls.md](../controls.md), "Scripted input"). A new script starts with every line of
+  `tools/input/load_save.txt`, which loads the first save from the title: A every 2.5 s until the load ends, because a
+  slow boot eats presses and a run left on a title dialog shows nothing. Its timed line stops those presses when the
+  world clock starts; a script without a timed line would carry them into the world. `TOTK_INPUT_RECORD` turns a person's play into
   a script; ask the user to record the repro rather than guessing the button sequence.
 - `--shot` saves the last frame and builds pipelines synchronously: use it for pictures, never for timing.
 - `--quiet` waits until no other `totk.exe` or `ninja.exe` runs. Every timing you report comes from a `--quiet` run.
