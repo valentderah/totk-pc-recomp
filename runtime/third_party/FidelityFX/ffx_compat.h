@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cwchar>
 #include <locale>
+#include <mutex>  // std::lock_guard in ffx_vk.cpp: ffx_types.h includes only <shared_mutex>, and libc++'s does not bring it
 #include <new>
 #include <string>
 #endif
