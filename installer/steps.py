@@ -41,6 +41,11 @@ import time
 import urllib.request
 from pathlib import Path
 
+if os.name == 'nt':
+    import winreg
+else:
+    winreg = None
+
 from . import ini, screens
 from . import layout as layouts
 from .layout import EXE, SUPPORTED, version_tag
@@ -122,6 +127,79 @@ def kill_tree(proc):
         os.killpg(proc.pid, signal.SIGKILL)
     except OSError:
         proc.kill()
+
+
+def parse_host(text):
+    """The host check's JSON object, or None when it did not finish (a crash leaves the parts it flushed)."""
+    try:
+        host = json.loads(text)
+    except ValueError:
+        return None
+    return host if isinstance(host, dict) and 'devices' in host else None
+
+
+def exit_code(code):
+    """A process exit code as Windows reports crashes (0xC0000005 for an access violation), else as a number."""
+    if os.name == 'nt' and code is not None and (code < 0 or code >= 0xC0000000):
+        return f'0x{code & 0xFFFFFFFF:08X}'
+    return str(code)
+
+
+def layer_manifests():
+    """Implicit Vulkan layer manifests where the Khronos loader looks for them (its docs, LoaderLayerInterface.md,
+    "Layer Discovery"): the folders in VK_IMPLICIT_LAYER_PATH or VK_ADD_IMPLICIT_LAYER_PATH, then on Windows the
+    manifests HKLM and HKCU\\SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers enable with a DWORD 0, read in the 64-bit view
+    the 64-bit probe and game use; elsewhere the implicit_layer.d folders. Layers a driver registers under its display
+    adapter's key are not listed."""
+    found = []
+    for var in ('VK_IMPLICIT_LAYER_PATH', 'VK_ADD_IMPLICIT_LAYER_PATH'):
+        for part in filter(None, os.environ.get(var, '').split(os.pathsep)):
+            p = Path(part)
+            found += sorted(p.glob('*.json')) if p.is_dir() else [p]
+    if winreg:
+        for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            try:
+                key = winreg.OpenKey(root, r'SOFTWARE\Khronos\Vulkan\ImplicitLayers', 0,
+                                     winreg.KEY_READ | winreg.KEY_WOW64_64KEY)
+            except OSError:
+                continue
+            with key:
+                i = 0
+                while True:
+                    try:
+                        path, enabled, _ = winreg.EnumValue(key, i)
+                    except OSError:
+                        break
+                    i += 1
+                    if enabled == 0:   # a DWORD 0 enables the manifest, anything else skips it
+                        found.append(Path(path))
+    else:
+        home = Path.home()
+        config = [os.environ.get('XDG_CONFIG_HOME') or home / '.config',
+                  *(os.environ.get('XDG_CONFIG_DIRS') or '/etc/xdg').split(':'), '/usr/local/etc', '/etc']
+        data = [os.environ.get('XDG_DATA_HOME') or home / '.local' / 'share',
+                *(os.environ.get('XDG_DATA_DIRS') or '/usr/local/share:/usr/share').split(':')]
+        for base in filter(None, config + data):
+            found += sorted((Path(base) / 'vulkan' / 'implicit_layer.d').glob('*.json'))
+    return found
+
+
+def implicit_vulkan_layers():
+    """(layer name, manifest path) of each readable implicit Vulkan layer manifest of layer_manifests(), for the
+    search for the layer that crashes the host check. A manifest the loader cannot read loads no layer and is left
+    out; a manifest listed twice counts once."""
+    layers = []
+    for path in dict.fromkeys(layer_manifests()):
+        try:
+            manifest = json.loads(path.read_text(encoding='utf-8-sig'))
+        except (OSError, ValueError):
+            continue
+        entries = (manifest.get('layers') or [manifest.get('layer')]) if isinstance(manifest, dict) else []
+        for entry in entries:
+            name = entry.get('name') if isinstance(entry, dict) else None
+            if isinstance(name, str) and (name, path) not in layers:
+                layers.append((name, path))
+    return layers
 
 
 def linux_glibc():
@@ -423,8 +501,19 @@ class Check(Step):
         return {}
 
     def host(self, ctx):
+        """Builds and runs the host check once per run: key() asks first and run() reports, so a failure is kept on
+        ctx and raised again rather than a crashing probe and its retries running twice."""
         if getattr(ctx, 'host', None) is not None:
             return
+        if getattr(ctx, 'host_error', None) is not None:
+            raise ctx.host_error
+        try:
+            self.check_host(ctx)
+        except InstallError as e:
+            ctx.host_error = e
+            raise
+
+    def check_host(self, ctx):
         layout, work = ctx.layout, ctx.temp / 'check'
         glibc = linux_glibc()
         if glibc and glibc < GLIBC_NEEDED and not layout.dev:
@@ -443,12 +532,7 @@ class Check(Step):
         if r.returncode:
             ctx.reporter.log(r.stdout + r.stderr)
             raise InstallError('check.toolchain_broken', detail=(r.stderr or r.stdout).strip()[-400:])
-        r = subprocess.run([str(exe)], capture_output=True, text=True, errors='replace')
-        try:
-            host = json.loads(r.stdout)
-        except ValueError:
-            raise InstallError('check.host_probe_failed', code=r.returncode) from None
-        ctx.reporter.log(f'host: {r.stdout.strip()}')
+        host = self.probe_host(ctx, exe)
         if not host['x86_64_v2']:
             raise InstallError('check.cpu_too_old')
         # v3 is the faster build; v2 runs on CPUs without AVX2/FMA (runtime/fma.c supplies the fused multiply-add).
@@ -467,6 +551,60 @@ class Check(Step):
             # pools to the GPU at each submit and its texture checks see every page as changed (docs/building.md, Linux)
             ctx.reporter.warning('warn.kernel_old', version='.'.join(map(str, kernel)))
         ctx.host = host
+
+    # Windows refuses to start a program a policy does not trust (issue #875): Smart App Control and other App Control
+    # policies (4551 "An Application Control policy has blocked this file"; 4556-4559 and 4580-4583 the same with the
+    # reputation verdict, among them 4559 "Unable to contact reputation service for unknown file"), group policy (1260
+    # "This program is blocked by group policy") and an antivirus that flags or removes the file (225, 226). hostcheck
+    # is the first program the setup builds on this PC; totk.exe is built the same way and unsigned too, so the install
+    # cannot go on.
+    BLOCKED_WINERRORS = {225, 226, 1260, 4551, 4556, 4557, 4558, 4559, 4580, 4581, 4582, 4583}
+    LAYER_TRIES = 16   # implicit layers tried one by one in the search for the one that crashes the probe
+
+    def probe_host(self, ctx, exe):
+        """Runs the host check check_host() built and returns its JSON. A probe that crashes inside Vulkan is run again
+        with the implicit Vulkan layers off (VK_LOADER_LAYERS_DISABLE=~implicit~, Vulkan loader 1.3.234 or later):
+        overlays, recorders and tuning tools install such layers, and a broken one kills every Vulkan program at
+        vkCreateInstance (issue #1345, exit code 0xC0000005 after "Checking the processor and the graphics card").
+        When that run passes, each listed layer is turned off alone to name the one that crashes. The install stops
+        either way: totk.exe --prepare-shaders in the prepare step and the game itself load the same layers
+        (runtime/vk_device.c create_instance), so going on would fail after lift and compile."""
+        rep = ctx.reporter
+        r = self.run_probe(exe)
+        host = parse_host(r.stdout)
+        if host is not None:
+            rep.log(f'host: {r.stdout.strip()}')
+            return host
+        code = exit_code(r.returncode)
+        rep.log(f'host: the check stopped with exit code {code}; it printed {r.stdout.strip()!r}')
+        if '"loader": true' not in r.stdout:
+            raise InstallError('check.host_probe_failed', code=code)
+        retry = self.run_probe(exe, dict(os.environ, VK_LOADER_LAYERS_DISABLE='~implicit~'))
+        if parse_host(retry.stdout) is None:
+            rep.log(f'host: without implicit Vulkan layers too: exit code {exit_code(retry.returncode)}, '
+                    f'{retry.stdout.strip()!r}')
+            raise InstallError('check.vulkan_crash', code=code)
+        layers = implicit_vulkan_layers()
+        rep.log(f'host: passes with the implicit Vulkan layers off; installed: '
+                f'{", ".join(f"{n} ({p})" for n, p in layers) or "none listed"}')
+        culprits = [(name, path) for name, path in layers[:self.LAYER_TRIES]
+                    if parse_host(self.run_probe(exe, dict(os.environ, VK_LOADER_LAYERS_DISABLE=name)).stdout)]
+        if culprits:
+            rep.log(f'host: passes without {", ".join(n for n, _ in culprits)}')
+            raise InstallError('check.vulkan_layer_crash', code=code,
+                               layers=', '.join(f'{n} ({p})' for n, p in culprits),
+                               disable=','.join(n for n, _ in culprits))
+        raise InstallError('check.vulkan_layers_crash', code=code,
+                           layers=', '.join(f'{n} ({p})' for n, p in layers) or '?')
+
+    def run_probe(self, exe, env=None):
+        try:
+            return subprocess.run([str(exe)], capture_output=True, text=True, errors='replace', env=env)
+        except OSError as e:
+            if getattr(e, 'winerror', None) in self.BLOCKED_WINERRORS:
+                raise InstallError('check.host_blocked', path=str(exe), detail=e.strerror or str(e)) from None
+            raise InstallError('check.host_probe_failed',
+                               code=f'{getattr(e, "winerror", None) or e.errno}: {e.strerror or e}') from None
 
     def inputs(self, ctx):
         """Open both files with the keys as the extraction will. Returns the bytes of both Program NCAs."""
