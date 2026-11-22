@@ -57,6 +57,8 @@
  "check.toolchain_broken": "O compilador incluído não funciona: {detail}",
  "check.glibc_old": "A biblioteca C deste sistema é a glibc {version}; o compilador da instalação precisa da {need} ou mais nova (Ubuntu 22.04, Debian 12, Fedora 35, SteamOS 3 e mais novos têm). Atualizar o sistema resolve.",
  "check.host_probe_failed": "A verificação do computador não rodou (código de saída {code}).",
+ "check.host_blocked": "O Windows bloqueou um programa que o instalador compilou neste PC ({path}): {detail}. O Controle Inteligente de Aplicativos, uma política de App Control ou um antivírus bloqueia programas sem assinatura; o próprio jogo é compilado do mesmo jeito neste PC e também seria bloqueado. Libere a pasta do instalador no seu antivírus ou desative o Controle Inteligente de Aplicativos na Segurança do Windows (Controle de aplicativos e do navegador) e rode o instalador de novo.",
+ "check.vulkan_crash": "O driver de vídeo travou quando o instalador pediu a lista de placas de vídeo (código de saída {code}), mesmo com as camadas Vulkan de outros programas desativadas. Instale o driver mais recente da sua placa de vídeo.",
  "check.cpu_too_old": "Este processador não tem x86-64-v2 (SSE4.2, POPCNT e CMPXCHG16B), o nível mais antigo para o qual o jogo é compilado. Intel Nehalem (2008) ou AMD Bulldozer (2011) e mais novos têm.",
  "check.vulkan_missing": "Nenhum driver Vulkan está instalado. Instale o driver mais recente da sua placa de vídeo.",
  "check.vulkan_no_device": "O Vulkan não encontra nenhuma placa de vídeo. Instale o driver mais recente da sua placa de vídeo.",
@@ -116,6 +118,7 @@
  "warn.xbox_prompts_failed": "Não foi possível preparar os ícones de botão do Xbox, do PlayStation ou do PC (código de saída {code}); o jogo mantém os ícones do Switch. Detalhes: {log}",
  "warn.shaders_skipped": "O driver gráfico travou ao compilar alguns shaders, então {count} ficaram fora da preparação. O jogo os compila quando precisar deles pela primeira vez, e o driver pode travar ali também; uma atualização do driver pode resolver. Detalhes: {log}",
  "warn.kernel_old": "O Linux {version} não tem o rastreamento de escrita de que o jogo depende (6.7 ou mais novo); o jogo pode rodar muito devagar. Atualizar o sistema resolve.",
+ "warn.vulkan_layer_crash": "Uma camada Vulkan de outro programa travou a verificação do computador (código de saída {code}); sem ela a verificação passou. Camadas instaladas: {layers}. O jogo carrega as mesmas camadas e pode travar ao iniciar: atualize ou desinstale o programa de overlay, gravação ou ajuste que instalou a camada com problema.",
  "warn.dlss_kept": "Já existe uma biblioteca DLSS na pasta de instalação ({path}); a instalação a mantém.",
  "warn.dlss_download_failed": "Não foi possível baixar o NVIDIA DLSS de {url}: {detail}. O jogo funciona sem ele; a próxima execução da instalação tenta de novo.",
 

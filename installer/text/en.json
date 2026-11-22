@@ -57,6 +57,8 @@
  "check.toolchain_broken": "The bundled compiler does not work: {detail}",
  "check.glibc_old": "This system's C library is glibc {version}; the setup's compiler needs {need} or later (Ubuntu 22.04, Debian 12, Fedora 35, SteamOS 3 and newer have it). Updating the system fixes this.",
  "check.host_probe_failed": "The computer check did not run (exit code {code}).",
+ "check.host_blocked": "Windows blocked a program the setup built on this PC ({path}): {detail}. Smart App Control, an App Control policy or an antivirus blocks unsigned programs; the game itself is built on this PC the same way, so it would be blocked too. Allow the setup folder in your antivirus, or turn off Smart App Control in Windows Security (App & browser control), then run the setup again.",
+ "check.vulkan_crash": "The graphics driver crashed while the setup asked it for the graphics cards (exit code {code}), also with the Vulkan layers of other programs turned off. Install the latest driver for your graphics card.",
  "check.cpu_too_old": "This processor lacks x86-64-v2 (SSE4.2, POPCNT and CMPXCHG16B), the oldest level the game is built for. Intel Nehalem (2008) or AMD Bulldozer (2011) and newer have it.",
  "check.vulkan_missing": "No Vulkan driver is installed. Install the latest driver for your graphics card.",
  "check.vulkan_no_device": "Vulkan finds no graphics card. Install the latest driver for your graphics card.",
@@ -116,6 +118,7 @@
  "warn.xbox_prompts_failed": "The Xbox, PlayStation or PC button prompts could not be prepared (exit code {code}); the game keeps the Switch prompts. Details: {log}",
  "warn.shaders_skipped": "The graphics driver crashed while building some shaders, so {count} were left out of the preparation. The game builds them when it first needs them, and the driver may crash there too; a driver update may fix it. Details: {log}",
  "warn.kernel_old": "Linux {version} lacks the write tracking the game relies on (6.7 or later); the game may run very slowly. Updating the system fixes this.",
+ "warn.vulkan_layer_crash": "A Vulkan layer of another program crashed the computer check (exit code {code}); without it the check passed. Installed layers: {layers}. The game loads the same layers and may crash at start: update or uninstall the overlay, recorder or tuning program that installed the failing one.",
  "warn.dlss_kept": "A DLSS library is already in the install folder ({path}); the setup keeps it.",
  "warn.dlss_download_failed": "NVIDIA DLSS could not be downloaded from {url}: {detail}. The game runs without it; the next setup run tries again.",
 

@@ -6,7 +6,9 @@ Run: python tests/installer_test.py
 import http.client
 import io
 import json
+import os
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1355,6 +1357,94 @@ class DlssTest(unittest.TestCase):
         self.ctx.host = {'devices': [{'name': 'AMD Radeon RX 7800 XT', 'api': [1, 3, 0], 'type': 2}]}
         self.assertEqual(steps.Dlss().run(self.ctx), {'skipped': 'no_rtx'})
         self.assertEqual(self.warnings(), [])
+
+
+class HostProbeTest(unittest.TestCase):
+    """Check.probe_host: the host check's crashes and refusals (issues #875, #1345)."""
+    GOOD = '{"x86_64_v2": true, "x86_64_v3": true, "loader": true, "instance": 0, "devices": [' \
+           '{"name": "Intel(R) UHD Graphics", "api": [1, 3, 215], "type": 1}]}\n'
+    CRASHED_IN_VULKAN = '{"x86_64_v2": true, "x86_64_v3": true, "loader": true, '
+    ACCESS_VIOLATION = 0xC0000005
+
+    def setUp(self):
+        self.ctx = SimpleNamespace(reporter=Reporter(out=io.StringIO()))
+        self.calls = []
+
+    def tearDown(self):
+        self.ctx.reporter.close()
+
+    def probe(self, *results):
+        """Runs probe_host with subprocess.run answering each call with the next of results (an exception is raised)."""
+        answers = iter(results)
+
+        def run(command, **kwargs):
+            self.calls.append(kwargs.get('env'))
+            r = next(answers)
+            if isinstance(r, BaseException):
+                raise r
+            return subprocess.CompletedProcess(command, r[0], r[1], '')
+
+        with mock.patch.object(steps.subprocess, 'run', run), \
+                mock.patch.object(steps, 'implicit_vulkan_layers', lambda: ['BadOverlay64.json']):
+            return steps.Check().probe_host(self.ctx, Path('hostcheck.exe'))
+
+    def events(self, kind):
+        return [e for e in map(json.loads, self.ctx.reporter.out.getvalue().splitlines()) if e['type'] == kind]
+
+    def test_a_good_probe_runs_once(self):
+        host = self.probe((0, self.GOOD))
+        self.assertEqual(host['devices'][0]['api'], [1, 3, 215])
+        self.assertEqual(self.calls, [None])
+        self.assertEqual(self.events('warning'), [])
+
+    def test_a_crash_in_a_vulkan_layer_is_run_again_without_the_implicit_layers(self):
+        host = self.probe((self.ACCESS_VIOLATION, self.CRASHED_IN_VULKAN), (0, self.GOOD))
+        self.assertEqual(host['devices'][0]['name'], 'Intel(R) UHD Graphics')
+        self.assertIsNone(self.calls[0])
+        self.assertEqual(self.calls[1]['VK_LOADER_LAYERS_DISABLE'], '~implicit~')
+        [w] = self.events('warning')
+        self.assertEqual(w['id'], 'warn.vulkan_layer_crash')
+        self.assertEqual(w['params']['layers'], 'BadOverlay64.json')
+        if os.name == 'nt':
+            self.assertEqual(w['params']['code'], '0xC0000005')
+
+    def test_a_driver_that_crashes_without_the_layers_too_stops_the_install(self):
+        with self.assertRaises(steps.InstallError) as e:
+            self.probe((self.ACCESS_VIOLATION, self.CRASHED_IN_VULKAN), (self.ACCESS_VIOLATION, self.CRASHED_IN_VULKAN))
+        self.assertEqual(e.exception.id, 'check.vulkan_crash')
+        self.assertEqual(len(self.calls), 2)
+
+    def test_a_crash_before_vulkan_is_not_run_again(self):
+        with self.assertRaises(steps.InstallError) as e:
+            self.probe((self.ACCESS_VIOLATION, ''))
+        self.assertEqual(e.exception.id, 'check.host_probe_failed')
+        self.assertEqual(len(self.calls), 1)
+        if os.name == 'nt':
+            self.assertEqual(e.exception.params['code'], '0xC0000005')
+
+    @unittest.skipUnless(os.name == 'nt', 'winerror is set on Windows only')
+    def test_a_probe_blocked_by_smart_app_control_names_the_policy(self):
+        blocked = OSError(None, 'An Application Control policy has blocked this file', None, 4551)
+        with self.assertRaises(steps.InstallError) as e:
+            self.probe(blocked)
+        self.assertEqual(e.exception.id, 'check.host_blocked')
+        self.assertIn('Application Control', e.exception.params['detail'])
+        self.assertTrue(e.exception.params['path'].endswith('hostcheck.exe'))
+
+    def test_another_start_failure_is_reported_not_raised(self):
+        with self.assertRaises(steps.InstallError) as e:
+            self.probe(OSError(2, 'The system cannot find the file specified'))
+        self.assertEqual(e.exception.id, 'check.host_probe_failed')
+        self.assertIn('cannot find', e.exception.params['code'])
+
+    def test_messages_in_every_language(self):
+        for path in sorted((ROOT / 'installer' / 'text').glob('*.json')):
+            text = json.loads(path.read_text(encoding='utf-8'))
+            self.assertIn('{path}', text['check.host_blocked'], path.name)
+            self.assertIn('{detail}', text['check.host_blocked'], path.name)
+            self.assertIn('{code}', text['check.vulkan_crash'], path.name)
+            self.assertIn('{code}', text['warn.vulkan_layer_crash'], path.name)
+            self.assertIn('{layers}', text['warn.vulkan_layer_crash'], path.name)
 
 
 if __name__ == '__main__':
