@@ -28,7 +28,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - In-game settings menu (F1) and performance overlay (F10)
 - Play time across runs on the Game tab of the settings menu, kept in `playtime.txt` next to the saves
 - Discord Rich Presence ("Playing TotK Recomp" with the play time), off by default, own application id supported
-- Setup in 11 languages, in-game menu in 4 ([Languages](#languages))
+- Setup in 11 languages, in-game menu in 5 ([Languages](#languages))
 - Keyboard, mouse and gamepad with remapping, rumble and gyro
 - Stereo or 5.1 surround sound output
 - Xbox and PlayStation button prompts: Xbox's LB, RB, LT, RT, Menu, View and A, B, X, Y, or PlayStation's ○ × △ □, L1, R1, L2, R2, Options and Share, as labelled on the button to press, with either button layout
@@ -51,6 +51,7 @@ Chinese Windows gets the Simplified Chinese setup.
 | Русский | ✅ | ✅ |
 | Português (Brasil) | ✅ | ✅ |
 | 简体中文 | ✅ | ✅ |
+| Tiếng Việt | English | ✅ |
 | Deutsch | ✅ | English |
 | Français | ✅ | English |
 | Español | ✅ | English |

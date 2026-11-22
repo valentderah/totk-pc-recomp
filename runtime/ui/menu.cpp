@@ -67,7 +67,7 @@ int playtime_get(uint64_t *total_s, uint64_t *session_s);   // playtime.c
 bool amiibo_check_font_rebuild(void);  // ui/amiibo_page.cpp; check and clear font rebuild request
 }
 
-// Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin and Cyrillic glyphs.
+// Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin, Vietnamese and Cyrillic glyphs.
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wc23-extensions"   // #embed in C++
 static const unsigned char roboto_ttf[] = {
@@ -276,12 +276,13 @@ static int vk_up(const MenuTarget *t) {
     return 1;
 }
 
-// Roboto Medium (Latin, Cyrillic, dashes and quotes) at 26 px per 1080 lines, with the glyphs of the Japanese, Korean
+// Roboto Medium (Latin, Vietnamese, Cyrillic, dashes and quotes) at 26 px per 1080 lines, with the glyphs of the Japanese, Korean
 // and Chinese language names merged in from a system font when there is one (each language is named in its own script).
 // A catalog row also holds menu text (Simplified Chinese), so every string of the row goes into the builder: the merged
 // font must cover the whole menu of that language, not only its name. Made again when the window height changes; the old
 // texture goes after the queue is idle (CreateFontsTexture).
-static const ImWchar kRanges[] = {0x0020, 0x00FF, 0x0400, 0x052F, 0x2010, 0x2027, 0};
+// 0x0100-0x01B0 and 0x1EA0-0x1EF9 with the combining marks 0x0300-0x0323 are the Vietnamese letters Latin-1 lacks.
+static const ImWchar kRanges[] = {0x0020, 0x00FF, 0x0100, 0x01B0, 0x0300, 0x0323, 0x0400, 0x052F, 0x1EA0, 0x1EF9, 0x2010, 0x2027, 0};
 static const struct { const char *lang; UiTextId name; } kCjk[] = {
     {"ja", UI_MENU_LANGNAME_JA}, {"ko", UI_MENU_LANGNAME_KO}, {"zh-Hans", UI_MENU_LANGNAME_ZH_HANS},
     {"zh-Hant", UI_MENU_LANGNAME_ZH_HANT},
@@ -1179,7 +1180,7 @@ static void tab_controls(float scale) {
 static void tab_menu(float scale) {
     opt_begin("##menu", scale);
     static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU,
-                                     UI_MENU_LANGNAME_PT_BR, UI_MENU_LANGNAME_ZH_HANS};
+                                     UI_MENU_LANGNAME_PT_BR, UI_MENU_LANGNAME_ZH_HANS, UI_MENU_LANGNAME_VI};
     opt_choice("TOTK_MENU_LANG", UI_MENU_MENU_LANG, langs, sizeof langs / sizeof *langs, UI_MENU_MENU_LANG_DESC);
     opt_toggle("TOTK_DISCORD_RPC", UI_MENU_DISCORD_RPC, UI_MENU_DISCORD_RPC_DESC);
     opt_end();
