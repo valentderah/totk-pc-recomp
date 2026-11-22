@@ -2,7 +2,9 @@
 // render-thread blocked time per perf kind, event counts) and a 320x180 thumbnail each (gfx_present.c, blitted on the
 // GPU by the present thread). A dump goes to <dir>/<YYYYMMDD-HHMMSS>-f<frame>/: frames.tsv and f<frame>.png per
 // thumbnail, written by a background thread. Triggers: F8 while the game window has focus, a frame interval over
-// TOTK_FLIGHT_SPIKE_MS (100; 0 off; at most one dump per 10 s), and TOTK_FLIGHT_AT=<frame>[,<frame>...]. A dump holds
+// TOTK_FLIGHT_SPIKE_MS (100; 0 off; at most one dump per 10 s), TOTK_FLIGHT_AT=<frame>[,<frame>...], and
+// TOTK_FLIGHT_FREEZE=1: a frame whose pass count falls under 30 (8 at least) after a frame over 100, which is the game stopping its 3D
+// world to open a menu, so the dump holds the last world frames and the first frozen one. A dump holds
 // the frames up to FLIGHT_POST presents after the trigger, so the aftermath is in it too. tools/flight_view.py reads it.
 //
 // Records come from perf_present (prof_win.c) on the render thread; the counts are differences of the TOTK_TRACE=perf
@@ -55,6 +57,7 @@ static uint64_t dump_at, trig_frame, trig_interval_us, last_spike_ns;
 static const char *trig_why;
 static uint64_t at_frames[16];
 static int n_at;
+static int freeze_on, prev_passes;   // TOTK_FLIGHT_FREEZE: dump when the pass count collapses
 static char base_dir[PLAT_PATH_MAX];
 static uint64_t prev_cnt[PERF_CNT_N], prev_xlated;
 static VkExecFrame prev_exec;
@@ -88,12 +91,14 @@ void flight_init(void) {
         else snprintf(tmp, sizeof tmp, "flight");
     }
     if (!plat_full_path(tmp, base_dir, sizeof base_dir)) snprintf(base_dir, sizeof base_dir, "%s", tmp);
+    freeze_on = env_u("TOTK_FLIGHT_FREEZE", 0) != 0;
     thumbs_on = env_u("TOTK_FLIGHT_THUMBS", 1) != 0;
     if (thumbs_on) vk_thumbs_enable(ring_n);
     flight_on = 1;
     rt_log("flight: on: last %d frames, %s; dump on F8, on a frame over %llu ms (one per 10 s)%s, to %s", ring_n,
            thumbs_on ? "thumbnails 320x180" : "no thumbnails", (unsigned long long)(spike_ns / 1000000),
            spike_ns ? "" : " (spike trigger off)", base_dir);
+    if (freeze_on) rt_log("flight: a pass count of 8 to 29 after one over 100 dumps too (TOTK_FLIGHT_FREEZE)");
     if (thumbs_on)
         rt_log("flight: memory: records %llu KB, thumbnail ring %llu MB (host-visible)",
                (unsigned long long)((size_t)ring_n * sizeof *ring >> 10),
@@ -348,6 +353,31 @@ void flight_frame(uint64_t frame, uint64_t now_ns, uint64_t interval_ns, const u
     }
     recorded++;
 
+    // TOTK_FLIGHT_TESTFRAME=<frame>[,<frame>...]: arms the dump at those frames, to check the path without a menu
+    static uint64_t test_at[4];
+    static int n_test = -1;
+    if (n_test < 0) {
+        const char *t = getenv("TOTK_FLIGHT_TESTFRAME");
+        n_test = 0;
+        while (t && *t && n_test < 4) {
+            char *q;
+            uint64_t v = strtoull(t, &q, 10);
+            if (q == t) break;
+            if (v) test_at[n_test++] = v;
+            t = *q ? q + 1 : q;
+        }
+    }
+    for (int i = 0; i < n_test; i++)
+        if (frame == test_at[i]) vk_dump_freeze(frame);
+    if (freeze_on) {   // the game stopped its 3D world: the world frames before it are in the ring
+        int passes = (int)r->n[C_PASSES];
+        if (recorded > 8 && passes >= 8 && passes < 30 && prev_passes > 100) {   // the menu keeps 12 to 24 passes; a load transition leaves 39, which is not a menu
+            rt_log("flight: freeze at frame %llu: %d passes after %d", (unsigned long long)frame, passes, prev_passes);
+            trigger(frame, interval_ns, "freeze");
+            vk_dump_freeze(frame);   // TOTK_DUMP=auto: the same frame, with the text of the frames that led to it
+        }
+        prev_passes = passes;
+    }
     static int key_was;
     int key = input_flight_key();
     if (key && !key_was) trigger(frame, interval_ns, "F8");

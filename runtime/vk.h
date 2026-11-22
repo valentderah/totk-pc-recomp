@@ -545,6 +545,7 @@ uint64_t vk_texture_oneshot(uint64_t lo, uint64_t hi);
 void vk_texture_eager_record(VkCommandBuffer cb, uint64_t fence);
 void vk_texture_eager_log(void);                     // once at exit: TOTK_WB_EAGER counts
 void vk_texture_debug(const VkTexImage *img, uint32_t *uploads, int *last_change, int *pages_written);   // vk_dump
+void vk_texture_diag_target(const VkTexImage *img);   // TOTK_TEX_WATCH: a pass renders into this image
 int vk_texture_slot_swz(int id, uint8_t swz[4]);    // vk_dump: swizzle of the descriptor in slot id
 int vk_texture_read_image(const tex_t *t, const view_t *v, const NVNcopyRegion *r, uint8_t *dst, uint64_t row,
                           uint64_t img);            // always from the image (GPU copy, waited for); 0 on failure

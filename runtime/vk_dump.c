@@ -47,14 +47,37 @@ int vk_dump_armed;
 static uint64_t dump_frame, log_from;   // log_from: TOTK_DUMP_LOG, first frame logged to passes.txt without images
 static char dir[400];
 static FILE *passes_f, *images_f;
+// TOTK_DUMP=auto: the files are opened now and nothing is logged until vk_dump_freeze names a frame, so a capture can be
+// aimed at the frame where the game stops drawing its 3D world instead of a frame number guessed in advance.
+static int auto_arm;
+static char base_dir[400];             // TOTK_DUMP_DIR as given; each capture makes its own freeze_<frame> under it
+static int dumps, max_dumps = 8;       // TOTK_DUMP=auto captures this many freezes per run, then stops
 static int seq, finished, copied;      // copied: passes and dispatches of the dump frame whose images were copied
 static int skip_runs, dump_ubo;        // TOTK_DUMP_SKIP_RUNS, TOTK_DUMP_UBO (vec4 per block, 0 for none)
+static int no_pics;                    // TOTK_DUMP_PICS=0: the text only, pictures of a frozen frame cost minutes
+static uintptr_t pics_addr[4];         // TOTK_DUMP_PICS_ADDR: only the targets at these addresses are copied
+static int npics_addr;
+static int pics_taken[4];              // this capture has its picture of that address already
+static int pics_index(const tex_t *t) {
+    for (int i = 0; i < npics_addr; i++)
+        if (pics_addr[i] == (uintptr_t)t->mem) return i;
+    return -1;
+}
 static uint32_t want_tex[16][2];       // TOTK_DUMP_TEX: slot id and 0, or width and height
 static int nwant_tex;
 static uint64_t last_targets;          // targets_sig of the last render pass; 0 after a dispatch
 static const char *pass_skip;          // why the current pass copies nothing, or NULL
 static volatile int64_t png_bytes, inflight;
 static PlatMutex rec_lock = PLAT_MUTEX_INIT, img_lock = PLAT_MUTEX_INIT;
+static uintptr_t probe_addr;           // TOTK_DUMP_PROBE: the image whose patch is read at the start of every frame
+static VkImage probe_img;
+static VkFormat probe_fmt;
+static uint32_t probe_w, probe_h;
+static uint64_t probe_frame;           // the last frame the patch was read at
+static int probe_hits, probe_hits_prev;   // passes of the frame recorded into the target
+static int probe_pass_draws;            // draws of the pass being recorded, counted whatever the capture records
+static int probe_passes, probe_passes_prev;   // passes a frame has, to see the menu's collapse
+static int probe_only;                 // TOTK_DUMP_PROBE without TOTK_DUMP: no capture, no files, the patch alone
 
 // ---- formats
 
@@ -183,6 +206,13 @@ typedef struct {
     uint64_t bytes;
     const Fmt *f;
     uint32_t w, h, d;   // d: 3D slices, laid side by side in the PNG
+    uint64_t at;        // probe: the frame it was read at
+    int probe;          // 1: log the mean only, no picture
+    int hits;           // probe: passes of that frame that rendered into the target
+    int passes;         // probe: passes the frame before it had
+    uint64_t img;       // probe: the image it read, to tell a transient target from a stable one
+    int after;          // probe: read after a pass ended, not at the start of the frame
+    int pass_no;        // probe: the pass it was read after
     char name[160];
 } Job;
 
@@ -340,6 +370,169 @@ static const char *copy_out(VkExec *ex, VkImage image, VkFormat vf, VkImageAspec
     return copy_region(ex, image, vf, aspect, level, layer, 0, (VkExtent3D){w, h, d}, w, h, d, name);
 }
 
+// ---- TOTK_DUMP_PROBE=<addr>: a 64x64 patch of that image, read at the start of every frame.
+//
+// A capture cannot answer whether the game's own full screen composite is the one that blacks the scene colour target
+// out: that composite samples the blurred copy of the world and paints it over the whole target, so any copy of the
+// target taken during the menu frame reads black whatever it held before. The patch is read before the frame's first
+// pass instead, which is the moment the menu's first pass reads the target too: a bright patch next to a black reading
+// of the same image means the sample is what breaks, a black patch means the content itself is gone.
+#define PROBE_PATCH 64
+
+static void probe_done(void *arg) {
+    Job *j = arg;
+    VmaAllocator vma = vk_ctx()->vma;
+    vmaInvalidateAllocation(vma, j->alloc, 0, VK_WHOLE_SIZE);
+    double sum = 0;
+    float mx = 0;
+    uint64_t n = (uint64_t)j->w * j->h;
+    for (uint64_t i = 0; i < n; i++) {
+        float o[4];
+        decode(j->f, j->map + i * j->f->bytes, o);
+        if (isnan(o[0])) continue;
+        sum += o[0] + o[1] + o[2];
+        if (o[0] > mx) mx = o[0];
+    }
+    if (j->after)
+        rt_log("vk_dump: probe: frame %llu after pass %d (%d draws), image %#llx: mean %.5f max %.5f\n",
+               (unsigned long long)j->at, j->pass_no, j->hits, (unsigned long long)j->img,
+               n ? sum / (double)(n * 3) : 0.0, mx);
+    else
+        rt_log("vk_dump: probe: frame %llu reads the scene at mean %.5f max %.5f, image %#llx; last frame: %d passes, %d of them into it\n",
+               (unsigned long long)j->at, n ? sum / (double)(n * 3) : 0.0, mx, (unsigned long long)j->img, j->passes, j->hits);
+    vmaDestroyBuffer(vma, j->buf, j->alloc);
+    plat_add64(&inflight, -(int64_t)j->bytes);
+    free(j);
+}
+
+static void probe_copy(VkExec *ex, VkImage img, VkFormat vf, uint32_t iw, uint32_t ih, int after, int pass_no,
+                       int draws) {
+    const Fmt *f = fmt_of(vf);
+    if (!f || !iw || !ih) return;
+    uint32_t w = iw < PROBE_PATCH ? iw : PROBE_PATCH, h = ih < PROBE_PATCH ? ih : PROBE_PATCH;
+    uint64_t bytes = (uint64_t)w * h * f->bytes;
+    Job *j = calloc(1, sizeof *j);
+    if (!j) return;
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = bytes,
+                             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO,
+                                  .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
+    VmaAllocationInfo info;
+    if (vmaCreateBuffer(vk_ctx()->vma, &bi, &ai, &j->buf, &j->alloc, &info) != VK_SUCCESS || !info.pMappedData) {
+        free(j);
+        return;
+    }
+    j->map = info.pMappedData, j->bytes = bytes, j->f = f, j->w = w, j->h = h, j->d = 1, j->at = probe_frame;
+    j->probe = 1, j->after = after, j->pass_no = pass_no, j->img = (uint64_t)(uintptr_t)img;
+    j->hits = after ? draws : probe_hits_prev, j->passes = after ? 0 : probe_passes_prev;
+    VkMemoryBarrier2 pre = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                            .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                            .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                            .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                            .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT};
+    VkMemoryBarrier2 post = pre;
+    post.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT, post.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    post.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, post.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &pre};
+    vkCmdPipelineBarrier2(ex->cb, &di);
+    VkBufferImageCopy r = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                           .imageOffset = {(int32_t)((iw - w) / 2), (int32_t)((ih - h) / 2), 0},
+                           .imageExtent = {w, h, 1}};
+    vkCmdCopyImageToBuffer(ex->cb, img, VK_IMAGE_LAYOUT_GENERAL, j->buf, 1, &r);
+    di.pMemoryBarriers = &post;
+    vkCmdPipelineBarrier2(ex->cb, &di);
+    ex->recorded += 3;
+    plat_add64(&inflight, (int64_t)bytes);
+    vk_completion_add(ex->fence, probe_done, j);
+}
+
+static int nvn_stage(int gfx_stage);
+static uint64_t handle_of(const VkExec *ex, int st, int slot, int img);
+
+// True when a draw's bindings sample the probed image. The order of "a pass samples it" and "the game clears it" inside
+// one frame is what decides a menu frame: a sample after the clear reads black.
+static int samples_probe(const VkExec *ex, const VkPipeInfo *info) {
+    for (uint32_t i = 0; i < info->n_bindings; i++) {
+        const VkPipeBinding *bd = &info->bindings[i];
+        if (!bd->res || (bd->kind != GFX_RES_TEX && bd->kind != GFX_RES_IMG)) continue;
+        int st = nvn_stage(bd->stage), img = bd->kind == GFX_RES_IMG;
+        for (uint32_t k = 0; k < (bd->count ? bd->count : 1u); k++) {
+            uint64_t h = handle_of(ex, st, bd->res->slot + (int)k, img);
+            if (!h) continue;
+            view_t v;
+            int hv = 0;
+            const VkTexImage *t = vk_texture_by_id(NVN_HANDLE_TEX(h), &v, &hv);
+            (void)hv;
+            if (t && t->addr == probe_addr) return 1;
+        }
+    }
+    return 0;
+}
+
+static uint64_t probe_sample_frame;   // the last frame whose first sampler of the probe was reported
+static int probe_samples;
+
+// Called from every draw: the first draw of a frame that samples the probed image says where in the frame that happens.
+static void probe_sample_note(const VkExec *ex, const VkPipeInfo *info) {
+    if (!probe_addr || !samples_probe(ex, info)) return;
+    uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
+    probe_samples++;
+    if (f == probe_sample_frame) return;
+    probe_sample_frame = f;
+    rt_log("vk_dump: probe: frame %llu pass %d of the frame is the first to sample the scene (draw %d)", (unsigned long long)f,
+           probe_passes - 1, probe_samples);
+    probe_samples = 0;
+}
+
+// Called at the start of a pass (vk_exec.c vk_exec_pass_begin), before its barrier and its first draw: remembers the
+// image of the probed target while a pass that renders into it is resolved, then reads the patch once a frame.
+void vk_dump_probe(VkExec *ex) {
+    if (!probe_addr) return;
+    int hit = 0;
+    for (int i = 0; i < 8 && i < (int)ex->pass_ncolor; i++) {
+        const VkExecTarget *t = &ex->color[i];
+        if (!t->image || !t->tex || (uintptr_t)t->tex->mem != probe_addr) continue;
+        probe_img = t->image, probe_fmt = t->format, probe_w = t->width, probe_h = t->height;
+        hit = 1;
+    }
+    uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
+    if (f != probe_frame) {
+        if (probe_img) {
+            probe_hits_prev = probe_hits, probe_passes_prev = probe_passes;
+            probe_hits = 0, probe_passes = 0, probe_frame = f;
+            probe_copy(ex, probe_img, probe_fmt, probe_w, probe_h, 0, 0, 0);
+        }
+        probe_hits = 0, probe_passes = 0;   // the frame being recorded now: this pass, and the ones after it
+    }
+    probe_hits += hit, probe_passes++;
+    probe_pass_draws = 0;
+}
+
+// The probe names one image; a clear that lands on it between the frames is the one thing that can take its content
+// away without a pass drawing it. Game clears go through vk_exec.c's clear_color/clear_attachment and
+// vk_exec_xfer.c's clear_tex, so each of those calls this.
+void vk_dump_probe_clear(const void *mem, const char *what, const float v[4]) {
+    if (!probe_addr || (uintptr_t)mem != probe_addr) return;
+    rt_log("vk_dump: probe: frame %llu %s clears the scene to %.3f %.3f %.3f %.3f, at pass %d of the frame",
+           (unsigned long long)(__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1), what, v[0], v[1], v[2], v[3],
+           probe_passes);
+}
+
+// Called at the end of a pass that rendered into the probed target: the patch is read again there. A bright reading at
+// the end of a world frame and a black one at the start of the next frame put the loss between the frames; black at
+// both ends means the address is not the image the screen shows.
+#define PROBE_MIN_DRAWS 16
+
+static void probe_pass_end(VkExec *ex, int n) {
+    if (!probe_addr || probe_pass_draws < PROBE_MIN_DRAWS) return;
+    for (int i = 0; i < 8 && i < (int)ex->pass_ncolor; i++) {
+        const VkExecTarget *t = &ex->color[i];
+        if (!t->image || !t->tex || (uintptr_t)t->tex->mem != probe_addr) continue;
+        probe_copy(ex, t->image, t->format, t->width, t->height, 1, n, probe_pass_draws);
+        return;
+    }
+}
+
 // ---- TOTK_DUMP_BUF=<addr>:<size>[:<off>:<stride>:<w>:<h>]: after every pass and dispatch that is logged, the GPU
 // buffer range is copied to a host buffer; when it differs from the previous copy it goes to buf_<pass>.bin, and
 // bufs.txt gets the changed bytes' extent plus, with the grid arguments, one map per dword of the w x h records of
@@ -442,18 +635,36 @@ static void buf_snap(VkExec *ex, int pass) {
     vk_completion_add(ex->fence, buf_done, j);
 }
 
+// TOTK_DUMP=auto records the text of every frame until the freeze names one, so the frames that led into it survive: they
+// are kept in memory and no picture is copied then (pass_decide makes every pass text only).
+static int text_only(void);   // defined once the ring below exists
+
 static int active(void) {
     uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
-    return !finished && (f == dump_frame || (log_from && f >= log_from && f < dump_frame));
+    return !finished && (text_only() || f == dump_frame || (log_from && f >= log_from && f < dump_frame));
 }
 static uint64_t frame_now(void) { return __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1; }
 
 typedef struct { char *s; size_t n, cap; } Str;
 
 __attribute__((format(printf, 2, 3))) static void sp(Str *b, const char *fmt, ...) {
+    char small[256];
     va_list a;
     va_start(a, fmt);
-    int k = vsnprintf(NULL, 0, fmt, a);
+    int k = vsnprintf(small, sizeof small, fmt, a);   // the common line fits: one format, not two
+    va_end(a);
+    if (k >= 0 && (size_t)k < sizeof small) {
+        if (b->n + (size_t)k + 1 > b->cap) {
+            b->cap = (b->n + (size_t)k + 1) * 2;
+            b->s = realloc(b->s, b->cap);
+            if (!b->s) rt_fatal("vk_dump: out of memory");
+        }
+        memcpy(b->s + b->n, small, (size_t)k + 1);
+        b->n += (size_t)k;
+        return;
+    }
+    va_start(a, fmt);
+    k = vsnprintf(NULL, 0, fmt, a);
     va_end(a);
     if (k < 0) return;
     if (b->n + (size_t)k + 1 > b->cap) {
@@ -465,6 +676,118 @@ __attribute__((format(printf, 2, 3))) static void sp(Str *b, const char *fmt, ..
     vsnprintf(b->s + b->n, (size_t)k + 1, fmt, a);
     va_end(a);
     b->n += (size_t)k;
+}
+
+// TOTK_DUMP=auto keeps the newest frames' text in memory, so a capture can start at a frame that is already past: the game
+// stops drawing its 3D world at a frame nothing can name in advance.
+#define RING_FRAMES 4
+static Str cur;                         // the frame being recorded
+static Str ring[RING_FRAMES];           // the frames before it
+static uint64_t ring_f[RING_FRAMES];
+static int ring_n, ring_next, direct;   // direct: the capture started, text goes to the file
+
+static int text_only(void) { return auto_arm && !direct; }
+
+// A world frame is 0.7 to 1 MB of text, and formatting it costs the frame more than the frame has: a held frame that
+// already reads like a world frame stops being recorded past its first passes. A menu frame is 50 to 110 KB whole.
+#define FRAME_TEXT_CAP (128u << 10)
+static int frame_stop;                  // this frame draws a world: its passes still name their targets, their draws are dropped
+
+// TOTK_DUMP_WATCH: a pass that renders into this address keeps its draws described even in a world frame, so the pass
+// that takes the world away from the scene target is readable whichever frame it lands in.
+static uintptr_t watch_addr;
+static int watch_on;
+
+static int watched_pass(const VkExec *ex) {
+    if (!watch_on) return 0;
+    for (int i = 0; i < 8; i++)
+        if (ex->color[i].tex && (uintptr_t)ex->color[i].tex->mem == watch_addr) return 1;
+    return 0;
+}
+
+static void vsp(Str *b, const char *fmt, va_list a) {
+    va_list b2;
+    va_copy(b2, a);
+    int k = vsnprintf(NULL, 0, fmt, a);
+    if (k < 0) return;
+    if (b->n + (size_t)k + 1 > b->cap) {
+        b->cap = (b->n + (size_t)k + 1) * 2;
+        b->s = realloc(b->s, b->cap);
+        if (!b->s) rt_fatal("vk_dump: out of memory");
+    }
+    vsnprintf(b->s + b->n, (size_t)k + 1, fmt, b2);
+    va_end(b2);
+    b->n += (size_t)k;
+}
+
+__attribute__((format(printf, 1, 2))) static void pw(const char *fmt, ...) {
+    va_list a;
+    va_start(a, fmt);
+    if (direct) vfprintf(passes_f, fmt, a);
+    else vsp(&cur, fmt, a);
+    va_end(a);
+}
+
+// Called as the recording reaches a frame's passes: the text of the frame before goes into the ring. Tied to the passes
+// rather than to the present, so a frame whose present never reaches this file still keeps its text.
+static uint64_t cur_frame;
+static void ring_tick(uint64_t frame) {
+    if (!auto_arm || direct || frame == cur_frame) return;
+    frame_stop = 0;
+    if (cur_frame && cur.s) {
+        if (ring[ring_next].s) free(ring[ring_next].s);
+        ring[ring_next] = cur;
+        ring_f[ring_next] = cur_frame;
+        memset(&cur, 0, sizeof cur);
+        ring_next = (ring_next + 1) % RING_FRAMES;
+        if (ring_n < RING_FRAMES) ring_n++;
+    } else {
+        free(cur.s);
+        memset(&cur, 0, sizeof cur);
+    }
+    cur_frame = frame;
+}
+
+// What the recorder costs a frame, and a budget on how many of a frame's draws it describes: a world frame draws
+// thousands of them, while the frames that matter here (the menu's, 130 to 380 draws) stay whole.
+#define DETAIL_DRAWS 150   // pipeline and texture sets described per frame; a menu frame needs fewer
+static uint32_t frame_draws;            // sets described in the frame being recorded
+static uint64_t frame_draws_of;
+static uint64_t cost_frame, cost_frame_ns;
+
+static void cost_note(uint64_t t0) {
+    uint64_t f = frame_now(), d = plat_now_ns() - t0;
+    if (f != cost_frame) {
+        if (cost_frame && cost_frame % 60 == 0 && cost_frame_ns)
+            rt_log("vk_dump: text cost %llu us in frame %llu", (unsigned long long)(cost_frame_ns / 1000),
+                    (unsigned long long)cost_frame);
+        cost_frame = f;
+        cost_frame_ns = 0;
+    }
+    cost_frame_ns += d;
+}
+
+static int frame_wants_detail(void) {
+    uint64_t f = frame_now();
+    if (f != frame_draws_of) {
+        frame_draws_of = f;
+        frame_draws = 0;
+    }
+    return ++frame_draws <= DETAIL_DRAWS;
+}
+
+// A pass that renders into the watched target keeps its draws described after the rest of the frame is dropped, but a
+// world frame draws over a thousand of them into it and describing them all costs 3 ms of the frame.
+#define WATCH_DRAWS 120
+static uint32_t watch_draws;
+static uint64_t watch_draws_of;
+static int watch_wants_detail(void) {
+    uint64_t f = frame_now();
+    if (f != watch_draws_of) {
+        watch_draws_of = f;
+        watch_draws = 0;
+    }
+    return ++watch_draws <= WATCH_DRAWS;
 }
 
 // SPIR-V hash of a shader; the first time, its SPIR-V goes to sh_<hash>.spv.
@@ -527,7 +850,7 @@ static void flush_luts(VkExec *ex, int n) {
         const char *why = bf ? copy_region(ex, l->image, bf, VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 0,
                                            (VkExtent3D){l->w, l->h, l->d}, (l->w + 3) / 4, (l->h + 3) / 4, l->d, name)
                              : copy_out(ex, l->image, l->format, VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, l->w, l->h, l->d, name);
-        fprintf(passes_f, "  %s tex %d -> %s.png%s%s\n", l->is2d ? "2D" : "3D", l->id, name, why ? " skipped: " : "",
+        pw("  %s tex %d -> %s.png%s%s\n", l->is2d ? "2D" : "3D", l->id, name, why ? " skipped: " : "",
                 why ? why : "");
     }
     nluts = 0;
@@ -640,7 +963,8 @@ static void describe_bindings(Str *b, const VkExec *ex, const VkPipeInfo *info) 
             for (int k = 0; k < nwant_tex; k++)
                 wanted |= want_tex[k][1] ? want_tex[k][0] == t->width && want_tex[k][1] == t->height
                                          : want_tex[k][0] == (uint32_t)NVN_HANDLE_TEX(h);
-            if (t->type == VK_IMAGE_TYPE_3D) queue_lut(t, NVN_HANDLE_TEX(h));
+            if (npics_addr) {   // a named picture only: nothing sampled is kept
+            } else if (t->type == VK_IMAGE_TYPE_3D) queue_lut(t, NVN_HANDLE_TEX(h));
             else if (wanted && t->type == VK_IMAGE_TYPE_2D && t->samples == 1) queue_lut(t, NVN_HANDLE_TEX(h));
             else if (!img && t->type == VK_IMAGE_TYPE_2D && t->samples == 1 && (uint64_t)t->width * t->height <= TEX2D_CAP &&
                      (t->format == VK_FORMAT_R8_UNORM || t->format == VK_FORMAT_R8G8_UNORM ||
@@ -668,9 +992,17 @@ static uint64_t bindings_hash(const VkExec *ex, const VkPipeInfo *info) {
 }
 
 void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeInfo *info) {
+    probe_pass_draws++;   // the probe alone needs this count too, so it is taken before the capture decides anything
+    probe_sample_note(ex, info);
     plat_mutex_lock(&rec_lock);
     if (!active()) goto out;
     pass_draws++;
+    if (watched_pass(ex)) {
+        if (!watch_wants_detail()) goto out;
+    } else {
+        if (text_only() && frame_stop) goto out;
+        if (!frame_wants_detail()) goto out;
+    }
     uint64_t th = bindings_hash(ex, info);
     for (int i = 0; i < nents; i++)
         if (ents[i].p == p && ents[i].th == th) {
@@ -693,7 +1025,7 @@ out:
 static void target_line(VkExec *ex, const VkExecTarget *t, const char *tag, int n) {
     char fn[16], name[160];
     if (!t->image) {
-        fprintf(passes_f, "  %s: nvn %#x target %d %ux%u: not renderable, left out\n", tag, t->tex->d.format,
+        pw("  %s: nvn %#x target %d %ux%u: not renderable, left out\n", tag, t->tex->d.format,
                 t->tex->d.target, t->tex->d.width, t->tex->d.height);
         return;
     }
@@ -703,16 +1035,21 @@ static void target_line(VkExec *ex, const VkExecTarget *t, const char *tag, int 
     uint32_t tw = t->tex->d.width >> t->level ? t->tex->d.width >> t->level : 1;
     uint32_t th = t->tex->d.height >> t->level ? t->tex->d.height >> t->level : 1;
     (void)n;
-    const char *why = pass_skip ? pass_skip : t->samples > 1 ? "multisampled" :
+    int pi = npics_addr ? pics_index(t->tex) : -1;
+    const char *why = pass_skip ? pass_skip :
+                      npics_addr && pi < 0 ? "not an image TOTK_DUMP_PICS_ADDR names" :
+                      npics_addr && pics_taken[pi] ? "already copied in this capture" :
+                      t->samples > 1 ? "multisampled" :
                       t->blocks ? copy_region(ex, t->image, t->format, t->aspect, t->level, t->is3d ? 0 : t->base_layer,
                                               t->is3d ? t->base_layer : 0, (VkExtent3D){tw, th, 1}, t->width,
                                               t->height, 1, name) :
                       t->is3d ? "3D slice (the volume is dumped as lut<id> where it is sampled)" :
                       copy_out(ex, t->image, t->format, t->aspect, t->level, t->base_layer, t->width, t->height, 1, name);
-    fprintf(passes_f, "  %s: nvn %#x %s(%d) %ux%u level %u layers %u+%u samples %u addr %#llx -> %s.png%s%s\n", tag,
+    pw("  %s: nvn %#x %s(%d) %ux%u level %u layers %u+%u samples %u addr %#llx -> %s.png%s%s\n", tag,
             t->nvn_format, fmt_name(t->format, fn), (int)t->format, t->width, t->height, t->level, t->base_layer,
             t->layers, t->samples, (unsigned long long)(uintptr_t)t->tex->mem, name, why ? " skipped: " : "",
             why ? why : "");
+    if (!why && pi >= 0) pics_taken[pi] = 1;
 }
 
 static uint64_t targets_sig(const VkExec *ex) {
@@ -727,19 +1064,41 @@ static uint64_t targets_sig(const VkExec *ex) {
 
 // Sets pass_skip for the pass or dispatch being logged and counts it when it copies.
 static void pass_decide(int same_targets) {
+    if (text_only()) {   // kept in memory only: no picture, and copied counts nothing
+        pass_skip = "text only, kept in memory";
+        copied = 0;
+        return;
+    }
+    if (no_pics) {   // text only: a capture that copies every target of a frame stalls the game for seconds
+        pass_skip = "text only, TOTK_DUMP_PICS=0";
+        copied = 0;
+        return;
+    }
     if (frame_now() != dump_frame) copied = 0;
     pass_skip = copied >= MAX_PASSES ? "pass cap" : same_targets ? "same targets as the previous pass" : NULL;
     if (!pass_skip) copied++;
 }
 
 void vk_dump_pass_end(VkExec *ex) {
+    uint64_t t0 = plat_now_ns();
+    int rec = 0;
+    probe_pass_end(ex, probe_passes - 1);   // before the capture's own bookkeeping: the probe runs with or without it
     plat_mutex_lock(&rec_lock);
     if (!active()) goto out;
+    rec = 1;
+    ring_tick(frame_now());
     int n = seq++;
     uint64_t sig = targets_sig(ex);
     pass_decide(skip_runs && sig == last_targets);
     last_targets = sig;
-    fprintf(passes_f, "pass %04d: render pass, draws %d, area %ux%u layers %u, fence %llu, frame %llu\n", n, pass_draws,
+    // In a world frame only the passes that render into the watched target are recorded whole: nothing else can take the
+    // picture away, and describing the hundreds of passes of a world is what made the game stutter.
+    int quiet = text_only() && frame_stop && watch_on && !watched_pass(ex);
+    if (quiet) {
+        pw("  pass %04d: draws %d, area %ux%u, no watched target\n", n, pass_draws, ex->pass_w, ex->pass_h);
+        goto tails;
+    }
+    pw("pass %04d: render pass, draws %d, area %ux%u layers %u, fence %llu, frame %llu\n", n, pass_draws,
             ex->pass_w, ex->pass_h, ex->pass_layers, (unsigned long long)ex->fence, (unsigned long long)frame_now());
     for (int i = 0; i < 8; i++) {
         if (!ex->color[i].tex) continue;
@@ -748,11 +1107,21 @@ void vk_dump_pass_end(VkExec *ex) {
         target_line(ex, &ex->color[i], tag, n);
     }
     if (ex->depth.tex) target_line(ex, &ex->depth, "td", n);
+    for (int i = 0; i < nents; i++)
+        pw("  pipe %d (draws %d): %s", i, ents[i].draws, ents[i].text);
+tails:
     for (int i = 0; i < nents; i++) {
-        fprintf(passes_f, "  pipe %d (draws %d): %s", i, ents[i].draws, ents[i].text);
         free(ents[i].text);
+        ents[i].text = NULL;
     }
-    if (ents_over) fprintf(passes_f, "  ... %d more draws with other pipeline/texture sets\n", ents_over);
+    if (ents_over) pw("  ... %d more draws with other pipeline/texture sets\n", ents_over);
+    if (frame_draws > DETAIL_DRAWS) pw("  ... draws past %d pipeline and texture sets of this frame are counted, not described\n", DETAIL_DRAWS);
+    if (watch_draws > WATCH_DRAWS) pw("  ... draws past %d into the watched target are counted, not described\n", WATCH_DRAWS);
+    if (text_only() && !frame_stop && n >= 2 && cur.n > 12000) {   // a world frame: keep its first passes, drop the rest
+        pw("  ... the rest of this frame is not recorded: it draws a world, not a menu\n");
+        frame_stop = 1;
+    }
+    if (text_only() && cur.n >= FRAME_TEXT_CAP) frame_stop = 1;
     if (!pass_skip) flush_luts(ex, n);
     else nluts = 0;
     buf_snap(ex, n);
@@ -760,18 +1129,23 @@ void vk_dump_pass_end(VkExec *ex) {
     nents = ents_over = pass_draws = 0;
 out:
     plat_mutex_unlock(&rec_lock);
+    if (rec) cost_note(t0);
 }
 
 void vk_dump_dispatch(VkExec *ex, const GfxShader *cs, VkPipeline p, const VkPipeInfo *info, const p_dispatch *d) {
     (void)p;
+    uint64_t t0 = plat_now_ns();
+    int rec = 0;
     plat_mutex_lock(&rec_lock);
     if (!active()) goto out;
+    rec = 1;
+    ring_tick(frame_now());
     int n = seq++;
     pass_decide(0);
     last_targets = 0;
     Str b = {0};
     describe_bindings(&b, ex, info);
-    fprintf(passes_f, "pass %04d: dispatch %dx%dx%d cs %016llx prog %llu caller %#llx, fence %llu\n%s", n, d->x, d->y,
+    pw("pass %04d: dispatch %dx%dx%d cs %016llx prog %llu caller %#llx, fence %llu\n%s", n, d->x, d->y,
             d->z, (unsigned long long)shader_hash(cs), (unsigned long long)(ex->prog ? ex->prog->serial : 0),
             (unsigned long long)d->caller, (unsigned long long)ex->fence, b.s ? b.s : "");
     free(b.s);
@@ -797,7 +1171,7 @@ void vk_dump_dispatch(VkExec *ex, const GfxShader *cs, VkPipeline p, const VkPip
         }
         const char *why = t->samples > 1 ? "multisampled" :
                           copy_out(ex, t->image, t->format, t->aspect, lv, layer, w, hh, dd, name);
-        fprintf(passes_f, "  writes img slot %d level %u layer %u depth %u -> %s.png%s%s\n", bd->res->slot, lv, layer,
+        pw("  writes img slot %d level %u layer %u depth %u -> %s.png%s%s\n", bd->res->slot, lv, layer,
                 dd, name, why ? " skipped: " : "", why ? why : "");
     }
     if (!pass_skip) flush_luts(ex, n);
@@ -806,6 +1180,7 @@ void vk_dump_dispatch(VkExec *ex, const GfxShader *cs, VkPipeline p, const VkPip
     fflush(passes_f);
 out:
     plat_mutex_unlock(&rec_lock);
+    if (rec) cost_note(t0);
 }
 
 static const char *tex_desc(const tex_t *t, char *buf, size_t n) {
@@ -827,14 +1202,14 @@ void vk_dump_copy(VkExec *ex, uint32_t op, const void *payload) {
     switch (op) {
     case OP_COPY_B2B: {
         const p_copy_b2b *p = payload;
-        fprintf(passes_f, "copy after pass %d: buffer %#llx -> buffer %#llx, %llu bytes\n", seq - 1,
+        pw("copy after pass %d: buffer %#llx -> buffer %#llx, %llu bytes\n", seq - 1,
                 (unsigned long long)p->src, (unsigned long long)p->dst, (unsigned long long)p->size);
         break;
     }
     case OP_COPY_B2T: case OP_COPY_T2B: {
         const p_copy_b2t *p = payload;
         region_desc(&p->r, ra, sizeof ra);
-        fprintf(passes_f, "copy after pass %d: %s buffer %#llx %s texture %s region %s flags %#x\n", seq - 1,
+        pw("copy after pass %d: %s buffer %#llx %s texture %s region %s flags %#x\n", seq - 1,
                 op == OP_COPY_B2T ? "buffer->texture" : "texture->buffer", (unsigned long long)p->src,
                 op == OP_COPY_B2T ? "->" : "<-", tex_desc(p->tex, a, sizeof a), ra, p->flags);
         break;
@@ -843,14 +1218,14 @@ void vk_dump_copy(VkExec *ex, uint32_t op, const void *payload) {
         const p_copy_t2t *p = payload;
         region_desc(&p->sr, ra, sizeof ra);
         region_desc(&p->dr, rb, sizeof rb);
-        fprintf(passes_f, "copy after pass %d: texture %s %s -> texture %s %s flags %#x\n", seq - 1,
+        pw("copy after pass %d: texture %s %s -> texture %s %s flags %#x\n", seq - 1,
                 tex_desc(p->src, a, sizeof a), ra, tex_desc(p->dst, b, sizeof b), rb, p->flags);
         break;
     }
     case OP_CLEAR_TEX: {
         const p_clear_tex *p = payload;
         region_desc(&p->r, ra, sizeof ra);
-        fprintf(passes_f, "clear after pass %d: texture %s region %s mask %#x\n", seq - 1, tex_desc(p->tex, a, sizeof a),
+        pw("clear after pass %d: texture %s region %s mask %#x\n", seq - 1, tex_desc(p->tex, a, sizeof a),
                 ra, p->mask);
         break;
     }
@@ -862,9 +1237,74 @@ out:
 
 static void make_dirs(char *path) { plat_file_mkdir_p(path); }
 
+// One capture per freeze, each in its own directory under TOTK_DUMP_DIR, so a run that opens the menu several times keeps
+// them all instead of spending the one dump on whatever collapsed the pass count first.
+static void open_capture(uint64_t frame) {
+    snprintf(dir, sizeof dir, "%s/freeze_%llu", base_dir, (unsigned long long)frame);
+    make_dirs(dir);
+    char path[600];
+    snprintf(path, sizeof path, "%s/passes.txt", dir);
+    passes_f = fopen(path, "w");
+    snprintf(path, sizeof path, "%s/images.txt", dir);
+    images_f = fopen(path, "w");
+    if (!passes_f || !images_f) rt_fatal("vk_dump: cannot write to %s", dir);
+    seq = 0;
+    copied = 0;
+    png_bytes = 0;
+    finished = 0;
+    if (bd_size) {
+        snprintf(path, sizeof path, "%s/bufs.txt", dir);
+        if (!(bufs_f = fopen(path, "w"))) bd_size = 0;
+    }
+}
+
+void vk_dump_freeze(uint64_t frame) {
+    if (!vk_dump_armed || !auto_arm) return;
+    plat_mutex_lock(&rec_lock);
+    if (direct || dumps >= max_dumps) {   // a capture is running, or this run has had its share
+        plat_mutex_unlock(&rec_lock);
+        return;
+    }
+    if (!passes_f) open_capture(frame);
+    uint64_t first = frame;
+    int i = (ring_next - ring_n + RING_FRAMES) % RING_FRAMES;
+    for (int k = 0; k < ring_n; k++, i = (i + 1) % RING_FRAMES) {
+        if (!ring[i].n) continue;
+        if (ring_f[i] < first) first = ring_f[i];
+        fwrite(ring[i].s, 1, ring[i].n, passes_f);
+        free(ring[i].s);
+        ring[i].s = NULL, ring[i].n = ring[i].cap = 0;
+    }
+    if (cur.n) fwrite(cur.s, 1, cur.n, passes_f);
+    free(cur.s);
+    memset(&cur, 0, sizeof cur);
+    cur_frame = 0;
+    ring_n = 0;
+    direct = 1;
+    fflush(passes_f);
+    log_from = frame + 1;
+    // Pictures wait for the menu to settle: the frame right after the collapse is the transition frame with the world's
+    // passes still in it (67 to 112 of them, 200 to 380 MB of PNGs and seconds of stalling). Five frames later the menu
+    // is all that is left, a dozen passes, so the pictures show the scene target as the menu actually reads it. With
+    // TOTK_DUMP_PICS=0 nothing is copied at all, so the text keeps going for as long as the menu stays open.
+    dump_frame = frame + (no_pics ? 3 : npics_addr ? 1 : 5);
+    copied = 0;
+    for (int i = 0; i < 4; i++) pics_taken[i] = 0;
+    dumps++;
+    plat_mutex_unlock(&rec_lock);
+    rt_log("vk_dump: freeze at frame %llu: capture %d of %d in %s, text from %llu on, pictures at %llu",
+           (unsigned long long)frame, dumps, max_dumps, dir, (unsigned long long)first,
+           (unsigned long long)dump_frame);
+}
+
 void vk_dump_init(void) {
     const char *e = cfg_get("TOTK_DUMP");
-    if (!e || !*e || !(dump_frame = strtoull(e, NULL, 10))) return;
+    const char *pb0 = cfg_get("TOTK_DUMP_PROBE");
+    if ((!e || !*e) && (!pb0 || !*pb0)) return;
+    probe_only = !e || !*e;
+    if (probe_only) auto_arm = 0;
+    else if (!strcmp(e, "auto")) auto_arm = 1;
+    else if (!(dump_frame = strtoull(e, NULL, 10))) return;
     const char *lf = cfg_get("TOTK_DUMP_LOG");
     if (lf && *lf) log_from = strtoull(lf, NULL, 10);
     const char *sr = cfg_get("TOTK_DUMP_SKIP_RUNS");
@@ -874,6 +1314,18 @@ void vk_dump_init(void) {
     if (dump_ubo == 1) dump_ubo = 16;
     if (dump_ubo > 4096) dump_ubo = 4096;
     if (dump_ubo < 0) dump_ubo = 0;
+    const char *np = cfg_get("TOTK_DUMP_PICS");
+    no_pics = np && *np && *np == '0';
+    const char *pa = cfg_get("TOTK_DUMP_PICS_ADDR");
+    for (char *q = (char *)pa; q && *q && npics_addr < 4; q += *q == ',')
+        pics_addr[npics_addr++] = (uintptr_t)strtoull(q, &q, 0);
+    const char *wa = cfg_get("TOTK_DUMP_WATCH");
+    watch_on = wa && *wa && (watch_addr = (uintptr_t)strtoull(wa, NULL, 0)) != 0;
+    if (watch_on) rt_log("vk_dump: passes into %#llx keep their draws described", (unsigned long long)watch_addr);
+    const char *pb = cfg_get("TOTK_DUMP_PROBE");
+    probe_addr = pb && *pb ? (uintptr_t)strtoull(pb, NULL, 0) : 0;
+    if (probe_addr) rt_log("vk_dump: probe: a %dx%d patch of %#llx is read at the start of every frame", PROBE_PATCH,
+                           PROBE_PATCH, (unsigned long long)probe_addr);
     const char *wt = cfg_get("TOTK_DUMP_TEX");
     for (char *q = (char *)wt; q && *q && nwant_tex < 16; q += *q == ',') {
         uint32_t *w = want_tex[nwant_tex++];
@@ -881,14 +1333,8 @@ void vk_dump_init(void) {
         w[1] = *q == 'x' ? (uint32_t)strtoul(q + 1, &q, 10) : 0;
     }
     const char *d = cfg_get("TOTK_DUMP_DIR");
-    snprintf(dir, sizeof dir, "%s", d && *d ? d : "dump");
-    make_dirs(dir);
+    snprintf(base_dir, sizeof base_dir, "%s", d && *d ? d : "dump");
     char path[600];
-    snprintf(path, sizeof path, "%s/passes.txt", dir);
-    passes_f = fopen(path, "w");
-    snprintf(path, sizeof path, "%s/images.txt", dir);
-    images_f = fopen(path, "w");
-    if (!passes_f || !images_f) rt_fatal("vk_dump: cannot write to %s", dir);
     const char *bf = cfg_get("TOTK_DUMP_BUF");
     if (bf && *bf) {
         char *q;
@@ -899,10 +1345,27 @@ void vk_dump_init(void) {
         if (*q == ':') bd_w = (uint32_t)strtoul(q + 1, &q, 0);
         if (*q == ':') bd_h = (uint32_t)strtoul(q + 1, &q, 0);
         if (!bd_w || !bd_h) bd_stride = 0;
-        snprintf(path, sizeof path, "%s/bufs.txt", dir);
-        if (bd_size && !(bufs_f = fopen(path, "w"))) bd_size = 0;
     }
     vk_dump_armed = 1;
+    if (probe_only) {   // the probe alone: no capture is taken, so nothing is opened and no text is kept
+        rt_log("vk_dump: probe only: no capture is taken this run");
+        return;
+    }
+    if (auto_arm) {   // nothing is opened until a frame is named: each capture gets its own directory
+        rt_log("vk_dump: TOTK_DUMP=auto: up to %d freezes go under %s", max_dumps, base_dir);
+        return;
+    }
+    snprintf(dir, sizeof dir, "%s", base_dir);
+    make_dirs(dir);
+    snprintf(path, sizeof path, "%s/passes.txt", dir);
+    passes_f = fopen(path, "w");
+    snprintf(path, sizeof path, "%s/images.txt", dir);
+    images_f = fopen(path, "w");
+    if (!passes_f || !images_f) rt_fatal("vk_dump: cannot write to %s", dir);
+    if (bd_size) {
+        snprintf(path, sizeof path, "%s/bufs.txt", dir);
+        if (!(bufs_f = fopen(path, "w"))) bd_size = 0;
+    }
     rt_log("vk_dump: frame %llu goes to %s", (unsigned long long)dump_frame, dir);
 }
 
@@ -921,4 +1384,17 @@ void vk_dump_present(uint64_t frame) {
     passes_f = NULL;
     rt_log("vk_dump: frame %llu: %d passes and dispatches, about %llu MB of PNGs in %s", (unsigned long long)frame, seq,
            (unsigned long long)(png_bytes >> 20), dir);
+    if (auto_arm) {   // back to holding text in the ring, ready for the next freeze
+        plat_mutex_lock(&rec_lock);
+        finished = 0;
+        direct = 0;
+        dump_frame = 0;
+        log_from = 0;
+        copied = 0;
+        plat_mutex_unlock(&rec_lock);
+        if (dumps >= max_dumps) {
+            vk_dump_armed = 0;
+            rt_log("vk_dump: %d captures taken, no more this run", dumps);
+        }
+    }
 }

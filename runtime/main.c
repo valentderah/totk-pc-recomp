@@ -45,7 +45,7 @@ unsigned rt_trace;
 // (TOTK_TRACE can write that much). Lines from before log_open wait in a static buffer: mem_init runs first so that
 // nothing else lands in the guest address space, and an earlier open would put the CRT's heap there.
 #define LOG_KEEP 5
-#define LOG_CAP (64ull << 20)
+#define LOG_CAP (192ull << 20)   // DSH 2026-11-22: a probe run writes about 25 MB and the 64 MiB cap cut it short
 enum { LOG_EARLY, LOG_FILE, LOG_OFF };
 static int g_log_state;
 static PlatAppend *g_log_file;
