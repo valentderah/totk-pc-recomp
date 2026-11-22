@@ -598,6 +598,21 @@ class IniTest(unittest.TestCase):
         self.assertEqual(out, '[display]\nvk_present = fifo\n[language]\n  lang =  de\nfps60 = 0\n')
         self.assertEqual(ini.get_language(out), 'de')
 
+    def test_the_last_active_language_is_rewritten(self):
+        text = 'lang = ru\n[language]\n# lang = fr\n  TOTK_LANG =  ja\nfps_limit = 60\n'
+        out = ini.set_language(text, 'de')
+        self.assertEqual(out, 'lang = ru\n[language]\n# lang = fr\n  lang =  de\nfps_limit = 60\n')
+        self.assertEqual(screens.ini_value(out, 'lang'), 'de')
+        self.assertEqual(ini.get_language(out), 'de')
+
+    def test_language_reader_uses_runtime_order_quotes_and_empty_values(self):
+        for text, expected in [('lang = ru\nTOTK_LANG = "ja"\n', 'ja'),
+                               ('lang = ru\nlang = \nTOTK_LANG = ""\n', 'ru'),
+                               ('lang = \nTOTK_LANG = ""\n', None),
+                               ('lang = "   "\n', '   ')]:
+            with self.subTest(text=text):
+                self.assertEqual(ini.get_language(text), expected)
+
     def test_missing_section_is_added(self):
         self.assertEqual(ini.set_language('fps60 = 0\n', 'fr'), 'fps60 = 0\n\n[language]\nlang = fr\n')
         self.assertEqual(ini.set_language('[language]\nlocale = de-DE\n', 'fr'),
@@ -764,6 +779,16 @@ class CleanupTest(unittest.TestCase):
 
     def test_intact_romfs_passes(self):
         self.assertEqual(self.run_cleanup(), 'ok')
+
+    def test_selected_language_overrides_the_last_duplicate(self):
+        path = self.dest / 'totk.ini'
+        path.write_text('lang = ru\n[language]\nTOTK_LANG = ja\n[display]\nfps_limit = 60\n')
+        self.assertEqual(self.run_cleanup(), 'ok')
+        text = path.read_text()
+        self.assertEqual(screens.ini_value(text, 'lang'), self.ctx.lang)
+        self.assertEqual(ini.get_language(text), self.ctx.state['lang'])
+        self.assertIn('lang = ru\n', text)
+        self.assertIn('fps_limit = 60\n', text)
 
     def test_keeps_build_and_writes_rebuild_command(self):
         for name in ('gen', 'build', 'check'):
