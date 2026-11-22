@@ -528,6 +528,10 @@ uint64_t vk_mem_gen(void) {
     return __atomic_load_n(&pool_gen, __ATOMIC_ACQUIRE) + __atomic_load_n(&mirror_gen, __ATOMIC_ACQUIRE);
 }
 
+uint64_t vk_mem_pool_gen(void) {
+    return __atomic_load_n(&pool_gen, __ATOMIC_ACQUIRE);
+}
+
 int vk_mem_class_of(uint64_t addr) {
     VkMemSpan m;
     return vk_mem_resolve(addr, 1, &m) ? m.cls : VK_MCLS_NONE;

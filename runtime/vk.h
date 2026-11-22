@@ -387,6 +387,8 @@ int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *out);   // 1 when al
 // Changes whenever vk_mem_resolve plus VK_MEM_USE may give another span for an address: a pool added, finalized or
 // mapped, a mirror created, refused or forgotten, a submission started.
 uint64_t vk_mem_gen(void);
+// Changes only when a pool is added, finalized or mapped (guest memory layout; does not bump per submission).
+uint64_t vk_mem_pool_gen(void);
 // Page write generations over guest memory (mem_written_pages plus vk_guest_written). Returns 1 when a page of the
 // range was written after generation `since`, 0 when not, -1 when the range is not write-watched (treat as written);
 // *now is the generation to pass next time.
