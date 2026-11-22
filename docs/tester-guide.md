@@ -8,7 +8,8 @@ from it may be shared.
 
 - Windows 10 or later, an x86-64 CPU with SSE4.2 (AVX2/FMA recommended: they build the default, faster version), about
   60 GB free.
-- A GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`, with a current driver.
+- A GPU with Vulkan 1.3, with a current driver. `VK_EXT_external_memory_host` is recommended: without it the game
+  runs on shadow storage, which costs memory and frame rate.
 - *Tears of the Kingdom* base game (1.0.0) and the 1.1.0, 1.2.1 or 1.4.3 update, dumped from your own Switch as NSP or XCI.
 - `prod.keys` dumped from your own Switch. Never send it to anyone, and never paste it into a log or an issue.
 

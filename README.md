@@ -71,7 +71,7 @@ native speakers are welcome.
 
 ### Windows
 
-Requirements: Windows 10 or later, an x86-64 CPU with SSE4.2 (AVX2/FMA machines get a faster build), a GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`, about 36 GiB free during setup (20 GiB after).
+Requirements: Windows 10 or later, an x86-64 CPU with SSE4.2 (AVX2/FMA machines get a faster build), a GPU with Vulkan 1.3 (`VK_EXT_external_memory_host` recommended: without it the game copies its memory pools and runs slower), about 36 GiB free during setup (20 GiB after).
 
 1. Download `TotK-Setup-<version>-windows.zip` from [Releases](../../releases/latest) and unpack it.
 2. Start `TotK-Setup.exe`. If SmartScreen warns about an unsigned app, choose *More info*, then *Run anyway*.
