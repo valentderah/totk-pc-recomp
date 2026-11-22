@@ -247,6 +247,17 @@ class FormTest(unittest.TestCase):
         (out / statefile.NAME).write_text('{nope', encoding='utf-8')
         self.assertFalse(Form(dest=str(out)).update_mode())
 
+    def test_malformed_state_does_not_crash_form_validation(self):
+        out = self._mkdir(self.dir / 'out')
+        for fields in ({'format': '1'}, {'format': None}, {'inputs': [1]}, {'steps': {'compile': 'done'}},
+                       {'lang': {}}):
+            with self.subTest(fields=fields):
+                (out / statefile.NAME).write_text(json.dumps(statefile.empty('r0') | fields), encoding='utf-8')
+                form = Form(dest=str(out))
+                self.assertIsNone(form.installed_state())
+                self.assertFalse(form.update_mode())
+                self.assertEqual(form.problems(), ['ui.need_base', 'ui.need_update', 'ui.need_keys', 'ui.need_lang'])
+
     @staticmethod
     def _mkdir(path):
         path.mkdir(parents=True, exist_ok=True)
