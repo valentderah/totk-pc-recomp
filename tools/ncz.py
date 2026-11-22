@@ -130,7 +130,13 @@ def blocks(f, pos, end, total):
         # to the NCA, while the full stored length locates the next block.
         data = read_at(f, pos, min(length, plain))
         pos += length
-        yield zstd.decompress(data) if length < plain else data
+        if length < plain:
+            # Read at most one byte beyond the declared size: a damaged frame must not allocate its whole output.
+            # ZstdFile also preserves support for concatenated frames within a block.
+            with zstd.ZstdFile(io.BytesIO(data)) as z:
+                data = z.read(plain + 1)
+            require(len(data) == plain, 'NCZ block decompressed size does not match its header')
+        yield data
 
 
 def stream(f, pos, end, total):

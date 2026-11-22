@@ -66,6 +66,35 @@ def ncz_file(nca, body, blocks=False):
     return out + b''.join(stored)
 
 
+class BlocksTest(unittest.TestCase):
+    def read(self, data, plain=1 << 14):
+        header = b'NCZBLOCK' + bytes([2, 1, 0, 14]) + struct.pack('<IQI', 1, plain, len(data))
+        return ncz.blocks(io.BytesIO(header + data), 0, len(header) + len(data), plain)
+
+    def test_oversized_compressed_block_is_rejected_before_yielding(self):
+        data = zstd.compress(bytes(1 << 20))   # a small fixture, 64 times the declared output
+        with self.assertRaisesRegex(ValueError, 'NCZ block decompressed size'):
+            next(self.read(data))
+
+    def test_short_compressed_block_is_rejected_before_yielding(self):
+        with self.assertRaisesRegex(ValueError, 'NCZ block decompressed size'):
+            next(self.read(zstd.compress(bytes(100))))
+
+    def test_compressed_block_can_contain_multiple_frames(self):
+        plain = bytes(1 << 14)
+        data = zstd.compress(plain[:100]) + zstd.compress(plain[100:])
+        self.assertEqual(b''.join(self.read(data)), plain)
+
+    def test_compressed_final_block_uses_its_actual_plain_size(self):
+        plain = bytes(123)
+        self.assertEqual(b''.join(self.read(zstd.compress(plain), len(plain))), plain)
+
+    def test_compressed_block_must_reach_its_end_marker(self):
+        data = zstd.compress(bytes(1 << 14), options={zstd.CompressionParameter.checksum_flag: True})
+        with self.assertRaises((zstd.ZstdError, EOFError)):
+            next(self.read(data[:-1]))
+
+
 class UnpackTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
