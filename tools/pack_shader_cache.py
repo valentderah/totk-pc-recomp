@@ -26,6 +26,7 @@ PACK = 'shader-cache.pack'
 KINDS = {'.spv': 1, '.res.json': 2, '.use': 3, '.in': 4}
 NAME = re.compile(r'([0-9a-f]{64})(\.spv|\.res\.json|\.use|\.in)')
 USE_SIZE = 20   # gfx_shader.c use_store: magic, version, three masks
+MAX_ENTRIES = 1 << 24   # gfx_shader.c pack_open's index limit
 
 
 def loose_files(cache):
@@ -58,8 +59,13 @@ def read_pack(path):
             print(f'{path}: not a cache pack, rebuilt from the loose files only', flush=True)
             return {}
         count = struct.unpack_from('<I', head, 8)[0]
-        raw = f.read(48 * count)
-        if len(raw) != 48 * count:
+        index_size = 48 * count
+        # Check the count before read() allocates its buffer: a damaged header can request hundreds of GiB.
+        if count > MAX_ENTRIES or index_size > size - 16:
+            print(f'{path}: invalid index size, rebuilt from the loose files only', flush=True)
+            return {}
+        raw = f.read(index_size)
+        if len(raw) != index_size:
             print(f'{path}: truncated index, rebuilt from the loose files only', flush=True)
             return {}
         out = {}
