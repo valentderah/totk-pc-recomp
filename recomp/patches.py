@@ -1,7 +1,8 @@
 """Code patch table for the generator: guest instructions replaced in the lifted C, switchable at run time.
 
 Lifted code cannot be byte-patched when the game runs, so a patch is applied when the C is generated. A patch file
-(gen.py --patches) has these kinds of lines; `#` starts a comment, fields are separated by whitespace:
+(gen.py --patches) has these kinds of lines; `#` starts a comment, fields are separated by whitespace. A plugin image
+path may be a JSON double-quoted string to preserve spaces, `#` and escaped characters:
 
   set  <name> <env> <default> [ordered]     a patch set: a run-time switch <env>=0/1, <default> when it is unset
   site <set> <module> <address> <original> <replacement> [<replacement> ...]
@@ -69,14 +70,16 @@ run's record; the design follows #845 by itaskaev2):
     the original code and not the hook again.
 A replacement word `@call:<module>+<offset>` is a call of the function there that writes no x30: every register in
 the Cpu at the call and all read back after it (the callback may change any of them, as exlaunch's hook context
-allows); the flags stay as they were. It may stand before the site's last word, which is then the original
-instruction.
+allows); the flags are published before it and taken back after it, since exlaunch's hook impl saves no NZCV and the
+game code goes on with the flags the callback left (recomp/flags.py plan's hooks). It may stand before the site's last
+word, which is then the original instruction.
 
 A `hook` line names guest functions (module offsets of function starts; gen.py stops on any other address) whose
 entry the runtime watches: their lifted C starts with FN_ENTER (runtime/cpu.h), a load of g_fnprof and a predicted
 branch to fnprof_hit while the runtime sets it. A table with hook lines puts FN_ENTER into these functions only; a table
 without any keeps it in every function, as does gen.py --fn-enter-all (a whole-game function-entry profile).
 """
+import json
 from pathlib import Path
 
 PAGE = 0x1000
@@ -187,10 +190,23 @@ def load(path, mods):
     sets, index, sites, spins, hooks, ordered, plugins = [], {}, {}, {}, {}, set(), {}
     bases = {n: (b, s) for n, b, s in mods}
     for no, raw in enumerate(Path(path).read_text(encoding='utf-8').splitlines(), 1):
-        f = raw.split('#', 1)[0].split()
+        where = f'{path}:{no}'
+        prefix = raw.split(None, 4)
+        if len(prefix) == 5 and prefix[0] == 'plugin' and prefix[4].startswith('"'):
+            try:
+                image, end = json.JSONDecoder().raw_decode(prefix[4])
+            except json.JSONDecodeError as e:
+                raise PatchError(f'{where}: invalid quoted plugin image: {e.msg}') from None
+            if not image:
+                raise PatchError(f'{where}: empty quoted plugin image')
+            tail = prefix[4][end:].strip()
+            if tail and not tail.startswith('#'):
+                raise PatchError(f'{where}: unexpected text after quoted plugin image')
+            f = prefix[:4] + [image]
+        else:
+            f = raw.split('#', 1)[0].split()
         if not f:
             continue
-        where = f'{path}:{no}'
         if f[0] == 'set' and (len(f) == 4 or len(f) == 5 and f[4] == 'ordered'):
             if f[1] in index:
                 raise PatchError(f'{where}: set {f[1]} defined twice')

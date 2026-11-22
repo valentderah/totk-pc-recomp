@@ -41,6 +41,9 @@
 # Game 1.4.3: the two launchers in Tenbez Shrine throw the stone ball into the other launcher's seat above 30 fps.
 # 0 = the game's own speed, tuned for 30 fps.
 # shutter_fix = 1
+# Games 1.2.1 and 1.4.3: above 30 fps a thunderstorm has the lightning of 30 fps, instead of more distant bolts and
+# lightning flashes the higher the frame rate. 0 = the game's own chances per frame, tuned for 30 fps.
+# lightning_fix = 1
 
 [performance]
 # The keys of this section and of [diagnostics] are for testing and troubleshooting, and take effect at the next start.

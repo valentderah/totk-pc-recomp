@@ -6,7 +6,9 @@ Run: python tests/installer_test.py
 import http.client
 import io
 import json
+import os
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -198,6 +200,58 @@ class RunnerTest(unittest.TestCase):
         with self.assertRaises(state.StateError) as e:
             state.load(self.bed.dest)
         self.assertEqual(e.exception.id, 'state.newer_format')
+
+    def test_invalid_state_format_is_reported_as_unreadable(self):
+        self.bed.dest.mkdir()
+        path = self.bed.dest / state.NAME
+        for value in ('1', None, [], {}, True, 1.5, -1):
+            with self.subTest(value=value):
+                data = state.empty('r0') | {'format': value}
+                path.write_text(json.dumps(data))
+                before = path.read_bytes()
+                with self.assertRaises(state.StateError) as error:
+                    state.load(self.bed.dest)
+                self.assertEqual(error.exception.id, 'state.unreadable')
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_invalid_state_records_are_reported_as_unreadable(self):
+        self.bed.dest.mkdir()
+        for field in ('inputs', 'steps'):
+            for value in (None, [], 'bad', {'entry': None}, {'entry': 'bad'}):
+                with self.subTest(field=field, value=value):
+                    path = self.bed.dest / state.NAME
+                    path.write_text(json.dumps(state.empty('r0') | {field: value}))
+                    with self.assertRaises(state.StateError) as error:
+                        state.load(self.bed.dest)
+                    self.assertEqual(error.exception.id, 'state.unreadable')
+
+    def test_invalid_state_text_fields_are_reported_as_unreadable(self):
+        self.bed.dest.mkdir()
+        for field in ('release', 'lang', 'version'):
+            for value in (None, [], {}, 1):
+                with self.subTest(field=field, value=value):
+                    (self.bed.dest / state.NAME).write_text(json.dumps(state.empty('r0') | {field: value}))
+                    with self.assertRaises(state.StateError) as error:
+                        state.load(self.bed.dest)
+                    self.assertEqual(error.exception.id, 'state.unreadable')
+
+    def test_legacy_state_without_inputs_can_be_resumed(self):
+        self.bed.run()
+        path = self.bed.dest / state.NAME
+        data = json.loads(path.read_text())
+        del data['format'], data['inputs']
+        path.write_text(json.dumps(data))
+        self.assertEqual(state.load(self.bed.dest)['inputs'], {})
+        result = self.bed.run()
+        self.assertEqual((result.result, result.ran), ('ok', ['check', 'cleanup']))
+
+    def test_newer_state_format_is_not_validated_as_the_current_schema(self):
+        self.bed.dest.mkdir()
+        data = {'format': state.FORMAT + 1, 'steps': {}, 'inputs': [], 'lang': {}}
+        (self.bed.dest / state.NAME).write_text(json.dumps(data))
+        with self.assertRaises(state.StateError) as error:
+            state.load(self.bed.dest)
+        self.assertEqual(error.exception.id, 'state.newer_format')
 
 
 class ReleaseFilesTest(unittest.TestCase):
@@ -544,6 +598,21 @@ class IniTest(unittest.TestCase):
         self.assertEqual(out, '[display]\nvk_present = fifo\n[language]\n  lang =  de\nfps60 = 0\n')
         self.assertEqual(ini.get_language(out), 'de')
 
+    def test_the_last_active_language_is_rewritten(self):
+        text = 'lang = ru\n[language]\n# lang = fr\n  TOTK_LANG =  ja\nfps_limit = 60\n'
+        out = ini.set_language(text, 'de')
+        self.assertEqual(out, 'lang = ru\n[language]\n# lang = fr\n  lang =  de\nfps_limit = 60\n')
+        self.assertEqual(screens.ini_value(out, 'lang'), 'de')
+        self.assertEqual(ini.get_language(out), 'de')
+
+    def test_language_reader_uses_runtime_order_quotes_and_empty_values(self):
+        for text, expected in [('lang = ru\nTOTK_LANG = "ja"\n', 'ja'),
+                               ('lang = ru\nlang = \nTOTK_LANG = ""\n', 'ru'),
+                               ('lang = \nTOTK_LANG = ""\n', None),
+                               ('lang = "   "\n', '   ')]:
+            with self.subTest(text=text):
+                self.assertEqual(ini.get_language(text), expected)
+
     def test_missing_section_is_added(self):
         self.assertEqual(ini.set_language('fps60 = 0\n', 'fr'), 'fps60 = 0\n\n[language]\nlang = fr\n')
         self.assertEqual(ini.set_language('[language]\nlocale = de-DE\n', 'fr'),
@@ -571,6 +640,107 @@ class IniTest(unittest.TestCase):
             text = path.read_text()
             self.assertIn('vk_present = fifo', text)
             self.assertEqual(ini.get_language(text), 'ja')
+
+
+class ExtractMergeTest(unittest.TestCase):
+    """The real merge wrapper with synthetic inputs and hactool output; no game files or keys."""
+
+    LEVELS = '\n'.join(f'        Level {i} (GOOD):' for i in range(6))
+    LOG = ('NCA:\nFixed-Key Signature (FAIL): omitted\nNPDM Signature (GOOD): omitted\n'
+           'NPDM:\n    ACID:\n        Signature Key (GOOD): 0\n        Signature (FAIL): omitted\n'
+           + LEVELS + '\nDone!\n')
+    IMAGE = b'synthetic merged image'
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.output, self.logs = self.root / 'romfs', self.root / 'logs'
+        self.logs.mkdir()
+        self.base, self.update, self.keys = (self.root / name for name in ('base.nsp', 'update.nsp', 'prod.keys'))
+        self.log, self.code, self.base_log = self.LOG, 0, self.LEVELS
+        self.phases = []
+        header = bytearray(0xc00)
+        header[0x404] = 4   # one BKTR section
+        inputs = [(source, {'size': 1, 'nca_offset': 0}, bytes(header)) for source in (self.base, self.update)]
+        self.enterContext(mock.patch.object(steps.extract, 'program_ncas', return_value=({}, inputs)))
+        self.enterContext(mock.patch.object(steps.extract, 'copy_range'))
+        self.enterContext(mock.patch.object(steps.extract, 'hactool_prod_keys'))
+        self.enterContext(mock.patch.object(steps.extract.shutil, 'disk_usage',
+                                           return_value=SimpleNamespace(free=100 * steps.GiB)))
+        self.enterContext(mock.patch.object(steps.extract, 'run_hactool', side_effect=self.hactool))
+        self.index = self.enterContext(mock.patch.object(steps.extract, 'index_romfs', return_value=[]))
+
+    def hactool(self, command, environment):
+        if '-x' not in command:
+            return 0, self.base_log   # the extra verification that identifies a damaged input
+        image = Path(next(arg.split('=', 1)[1] for arg in command if arg.startswith('--section0=')))
+        image.write_bytes(self.IMAGE)
+        return self.code, self.log
+
+    def merge(self):
+        steps.extract.merge_update_romfs(self.base, self.update, self.keys, self.root / 'hactool', self.output,
+                                         self.logs, phase=self.phases.append)
+
+    def test_acid_signature_warning_keeps_a_verified_merge(self):
+        self.merge()
+        image = self.output / 'romfs.bin'
+        self.assertEqual(image.read_bytes(), self.IMAGE)
+        report = json.loads((self.output / 'index.json').read_text())
+        self.assertEqual((report['status'], report['romfs_size'], report['romfs_sha256']),
+                         ('pass', len(self.IMAGE), steps.extract.sha256(image)))
+        self.assertEqual(self.phases, ['copy', 'merge', 'index'])
+        self.assertEqual((self.logs / f'merge_romfs-{self.root.name}.log').read_text(), self.LOG)
+
+    def test_existing_npdm_signature_warning_is_still_allowed(self):
+        self.log = self.LOG.replace('NPDM Signature (GOOD)', 'NPDM Signature (FAIL)')
+        self.merge()
+        self.assertTrue((self.output / 'index.json').is_file())
+
+    def test_data_hash_failures_still_identify_the_damaged_update(self):
+        for label in [*(f'Level {i}' for i in range(6)), 'Superblock Hash', 'Hash Table']:
+            with self.subTest(label=label):
+                self.log = self.LOG + f'        {label} (FAIL): omitted\n'
+                with self.assertRaises(steps.extract.DamagedFile) as error:
+                    self.merge()
+                self.assertEqual(error.exception.path, self.update)
+                self.assertIn('diagnose', self.phases)
+                self.index.assert_not_called()
+                self.assertFalse(self.output.exists())
+
+    def test_base_hash_failure_is_still_identified(self):
+        self.log = self.LOG.replace('Level 5 (GOOD)', 'Level 5 (FAIL)')
+        self.base_log = self.LEVELS.replace('Level 5 (GOOD)', 'Level 5 (FAIL)')
+        with self.assertRaises(steps.extract.DamagedFile) as error:
+            self.merge()
+        self.assertEqual(error.exception.path, self.base)
+        self.index.assert_not_called()
+
+    def test_every_ivfc_level_is_still_required(self):
+        for level in range(6):
+            with self.subTest(level=level):
+                self.log = self.LOG.replace(f'        Level {level} (GOOD):\n', '')
+                with self.assertRaisesRegex(ValueError, 'did not verify all six IVFC levels'):
+                    self.merge()
+                self.index.assert_not_called()
+                self.assertFalse(self.output.exists())
+
+    def test_other_hactool_errors_are_still_rejected(self):
+        for message in ('Signature Key (FAIL): 0', 'Fixed-Key Index (FAIL): 0', 'Other Signature (FAIL): omitted',
+                        'Section (INVALID)', 'Failed to read section', 'Error: cannot save section'):
+            with self.subTest(message=message):
+                self.log = self.LOG + message + '\n'
+                with self.assertRaisesRegex(ValueError, 'hactool merge failed'):
+                    self.merge()
+                self.index.assert_not_called()
+                self.assertFalse(self.output.exists())
+
+    def test_nonzero_exit_is_still_rejected(self):
+        self.code = 1
+        with self.assertRaisesRegex(ValueError, 'hactool merge failed'):
+            self.merge()
+        self.index.assert_not_called()
+        self.assertFalse(self.output.exists())
 
 
 class CleanupTest(unittest.TestCase):
@@ -609,6 +779,16 @@ class CleanupTest(unittest.TestCase):
 
     def test_intact_romfs_passes(self):
         self.assertEqual(self.run_cleanup(), 'ok')
+
+    def test_selected_language_overrides_the_last_duplicate(self):
+        path = self.dest / 'totk.ini'
+        path.write_text('lang = ru\n[language]\nTOTK_LANG = ja\n[display]\nfps_limit = 60\n')
+        self.assertEqual(self.run_cleanup(), 'ok')
+        text = path.read_text()
+        self.assertEqual(screens.ini_value(text, 'lang'), self.ctx.lang)
+        self.assertEqual(ini.get_language(text), self.ctx.state['lang'])
+        self.assertIn('lang = ru\n', text)
+        self.assertIn('fps_limit = 60\n', text)
 
     def test_keeps_build_and_writes_rebuild_command(self):
         for name in ('gen', 'build', 'check'):
@@ -905,6 +1085,35 @@ class ShapesTest(unittest.TestCase):
         self.assertEqual(screens.wanted(self.dest, [(3440, 1440), (1920, 1080), (800, 1280)]),
                          (['2560x1080', '3440x1440', '1280x800', '1920x1280'], 'pc'))
         self.assertEqual(screens.wanted(self.dest / 'none', [(2560, 1440)]), ([], None))
+
+    def test_layout_settings_keep_the_last_nonempty_value(self):
+        for empty in ('', '   ', '""'):
+            with self.subTest(empty=empty):
+                text = f'prompts = xbox\nTOTK_PROMPTS = "pc"\nprompts = {empty}\n'
+                self.assertEqual(screens.ini_value(text, 'prompts'), 'pc')
+                self.assertEqual(screens.prompts_style(text), 'pc')
+        self.assertEqual(screens.ini_value('prompts = pc\n# prompts = xbox\n; prompts = xbox', 'prompts'), 'pc')
+        # cfg.c trims the whole value and removes matching quotes; it does not strip inline comments.
+        self.assertEqual(screens.ini_value('prompts = pc # comment', 'prompts'), 'pc # comment')
+
+    def test_quoted_pad_layout_selects_the_matching_prompts(self):
+        self.assertEqual(screens.prompts_style('TOTK_PAD_LAYOUT = "nintendo"\nprompts = "PS"'), 'playstation')
+        self.assertEqual(screens.prompts_style('pad_layout = "xbox_prompts"'), 'xbox')
+
+    def test_shapes_generate_the_layouts_selected_by_quoted_or_repeated_settings(self):
+        screens.displays = lambda: []
+        (self.dest / 'romfs-patches-pc').mkdir()
+        (self.dest / 'romfs-patches-pc' / 'manifest.tsv').write_text('#\n')
+        for trailing in ('', '\noutput_res =\nTOTK_PROMPTS = ""\nhud_width =   \n'):
+            with self.subTest(trailing=trailing):
+                (self.dest / 'totk.ini').write_text('[display]\nTOTK_OUTPUT_RES = "3840x1080"\n'
+                                                  'hud_width = "16:9"\n[input]\nprompts = "pc"\n' + trailing)
+                ctx = SimpleNamespace(**vars(self.ctx))
+                record = steps.Shapes().run(ctx)
+                self.assertEqual(record['folders'], ['romfs-patches-3840x1080', 'romfs-patches-pc-3840x1080',
+                                                     'romfs-patches-3840x1080-hud16x9',
+                                                     'romfs-patches-pc-3840x1080-hud16x9'])
+                self.assertTrue(steps.Shapes().current(ctx, record))
 
     def test_run_writes_only_the_wanted_folders(self):
         screens.displays = lambda: [(2560, 1080)]
@@ -1254,6 +1463,153 @@ class DlssTest(unittest.TestCase):
         self.ctx.host = {'devices': [{'name': 'AMD Radeon RX 7800 XT', 'api': [1, 3, 0], 'type': 2}]}
         self.assertEqual(steps.Dlss().run(self.ctx), {'skipped': 'no_rtx'})
         self.assertEqual(self.warnings(), [])
+
+
+class HostProbeTest(unittest.TestCase):
+    """Check.probe_host: the host check's crashes and refusals (issues #875, #1345)."""
+    GOOD = '{"x86_64_v2": true, "x86_64_v3": true, "loader": true, "instance": 0, "devices": [' \
+           '{"name": "Intel(R) UHD Graphics", "api": [1, 3, 215], "type": 1}]}\n'
+    CRASHED_IN_VULKAN = '{"x86_64_v2": true, "x86_64_v3": true, "loader": true, '
+    ACCESS_VIOLATION = 0xC0000005
+    LAYERS = [('VK_LAYER_VALVE_steam_overlay_64', Path('C:/Steam/SteamOverlayVulkanLayer64.json')),
+              ('VK_LAYER_BAD_overlay', Path('C:/Bad/BadOverlay64.json'))]
+
+    def setUp(self):
+        self.ctx = SimpleNamespace(reporter=Reporter(out=io.StringIO()))
+        self.calls = []
+
+    def tearDown(self):
+        self.ctx.reporter.close()
+
+    def probe(self, *results, layers=()):
+        """Runs probe_host with subprocess.run answering each call with the next of results (an exception is raised,
+        a callable gets the run's VK_LOADER_LAYERS_DISABLE)."""
+        answers = iter(results)
+
+        def run(command, **kwargs):
+            env = kwargs.get('env')
+            self.calls.append(env)
+            r = next(answers)
+            if callable(r):
+                r = r((env or {}).get('VK_LOADER_LAYERS_DISABLE'))
+            if isinstance(r, BaseException):
+                raise r
+            return subprocess.CompletedProcess(command, r[0], r[1], '')
+
+        with mock.patch.object(steps.subprocess, 'run', run), \
+                mock.patch.object(steps, 'implicit_vulkan_layers', lambda: list(layers)):
+            return steps.Check().probe_host(self.ctx, Path('hostcheck.exe'))
+
+    def bad_layer(self, disabled):
+        """The probe on a PC whose VK_LAYER_BAD_overlay is broken, with the layers in disabled turned off."""
+        if disabled in ('~implicit~', 'VK_LAYER_BAD_overlay'):
+            return 0, self.GOOD
+        return self.ACCESS_VIOLATION, self.CRASHED_IN_VULKAN
+
+    def only_all_off(self, disabled):
+        """The probe on a PC whose broken layer is not in the list (a driver's, under its adapter key)."""
+        if disabled == '~implicit~':
+            return 0, self.GOOD
+        return self.ACCESS_VIOLATION, self.CRASHED_IN_VULKAN
+
+    def events(self, kind):
+        return [e for e in map(json.loads, self.ctx.reporter.out.getvalue().splitlines()) if e['type'] == kind]
+
+    def test_a_good_probe_runs_once(self):
+        host = self.probe((0, self.GOOD))
+        self.assertEqual(host['devices'][0]['api'], [1, 3, 215])
+        self.assertEqual(self.calls, [None])
+        self.assertEqual(self.events('warning'), [])
+
+    def test_a_crashing_layer_is_named_and_stops_the_install(self):
+        # totk.exe --prepare-shaders and the game load the same layer, so going on would fail after lift and compile
+        with self.assertRaises(steps.InstallError) as e:
+            self.probe(*[self.bad_layer] * 4, layers=self.LAYERS)
+        self.assertEqual(e.exception.id, 'check.vulkan_layer_crash')
+        self.assertEqual(e.exception.params['disable'], 'VK_LAYER_BAD_overlay')
+        self.assertIn('VK_LAYER_BAD_overlay (', e.exception.params['layers'])
+        self.assertNotIn('steam', e.exception.params['layers'])
+        self.assertEqual([c and c['VK_LOADER_LAYERS_DISABLE'] for c in self.calls],
+                         [None, '~implicit~', 'VK_LAYER_VALVE_steam_overlay_64', 'VK_LAYER_BAD_overlay'])
+        if os.name == 'nt':
+            self.assertEqual(e.exception.params['code'], '0xC0000005')
+
+    def test_a_crashing_layer_that_cannot_be_singled_out_lists_the_installed_ones(self):
+        with self.assertRaises(steps.InstallError) as e:
+            self.probe(*[self.only_all_off] * 4, layers=self.LAYERS)
+        self.assertEqual(e.exception.id, 'check.vulkan_layers_crash')
+        self.assertIn('VK_LAYER_VALVE_steam_overlay_64', e.exception.params['layers'])
+        self.assertIn('VK_LAYER_BAD_overlay', e.exception.params['layers'])
+        with self.assertRaises(steps.InstallError) as e:
+            self.probe(self.only_all_off, self.only_all_off)
+        self.assertEqual((e.exception.id, e.exception.params['layers']), ('check.vulkan_layers_crash', '?'))
+
+    def test_a_driver_that_crashes_without_the_layers_too_stops_the_install(self):
+        with self.assertRaises(steps.InstallError) as e:
+            self.probe((self.ACCESS_VIOLATION, self.CRASHED_IN_VULKAN), (self.ACCESS_VIOLATION, self.CRASHED_IN_VULKAN),
+                       layers=self.LAYERS)
+        self.assertEqual(e.exception.id, 'check.vulkan_crash')
+        self.assertEqual(len(self.calls), 2)
+
+    def test_a_crash_before_vulkan_is_not_run_again(self):
+        with self.assertRaises(steps.InstallError) as e:
+            self.probe((self.ACCESS_VIOLATION, ''))
+        self.assertEqual(e.exception.id, 'check.host_probe_failed')
+        self.assertEqual(len(self.calls), 1)
+        if os.name == 'nt':
+            self.assertEqual(e.exception.params['code'], '0xC0000005')
+
+    @unittest.skipUnless(os.name == 'nt', 'winerror is set on Windows only')
+    def test_a_probe_blocked_by_smart_app_control_names_the_policy(self):
+        for code in (4551, 4559, 1260, 225):
+            with self.subTest(code=code):
+                blocked = OSError(None, 'An Application Control policy has blocked this file', None, code)
+                with self.assertRaises(steps.InstallError) as e:
+                    self.probe(blocked)
+                self.assertEqual(e.exception.id, 'check.host_blocked')
+                self.assertIn('Application Control', e.exception.params['detail'])
+                self.assertTrue(e.exception.params['path'].endswith('hostcheck.exe'))
+
+    def test_another_start_failure_is_reported_not_raised(self):
+        with self.assertRaises(steps.InstallError) as e:
+            self.probe(OSError(2, 'The system cannot find the file specified'))
+        self.assertEqual(e.exception.id, 'check.host_probe_failed')
+        self.assertIn('cannot find', e.exception.params['code'])
+
+    def test_a_failed_host_check_runs_once_per_install(self):
+        # key() probes first and run() reports: the crashing probe and its retries must not run twice
+        check, ctx = steps.Check(), SimpleNamespace()
+        failure = steps.InstallError('check.vulkan_crash', code='1')
+        with mock.patch.object(steps.Check, 'check_host', side_effect=failure) as probe:
+            check.key(ctx)
+            with self.assertRaises(steps.InstallError) as e:
+                check.host(ctx)
+        self.assertEqual(e.exception.id, 'check.vulkan_crash')
+        self.assertEqual(probe.call_count, 1)
+
+    def test_layer_names_come_from_the_manifests_the_loader_reads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            (folder / 'one.json').write_text(json.dumps({'file_format_version': '1.1.2', 'layer': {
+                'name': 'VK_LAYER_TEST_one', 'library_path': 'one.dll'}}), encoding='utf-8-sig')
+            (folder / 'two.json').write_text(json.dumps({'file_format_version': '1.0.1', 'layers': [
+                {'name': 'VK_LAYER_TEST_a'}, {'name': 'VK_LAYER_TEST_b'}]}), encoding='utf-8')
+            (folder / 'broken.json').write_text('{', encoding='utf-8')
+            with mock.patch.dict(os.environ, {'VK_ADD_IMPLICIT_LAYER_PATH': tmp}):
+                mine = [(n, p.name) for n, p in steps.implicit_vulkan_layers() if p.parent == folder]
+        self.assertEqual(mine, [('VK_LAYER_TEST_one', 'one.json'), ('VK_LAYER_TEST_a', 'two.json'),
+                                ('VK_LAYER_TEST_b', 'two.json')])
+
+    def test_messages_in_every_language(self):
+        need = {'check.host_blocked': ('{path}', '{detail}'), 'check.vulkan_crash': ('{code}',),
+                'check.vulkan_layer_crash': ('{code}', '{layers}', '{disable}', 'VK_LOADER_LAYERS_DISABLE'),
+                'check.vulkan_layers_crash': ('{code}', '{layers}', 'VK_LOADER_LAYERS_DISABLE', '~implicit~')}
+        for path in sorted((ROOT / 'installer' / 'text').glob('*.json')):
+            text = json.loads(path.read_text(encoding='utf-8'))
+            self.assertNotIn('warn.vulkan_layer_crash', text, path.name)
+            for key, parts in need.items():
+                for part in parts:
+                    self.assertIn(part, text[key], f'{path.name} {key}')
 
 
 if __name__ == '__main__':
