@@ -161,10 +161,13 @@ def main():
         code, log = run(args.exe, mods, f'Top|Low|{UNI}|Case')
         check(code == 0, 'probe-fs passes with five mods (served bytes equal the winners\' files)', log)
         for line in ('mods: Top: 2 files served (1 replaced, 1 added), 0 overridden',
-                     'mods: Low: 1 files served (1 replaced, 0 added), 2 overridden by Top, 1 for another game version',
-                     'mods: Case: 1 files served (0 replaced, 1 added), 1 overridden by Top, 1 for another game version',
-                     f'mods: {UNI}: 0 files served (0 replaced, 0 added), 1 overridden by Low',
-                     'mods: Lite: 1 files served (0 replaced, 1 added), 0 overridden'):
+                     'mods: Low: 1 files served (1 replaced, 0 added), 2 overridden, 1 for another game version',
+                     'mods: Case: 1 files served (0 replaced, 1 added), 1 overridden, 1 for another game version',
+                     f'mods: {UNI}: 0 files served (0 replaced, 0 added), 1 overridden',
+                     'mods: Lite: 1 files served (0 replaced, 1 added), 0 overridden',
+                     # the conflict table (runtime/mods.c mods_conflicts_log), each way
+                     'mods: Top: overrides Low at 2 files', 'mods: Low: 2 files overridden by Top',
+                     'mods: Top: overrides Case at 1 files', f'mods: {UNI}: 1 files overridden by Low'):
             check(line in log, line, log)
         check(p1case not in log, 'the case-flipped path is served as the RomFS path, not added', log)
 

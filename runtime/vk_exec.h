@@ -73,6 +73,8 @@ typedef struct VkExecJob {
     int chunk;                           // vk_exec.c: the chunk that holds the op
     VkExecTarget scene, depth;           // contact: the scene colour and the linear depth; DLSS: the light target to copy
                                          // (mask) or the scaling pass's target (evaluation; no tex: in place)
+    VkExecTarget sun;                    // contact: the half-resolution lighting target whose alpha is sun visibility
+                                         // (no img: none in this frame)
     float pc[16];                        // the march's push constants
 } VkExecJob;
 
@@ -119,6 +121,7 @@ typedef struct VkExec {
     uint32_t st_vmask[2], st_wmask[2], st_ref[2];   // OP_STENCIL per face (0 front, 1 back): compare mask, write mask, ref
     float point_size;                    // OP_BIND_STATE kind 6: NVN point size for the support buffer; 0 = never set = 1
     p_poly_offset poly_offset;           // OP_POLY_OFFSET: depth bias factor, units, clamp
+    int8_t volume_bias;                  // the sign of the volume bias recorded in place of poly_offset: set by prepare_draw, used by record_fixed
     p_prim_restart prim_restart;         // OP_PRIM_RESTART: applied to indexed strip and fan draws (op_draw_idx)
     float blend_color[4];                // OP_BLEND_COLOR
     int64_t copy_stride;                 // OP_COPY_STRIDE: row stride of buffer <-> texture copies (vk_exec_xfer.c)

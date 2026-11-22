@@ -1046,8 +1046,11 @@ static void run_job(VkExec *ex) {
     if (j.kind != VK_JOB_CONTACT) {
         vk_dlaa_exec(ex, &j);
     } else {
-        // The scan resolved the scene and its depth without creating entries (vk_texture_revive): their images now.
+        // The scan resolved the scene, its depth and the lighting target without creating entries (vk_texture_revive):
+        // their images now. A lighting target without one leaves the march darkening every pixel.
         const VkTexImage *si = vk_texture_get(j.scene.tex), *di = vk_texture_get(j.depth.tex);
+        const VkTexImage *ui = j.sun.img ? vk_texture_get(j.sun.tex) : NULL;
+        j.sun.img = ui, j.sun.image = ui ? ui->image : VK_NULL_HANDLE;
         if (si && di) {
             j.scene.img = si, j.scene.image = si->image, j.depth.img = di, j.depth.image = di->image;
             vk_contact_exec(ex, &j);
@@ -1784,6 +1787,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
         for (int i = 0; i < n; i++) walk(ex, nvn_op_first(handles[i]), 0, NULL);
     }
     vk_exec_pass_end(ex);
+    if (vk_dlaa_fg_on) vk_dlaa_sub_end(ex);   // frame generation after the frame's window texture (vk_dlaa.c)
     x_cur = NULL;
     if (ex->recorded) vk_exec_barrier(ex);   // later submissions see this one's writes
     if (n) ex->recorded += vk_mem_mirror_end(ex->cb, fence), vk_usnap_end(fence);   // VRAM mirror bytes the GPU wrote go back to guest memory

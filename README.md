@@ -28,16 +28,40 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - In-game settings menu (F1) and performance overlay (F10)
 - Play time across runs on the Game tab of the settings menu, kept in `playtime.txt` next to the saves
 - Discord Rich Presence ("Playing TotK Recomp" with the play time), off by default, own application id supported
-- Setup and in-game menu in English, Russian, Brazilian Portuguese and Simplified Chinese
+- Setup in 11 languages, in-game menu in 4 ([Languages](#languages))
 - Keyboard, mouse and gamepad with remapping, rumble and gyro
 - Stereo or 5.1 surround sound output
-- Xbox button prompts: LB, RB, LT, RT, Menu and View, and A, B, X and Y as labelled on the button to press, with either button layout
+- Xbox and PlayStation button prompts: Xbox's LB, RB, LT, RT, Menu, View and A, B, X, Y, or PlayStation's ○ × △ □, L1, R1, L2, R2, Options and Share, as labelled on the button to press, with either button layout
 - Shaders prepared at install instead of during play
 - Mods made for emulators: unpack a mod into the `mods` folder next to `totk.exe`; switch and order them in the menu. RomFS
   mods, TKMM's merged output and ExeFS code patches (`.ips`, `.pchtxt`) work; the game rebuilds itself for code patches
   ([docs/mods.md](docs/mods.md)). HD texture packs work: the port grows the texture heap a pack asks for by itself. Tested
   with the HDPacks.com 4K Texture Pack v1.0 on 1.4.3 and 1.2.1; other packs come with no guarantee
 - Atmosphère cheats: put a cheat file into a mod and switch its cheats in the menu ([docs/cheats.md](docs/cheats.md))
+
+## Languages
+
+The game keeps the text and voices of every language it shipped with. The port's own setup and in-game menu (F1) come
+in these; both follow the Windows display language, and the menu has its own choice on its Menu tab. A Traditional
+Chinese Windows gets the Simplified Chinese setup.
+
+| Language | Setup | In-game menu |
+|---|:---:|:---:|
+| English | ✅ | ✅ |
+| Русский | ✅ | ✅ |
+| Português (Brasil) | ✅ | ✅ |
+| 简体中文 | ✅ | ✅ |
+| Deutsch | ✅ | English |
+| Français | ✅ | English |
+| Español | ✅ | English |
+| Italiano | ✅ | English |
+| Nederlands | ✅ | English |
+| 日本語 | ✅ | English |
+| 한국어 | ✅ | English |
+
+Spotted a clumsy phrase, or want your language added? The setup texts are in `installer/text/<language>.json`, the
+menu texts in `runtime/ui_text.c`; open an issue or a pull request ([CONTRIBUTING.md](CONTRIBUTING.md)). Fixes from
+native speakers are welcome.
 
 ## Planned
 

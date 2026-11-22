@@ -140,16 +140,26 @@ def ini_value(text, name):
     return value
 
 
+# The pad prompts' folder suffixes (make_romfs_patches.py --prompts), each written at 16:9 on every install
+# (steps.Prepare): the Xbox and PlayStation ones, for the Nintendo pad layout and for xbox and auto
+PAD_PROMPTS = ('xbox', 'xbox-label', 'playstation', 'playstation-xbox')
+# Every prompts folder suffix: the pad ones and the keyboard and mouse one (steps.PcPrompts)
+PROMPTS_STYLES = PAD_PROMPTS + ('pc',)
+
+
 def prompts_style(text):
     """The prompts' folder suffix the settings select, as runtime/input_map.c input_prompts_pick and
-    input_prompts_folder pick it at start: 'pc', 'xbox' (Nintendo pad layout), 'xbox-label' (any other) or None for the
-    game's own prompts, the default without a totk.ini."""
-    p, layout = ini_value(text, 'prompts'), (ini_value(text, 'pad_layout') or '').lower()
-    if p and p.lower() == 'pc':
+    input_prompts_folder pick it at start: 'pc', 'xbox' or 'playstation' (Nintendo pad layout), 'xbox-label' or
+    'playstation-xbox' (any other), or None for the game's own prompts, the default without a totk.ini."""
+    p, layout = (ini_value(text, 'prompts') or '').lower(), (ini_value(text, 'pad_layout') or '').lower()
+    if p == 'pc':
         return 'pc'
-    if not (p.lower() == 'xbox' if p else layout == 'xbox_prompts'):
+    nintendo = layout in ('nintendo', 'xbox_prompts')
+    if p in ('playstation', 'ps'):
+        return 'playstation' if nintendo else 'playstation-xbox'
+    if not (p == 'xbox' if p else layout == 'xbox_prompts'):
         return None
-    return 'xbox' if layout in ('nintendo', 'xbox_prompts') else 'xbox-label'
+    return 'xbox' if nintendo else 'xbox-label'
 
 
 def wanted(dest, screens=None):

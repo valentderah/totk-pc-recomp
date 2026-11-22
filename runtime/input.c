@@ -4,14 +4,14 @@
 // system's back end (input_wsys.h: input_win.c with Win32, input_sdl.c with SDL), which also owns the cursor capture.
 // Keys and their map: docs/controls.md.
 // The gamepad also rumbles (input_rumble) and, when it has a gyro and an accelerometer, feeds the six-axis sensor from a
-// thread of its own (input_motion_start). A DualSense gets its trigger effects from that thread too (triggers_update).
-// Every SDL call on the gamepad is made under `lock`.
+// thread of its own (input_motion_start). Every SDL call on the gamepad is made under `lock`, except the rumble writes (rumble_main).
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_hidapi.h>
 
 #include "cfg.h"
 #include "dualsense.h"
@@ -40,23 +40,30 @@ int input_kbm_last(void) { return __atomic_load_n(&g_kbm_last, __ATOMIC_RELAXED)
 int input_gameplay_active(void) { return !g_menu && !g_block && ikb_foreground() && ikb_captured(); }
 static SDL_Gamepad *pad;
 static uint64_t next_scan;
+static volatile int32_t rumble_ready;   // the open gamepad has rumble motors (what input_rumble returns)
+static void rumble_cancel(void);
 static int pad_rumble;               // the open gamepad has rumble motors
-// The open gamepad is a DualSense whose triggers take effects (dualsense.h). All under lock.
-static int pad_ds5;
-static int ds_live;                              // ... and it was sent the effects in ds_sent (right, left)
-static uint8_t ds_sent[2][DS_TRIGGER_BYTES];
-static int ds_stopped;                           // input_haptics_stop freed the triggers: the process is ending
-static int ds_strength = -1, ds_mode = DS_TRIGGERS_R2, ds_rumble;   // TOTK_DUALSENSE_TRIGGERS 0..8, mode, trigger vibration; live (cfg_version)
+static int pad_ds5;                  // the open gamepad is a real DualSense (adaptive triggers, dualsense.c)
+static int ds_strength = -1, ds_mode = DS_TRIGGERS_R2, ds_live, ds_stopped;   // TOTK_DUALSENSE_TRIGGERS*, sent once, shutdown
 static unsigned ds_cfg_seen;
-static int ds_vibration;                         // trigger vibration level of the last rumble, 0 none ...
-static uint64_t ds_vibration_until;              // ... and when it ends, plat_now_ns
-static uint16_t rumble_low, rumble_high;         // the DualSense's last input_rumble ...
-static uint64_t rumble_until;                    // ... and when it ends, plat_now_ns
+static uint8_t ds_sent[2][DS_TRIGGER_BYTES];
+static int ds_bt_trigger_dirty;      // 1 when a BT report 0x36 needs to carry an updated trigger block
 static volatile int32_t pad_labels[4];  // ... and the labels of its south, east, west, north buttons (PAD_LABEL_*), any thread
 static int pad_east_a;               // ... and labels its east face button A (Nintendo layout under TOTK_PAD_LAYOUT=auto)
 static int pad_layout = -1;          // PAD_LAYOUT_* in effect for the open gamepad, -1 to pick again; live (cfg_version)
 static unsigned pad_layout_seen;
 static volatile int32_t pad_layout_shown = -1;   // pad_layout for the menu (any thread), -1 without a gamepad
+// Steam Input: a game Steam starts gets SDL_GAMECONTROLLER_IGNORE_DEVICES, the vendor/product pairs of the controllers
+// Steam reads itself, and sees Steam's virtual gamepad in their place. That pad has no motion sensors, so a Steam
+// Controller, a Steam Deck or a DualSense under Steam Input gives no gyro. steam_reveal keeps the list here and clears
+// the hint: the buttons and sticks still come from the virtual pad (scan_pads skips the listed devices, so Steam's
+// remapping holds and nothing is read twice), and only the sensors come from the real controller (motion_source).
+enum { STEAM_HIDDEN_MAX = 64 };
+static uint16_t steam_hidden[STEAM_HIDDEN_MAX][2];   // vendor, product
+static int steam_hidden_n;
+static SDL_Gamepad *motion_extra;    // the hidden controller opened for its sensors only, NULL none
+static int pad_hidden;               // the open gamepad is a controller Steam hid (scan_pads' fallback)
+static uint64_t next_motion_scan;
 static SDL_JoystickID sensor_pad;    // the gamepad whose sensors the motion thread set up, 0 none
 static int sensor_ok;                // ... and it has both sensors, enabled
 static int motion_thread;            // 0 not started, 1 running, -1 off (TOTK_MOTION=0, no SDL)
@@ -116,7 +123,10 @@ static void script_load(void) {
         ScriptEv e = {.at = (uint64_t)(at * unit + 0.5), .hold = timed ? 66667 : 4, .bit = -1, .timed = timed};
         long a, b;
         double c;
-        if (!strcmp(name, "WHEEL")) {
+        if (!strcmp(name, "QUICKSAVE") || !strcmp(name, "QUICKLOAD")) {
+            e.stick = name[5] == 'S' ? 5 : 6, e.hold = 1;   // once, as quicksave's keys
+            snprintf(e.text, sizeof e.text, "%s", name);
+        } else if (!strcmp(name, "WHEEL")) {
             if (sscanf(line + off, "%ld", &a) != 1) { rt_log("input: script line %d: WHEEL needs notches", ln); continue; }
             e.stick = 4, e.x = (int32_t)a, e.hold = 1;   // one turn, never held
             snprintf(e.text, sizeof e.text, "WHEEL %d", e.x);
@@ -146,6 +156,10 @@ static void script_load(void) {
     rt_log("input: script %s, %d events", path, script_n);
 }
 
+// Under lock: the Switch buttons the input script pressed in the last poll, apart from the keys' and the gamepad's, so
+// a gamepad combo can count a scripted press as the gamepad's without counting the keys bound to the same buttons
+static uint64_t script_seen;
+
 static void script_apply(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     if (!script_state) script_load();
     if (!script_n) return;
@@ -164,7 +178,8 @@ static void script_apply(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
             if (e->timed) rt_log("input: script frame %llu at %.1f ms: %s", (unsigned long long)fr, w / 1000.0, e->text);
             else rt_log("input: script frame %llu tick %llu: %s", (unsigned long long)fr, (unsigned long long)tick, e->text);
         }
-        if (e->stick == 4) script_wheel += e->x;
+        if (e->stick >= 5) quicksave_request(e->stick == 6);
+        else if (e->stick == 4) script_wheel += e->x;
         else if (e->stick == 3) {
             int64_t x = (int64_t)script_mouse[0] + e->x, y = (int64_t)script_mouse[1] + e->y;
             script_mouse[0] = (int32_t)(x < INT32_MIN ? INT32_MIN : x > INT32_MAX ? INT32_MAX : x);
@@ -266,7 +281,8 @@ static void rec_apply(uint64_t b, const int32_t sl[2], const int32_t sr[2]) {
 
 void input_direct_mouse_sample(int enabled, int32_t *dx, int32_t *dy) {
     plat_mutex_lock(&lock);
-    enabled = enabled && !g_block && !g_menu;
+    // the moving free camera takes the mouse (freecam_gate)
+    enabled = enabled && !g_block && !g_menu && freecam_state() != FREECAM_MOVE;
     *dx = script_mouse[0]; *dy = script_mouse[1];
     script_mouse[0] = script_mouse[1] = 0;
     if (!enabled) { *dx = *dy = 0; }
@@ -361,6 +377,14 @@ static void walk_get(void) {
 static int mouse_selector;
 int input_direct_mouse_selector_active(void) { return __atomic_load_n(&mouse_selector, __ATOMIC_RELAXED) != 0; }
 
+// A script's MOUSE line within the last 100 ms (under `lock`): mouse_camera then makes a stick of it
+static uint64_t script_mouse_at;
+static int input_script_mouse_recent(void) {
+    uint64_t now = plat_now_ns();
+    if (script_mouse[0] || script_mouse[1]) script_mouse_at = now;
+    return script_mouse_at && now - script_mouse_at < 100000000ull;
+}
+
 // Selector 1 is a radial wheel, 2..4 are distinct horizontal quick lists; only a wheel retains a virtual cursor.
 // Under `lock`.
 static void mouse_camera(int32_t out[2], int selector) {
@@ -393,7 +417,10 @@ static void mouse_camera(int32_t out[2], int selector) {
         frame = ~0ull;
         return;   // the camera update takes the raw counts itself, once, outside the HID stick path
     }
-    if (!ikb_captured()) {
+    // A script's MOUSE lines move the stick as the mouse does, captured or not (in direct mode the camera hook takes
+    // them, input_direct_mouse_sample): for 100 ms after one the stick is the mouse's, as while captured
+    int scripted = input_script_mouse_recent();
+    if (!ikb_captured() && !scripted) {
         ikb_mouse_take(&dx, &dy);
         held[0] = held[1] = 0;
         frame = ~0ull;
@@ -403,6 +430,9 @@ static void mouse_camera(int32_t out[2], int selector) {
         if (fr != frame) {
             double dt = age < 0.004 ? 0.004 : age > 0.1 ? 0.1 : age;
             ikb_mouse_take(&dx, &dy);
+            if (!ikb_captured()) dx = dy = 0;
+            dx += script_mouse[0], dy += script_mouse[1];
+            script_mouse[0] = script_mouse[1] = 0;
             input_mouse_stick(dx, dy, dt, mouse_sens_get(), held);
             frame = fr;
             t0 = now;
@@ -434,7 +464,68 @@ static void stick(SDL_GamepadAxis ax, SDL_GamepadAxis ay, float dead, int32_t ou
     input_pad_stick(SDL_GetGamepadAxis(pad, ax), -(int32_t)SDL_GetGamepadAxis(pad, ay), dead, out);
 }
 
-// ---- RenHDrum dynamic loading, DualSense USB/Bluetooth DSP, Switch HD Rumble engine, and Xbox One Rumble
+// Before SDL_Init: keep the controllers Steam hid (steam_hidden) and let SDL open them. The list is
+// "0xVVVV/0xPPPP,..." (SDL's own format). With motion off (TOTK_MOTION=0 at start) Steam's list stays in force.
+static void steam_reveal(void) {
+    const char *e = getenv("SDL_GAMECONTROLLER_IGNORE_DEVICES");
+    if (!e || !*e || !cfg_bool("TOTK_MOTION")) return;
+    for (const char *s = e; *s && steam_hidden_n < STEAM_HIDDEN_MAX;) {
+        unsigned v, p;
+        int used = 0;
+        if (sscanf(s, " %x/%x%n", &v, &p, &used) == 2 && used > 0) {
+            steam_hidden[steam_hidden_n][0] = (uint16_t)v;
+            steam_hidden[steam_hidden_n][1] = (uint16_t)p;
+            steam_hidden_n++;
+            s += used;
+        }
+        const char *c = strchr(s, ',');
+        if (!c) break;
+        s = c + 1;
+    }
+    if (!steam_hidden_n) return;
+    // The environment outranks a hint of normal priority, so this one overrides it
+    SDL_SetHintWithPriority(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES, "", SDL_HINT_OVERRIDE);
+    rt_log("input: Steam Input hides %d controller type(s); buttons stay on Steam's virtual gamepad, motion is read "
+           "from the controller itself", steam_hidden_n);
+}
+
+// The ids the device itself reports. SDL_GetGamepadVendorForID and ...ProductForID give a Steam virtual pad the ids of
+// the controller behind it, which would make it look like a controller Steam hid; the GUID keeps the device's own.
+static void raw_ids(SDL_JoystickID id, uint16_t *v, uint16_t *p) {
+    SDL_GetJoystickGUIDInfo(SDL_GetGamepadGUIDForID(id), v, p, NULL, NULL);
+}
+
+static int steam_hidden_id(SDL_JoystickID id) {
+    uint16_t v, p;
+    raw_ids(id, &v, &p);
+    for (int i = 0; i < steam_hidden_n; i++)
+        if (steam_hidden[i][0] == v && steam_hidden[i][1] == p) return 1;
+    return 0;
+}
+
+
+// Steam's virtual gamepad: Valve's vendor id with product 0x11ff in the device's own ids (raw_ids; SDL's
+// SDL_IsJoystickSteamVirtualGamepad is not public)
+static int steam_virtual(SDL_Gamepad *g) {
+    uint16_t v, p;
+    raw_ids(SDL_GetGamepadID(g), &v, &p);
+    return v == 0x28de && p == 0x11ff;
+}
+
+static int has_motion(SDL_Gamepad *g) {
+    return SDL_GamepadHasSensor(g, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(g, SDL_SENSOR_ACCEL);
+}
+
+// A gamepad Steam did not hide is connected (Steam's virtual pad, or another controller).
+static int unhidden_pad_present(void) {
+    int n = 0, found = 0;
+    SDL_JoystickID *ids = SDL_GetGamepads(&n);
+    for (int i = 0; ids && i < n && !found; i++) found = !steam_hidden_id(ids[i]);
+    SDL_free(ids);
+    return found;
+}
+
+// ---- RenHDrum v0.5.0 dynamic loading, DualSense USB/BT HD Haptics, Switch HD Rumble, Xbox One Rumble, and native DualSense triggers
 typedef uint32_t (*pfn_renhdrum_version)(void);
 typedef int32_t (*pfn_renhdrum_settings_default)(RenHdcSettings *out_settings);
 typedef RenHdcEngine *(*pfn_renhdrum_engine_create)(bool is_bluetooth, bool is_pro_controller);
@@ -457,10 +548,20 @@ typedef int32_t (*pfn_renhdrum_dualsense_dsp_set_target)(
 typedef int32_t (*pfn_renhdrum_dualsense_dsp_set_half_target)(
     RenHdcDualSenseDsp *dsp, bool is_right,
     float al, float fl, float ah, float fh);
+typedef int32_t (*pfn_renhdrum_dualsense_dsp_set_speaker)(RenHdcDualSenseDsp *dsp, int32_t percent);
 typedef int32_t (*pfn_renhdrum_dualsense_dsp_fill_f32)(
     RenHdcDualSenseDsp *dsp, float *out_interleaved_4ch, size_t frame_count);
 typedef int32_t (*pfn_renhdrum_dualsense_dsp_build_bt_report)(
     RenHdcDualSenseDsp *dsp, uint8_t buffer_length, uint8_t *out_report142);
+typedef int32_t (*pfn_renhdrum_dualsense_dsp_build_bt36_report)(
+    RenHdcDualSenseDsp *dsp, const uint8_t *state47_or_null, uint8_t seq, uint8_t *out_report398);
+typedef int32_t (*pfn_renhdrum_hd_haptics_speaker_block)(int32_t on, uint8_t *out47);
+typedef RenHdcTriTrigger *(*pfn_renhdrum_tri_trigger_create)(void);
+typedef void (*pfn_renhdrum_tri_trigger_destroy)(RenHdcTriTrigger *h);
+typedef int32_t (*pfn_renhdrum_tri_trigger_update)(
+    RenHdcTriTrigger *h, uint32_t now_ms, uint8_t depth,
+    float amp_low, float freq_low, float amp_high, float freq_high, bool fresh, uint8_t *out11);
+typedef void (*pfn_renhdrum_tri_trigger_note_action)(RenHdcTriTrigger *h, uint32_t now_ms);
 typedef RenHdcXboxRumble *(*pfn_renhdrum_xbox_rumble_create)(bool is_bluetooth);
 typedef void (*pfn_renhdrum_xbox_rumble_destroy)(RenHdcXboxRumble *rumble);
 typedef int32_t (*pfn_renhdrum_xbox_rumble_push_half_sample)(
@@ -470,7 +571,10 @@ typedef int32_t (*pfn_renhdrum_xbox_rumble_tick)(RenHdcXboxRumble *rumble, int64
 typedef int32_t (*pfn_renhdrum_xbox_rumble_resend)(RenHdcXboxRumble *rumble);
 typedef void (*pfn_renhdrum_set_nx2_mode)(int32_t mode);
 typedef RenHdcDualSenseDsp *(*pfn_renhdrum_valve_grip_dsp_create)(int32_t volume_percent, bool crisp_notes);
+typedef RenHdcDualSenseDsp *(*pfn_renhdrum_valve_grip_dsp_create_ex)(int32_t volume_percent, bool crisp_notes, bool drift_compensation);
 typedef int32_t (*pfn_renhdrum_valve_grip_build_report)(RenHdcDualSenseDsp *dsp, uint8_t format, uint8_t *out_report64);
+typedef int32_t (*pfn_renhdrum_valve_grip_mode_tick)(RenHdcDualSenseDsp *dsp, uint8_t format, uint64_t now_ns, bool stalled, uint8_t *out_reports8);
+typedef int32_t (*pfn_renhdrum_valve_grip_mode_off)(uint8_t format, uint8_t *out_reports8);
 
 typedef struct {
     pfn_renhdrum_version version;
@@ -485,8 +589,15 @@ typedef struct {
     pfn_renhdrum_dualsense_dsp_destroy dualsense_dsp_destroy;
     pfn_renhdrum_dualsense_dsp_set_target dualsense_dsp_set_target;
     pfn_renhdrum_dualsense_dsp_set_half_target dualsense_dsp_set_half_target;
+    pfn_renhdrum_dualsense_dsp_set_speaker dualsense_dsp_set_speaker;
     pfn_renhdrum_dualsense_dsp_fill_f32 dualsense_dsp_fill_f32;
     pfn_renhdrum_dualsense_dsp_build_bt_report dualsense_dsp_build_bt_report;
+    pfn_renhdrum_dualsense_dsp_build_bt36_report dualsense_dsp_build_bt36_report;
+    pfn_renhdrum_hd_haptics_speaker_block hd_haptics_speaker_block;
+    pfn_renhdrum_tri_trigger_create tri_trigger_create;
+    pfn_renhdrum_tri_trigger_destroy tri_trigger_destroy;
+    pfn_renhdrum_tri_trigger_update tri_trigger_update;
+    pfn_renhdrum_tri_trigger_note_action tri_trigger_note_action;
     pfn_renhdrum_xbox_rumble_create xbox_rumble_create;
     pfn_renhdrum_xbox_rumble_destroy xbox_rumble_destroy;
     pfn_renhdrum_xbox_rumble_push_half_sample xbox_rumble_push_half_sample;
@@ -494,7 +605,10 @@ typedef struct {
     pfn_renhdrum_xbox_rumble_resend xbox_rumble_resend;
     pfn_renhdrum_set_nx2_mode set_nx2_mode;
     pfn_renhdrum_valve_grip_dsp_create valve_grip_dsp_create;
+    pfn_renhdrum_valve_grip_dsp_create_ex valve_grip_dsp_create_ex;
     pfn_renhdrum_valve_grip_build_report valve_grip_build_report;
+    pfn_renhdrum_valve_grip_mode_tick valve_grip_mode_tick;
+    pfn_renhdrum_valve_grip_mode_off valve_grip_mode_off;
 } RenHdrumApi;
 
 static RenHdrumApi rh;
@@ -505,10 +619,17 @@ static RenHdcDualSenseDsp *dualsense_dsp;     // under dsp_lock (and lock on cre
 static SDL_AudioStream *ds_audio_stream;      // under lock: 4-channel 48 kHz f32 USB audio stream
 static int ds_init_audio;                     // 1 if we initialized SDL_INIT_AUDIO
 static int ds_is_bt;                          // 1 if DualSense is connected over Bluetooth
-static uint64_t ds_bt_last_active_ns;         // timestamp of last BT report 0x32 with non-zero signal
-static uint64_t ds_bt_next_ns;                // next scheduled BT report 0x32 timestamp
+static int ds_speaker_on;                     // 1 while USB HD Haptics speaker block is enabled on the pad
+static int ds_bt_report36;                    // 1 while Bluetooth DualSense uses combined report 0x36 (HD Haptics)
+static uint64_t ds_bt_last_active_ns;         // timestamp of last BT report (0x36 or 0x32) with non-zero signal
+static uint64_t ds_bt_next_ns;                // next scheduled BT report timestamp
 static int ds_audio_tries;                    // USB audio open retry count (max 10)
 static uint64_t ds_audio_last_try_ns;         // timestamp of last USB audio open attempt
+static RenHdcTriTrigger *ds_tri[2];           // under lock: [0] L2, [1] R2 RenHDrum vibration-reactive triggers
+static float ds_tri_sample[2][4];             // latest HD rumble sample (al, fl, ah, fh) for [0] left / [1] right
+static int ds_tri_fresh[2];                   // 1 when ds_tri_sample[s] is new since the last tri_trigger_update
+static uint8_t ds_tri_effect[2][DS_TRIGGER_BYTES];   // last 11-byte effect from tri_trigger_update ([0] L2, [1] R2)
+static int ds_tri_active[2];                  // 1 when ds_tri_effect[s] is an active pulse (mode != DS_MODE_OFF)
 static RenHdcEngine *renhdrum_engine;         // under lock: Switch Pro / Joy-Con HD rumble engine
 static RenHdcXboxRumble *xbox_rumble;         // under lock: Xbox One / Series X|S 4-motor rumble converter
 static RenHdcDualSenseDsp *steam_dsp;         // under dsp_lock (and lock on create/destroy): Steam Controller (2026) grips
@@ -518,22 +639,25 @@ static uint64_t steam_period_ns;              // RENHDRUM_VALVE_GRIP_PERIOD_NS_{
 static uint64_t steam_next_ns;                // next scheduled report 0x88 timestamp
 static uint64_t steam_last_active_ns;         // timestamp of last report 0x88 with non-zero signal
 static int steam_fails;                       // consecutive SDL_hid_write failures on steam_hid
-static int steam_init_step;                   // 0 ready, 1 awaiting 10 ms format command, 2 awaiting 200 ms settle
-static uint64_t steam_init_ns;                // deadline for the current Steam Controller grip init step
+static int steam_stalled;                     // 1 if the previous grip write stalled or failed
 static int haptics_thread;                    // 0 not started, 1 running
-static volatile int32_t haptics_work;         // 1 while haptics_main has active streaming, init, or audio retries to run
+static volatile int32_t haptics_work;         // 1 while haptics_main has active streaming or USB audio retries to run
 static int hd_active_side[2];                 // 1 while non-zero HD rumble is playing on [0] left / [1] right
 static uint64_t hd_last_push_ns[2];           // timestamp of last non-zero HD rumble push on [0] left / [1] right
-// Under lock: a second HID handle on the Bluetooth DualSense for output report 0x32. SDL_SendJoystickEffect cannot carry
-// it: SDL's PS5 driver wraps whatever it is given into its own effects report (0x31 over Bluetooth, 0x02 over USB), so
-// a 0x32 report sent that way would land in the rumble, volume and LED fields of a 0x31 report instead.
+// Under lock: a second HID handle on the Bluetooth DualSense for output reports 0x36 and 0x32. SDL_SendGamepadEffect
+// cannot carry them: SDL's PS5 driver wraps whatever it is given into report 0x31 over Bluetooth.
 static SDL_hid_device *ds_hid;
 static volatile int32_t hd_pad_kind;          // HD_PAD_* of the open gamepad (any thread)
 static unsigned rh_cfg_seen = ~0u;
 static int rh_hd_on = 1, rh_bt_level = 3, rh_hd_crisp = 1, rh_hd_bt_crisp = 1;
-static int rh_ds_on = 1, rh_ds_vol = 100, rh_ds_crisp = 1, rh_ds_bt_crisp = 0;
+static int rh_ds_on = 1, rh_ds_hd_haptics = 1, rh_ds_vol = 100, rh_ds_crisp = 1, rh_ds_bt_crisp = 0, rh_ds_trig_vib = 0;
 static int rh_xbox_on = 1, rh_xbox_trig = 1;
 static int rh_steam_on = 1, rh_steam_vol = 100, rh_steam_crisp = 1;
+
+static void dualsense_bt_tick(uint64_t now_ns);
+static void renhdrum_close_pad(SDL_Gamepad *closing_pad);
+static void renhdrum_open_pad(SDL_Gamepad *opened_pad);
+static void renhdrum_sync_cfg(void);
 
 static void renhdrum_read_cfg(void) {
     rh_cfg_seen = cfg_version();
@@ -542,11 +666,22 @@ static void renhdrum_read_cfg(void) {
     rh_bt_level = !strcasecmp(spd, "stable") ? 1 : !strcasecmp(spd, "balanced") ? 2 : !strcasecmp(spd, "compatible") ? 4 : 3;
     rh_hd_crisp = cfg_bool("TOTK_HD_RUMBLE_CRISP") != 0;
     rh_hd_bt_crisp = cfg_bool("TOTK_HD_RUMBLE_BT_CRISP") != 0;
-    rh_ds_on = cfg_bool("TOTK_DUALSENSE_HAPTICS") != 0;
+    const char *ds = cfg_value("TOTK_DUALSENSE_HAPTICS");
+    if (!strcasecmp(ds, "0") || !strcasecmp(ds, "off") || !strcasecmp(ds, "false")) {
+        rh_ds_on = 0;
+        rh_ds_hd_haptics = 0;
+    } else if (!strcasecmp(ds, "standard") || !strcasecmp(ds, "haptics")) {
+        rh_ds_on = 1;
+        rh_ds_hd_haptics = 0;
+    } else {
+        rh_ds_on = 1;
+        rh_ds_hd_haptics = 1;
+    }
     int vol = cfg_int("TOTK_DUALSENSE_VOLUME");
     rh_ds_vol = vol < 10 ? 10 : vol > 100 ? 100 : vol;
     rh_ds_crisp = cfg_bool("TOTK_DUALSENSE_CRISP") != 0;
     rh_ds_bt_crisp = cfg_bool("TOTK_DUALSENSE_BT_CRISP") != 0;
+    rh_ds_trig_vib = cfg_bool("TOTK_DUALSENSE_TRIGGER_VIBRATION") != 0;
     rh_xbox_on = cfg_bool("TOTK_XBOX_RUMBLE") != 0;
     rh_xbox_trig = cfg_bool("TOTK_XBOX_TRIGGERS") != 0;
     rh_steam_on = cfg_bool("TOTK_STEAM_RUMBLE") != 0;
@@ -555,7 +690,7 @@ static void renhdrum_read_cfg(void) {
     rh_steam_crisp = cfg_bool("TOTK_STEAM_CRISP") != 0;
 }
 
-// Construct RenHdcSettings manually in memory (do NOT call renhdrum_settings_resolve, which queries Brontide IPC/files).
+// Construct RenHdcSettings manually in memory (do NOT call renhdrum_settings_resolve, which reads external AppData/IPC).
 static RenHdcSettings renhdrum_make_settings(void) {
     RenHdcSettings s;
     memset(&s, 0, sizeof s);
@@ -590,14 +725,13 @@ static void dsp_push_target(RenHdcDualSenseDsp *dsp, int side, float left_al, fl
     plat_mutex_unlock(&dsp_lock);
 }
 
-// Under lock: give a DualSense the trigger effects the settings ask for (ds_triggers_pick), when they differ from the
-// ones it has. TOTK_DUALSENSE_TRIGGERS (0..8, live) is the resistance; with TOTK_DUALSENSE_TRIGGER_VIBRATION (or
-// TOTK_RUMBLE_TRIGGERS) the level the last rumble left in ds_vibration replaces it until that rumble ends. Nothing is
-// sent to a pad that never needed an effect, so with both settings off a DualSense is left as it was. keep_rumble: send
-// the SDL rumble in effect again behind the trigger report, as the controller is not known to keep its emulated rumble
-// across a report that does not carry it; input_rumble passes 0 and sends its own.
-static void triggers_update(uint64_t now, int keep_rumble) {
-    if (!pad_ds5 || ds_stopped) return;
+// Under lock: give a DualSense the trigger effects the settings ask for, when they differ from the ones it has.
+// TOTK_DUALSENSE_TRIGGERS (0..8, live) sets native adaptive trigger resistance (works with or without renhdrum.dll);
+// TOTK_DUALSENSE_TRIGGERS_MODE chooses R2, R2+L2, or L2. When RenHDrum is active and TOTK_DUALSENSE_TRIGGER_VIBRATION
+// is on, RenHDrum's TriTrigger (ds_tri_active/ds_tri_effect) temporarily overrides a trigger during impact pulses.
+// Over Bluetooth with HD Haptics (report 0x36) active, the 47-byte block is carried inside report 0x36.
+static void triggers_update(uint64_t now) {
+    if (!pad_ds5 || ds_stopped || !pad) return;
     unsigned ver = cfg_version();
     if (ds_strength < 0 || ver != ds_cfg_seen) {
         ds_cfg_seen = ver;
@@ -606,12 +740,27 @@ static void triggers_update(uint64_t now, int keep_rumble) {
         const char *m = cfg_value("TOTK_DUALSENSE_TRIGGERS_MODE");
         ds_mode = !strcasecmp(m, "both") || !strcasecmp(m, "r2+l2") ? DS_TRIGGERS_R2_L2 :
                   !strcasecmp(m, "l2") ? DS_TRIGGERS_L2 : DS_TRIGGERS_R2;
-        ds_rumble = cfg_bool("TOTK_DUALSENSE_TRIGGER_VIBRATION") || input_rumble_triggers_enabled();
     }
-    DsTriggerState s = {.strength = ds_strength, .vibration = ds_rumble && now < ds_vibration_until ? ds_vibration : 0, .mode = ds_mode};
+    DsTriggerState s = {.strength = ds_strength, .vibration = 0, .mode = ds_mode};
     uint8_t want[2][DS_TRIGGER_BYTES], report[DS_REPORT_BYTES];
-    ds_triggers_pick(&s, want[0], want[1]);
+    ds_triggers_pick(&s, want[0], want[1]);   // want[0] = R2, want[1] = L2
+    if (rh_ds_trig_vib) {
+        if (ds_tri_active[1]) memcpy(want[0], ds_tri_effect[1], DS_TRIGGER_BYTES);
+        if (ds_tri_active[0]) memcpy(want[1], ds_tri_effect[0], DS_TRIGGER_BYTES);
+    }
     if (ds_live ? !memcmp(want, ds_sent, sizeof want) : want[0][0] == DS_MODE_OFF && want[1][0] == DS_MODE_OFF) return;
+    if (ds_is_bt && ds_bt_report36 && ds_hid && dualsense_dsp && rh.dualsense_dsp_build_bt36_report) {
+        if (!ds_live)
+            rt_log("input: DualSense trigger effects on via BT 0x36 (dualsense_triggers = %d, mode = %s, trigger_vibration = %d)",
+                   ds_strength, ds_mode == DS_TRIGGERS_R2_L2 ? "both" : ds_mode == DS_TRIGGERS_L2 ? "l2" : "r2",
+                   rh_ds_trig_vib);
+        memcpy(ds_sent, want, sizeof want);
+        ds_live = want[0][0] != DS_MODE_OFF || want[1][0] != DS_MODE_OFF;
+        ds_bt_trigger_dirty = 1;
+        plat_xchg32(&haptics_work, 1);
+        if (now >= ds_bt_next_ns) dualsense_bt_tick(now);
+        return;
+    }
     ds_report_triggers(report, want[0], want[1]);
     if (!SDL_SendGamepadEffect(pad, report, sizeof report)) {
         // SDL waits 10 ms in each call on a pad it cannot switch to enhanced reports: one try per connection
@@ -620,32 +769,16 @@ static void triggers_update(uint64_t now, int keep_rumble) {
         return;
     }
     if (!ds_live)
-        rt_log("input: DualSense trigger effects on (dualsense_triggers = %d, mode = %s, dualsense_trigger_vibration = %d)",
-               ds_strength, ds_mode == DS_TRIGGERS_R2_L2 ? "both" : ds_mode == DS_TRIGGERS_L2 ? "l2" : "r2", ds_rumble);
+        rt_log("input: DualSense trigger effects on (dualsense_triggers = %d, mode = %s, trigger_vibration = %d)",
+               ds_strength, ds_mode == DS_TRIGGERS_R2_L2 ? "both" : ds_mode == DS_TRIGGERS_L2 ? "l2" : "r2",
+               rh_ds_trig_vib);
     memcpy(ds_sent, want, sizeof want);
     ds_live = 1;
-    if (keep_rumble && now < rumble_until && (rumble_low || rumble_high))
-        SDL_RumbleGamepad(pad, rumble_low, rumble_high, (uint32_t)((rumble_until - now) / 1000000u) + 1);
 }
 
-// Under lock: the haptics took a rumble (input_hd_rumble), so input_rumble does not see it. The triggers vibrate at
-// the level of amp, the stronger side's high band amplitude (0..1), until the game's next value or for as long as
-// haptics_main lets a side sound that the game left alone. No SDL rumble is in effect then, so none is sent again:
-// it would switch the controller from its haptics to the emulated rumble.
-static void triggers_hd_rumble(uint64_t now, float amp) {
-    if (!pad_ds5) return;
-    rumble_low = rumble_high = 0, rumble_until = 0;
-    ds_vibration = ds_vibration_level((uint16_t)((amp > 0 ? amp < 1 ? amp : 1 : 0) * 65535.0f + 0.5f));
-    ds_vibration_until = now + 250000000ull;
-    triggers_update(now, 0);
-}
-
-// Under lock, before the gamepad is closed for good: a DualSense that was given trigger effects gets its triggers
-// back free, as the controller keeps an effect until it is told otherwise or powers off. SDL writes the report from
-// a thread of its own; SDL_CloseGamepad waits for it (SDL, src/joystick/hidapi/SDL_hidapijoystick.c,
-// HIDAPI_JoystickClose: up to 30 ms). Nothing is sent to any other gamepad.
+// Under lock, before the gamepad is closed for good: free the DualSense triggers so they do not stay stiff after exit.
 static void triggers_stop(void) {
-    ds_stopped = 1;   // a poll may open the gamepad again before the process is gone: no effect for it
+    ds_stopped = 1;
     if (!pad || !ds_live) return;
     uint8_t off[DS_TRIGGER_BYTES], report[DS_REPORT_BYTES];
     ds_trigger_off(off);
@@ -655,15 +788,12 @@ static void triggers_stop(void) {
     rt_log("input: DualSense trigger effects off");
 }
 
-static void renhdrum_close_pad(SDL_Gamepad *closing_pad);
-static void renhdrum_open_pad(SDL_Gamepad *opened_pad);
-static void renhdrum_sync_cfg(void);
-
-// plat_exit runs no atexit handlers: the exit paths (gfx_window_closed, svc ExitProcess, the end of a --seconds run)
-// call this first so the controller is left silent, wired USB Switch Pro Controllers exit 0x30 mode (SDL_CloseGamepad),
-// a DualSense's triggers are free again (triggers_stop), and the DSP / engine are destroyed.
+// plat_exit runs no atexit handlers: the exit paths call this first so the controller is left silent, wired USB Switch
+// Pro Controllers exit 0x30 mode (SDL_CloseGamepad), DualSense speaker & triggers are reset, and engines are destroyed.
 void input_haptics_stop(void) {
     plat_mutex_lock(&lock);
+    plat_xchg32(&rumble_ready, 0);
+    rumble_cancel();
     renhdrum_close_pad(pad);
     triggers_stop();
     if (pad) {
@@ -725,8 +855,15 @@ static int renhdrum_load(void) {
     rh.dualsense_dsp_destroy = RH_SYM(dualsense_dsp_destroy);
     rh.dualsense_dsp_set_target = RH_SYM(dualsense_dsp_set_target);
     rh.dualsense_dsp_set_half_target = RH_SYM(dualsense_dsp_set_half_target);
+    rh.dualsense_dsp_set_speaker = RH_SYM(dualsense_dsp_set_speaker);
     rh.dualsense_dsp_fill_f32 = RH_SYM(dualsense_dsp_fill_f32);
     rh.dualsense_dsp_build_bt_report = RH_SYM(dualsense_dsp_build_bt_report);
+    rh.dualsense_dsp_build_bt36_report = RH_SYM(dualsense_dsp_build_bt36_report);
+    rh.hd_haptics_speaker_block = RH_SYM(hd_haptics_speaker_block);
+    rh.tri_trigger_create = RH_SYM(tri_trigger_create);
+    rh.tri_trigger_destroy = RH_SYM(tri_trigger_destroy);
+    rh.tri_trigger_update = RH_SYM(tri_trigger_update);
+    rh.tri_trigger_note_action = RH_SYM(tri_trigger_note_action);
     rh.xbox_rumble_create = RH_SYM(xbox_rumble_create);
     rh.xbox_rumble_destroy = RH_SYM(xbox_rumble_destroy);
     rh.xbox_rumble_push_half_sample = RH_SYM(xbox_rumble_push_half_sample);
@@ -734,7 +871,10 @@ static int renhdrum_load(void) {
     rh.xbox_rumble_resend = RH_SYM(xbox_rumble_resend);
     rh.set_nx2_mode = RH_SYM(set_nx2_mode);
     rh.valve_grip_dsp_create = RH_SYM(valve_grip_dsp_create);
+    rh.valve_grip_dsp_create_ex = RH_SYM(valve_grip_dsp_create_ex);
     rh.valve_grip_build_report = RH_SYM(valve_grip_build_report);
+    rh.valve_grip_mode_tick = RH_SYM(valve_grip_mode_tick);
+    rh.valve_grip_mode_off = RH_SYM(valve_grip_mode_off);
 #undef RH_SYM
 
     if (!rh.version || !rh.engine_create || !rh.engine_destroy || !rh.engine_apply_settings ||
@@ -765,6 +905,108 @@ static int renhdrum_load(void) {
 
 int input_renhdrum_available(void) {
     return renhdrum_load();
+}
+
+static void dualsense_sync_tri_triggers(uint64_t now_ns) {
+    int want_tri = dualsense_dsp && rh_ds_trig_vib && rh.tri_trigger_create && rh.tri_trigger_destroy && rh.tri_trigger_update;
+    int changed = 0;
+    for (int s = 0; s < 2; s++) {
+        if (want_tri && !ds_tri[s]) {
+            ds_tri[s] = rh.tri_trigger_create();
+            ds_tri_active[s] = 0;
+            ds_tri_fresh[s] = 0;
+            ds_trigger_off(ds_tri_effect[s]);
+            if (ds_tri[s] && s == 0) rt_log("input: RenHDrum DualSense L2/R2 trigger rumble on");
+        } else if (!want_tri && ds_tri[s]) {
+            rh.tri_trigger_destroy(ds_tri[s]);
+            ds_tri[s] = NULL;
+            if (ds_tri_active[s]) changed = 1;
+            ds_tri_active[s] = 0;
+            ds_tri_fresh[s] = 0;
+            ds_trigger_off(ds_tri_effect[s]);
+        }
+    }
+    if (changed) triggers_update(now_ns);
+}
+
+static void dualsense_tri_step(uint64_t now_ns) {
+    if (!pad || !pad_ds5 || (!ds_tri[0] && !ds_tri[1]) || !rh.tri_trigger_update) return;
+    static const SDL_GamepadButton action_buttons[] = {
+        SDL_GAMEPAD_BUTTON_SOUTH, SDL_GAMEPAD_BUTTON_EAST, SDL_GAMEPAD_BUTTON_WEST, SDL_GAMEPAD_BUTTON_NORTH,
+        SDL_GAMEPAD_BUTTON_LEFT_STICK, SDL_GAMEPAD_BUTTON_RIGHT_STICK, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,
+        SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, SDL_GAMEPAD_BUTTON_DPAD_UP, SDL_GAMEPAD_BUTTON_DPAD_DOWN,
+        SDL_GAMEPAD_BUTTON_DPAD_LEFT, SDL_GAMEPAD_BUTTON_DPAD_RIGHT,
+    };
+    int btn_action = 0;
+    for (size_t i = 0; !btn_action && i < sizeof action_buttons / sizeof *action_buttons; i++)
+        btn_action = SDL_GetGamepadButton(pad, action_buttons[i]);
+    int raw[2] = {SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER),
+                  SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)};
+    uint8_t depth[2];
+    for (int s = 0; s < 2; s++) {
+        int a = raw[s] < 0 ? 0 : raw[s] > 32767 ? 32767 : raw[s];
+        depth[s] = (uint8_t)(a * 255 / 32767);
+    }
+    uint32_t now_ms = (uint32_t)(now_ns / 1000000ull);
+    int any_changed = 0;
+    for (int s = 0; s < 2; s++) {
+        if (!ds_tri[s]) continue;
+        if ((btn_action || depth[1 - s] > 12) && rh.tri_trigger_note_action)
+            rh.tri_trigger_note_action(ds_tri[s], now_ms);
+        int fresh = ds_tri_fresh[s];
+        ds_tri_fresh[s] = 0;
+        uint8_t eff11[DS_TRIGGER_BYTES];
+        if (rh.tri_trigger_update(ds_tri[s], now_ms, depth[s],
+                                  ds_tri_sample[s][0], ds_tri_sample[s][1],
+                                  ds_tri_sample[s][2], ds_tri_sample[s][3], fresh != 0, eff11) == 1) {
+            memcpy(ds_tri_effect[s], eff11, DS_TRIGGER_BYTES);
+            ds_tri_active[s] = eff11[0] != DS_MODE_OFF;
+            any_changed = 1;
+        }
+    }
+    if (any_changed) triggers_update(now_ns);
+}
+
+static void dualsense_sync_hd_haptics(void) {
+    if (!dualsense_dsp) return;
+    if (!ds_is_bt) {
+        if (rh_ds_hd_haptics && ds_audio_stream && !ds_speaker_on) {
+            plat_mutex_lock(&dsp_lock);
+            if (dualsense_dsp && rh.dualsense_dsp_set_speaker)
+                rh.dualsense_dsp_set_speaker(dualsense_dsp, RENHDRUM_HD_HAPTICS_SPEAKER_PERCENT);
+            plat_mutex_unlock(&dsp_lock);
+            if (pad && rh.hd_haptics_speaker_block) {
+                uint8_t blk[RENHDRUM_DS5_EFFECTS_SIZE];
+                if (rh.hd_haptics_speaker_block(1, blk) == RENHDRUM_OK)
+                    SDL_SendGamepadEffect(pad, blk, sizeof blk);
+            }
+            ds_speaker_on = 1;
+            rt_log("input: DualSense HD Haptics speaker on (%d%%)", RENHDRUM_HD_HAPTICS_SPEAKER_PERCENT);
+        } else if (!rh_ds_hd_haptics && ds_speaker_on) {
+            plat_mutex_lock(&dsp_lock);
+            if (dualsense_dsp && rh.dualsense_dsp_set_speaker)
+                rh.dualsense_dsp_set_speaker(dualsense_dsp, 0);
+            plat_mutex_unlock(&dsp_lock);
+            if (pad && rh.hd_haptics_speaker_block) {
+                uint8_t blk[RENHDRUM_DS5_EFFECTS_SIZE];
+                if (rh.hd_haptics_speaker_block(0, blk) == RENHDRUM_OK)
+                    SDL_SendGamepadEffect(pad, blk, sizeof blk);
+            }
+            ds_speaker_on = 0;
+            rt_log("input: DualSense HD Haptics speaker off");
+        }
+    } else {
+        int want36 = rh_ds_hd_haptics && rh.dualsense_dsp_build_bt36_report != NULL;
+        ds_bt_report36 = want36;
+        plat_mutex_lock(&dsp_lock);
+        if (dualsense_dsp && rh.dualsense_dsp_set_speaker)
+            rh.dualsense_dsp_set_speaker(dualsense_dsp, want36 ? RENHDRUM_HD_HAPTICS_SPEAKER_PERCENT : 0);
+        plat_mutex_unlock(&dsp_lock);
+        if (want36 && pad_ds5 && ds_live) {
+            ds_bt_trigger_dirty = 1;
+            plat_xchg32(&haptics_work, 1);
+        }
+    }
 }
 
 static void SDLCALL dualsense_audio_cb(void *userdata, SDL_AudioStream *stream, int additional_amount, int total_amount) {
@@ -827,6 +1069,7 @@ static int dualsense_try_open_audio(void) {
     }
     SDL_ResumeAudioStreamDevice(ds_audio_stream);
     rt_log("input: DualSense 48 kHz 4-channel USB audio haptics stream active");
+    dualsense_sync_hd_haptics();
     return 1;
 }
 
@@ -845,23 +1088,42 @@ static void dualsense_bt_tick(uint64_t now_ns) {
         ds_bt_next_ns = now_ns + RENHDRUM_DS5_BT_PERIOD_NS;
     else
         ds_bt_next_ns += RENHDRUM_DS5_BT_PERIOD_NS;
+
+    if (ds_bt_report36 && rh.dualsense_dsp_build_bt36_report) {
+        uint8_t report398[RENHDRUM_DS5_BT36_REPORT_SIZE];
+        uint8_t state47[RENHDRUM_DS5_EFFECTS_SIZE];
+        int have_state = pad_ds5 && (ds_live || ds_bt_trigger_dirty);
+        if (have_state) ds_report_triggers(state47, ds_sent[0], ds_sent[1]);
+        plat_mutex_lock(&dsp_lock);
+        int32_t rc = rh.dualsense_dsp_build_bt36_report(dualsense_dsp, have_state ? state47 : NULL, 0, report398);
+        plat_mutex_unlock(&dsp_lock);
+        if (rc == 1) {
+            ds_bt_last_active_ns = now_ns;
+            ds_bt_trigger_dirty = 0;
+            if (SDL_hid_write(ds_hid, report398, sizeof report398) < 0) {
+                static volatile int32_t warned36;
+                if (!plat_xchg32(&warned36, 1)) rt_log("input: DualSense report 0x36 write failed (%s)", SDL_GetError());
+            }
+        }
+        return;
+    }
+
     uint8_t report142[RENHDRUM_DS5_BT_REPORT_SIZE];
     plat_mutex_lock(&dsp_lock);
     int32_t rc = rh.dualsense_dsp_build_bt_report(dualsense_dsp, RENHDRUM_DS5_BT_BUFFER_LENGTH_DEFAULT, report142);
     plat_mutex_unlock(&dsp_lock);
     if (rc == 1) ds_bt_last_active_ns = now_ns;
-    // Keep sending for 2.0s after any active vibration (matching Brontide DualSenseBtLoop)
-    // so the DualSense 3 kHz audio buffer does not starve and voice-coil haptics stay active.
+    // Keep sending for 2.0s after any active vibration so the DualSense 3 kHz audio buffer does not starve.
     if (ds_bt_last_active_ns && now_ns - ds_bt_last_active_ns < 2000000000ull) {
         if (SDL_hid_write(ds_hid, report142, sizeof report142) < 0) {
-            static volatile int32_t warned;
-            if (!plat_xchg32(&warned, 1)) rt_log("input: DualSense report 0x32 write failed (%s)", SDL_GetError());
+            static volatile int32_t warned32;
+            if (!plat_xchg32(&warned32, 1)) rt_log("input: DualSense report 0x32 write failed (%s)", SDL_GetError());
         }
     }
 }
 
-// The HID device of a Bluetooth DualSense, opened a second time for report 0x32: the joystick's own path (HIDAPI
-// driver), else the first Bluetooth device with this vendor and product.
+// The HID device of a Bluetooth DualSense, opened a second time for reports 0x36 and 0x32: the joystick's own path
+// (HIDAPI driver), else the first Bluetooth device with this vendor and product.
 static SDL_hid_device *dualsense_open_hid(SDL_Joystick *joy, uint16_t vid, uint16_t pid) {
     const char *path = SDL_GetJoystickPath(joy);
     SDL_hid_device *d = path && *path ? SDL_hid_open_path(path) : NULL;
@@ -894,67 +1156,89 @@ static void xbox_hd_tick(uint64_t now_ns) {
     }
 }
 
-static void steam_grip_mode(SDL_hid_device *hid, uint8_t op, uint8_t format) {
+static void steam_grip_mode_off(SDL_hid_device *hid, uint8_t format) {
     if (!hid) return;
-    static const uint8_t channels[2] = {2, 5};
-    for (int i = 0; i < 2; i++) {
-        uint8_t r[4] = {0x86, op, channels[i], format};
-        SDL_hid_write(hid, r, sizeof r);
+    if (rh.valve_grip_mode_off) {
+        uint8_t reports[RENHDRUM_VALVE_GRIP_MODE_REPORTS_SIZE];
+        const uint8_t fmts[2] = {format, 0};
+        for (int f = 0; f < 2; f++) {
+            if (rh.valve_grip_mode_off(fmts[f], reports) == RENHDRUM_VALVE_GRIP_MODE_REPORT_COUNT) {
+                SDL_hid_write(hid, reports, RENHDRUM_VALVE_GRIP_MODE_REPORT_SIZE);
+                SDL_hid_write(hid, reports + RENHDRUM_VALVE_GRIP_MODE_REPORT_SIZE, RENHDRUM_VALVE_GRIP_MODE_REPORT_SIZE);
+            }
+        }
+        return;
     }
+    static const uint8_t channels[2] = {2, 5};
+    const uint8_t fmts[2] = {format, 0};
+    for (int f = 0; f < 2; f++)
+        for (int i = 0; i < 2; i++) {
+            uint8_t r[4] = {0x86, 1, channels[i], fmts[f]};
+            SDL_hid_write(hid, r, sizeof r);
+        }
 }
 
 static void steam_grip_tick(uint64_t now_ns) {
     if (!steam_dsp || !steam_hid || !rh.valve_grip_build_report || !steam_period_ns) return;
-    if (steam_init_step == 1) {
-        if (now_ns < steam_init_ns) return;
-        steam_grip_mode(steam_hid, 2, steam_format);
-        steam_init_step = 2;
-        steam_init_ns = now_ns + 200000000ull;
-        return;
-    }
-    if (steam_init_step == 2) {
-        if (now_ns < steam_init_ns) return;
-        if (pad) SDL_RumbleGamepad(pad, 0, 0, 0);
-        steam_init_step = 0;
-        steam_init_ns = 0;
-        steam_next_ns = now_ns;
-    }
     if (now_ns < steam_next_ns) return;
-    if (!steam_next_ns || now_ns - steam_next_ns > 100000000ull)
+    if (!steam_next_ns || now_ns - steam_next_ns > 100000000ull) {
         steam_next_ns = now_ns + steam_period_ns;
-    else
+        steam_stalled = 1;
+    } else {
         steam_next_ns += steam_period_ns;
-
+    }
     uint8_t report[RENHDRUM_VALVE_GRIP_REPORT_SIZE];
+    uint8_t mode_reports[RENHDRUM_VALVE_GRIP_MODE_REPORTS_SIZE];
+    int32_t mode_count = 0;
     plat_mutex_lock(&dsp_lock);
     int32_t rc = rh.valve_grip_build_report(steam_dsp, steam_format, report);
+    if (rc >= 0 && rh.valve_grip_mode_tick)
+        mode_count = rh.valve_grip_mode_tick(steam_dsp, steam_format, now_ns, steam_stalled != 0, mode_reports);
     plat_mutex_unlock(&dsp_lock);
     if (rc < 0) return;
-    if (rc == 1) steam_last_active_ns = now_ns;
-    if (steam_last_active_ns && now_ns - steam_last_active_ns < 100000000ull) {
-        if (SDL_hid_write(steam_hid, report, sizeof report) < 0) {
-            if (++steam_fails >= 100) {
-                rt_log("input: Steam Controller (2026) grip HID write failed (%s); falling back to standard rumble",
-                       SDL_GetError());
-                plat_mutex_lock(&dsp_lock);
-                RenHdcDualSenseDsp *d = steam_dsp;
-                steam_dsp = NULL;
-                plat_mutex_unlock(&dsp_lock);
-                rh.dualsense_dsp_destroy(d);
-                SDL_hid_close(steam_hid);
-                steam_hid = NULL;
-                steam_format = 0;
-                steam_period_ns = 0;
-                steam_next_ns = 0;
-                steam_last_active_ns = 0;
+
+    steam_stalled = 0;
+    if (mode_count == RENHDRUM_VALVE_GRIP_MODE_REPORT_COUNT) {
+        for (int i = 0; i < mode_count; i++) {
+            if (SDL_hid_write(steam_hid, mode_reports + i * RENHDRUM_VALVE_GRIP_MODE_REPORT_SIZE,
+                              RENHDRUM_VALVE_GRIP_MODE_REPORT_SIZE) < 0) {
+                steam_stalled = 1;
+                steam_fails++;
+            } else {
                 steam_fails = 0;
-                steam_init_step = 0;
-                steam_init_ns = 0;
-                plat_xchg32(&hd_pad_kind, HD_PAD_NONE);
             }
+        }
+    }
+    if (rc == 1 || rc == RENHDRUM_VALVE_GRIP_SKIP) steam_last_active_ns = now_ns;
+    if (rc != RENHDRUM_VALVE_GRIP_SKIP && steam_last_active_ns && now_ns - steam_last_active_ns < 100000000ull) {
+        uint64_t t0 = plat_now_ns();
+        int w = SDL_hid_write(steam_hid, report, sizeof report);
+        uint64_t t1 = plat_now_ns();
+        if (w < 0) {
+            steam_stalled = 1;
+            steam_fails++;
         } else {
             steam_fails = 0;
+            if (t1 - t0 > steam_period_ns) steam_stalled = 1;
         }
+    }
+    if (steam_fails >= 100) {
+        rt_log("input: Steam Controller (2026) grip HID write failed (%s); falling back to standard rumble", SDL_GetError());
+        plat_mutex_lock(&dsp_lock);
+        RenHdcDualSenseDsp *d = steam_dsp;
+        steam_dsp = NULL;
+        plat_mutex_unlock(&dsp_lock);
+        rh.dualsense_dsp_destroy(d);
+        steam_grip_mode_off(steam_hid, steam_format);
+        SDL_hid_close(steam_hid);
+        steam_hid = NULL;
+        steam_format = 0;
+        steam_period_ns = 0;
+        steam_next_ns = 0;
+        steam_last_active_ns = 0;
+        steam_fails = 0;
+        steam_stalled = 0;
+        plat_xchg32(&hd_pad_kind, HD_PAD_NONE);
     }
 }
 
@@ -980,8 +1264,12 @@ static void haptics_main(void *arg) {
                     if (hd_active_side[s] && now - hd_last_push_ns[s] > 250000000ull) {
                         hd_active_side[s] = 0;
                         bool is_right = s == 1;
-                        if (dualsense_dsp)
+                        if (dualsense_dsp) {
                             dsp_push_target(dualsense_dsp, s, 0.0f, 160.0f, 0.0f, 320.0f, 0.0f, 160.0f, 0.0f, 320.0f);
+                            ds_tri_sample[s][0] = 0.0f; ds_tri_sample[s][1] = 160.0f;
+                            ds_tri_sample[s][2] = 0.0f; ds_tri_sample[s][3] = 320.0f;
+                            ds_tri_fresh[s] = 1;
+                        }
                         if (steam_dsp)
                             dsp_push_target(steam_dsp, s, 0.0f, 160.0f, 0.0f, 320.0f, 0.0f, 160.0f, 0.0f, 320.0f);
                         if (renhdrum_engine) {
@@ -996,6 +1284,7 @@ static void haptics_main(void *arg) {
                     }
                 }
                 if (dualsense_dsp) {
+                    dualsense_tri_step(now);
                     if (ds_is_bt) dualsense_bt_tick(now);
                     else dualsense_maintain_audio(now);
                 }
@@ -1003,9 +1292,9 @@ static void haptics_main(void *arg) {
                 if (xbox_rumble) xbox_hd_tick(now);
                 if (steam_dsp) steam_grip_tick(now);
                 int usb_retry = dualsense_dsp && !ds_is_bt && !ds_audio_stream && ds_audio_tries < 10;
-                active = hd_active_side[0] || hd_active_side[1] ||
-                         (ds_is_bt && ds_bt_last_active_ns && now - ds_bt_last_active_ns < 2000000000ull) ||
-                         steam_init_step ||
+                active = hd_active_side[0] || hd_active_side[1] || ds_tri_active[0] || ds_tri_active[1] ||
+                         (ds_is_bt && ((ds_bt_last_active_ns && now - ds_bt_last_active_ns < 2000000000ull) ||
+                                       ds_bt_trigger_dirty)) ||
                          (steam_last_active_ns && now - steam_last_active_ns < 100000000ull) ||
                          usb_retry;
                 if (active)
@@ -1024,6 +1313,19 @@ static void haptics_thread_start(void) {
 }
 
 static void renhdrum_close_pad(SDL_Gamepad *closing_pad) {
+    for (int s = 0; s < 2; s++) {
+        if (ds_tri[s] && rh.tri_trigger_destroy) rh.tri_trigger_destroy(ds_tri[s]);
+        ds_tri[s] = NULL;
+        ds_tri_active[s] = 0;
+        ds_tri_fresh[s] = 0;
+        memset(ds_tri_sample[s], 0, sizeof ds_tri_sample[s]);
+    }
+    if (ds_speaker_on && closing_pad && SDL_GamepadConnected(closing_pad) && rh.hd_haptics_speaker_block) {
+        uint8_t blk[RENHDRUM_DS5_EFFECTS_SIZE];
+        if (rh.hd_haptics_speaker_block(0, blk) == RENHDRUM_OK)
+            SDL_SendGamepadEffect(closing_pad, blk, sizeof blk);
+    }
+    ds_speaker_on = 0;
     if (ds_audio_stream) {
         SDL_AudioStream *s = ds_audio_stream;
         ds_audio_stream = NULL;
@@ -1037,12 +1339,19 @@ static void renhdrum_close_pad(SDL_Gamepad *closing_pad) {
     }
     if (dualsense_dsp) {
         if (ds_hid && closing_pad && SDL_GamepadConnected(closing_pad)) {
-            uint8_t report142[RENHDRUM_DS5_BT_REPORT_SIZE];
             plat_mutex_lock(&dsp_lock);
             rh.dualsense_dsp_set_target(dualsense_dsp, 0.0f, 160.0f, 0.0f, 320.0f, 0.0f, 160.0f, 0.0f, 320.0f);
-            int32_t rc = rh.dualsense_dsp_build_bt_report(dualsense_dsp, RENHDRUM_DS5_BT_BUFFER_LENGTH_DEFAULT, report142);
-            plat_mutex_unlock(&dsp_lock);
-            if (rc >= 0) SDL_hid_write(ds_hid, report142, sizeof report142);
+            if (ds_bt_report36 && rh.dualsense_dsp_build_bt36_report) {
+                uint8_t report398[RENHDRUM_DS5_BT36_REPORT_SIZE];
+                int32_t rc = rh.dualsense_dsp_build_bt36_report(dualsense_dsp, NULL, 0, report398);
+                plat_mutex_unlock(&dsp_lock);
+                if (rc == 1) SDL_hid_write(ds_hid, report398, sizeof report398);
+            } else {
+                uint8_t report142[RENHDRUM_DS5_BT_REPORT_SIZE];
+                int32_t rc = rh.dualsense_dsp_build_bt_report(dualsense_dsp, RENHDRUM_DS5_BT_BUFFER_LENGTH_DEFAULT, report142);
+                plat_mutex_unlock(&dsp_lock);
+                if (rc >= 0) SDL_hid_write(ds_hid, report142, sizeof report142);
+            }
         }
         if (ds_hid) {
             SDL_hid_close(ds_hid);
@@ -1079,10 +1388,7 @@ static void renhdrum_close_pad(SDL_Gamepad *closing_pad) {
         rh.dualsense_dsp_destroy(d);
     }
     if (steam_hid) {
-        if (closing_pad && SDL_GamepadConnected(closing_pad)) {
-            steam_grip_mode(steam_hid, 1, steam_format);
-            steam_grip_mode(steam_hid, 1, 0);
-        }
+        if (closing_pad && SDL_GamepadConnected(closing_pad)) steam_grip_mode_off(steam_hid, steam_format);
         SDL_hid_close(steam_hid);
         steam_hid = NULL;
     }
@@ -1091,9 +1397,10 @@ static void renhdrum_close_pad(SDL_Gamepad *closing_pad) {
     steam_next_ns = 0;
     steam_last_active_ns = 0;
     steam_fails = 0;
-    steam_init_step = 0;
-    steam_init_ns = 0;
+    steam_stalled = 0;
     ds_is_bt = 0;
+    ds_bt_report36 = 0;
+    ds_bt_trigger_dirty = 0;
     ds_bt_last_active_ns = 0;
     ds_bt_next_ns = 0;
     ds_audio_tries = 0;
@@ -1106,6 +1413,10 @@ static void renhdrum_close_pad(SDL_Gamepad *closing_pad) {
 static void renhdrum_open_pad(SDL_Gamepad *opened_pad) {
     renhdrum_close_pad(NULL);
     renhdrum_read_cfg();
+    if (!opened_pad || steam_virtual(opened_pad)) {
+        plat_xchg32(&hd_pad_kind, HD_PAD_NONE);
+        return;
+    }
     SDL_Joystick *joy = SDL_GetGamepadJoystick(opened_pad);
     if (!joy) {
         plat_xchg32(&hd_pad_kind, HD_PAD_NONE);
@@ -1141,12 +1452,17 @@ static void renhdrum_open_pad(SDL_Gamepad *opened_pad) {
         plat_mutex_unlock(&dsp_lock);
         ds_is_bt = wireless ? 1 : 0;
         SDL_RumbleGamepad(opened_pad, 0, 0, 0);
-        if (!ds_is_bt) {
+        if (ds_is_bt) {
+            dualsense_sync_hd_haptics();
+        } else {
             dualsense_maintain_audio(plat_now_ns());
             if (!ds_audio_stream) plat_xchg32(&haptics_work, 1);
         }
-        rt_log("input: RenHDrum DualSense HD rumble active (%s, volume %d%%, crisp %s)",
-               ds_is_bt ? "Bluetooth HID report 0x32" : "USB 48 kHz 4-channel audio VCM", rh_ds_vol, crisp ? "on" : "off");
+        dualsense_sync_tri_triggers(plat_now_ns());
+        rt_log("input: RenHDrum DualSense HD rumble active (%s, volume %d%%, crisp %s, hd_haptics %s)",
+               ds_is_bt ? (ds_bt_report36 ? "Bluetooth HID report 0x36" : "Bluetooth HID report 0x32")
+                        : "USB 48 kHz 4-channel audio VCM",
+               rh_ds_vol, crisp ? "on" : "off", rh_ds_hd_haptics ? "on" : "off");
     } else if (vid == 0x057E && (pid == 0x2009 || pid == 0x2006 || pid == 0x2007)) {
         if (!renhdrum_load()) return;
         plat_xchg32(&hd_pad_kind, wireless ? HD_PAD_SWITCH_BT : HD_PAD_SWITCH_USB);
@@ -1193,7 +1509,7 @@ static void renhdrum_open_pad(SDL_Gamepad *opened_pad) {
             rt_log("input: Steam Controller (2026) HD Rumble off (TOTK_STEAM_RUMBLE=0); using standard SDL rumble");
             return;
         }
-        if (!rh.valve_grip_dsp_create || !rh.valve_grip_build_report) {
+        if ((!rh.valve_grip_dsp_create_ex && !rh.valve_grip_dsp_create) || !rh.valve_grip_build_report) {
             rt_log("input: Steam Controller (2026) grip functions missing in renhdrum.dll; using standard SDL rumble");
             return;
         }
@@ -1201,12 +1517,10 @@ static void renhdrum_open_pad(SDL_Gamepad *opened_pad) {
             rt_log("input: Steam Input virtual pad active; skipping raw Steam Controller (2026) grip HID");
             return;
         }
-#ifndef _WIN32
-        if (pid == 0x1303) {
+        if (sizeof PLAT_EXE_SUFFIX <= 1 && pid == 0x1303) {
             rt_log("input: Steam Controller (2026) Bluetooth grip streaming requires Windows; using standard rumble");
             return;
         }
-#endif
         const char *path = SDL_GetGamepadPath(opened_pad);
         if (!path || !*path) path = SDL_GetJoystickPath(joy);
         if (!path || !*path) return;
@@ -1218,7 +1532,9 @@ static void renhdrum_open_pad(SDL_Gamepad *opened_pad) {
         }
         steam_format = pid == 0x1302 ? RENHDRUM_VALVE_GRIP_FORMAT_MULAW_8K : RENHDRUM_VALVE_GRIP_FORMAT_MULAW_4K;
         steam_period_ns = pid == 0x1302 ? RENHDRUM_VALVE_GRIP_PERIOD_NS_8K : RENHDRUM_VALVE_GRIP_PERIOD_NS_4K;
-        RenHdcDualSenseDsp *dsp = rh.valve_grip_dsp_create(rh_steam_vol, rh_steam_crisp != 0);
+        RenHdcDualSenseDsp *dsp = rh.valve_grip_dsp_create_ex
+                                      ? rh.valve_grip_dsp_create_ex(rh_steam_vol, rh_steam_crisp != 0, true)
+                                      : rh.valve_grip_dsp_create(rh_steam_vol, rh_steam_crisp != 0);
         if (!dsp) {
             SDL_hid_close(steam_hid);
             steam_hid = NULL;
@@ -1226,13 +1542,10 @@ static void renhdrum_open_pad(SDL_Gamepad *opened_pad) {
             steam_period_ns = 0;
             return;
         }
-        steam_grip_mode(steam_hid, 1, 0);
-        steam_init_step = 1;
-        steam_init_ns = plat_now_ns() + 10000000ull;
         plat_mutex_lock(&dsp_lock);
         steam_dsp = dsp;
         plat_mutex_unlock(&dsp_lock);
-        plat_xchg32(&haptics_work, 1);
+        SDL_RumbleGamepad(opened_pad, 0, 0, 0);
         rt_log("input: RenHDrum Steam Controller (2026) grip HD Rumble active (%s, volume %d%%, crisp %s)",
                pid == 0x1302 ? "USB 8 kHz" : pid == 0x1304 ? "Wireless dongle 4 kHz" : "Bluetooth 4 kHz",
                rh_steam_vol, rh_steam_crisp ? "on" : "off");
@@ -1244,21 +1557,30 @@ static void renhdrum_open_pad(SDL_Gamepad *opened_pad) {
 static void renhdrum_sync_cfg(void) {
     if (cfg_version() == rh_cfg_seen) return;
     int was_hd_on = rh_hd_on, was_bt_level = rh_bt_level, was_hd_crisp = rh_hd_crisp, was_hd_bt_crisp = rh_hd_bt_crisp;
-    int was_ds_on = rh_ds_on, was_ds_vol = rh_ds_vol, was_ds_crisp = rh_ds_crisp, was_ds_bt_crisp = rh_ds_bt_crisp;
+    int was_ds_on = rh_ds_on, was_ds_hd = rh_ds_hd_haptics, was_ds_vol = rh_ds_vol, was_ds_crisp = rh_ds_crisp,
+        was_ds_bt_crisp = rh_ds_bt_crisp, was_ds_trig_vib = rh_ds_trig_vib;
     int was_xbox_on = rh_xbox_on, was_xbox_trig = rh_xbox_trig;
     int was_steam_on = rh_steam_on, was_steam_vol = rh_steam_vol, was_steam_crisp = rh_steam_crisp;
     renhdrum_read_cfg();
     int kind = (int)plat_cas32(&hd_pad_kind, 0, 0);
     if (kind == HD_PAD_DUALSENSE_USB || kind == HD_PAD_DUALSENSE_BT) {
         if (rh_ds_on != was_ds_on) {
-            if (!rh_ds_on) renhdrum_close_pad(pad);
-            else renhdrum_open_pad(pad);
+            if (!rh_ds_on) {
+                renhdrum_close_pad(pad);
+                triggers_update(plat_now_ns());
+            } else {
+                renhdrum_open_pad(pad);
+            }
         } else if (dualsense_dsp) {
             int crisp = ds_is_bt ? rh_ds_bt_crisp : rh_ds_crisp;
             int was_crisp = ds_is_bt ? was_ds_bt_crisp : was_ds_crisp;
             if (rh_ds_vol != was_ds_vol || crisp != was_crisp) {
                 RenHdcDualSenseDsp *new_dsp = rh.dualsense_dsp_create(rh_ds_vol, crisp != 0);
                 if (new_dsp) {
+                    if (rh.dualsense_dsp_set_speaker)
+                        rh.dualsense_dsp_set_speaker(new_dsp, (ds_speaker_on || (ds_is_bt && ds_bt_report36))
+                                                                  ? RENHDRUM_HD_HAPTICS_SPEAKER_PERCENT
+                                                                  : 0);
                     plat_mutex_lock(&dsp_lock);
                     RenHdcDualSenseDsp *old = dualsense_dsp;
                     dualsense_dsp = new_dsp;
@@ -1266,6 +1588,12 @@ static void renhdrum_sync_cfg(void) {
                     if (old) rh.dualsense_dsp_destroy(old);
                 }
             }
+            if (rh_ds_hd_haptics != was_ds_hd) {
+                dualsense_sync_hd_haptics();
+                if (ds_is_bt)
+                    rt_log("input: DualSense Bluetooth mode switched to report %s", ds_bt_report36 ? "0x36 (HD Haptics)" : "0x32");
+            }
+            if (rh_ds_trig_vib != was_ds_trig_vib) dualsense_sync_tri_triggers(plat_now_ns());
         }
     } else if (kind == HD_PAD_SWITCH_USB || kind == HD_PAD_SWITCH_BT) {
         if (rh_hd_on != was_hd_on) {
@@ -1288,7 +1616,9 @@ static void renhdrum_sync_cfg(void) {
             if (!rh_steam_on) renhdrum_close_pad(pad);
             else renhdrum_open_pad(pad);
         } else if (steam_dsp && (rh_steam_vol != was_steam_vol || rh_steam_crisp != was_steam_crisp)) {
-            RenHdcDualSenseDsp *new_dsp = rh.valve_grip_dsp_create(rh_steam_vol, rh_steam_crisp != 0);
+            RenHdcDualSenseDsp *new_dsp = rh.valve_grip_dsp_create_ex
+                                              ? rh.valve_grip_dsp_create_ex(rh_steam_vol, rh_steam_crisp != 0, true)
+                                              : rh.valve_grip_dsp_create(rh_steam_vol, rh_steam_crisp != 0);
             if (new_dsp) {
                 plat_mutex_lock(&dsp_lock);
                 RenHdcDualSenseDsp *old = steam_dsp;
@@ -1300,31 +1630,57 @@ static void renhdrum_sync_cfg(void) {
     }
 }
 
-// Open the first gamepad when none is open or the open one went away; logs once per change.
+// Open the first gamepad when none is open or the open one went away; logs once per change. A controller Steam hid
+// (steam_hidden) is taken only when no other gamepad is there, e.g. while Steam's virtual pad is not up yet, and gives
+// way to the virtual pad once it is (pad_physical looks again every RESCAN_MS while pad_hidden): otherwise Steam's
+// remapping would be lost for the session. The hidden controller then stays open for its sensors (motion_extra), so
+// its bias and orientation go on.
 static void scan_pads(void) {
-    if (pad && SDL_GamepadConnected(pad)) return;
+    if (pad && SDL_GamepadConnected(pad)) {
+        if (!pad_hidden || !unhidden_pad_present()) return;
+        rt_log("input: Steam Input's virtual gamepad is up: buttons move to it from \"%s\"", SDL_GetGamepadName(pad));
+        renhdrum_close_pad(pad);
+        plat_xchg32(&hd_pad_kind, HD_PAD_NONE);
+        pad_ds5 = 0; ds_live = 0;
+        if (!motion_extra && has_motion(pad)) motion_extra = pad;
+        else SDL_CloseGamepad(pad);
+        pad = NULL;
+        pad_hidden = 0;
+        plat_xchg32(&rumble_ready, 0);
+        rumble_cancel();
+    }
     if (pad) {
+        plat_xchg32(&rumble_ready, 0);
+        rumble_cancel();
         renhdrum_close_pad(pad);
         plat_xchg32(&hd_pad_kind, HD_PAD_NONE);
         SDL_CloseGamepad(pad); pad = NULL; sensor_pad = 0; sensor_ok = 0;
         // Its bias and an attempt collecting from it go with it; the next pad gets its own in pad_bias_select.
         motion_bias_reset(motion_global());
         calib_pad_name[0] = 0;
-        pad_ds5 = 0;
+        pad_ds5 = 0; ds_live = 0;
         plat_xchg32(&pad_layout_shown, -1);
         for (int i = 0; i < 4; i++) plat_xchg32(&pad_labels[i], PAD_LABEL_NONE);
         rt_log("input: gamepad disconnected");
     }
     int n = 0;
     SDL_JoystickID *ids = SDL_GetGamepads(&n);
-    for (int i = 0; ids && i < n && !pad; i++) pad = SDL_OpenGamepad(ids[i]);
+    for (int pass = 0; pass < 2 && !pad; pass++)
+        for (int i = 0; ids && i < n && !pad; i++)
+            if (steam_hidden_id(ids[i]) == pass) {
+                // The controller motion_source holds for its sensors serves as the pad too: one open handle
+                if (motion_extra && SDL_GetGamepadID(motion_extra) == ids[i]) { pad = motion_extra; motion_extra = NULL; }
+                else pad = SDL_OpenGamepad(ids[i]);
+            }
     SDL_free(ids);
     if (!pad) return;
+    pad_hidden = steam_hidden_n && steam_hidden_id(SDL_GetGamepadID(pad));
     pad_rumble = SDL_GetBooleanProperty(SDL_GetGamepadProperties(pad), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false);
+    plat_xchg32(&rumble_ready, pad_rumble);
     // The real type: a mapping that presents the pad as another kind does not change what its triggers can do. A
     // controller that powered off and came back has no effect any more, so the first update sends them again.
-    pad_ds5 = SDL_GetRealGamepadType(pad) == SDL_GAMEPAD_TYPE_PS5;
-    ds_live = 0, ds_vibration_until = 0, rumble_until = 0;
+    pad_ds5 = !steam_virtual(pad) && SDL_GetRealGamepadType(pad) == SDL_GAMEPAD_TYPE_PS5;
+    ds_live = 0, ds_bt_trigger_dirty = 0;
     pad_east_a = SDL_GetGamepadButtonLabel(pad, SDL_GAMEPAD_BUTTON_EAST) == SDL_GAMEPAD_BUTTON_LABEL_A;
     for (int i = 0; i < 4; i++) {
         SDL_GamepadButtonLabel lb = SDL_GetGamepadButtonLabel(pad, pad_sdl[PAD_SOUTH + i]);
@@ -1340,7 +1696,10 @@ static void scan_pads(void) {
     }
     pad_layout = -1;
     int motion = SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL);
-    rt_log("input: gamepad \"%s\" (%s, %s, east button %s)", SDL_GetGamepadName(pad), pad_rumble ? "rumble" : "no rumble",
+    uint16_t rv, rp;
+    raw_ids(SDL_GetGamepadID(pad), &rv, &rp);
+    rt_log("input: gamepad \"%s\" %04x:%04x%s (%s, %s, east button %s)", SDL_GetGamepadName(pad), rv, rp,
+           steam_virtual(pad) ? " Steam Input" : "", pad_rumble ? "rumble" : "no rumble",
            motion ? "gyro and accelerometer" : "no motion sensors", pad_east_a ? "labelled A" : "not labelled A");
     renhdrum_open_pad(pad);
 }
@@ -1384,6 +1743,20 @@ static void binds_refresh(void) {
 // TOTK_TEST_PAD=<lx>,<ly>,<rx>,<ry> (test runs): an SDL virtual gamepad whose sticks rest at these raw SDL axis values
 // (-32768..32767, down is +y), attached before the first scan so it is the gamepad the game reads: drift and full
 // deflection go through the same mapping and dead zone as a real pad.
+// TOTK_TEST_PAD_RUMBLE_MS=<n>: the test gamepad has rumble and each write to it takes n ms (a slow Bluetooth HID write),
+// to show that input_rumble does not wait for it. Read with cfg_get, as TOTK_TEST_PAD is: a test variable has no row in
+// the settings table, and cfg_int stops the game on a name without one.
+static int test_pad_rumble_ms(void) {
+    const char *e = cfg_get("TOTK_TEST_PAD_RUMBLE_MS");
+    return e ? atoi(e) : 0;
+}
+
+static bool test_pad_rumble(void *userdata, Uint16 low, Uint16 high) {
+    (void)userdata; (void)low; (void)high;
+    plat_wait_ns((uint64_t)test_pad_rumble_ms() * 1000000ull);
+    return true;
+}
+
 static void test_pad_attach(void) {
     static SDL_Joystick *joy;   // kept open: a virtual joystick's axes are set through an open handle
     const char *e = cfg_get("TOTK_TEST_PAD");
@@ -1399,6 +1772,7 @@ static void test_pad_attach(void) {
     d.naxes = SDL_GAMEPAD_AXIS_COUNT;
     d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
     d.name = "TotK test gamepad";
+    if (test_pad_rumble_ms() > 0) d.Rumble = test_pad_rumble;
     SDL_JoystickID id = SDL_AttachVirtualJoystick(&d);
     joy = id ? SDL_OpenJoystick(id) : NULL;
     if (!joy) {
@@ -1416,8 +1790,16 @@ static void start(void) {
     binds_refresh();
     const char *e = cfg_get("TOTK_INPUT");
     if (e && !strcmp(e, "none")) { state = -1; rt_log("input: disabled (TOTK_INPUT=none)"); return; }
-    // SDL3 on Windows defaults SDL_JOYSTICK_RAWINPUT to 0, opening Xbox controllers through XInput (which exposes only
-    // the 2 grip motors and drops SDL_RumbleGamepadTriggers). Enable RAWINPUT when Xbox 4-motor trigger rumble is on.
+    steam_reveal();
+    // SDL drops gamepad button presses and stick movements (and leaves the polled state unchanged) while its own
+    // window lacks keyboard focus (SDL_PrivateJoystickShouldIgnoreEvent in SDL_joystick.c; centring and releases
+    // pass). That applies where the window is SDL's (Linux); the Win32 window on Windows is not an SDL window. The
+    // game keeps running out of focus by default (TOTK_ASSUME_FOCUS, ov_system.c oe_set_focus), so the gamepad has to
+    // keep working there. With the setting off the game's main thread waits while unfocused and reads no input, so
+    // the hint can stay on for the whole run.
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    // Only request SDL's RAWINPUT driver on Windows when RenHDrum Xbox 4-motor trigger rumble is loaded and enabled
+    // (or the player explicitly enabled standard Xbox trigger rumble), so players without the DLL keep default XInput.
     if ((cfg_bool("TOTK_XBOX_RUMBLE") && cfg_bool("TOTK_XBOX_TRIGGERS") && renhdrum_load()) ||
         cfg_bool("TOTK_RUMBLE_TRIGGERS"))
         SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "1");
@@ -1543,10 +1925,10 @@ static void wheel_route(uint64_t *bp, int32_t sl[2], int32_t sr[2]) {
 
 // Under lock, state 1: the open gamepad's inputs by position (pd[PAD_*] != 0 held); 0 without a connected gamepad.
 static int pad_physical(uint8_t pd[PAD_COUNT]) {
-    if ((!pad || !SDL_GamepadConnected(pad)) && plat_now_ns() / 1000000u >= next_scan) { next_scan = plat_now_ns() / 1000000u + RESCAN_MS; scan_pads(); }
+    if ((!pad || !SDL_GamepadConnected(pad) || pad_hidden) && plat_now_ns() / 1000000u >= next_scan) { next_scan = plat_now_ns() / 1000000u + RESCAN_MS; scan_pads(); }
     SDL_UpdateGamepads();
     if (!pad || !SDL_GamepadConnected(pad)) return 0;
-    if (motion_thread != 1) triggers_update(plat_now_ns(), 1);   // the motion thread does it once the game started it
+    triggers_update(plat_now_ns());
     for (int p = PAD_SOUTH; p < PAD_ZL; p++) pd[p] = SDL_GetGamepadButton(pad, pad_sdl[p]);
     pd[PAD_ZL] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > TRIGGER_ON;
     pd[PAD_ZR] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > TRIGGER_ON;
@@ -1556,13 +1938,147 @@ static int pad_physical(uint8_t pd[PAD_COUNT]) {
 
 // Under lock, state 1: the open gamepad's buttons (Switch bits after TOTK_PAD_LAYOUT and the TOTK_BIND_* lines) and
 // sticks; 0 without a connected gamepad.
+// Under lock: the last pad_read's inputs by position, [PAD_GUIDE] the Home / Guide button (no Switch button), and its
+// left and right trigger axes, 0..32767: what the gamepad combos and the free camera read
+#define PAD_GUIDE PAD_COUNT
+static uint8_t pad_seen[PAD_COUNT + 1];
+static int16_t trigger_seen[2];
+
 static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     uint8_t pd[PAD_COUNT] = {0};
-    if (!pad_physical(pd)) return 0;
+    if (!pad_physical(pd)) {
+        memset(pad_seen, 0, sizeof pad_seen);
+        memset(trigger_seen, 0, sizeof trigger_seen);
+        return 0;
+    }
+    memcpy(pad_seen, pd, sizeof pd);
+    pad_seen[PAD_GUIDE] = SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_GUIDE);
+    trigger_seen[0] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+    trigger_seen[1] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
     *b |= input_map_pad_buttons(pd, pad_layout_get());
     stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, stick_dead_get(0), sl);
     stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY, stick_dead_get(1), sr);
     return 1;
+}
+
+uint32_t input_pad_combo(const char *env, const char *s) {
+    uint32_t mask = 0;
+    char name[32];
+    size_t n = 0;
+    for (const char *c = s;; c++) {
+        if (*c && *c != '+' && *c != ' ') {
+            if (n < sizeof name - 1) name[n++] = *c;
+            continue;
+        }
+        if (n) {
+            name[n] = 0;
+            int p = !strcasecmp(name, "guide") || !strcasecmp(name, "home") ? PAD_GUIDE : input_pad_id(name);
+            if (p == PAD_NONE) {
+                rt_log("input: %s=%s: %s is not a gamepad button (south east west north lstick rstick "
+                       "l r zl zr start back guide dpad_*, paddles)", env, s, name);
+                return 0;
+            }
+            mask |= 1u << p;
+            n = 0;
+        }
+        if (!*c) break;
+    }
+    return mask;
+}
+
+// TOTK_FREECAM_PAD (live): the combo that switches the free camera (freecam.c), for example zl+zr+lstick (LT+RT+L3);
+// none, the default (the settings table), for no combo. Under lock.
+static uint32_t freecam_pad_mask(void) {
+    static unsigned seen;
+    static int read;
+    static uint32_t mask;
+    unsigned v = cfg_version();
+    if (read && v == seen) return mask;
+    read = 1, seen = v;
+    const char *s = cfg_value("TOTK_FREECAM_PAD");
+    mask = *s && strcasecmp(s, "none") ? input_pad_combo("TOTK_FREECAM_PAD", s) : 0;
+    return mask;
+}
+
+// TOTK_FREECAM_KEY (live): the key that switches the free camera; none, the default (the settings table), for no key.
+// Under lock.
+static int freecam_key(void) {
+    static unsigned seen;
+    static int read, key;
+    unsigned v = cfg_version();
+    if (read && v == seen) return key;
+    read = 1, seen = v;
+    const char *s = cfg_value("TOTK_FREECAM_KEY");
+    key = !*s || !strcasecmp(s, "none") ? KEY_NONE : input_key_id(s);
+    if (key == KEY_NONE && *s && strcasecmp(s, "none"))
+        rt_log("input: TOTK_FREECAM_KEY=%s is not a key name (docs/controls.md)", s);
+    return key;
+}
+
+static float trigger_unit(int16_t v) {   // 0..1 past a 5 % dead zone
+    float t = v / 32767.0f;
+    return t < 0.05f ? 0 : (t - 0.05f) / 0.95f;
+}
+
+// The free camera combo, latched like Minus+Plus (input_map.c, chord): once every button of it is down (on the gamepad,
+// or pressed by an input script) the free camera steps once (off, move, lock), and the buttons stay hidden from the
+// game until all are released; the free camera key steps it on its press. While the free camera moves it gets the
+// input and the game gets nothing, so Link stands still: the sticks (the keys' sticks merged into sl and sr), the
+// trigger axes or else ZL and ZR as buttons, a press of L or R as a speed click, and the mouse's motion, which
+// input_direct_mouse_sample then keeps from the game's camera. ZL, ZR, L and R are the merged Switch buttons, so the
+// keys bound to them count. Locked, the game gets the input as it is (freecam.c: the game steers Link by the camera it
+// draws). Off for other updates and with the freecam patch set off. Under lock.
+static void freecam_gate(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
+    static int held, key_held, available = -1, shoulder[2];
+    if (available < 0) available = freecam_available();
+    uint32_t mask = available ? freecam_pad_mask() : 0, raw = 0;
+    int layout = pad_layout_get();
+    for (int p = PAD_SOUTH; p <= PAD_GUIDE; p++) {
+        if (!(mask >> p & 1)) continue;
+        // A position counts as down on the gamepad or when the input script presses the Switch buttons it stands for,
+        // as a gamepad would; the keys bound to those buttons do not (the free camera key is theirs). Home has no
+        // Switch button: gamepad only.
+        uint8_t one[PAD_COUNT] = {0};
+        if (p < PAD_COUNT) one[p] = 1;
+        if (pad_seen[p] || (p < PAD_COUNT && script_seen & input_map_pad_buttons(one, layout))) raw |= 1u << p;
+    }
+    if (!mask) held = 0;
+    else if (held) held = raw != 0;
+    else if (raw == mask) {
+        held = 1;
+        freecam_cycle();
+    }
+    int key = available ? freecam_key() : KEY_NONE;
+    int key_down = key != KEY_NONE && ikb_foreground() && ikb_down(key);
+    if (key_down && !key_held) freecam_cycle();
+    key_held = key_down;
+    if (available && freecam_state() == FREECAM_MOVE) {
+        float lt = trigger_unit(trigger_seen[0]), rt = trigger_unit(trigger_seen[1]);
+        if (*b >> B_ZL & 1) lt = 1;
+        if (*b >> B_ZR & 1) rt = 1;
+        FreecamPad fp = {sl[0] / (float)STICK_MAX, sl[1] / (float)STICK_MAX, sr[0] / (float)STICK_MAX,
+                         sr[1] / (float)STICK_MAX, lt, rt};
+        freecam_pad(&fp);
+        for (int k = 0; k < 2; k++) {
+            int down = (int)(*b >> (k ? B_R : B_L) & 1);
+            if (down && !shoulder[k]) freecam_speed_click(k);
+            shoulder[k] = down;
+        }
+        if (ikb_captured() && ikb_foreground() && input_cursor_allowed()) {
+            int32_t x, y;
+            ikb_mouse_take(&x, &y);   // what the stick emulation left (none in that mode: it is in sr already)
+            float deg = 0.08f * mouse_sens_get();   // the game camera's rate a count (mouse_direct.c DEG_PER_COUNT)
+            if (x || y) freecam_mouse(x * deg, y * deg);
+        }
+        *b = 0;
+        sl[0] = sl[1] = sr[0] = sr[1] = 0;
+        return;
+    }
+    shoulder[0] = shoulder[1] = 1;   // a shoulder held when the free camera starts is no click
+    if (!held) return;
+    uint8_t sub[PAD_COUNT] = {0};
+    for (int p = PAD_SOUTH; p < PAD_COUNT; p++) sub[p] = mask >> p & 1;
+    *b &= ~input_map_pad_buttons(sub, pad_layout_get());
 }
 
 int input_pad_stick_percent(double pct[2]) {
@@ -1635,6 +2151,9 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
                 else if (!click_held[i]) click_held[i] = 1, click_talk[i] = menu_cursor_dialogue();
                 if (click_talk[i]) down[key] = 0, b |= 1ull << click_btn[i];
             }
+            // The quick save and quick load keys are quicksave's while it is on (quicksave.c): they reach no binding
+            // then, and do nothing while the settings menu or a text entry is open
+            if (quicksave_on()) quicksave_keys(down, !g_menu && !g_block);
             if (cap && !g_menu && !g_block) gameplay_tweaks_prepare_keys(down, b);
             else gameplay_tweaks_reset();
             b |= input_map_buttons(down);
@@ -1671,7 +2190,16 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
         if (pad_used) __atomic_store_n(&g_kbm_last, 0, __ATOMIC_RELAXED);
         else if (kbm_used) __atomic_store_n(&g_kbm_last, 1, __ATOMIC_RELAXED);
     }
-    script_apply(&b, sl, sr);
+    // Without the keyboard and mouse poll above (TOTK_INPUT=none in scripted runs, or the window in the background), a
+    // script's MOUSE lines still move the right stick wherever the mouse would (mouse_camera)
+    if (!(state > 0 && ikb_foreground()) && input_script_mouse_recent() && !input_direct_mouse_active()) {
+        int32_t k[2];
+        mouse_camera(k, 0);
+        pick(&sr[0], &sr[1], k[0], k[1]);
+    }
+    script_seen = 0;
+    script_apply(&script_seen, sl, sr);
+    b |= script_seen;
     wheel_route(&b, sl, sr);
     gameplay_tweaks_apply(__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), input_gameplay_active(), &b, &sl[0], &sl[1], &sr[0], &sr[1]);
     rec_apply(b, sl, sr);
@@ -1682,6 +2210,7 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
     static int overlay_held;   // L3+R3 step the performance overlay (F10)
     int overlay = input_overlay_gate(&overlay_held, &b);
     sl[0] = st[0], sl[1] = st[1], sr[0] = st[2], sr[1] = st[3];
+    freecam_gate(&b, sl, sr);   // TOTK_FREECAM_PAD steps the free camera, which takes the pad while moving (freecam.c)
     plat_mutex_unlock(&lock);
     if (toggle) menu_toggle();
     if (overlay) menu_perf_cycle();
@@ -1746,7 +2275,10 @@ static int blocked(volatile int32_t *flag, volatile uint64_t *closed, const char
 
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     poll_merged(buttons, lx, ly, rx, ry);
-    if (!g_block && !g_menu) menu_cursor_poll(buttons);
+    // While quick load drives the game's load menu the pointer leaves it alone and the game gets only its presses
+    if (!g_block && !g_menu && !quicksave_busy()) menu_cursor_poll(buttons);
+    // A quick load under way goes on while the settings menu or a text entry opens: the held picture ends with it
+    if ((quicksave_busy() || (!g_block && !g_menu)) && quicksave_poll(buttons, lx, ly, rx, ry)) return;
     const int32_t axes[4] = {*lx, *ly, *rx, *ry};
     int text = blocked(&g_block, &g_block_closed, "text entry", *buttons, axes),
         menu = blocked(&g_menu, &g_menu_closed, "menu", *buttons, axes);
@@ -1849,24 +2381,33 @@ int input_hd_rumble(int side, float left_al, float left_fl, float left_ah, float
         if (dualsense_dsp) {
             dsp_push_target(dualsense_dsp, side, left_al, left_fl, left_ah, left_fh,
                             right_al, right_fl, right_ah, right_fh);
+            if (side != 1) {
+                ds_tri_sample[0][0] = left_al; ds_tri_sample[0][1] = left_fl;
+                ds_tri_sample[0][2] = left_ah; ds_tri_sample[0][3] = left_fh;
+                ds_tri_fresh[0] = 1;
+            }
+            if (side != 0) {
+                ds_tri_sample[1][0] = right_al; ds_tri_sample[1][1] = right_fl;
+                ds_tri_sample[1][2] = right_ah; ds_tri_sample[1][3] = right_fh;
+                ds_tri_fresh[1] = 1;
+            }
+            handled = ds_is_bt ? (ds_hid != NULL) : (ds_audio_stream != NULL);
+            if (handled) dualsense_tri_step(now);
             if (ds_is_bt) {
                 if (non_zero && (!ds_bt_last_active_ns || now - ds_bt_last_active_ns >= 2000000000ull)) {
                     ds_bt_next_ns = now;
                     dualsense_bt_tick(now);
                 }
                 if (non_zero) plat_xchg32(&haptics_work, 1);
-                handled = ds_hid != NULL;
-            } else {
-                if (non_zero) plat_xchg32(&haptics_work, 1);
-                handled = ds_audio_stream != NULL;
+            } else if (non_zero) {
+                plat_xchg32(&haptics_work, 1);
             }
-            if (handled) triggers_hd_rumble(now, left_ah > right_ah ? left_ah : right_ah);
         } else if (steam_dsp && steam_hid) {
             dsp_push_target(steam_dsp, side, left_al, left_fl, left_ah, left_fh,
                             right_al, right_fl, right_ah, right_fh);
             if (non_zero && (!steam_last_active_ns || now - steam_last_active_ns >= 100000000ull)) {
                 steam_next_ns = now;
-                if (!steam_init_step) steam_grip_tick(now);
+                steam_grip_tick(now);
             }
             if (non_zero) plat_xchg32(&haptics_work, 1);
             handled = 1;
@@ -1901,25 +2442,87 @@ int input_hd_rumble(int side, float left_al, float left_fl, float left_ah, float
     return handled;
 }
 
-int input_rumble(uint16_t low, uint16_t high, uint32_t ms) {
-    int ok = 0;
-    static int triggers = -1;
-    static unsigned seen;
-    if (triggers < 0 || seen != cfg_version()) seen = cfg_version(), triggers = input_rumble_triggers_enabled();
+// The rumble worker. input_rumble only stores the newest request (rq) and wakes the worker; the worker sends it to the
+// gamepad. A Bluetooth HID write can block for tens of milliseconds, and the callers are the guest thread that runs
+// SendVibrationValue and every path that takes `lock`, so no SDL rumble call is made on them. Requests that pile up
+// while the worker is in a write are dropped except the newest (Savage Wind Recomp, commit a8ad674, does the same for
+// issue #730).
+//
+// The worker takes its own handle on the open gamepad under `lock` (SDL_OpenGamepad of an open pad's id returns the same
+// object with its reference count raised) and releases `lock` before the write, so a scan_pads close of `pad` meanwhile
+// only drops one reference and the object lives until the worker's SDL_CloseGamepad. SDL itself serialises the write
+// with its other joystick calls (SDL_RumbleJoystick runs under the joystick lock), so a poll or motion_main's
+// SDL_UpdateGamepads that lands inside a slow write still waits for it; the thread that sends rumble and the other
+// `lock` users that make no SDL gamepad call do not.
+typedef struct { uint16_t low, high; uint32_t ms; int pending; } RumbleReq;
+static PlatMutex rq_lock = PLAT_MUTEX_INIT;   // guards rq, rumble_stop and rumble_thread; taken after `lock`, never before it
+static PlatCond rq_cond = PLAT_COND_INIT;
+static RumbleReq rq;
+static int rumble_stop;
+static PlatThread *rumble_thread;
+
+static void rumble_write(uint16_t low, uint16_t high, uint32_t ms) {
+    SDL_Gamepad *g = NULL;
+    int is_ds5 = 0;
+    int triggers = input_rumble_triggers_enabled();
     plat_mutex_lock(&lock);
     if (state == 1 && pad && pad_rumble) {
-        if (pad_ds5) {
-            // A DualSense has no trigger motors (SDL_RumbleGamepadTriggers is unsupported on it): its adaptive
-            // triggers vibrate instead, with an effect sent before the rumble it belongs to.
-            uint64_t now = plat_now_ns();
-            rumble_low = low, rumble_high = high, rumble_until = now + ms * 1000000ull;
-            ds_vibration = ds_vibration_level(high), ds_vibration_until = rumble_until;
-            triggers_update(now, 0);
-        }
-        ok = SDL_RumbleGamepad(pad, low, high, ms);
-        if (triggers && !pad_ds5) SDL_RumbleGamepadTriggers(pad, high, high, ms);   // unsupported pads return false: ignored
+        is_ds5 = pad_ds5;
+        g = SDL_OpenGamepad(SDL_GetGamepadID(pad));
     }
     plat_mutex_unlock(&lock);
+    if (!g) return;
+    SDL_RumbleGamepad(g, low, high, ms);
+    if (triggers && !is_ds5) SDL_RumbleGamepadTriggers(g, high, high, ms);   // unsupported pads return false: ignored
+    SDL_CloseGamepad(g);
+}
+
+static void rumble_main(void *arg) {
+    (void)arg;
+    plat_mutex_lock(&rq_lock);
+    for (;;) {
+        while (!rq.pending && !rumble_stop) plat_cond_wait(&rq_cond, &rq_lock);
+        if (!rq.pending) break;
+        RumbleReq r = rq;
+        rq.pending = 0;
+        plat_mutex_unlock(&rq_lock);
+        rumble_write(r.low, r.high, r.ms);
+        plat_mutex_lock(&rq_lock);
+    }
+    plat_mutex_unlock(&rq_lock);
+}
+
+// Stops the motors and the worker at exit: a pad keeps its last request running for its duration otherwise.
+static void rumble_exit(void) {
+    plat_mutex_lock(&rq_lock);
+    PlatThread *t = rumble_thread;
+    rq = (RumbleReq){0, 0, 0, 1};
+    rumble_stop = 1;
+    plat_cond_signal(&rq_cond);
+    plat_mutex_unlock(&rq_lock);
+    if (t) plat_thread_join_ns(t, 300000000ull);   // a write stuck past this is left to the exit
+}
+
+// Drops the request that has not been sent yet (the gamepad it was for went away). A request in flight holds its own
+// handle and ends by itself. Under lock.
+static void rumble_cancel(void) {
+    plat_mutex_lock(&rq_lock);
+    rq.pending = 0;
+    plat_mutex_unlock(&rq_lock);
+}
+
+int input_rumble(uint16_t low, uint16_t high, uint32_t ms) {
+    int ok = __atomic_load_n(&rumble_ready, __ATOMIC_ACQUIRE);
+    if (!ok) return 0;
+    plat_mutex_lock(&rq_lock);
+    if (!rumble_thread && !rumble_stop) {
+        rumble_thread = plat_thread_new(rumble_main, NULL, "rumble");
+        if (!rumble_thread) rt_fatal("input: cannot start the rumble thread");
+        atexit(rumble_exit);
+    }
+    rq = (RumbleReq){low, high, ms, 1};
+    plat_cond_signal(&rq_cond);
+    plat_mutex_unlock(&rq_lock);
     return ok;
 }
 
@@ -1952,17 +2555,24 @@ static void copy_name(char *dst, size_t cap, const char *src) {
     dst[n] = 0;
 }
 
-// Under lock: the open gamepad's identity for the saved bias. Its name, plus a hash of SDL's serial when the pad
+// Under lock: the identity of src (motion_source) for the saved bias. Its name, plus a hash of SDL's serial when the pad
 // reports one (Switch and PlayStation pads report their Bluetooth address), so two controllers of one model keep their
 // own bias; the hash keeps the address out of totk.ini and the log, which players post with bug reports.
-static void pad_identity(char *dst, size_t cap) {
-    const char *name = SDL_GetGamepadName(pad), *serial = SDL_GetGamepadSerial(pad);
+static void pad_identity(SDL_Gamepad *src, char *dst, size_t cap) {
+    const char *name = SDL_GetGamepadName(src), *serial = SDL_GetGamepadSerial(src);
     char id[160];
     if (serial && *serial) {
         uint32_t h = 2166136261u;   // FNV-1a
         for (const char *c = serial; *c; c++) h = (h ^ (uint8_t)*c) * 16777619u;
         snprintf(id, sizeof id, "%s #%08x", name ? name : "", h);
     } else snprintf(id, sizeof id, "%s", name ? name : "");
+    // Steam's virtual pad takes the name of the controller behind it but sends Steam's corrected motion: its bias
+    // is its own (pad_bias_select would otherwise load the raw controller's)
+    // A controller read past Steam Input sends what Steam set it to: on the Steam Controller that is motion the
+    // controller already corrected, so the bias of the same controller read with Steam closed does not apply either
+    if (steam_virtual(src)) strncat(id, " (Steam Input)", sizeof id - strlen(id) - 1);
+    else if (steam_hidden_n && steam_hidden_id(SDL_GetGamepadID(src)))
+        strncat(id, " (under Steam)", sizeof id - strlen(id) - 1);
     copy_name(dst, cap, id);
 }
 
@@ -1970,35 +2580,82 @@ static void pad_identity(char *dst, size_t cap) {
 // previous controller's bias and any attempt still collecting from it are dropped, then the bias saved in totk.ini is
 // taken when gyro_bias_pad names this controller. It is taken with gyro_calibration off too: the switch only decides
 // whether motion_feed subtracts it, so turning the switch on mid-run applies the saved bias.
-static void pad_bias_select(void) {
+static void pad_bias_select(SDL_Gamepad *src) {
     char id[128];
-    pad_identity(id, sizeof id);
+    pad_identity(src, id, sizeof id);
     motion_bias_reset(motion_global());
     calib_pad_name[0] = 0;
     const char *saved = cfg_get("TOTK_GYRO_BIAS_PAD");
     if (saved && !strcmp(saved, id)) {
         motion_bias_load(motion_global());
-        copy_name(calib_pad_name, sizeof calib_pad_name, SDL_GetGamepadName(pad));
+        copy_name(calib_pad_name, sizeof calib_pad_name, SDL_GetGamepadName(src));
         rt_log("input: gyro bias loaded from totk.ini for %s", calib_pad_name);
     }
 }
 
-// Under lock: (re)enable the sensors when the open gamepad changed; 1 if it has both and they are on.
-static int sensors_ready(void) {
-    SDL_JoystickID id = SDL_GetGamepadID(pad);
+// Under lock: the gamepad the sensors are read from, NULL without one. The open pad when it has a gyro and an
+// accelerometer, or when Steam hid nothing. Otherwise (Steam's virtual pad, which has neither) the first controller
+// Steam hid that has both, looked for once a RESCAN_MS; one without them is not opened again until it reconnects.
+static SDL_Gamepad *motion_source(void) {
+    static SDL_JoystickID rejected[8];
+    if (motion_extra && !SDL_GamepadConnected(motion_extra)) {
+        rt_log("input: \"%s\" (motion only) disconnected", SDL_GetGamepadName(motion_extra));
+        SDL_CloseGamepad(motion_extra);
+        motion_extra = NULL;
+    }
+    int pad_on = pad && SDL_GamepadConnected(pad);
+    // Newer Steam clients give the virtual pad motion too, but already corrected by Steam (and gated by the layout's
+    // gyro settings), so the bias calibrated on the raw controller would count twice and the camera drift. Under
+    // Steam Input the real controller's raw sensors come first; the virtual pad's are the fallback.
+    if (pad_on && has_motion(pad) && !(steam_hidden_n && steam_virtual(pad))) {
+        if (motion_extra) { SDL_CloseGamepad(motion_extra); motion_extra = NULL; }
+        return pad;
+    }
+    if (!motion_extra && steam_hidden_n && plat_now_ns() / 1000000u >= next_motion_scan) {
+        next_motion_scan = plat_now_ns() / 1000000u + RESCAN_MS;
+        int n = 0;
+        SDL_JoystickID *ids = SDL_GetGamepads(&n), skip = pad_on ? SDL_GetGamepadID(pad) : 0;
+        for (int i = 0; ids && i < n && !motion_extra; i++) {
+            int seen = 0;
+            for (int r = 0; r < 8; r++) seen |= rejected[r] == ids[i];
+            if (ids[i] == skip || seen || !steam_hidden_id(ids[i])) continue;
+            SDL_Gamepad *g = SDL_OpenGamepad(ids[i]);
+            if (g && has_motion(g)) {
+                motion_extra = g;
+                rt_log("input: motion from \"%s\" (%04x:%04x), the controller behind Steam Input's virtual gamepad",
+                       SDL_GetGamepadName(g), SDL_GetGamepadVendor(g), SDL_GetGamepadProduct(g));
+            } else {
+                if (g) SDL_CloseGamepad(g);
+                memmove(rejected + 1, rejected, sizeof rejected - sizeof rejected[0]);
+                rejected[0] = ids[i];
+            }
+        }
+        SDL_free(ids);
+    }
+    return motion_extra ? motion_extra : pad_on ? pad : NULL;
+}
+
+// Under lock: (re)enable the sensors when the motion source changed; 1 if it has both and they are on.
+static int sensors_ready(SDL_Gamepad *src) {
+    SDL_JoystickID id = SDL_GetGamepadID(src);
     if (id == sensor_pad) return sensor_ok;
     sensor_pad = id;
-    pad_bias_select();
+    pad_bias_select(src);
     // Nothing drains the SDL event queue: no event per sample (the data still updates, SDL_SendJoystickSensor)
     SDL_SetEventEnabled(SDL_EVENT_GAMEPAD_SENSOR_UPDATE, false);
-    sensor_ok =SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL) &&
-                SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true) &&
-                SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_ACCEL, true);
-    if (sensor_ok) rt_log("input: motion sensors on (gyro %.0f Hz, accelerometer %.0f Hz)",
-                          (double)SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_GYRO),
-                          (double)SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_ACCEL));
+    sensor_ok = has_motion(src) &&
+                SDL_SetGamepadSensorEnabled(src, SDL_SENSOR_GYRO, true) &&
+                SDL_SetGamepadSensorEnabled(src, SDL_SENSOR_ACCEL, true);
+    if (sensor_ok) {
+        rt_log("input: motion sensors on (gyro %.0f Hz, accelerometer %.0f Hz)",
+               (double)SDL_GetGamepadSensorDataRate(src, SDL_SENSOR_GYRO),
+               (double)SDL_GetGamepadSensorDataRate(src, SDL_SENSOR_ACCEL));
+        motion_restart(motion_global());   // another controller: its own orientation, from its first reading
+    } else if (has_motion(src))   // after PR #1024: the SDL error, not "no sensors", when enabling them failed
+        rt_log("input: \"%s\" has a gyro and an accelerometer but SDL could not turn them on (%s): the six-axis sensor "
+               "reads a controller at rest", SDL_GetGamepadName(src), SDL_GetError());
     else rt_log("input: \"%s\" has no gyro and accelerometer: the six-axis sensor reads a controller at rest",
-                SDL_GetGamepadName(pad));
+                SDL_GetGamepadName(src));
     return sensor_ok;
 }
 
@@ -2013,9 +2670,9 @@ int input_motion_enabled(void) {
     return on;
 }
 
-// 250 Hz: the gamepads update (reports read, rumble expiry), a DualSense's trigger effects follow the settings and
-// the rumble (triggers_update), and the newest gyro and accelerometer sample goes into the fusion. Without a gamepad
-// with sensors, or with motion off (TOTK_MOTION=0, live), nothing is fed and the six-axis sensor reads at rest.
+// 250 Hz: the gamepads update (reports read, rumble expiry) and the newest gyro and accelerometer sample goes into the
+// fusion. Without a gamepad with sensors, or with motion off (TOTK_MOTION=0, live), nothing is fed and the six-axis
+// sensor reads at rest.
 static void motion_main(void *arg) {
     (void)arg;
     for (;;) {
@@ -2023,11 +2680,12 @@ static void motion_main(void *arg) {
         float a[3], g[3];
         int have = 0;
         plat_mutex_lock(&lock);
-        if (pad && SDL_GamepadConnected(pad)) {
+        if (pad && SDL_GamepadConnected(pad)) triggers_update(plat_now_ns());
+        SDL_Gamepad *src = motion_source();
+        if (src) {
             SDL_UpdateGamepads();
-            triggers_update(plat_now_ns(), 1);
-            have = sensors_ready() && SDL_GetGamepadSensorData(pad, SDL_SENSOR_ACCEL, a, 3) &&
-                   SDL_GetGamepadSensorData(pad, SDL_SENSOR_GYRO, g, 3);
+            have = sensors_ready(src) && SDL_GetGamepadSensorData(src, SDL_SENSOR_ACCEL, a, 3) &&
+                   SDL_GetGamepadSensorData(src, SDL_SENSOR_GYRO, g, 3);
         }
         plat_mutex_unlock(&lock);
         if (!have || !input_motion_enabled()) continue;
@@ -2060,18 +2718,19 @@ void input_motion_calibrate(void) {
     // The menu can run before the game starts the six-axis sensor (the title screen): the thread starts here then.
     if (input_gyro_calibration_enabled() && input_motion_enabled()) motion_thread_start();
     const char *why = NULL;
+    SDL_Gamepad *src = motion_thread == 1 ? motion_source() : NULL;
     if (!input_gyro_calibration_enabled()) why = "gyro_calibration is off";
     else if (!input_motion_enabled()) why = "motion is off (TOTK_MOTION=0)";
     else if (motion_thread != 1) why = "no SDL gamepad support";
-    else if (!pad || !SDL_GamepadConnected(pad)) why = "no gamepad";
+    else if (!src) why = "no gamepad";
     // sensors_ready here, not at the sensor thread's next look at a new pad: that look selects the pad's bias and
     // would cancel the attempt that starts below.
-    else if (!sensors_ready()) why = "the gamepad has no gyro and accelerometer";
+    else if (!sensors_ready(src)) why = "the gamepad has no gyro and accelerometer";
     if (why) rt_log("input: calibrate gyro ignored: %s", why);
     else {
         char id[128];
-        pad_identity(id, sizeof id);
-        copy_name(calib_pad_name, sizeof calib_pad_name, SDL_GetGamepadName(pad));
+        pad_identity(src, id, sizeof id);
+        copy_name(calib_pad_name, sizeof calib_pad_name, SDL_GetGamepadName(src));
         motion_calibrate_start(motion_global(), id, kern_now_ns());
         rt_log("input: gyro calibration started on %s", calib_pad_name);
     }

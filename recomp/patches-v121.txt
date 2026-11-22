@@ -11,6 +11,7 @@ set output   TOTK_PATCH_OUTPUT   0
 set scene    TOTK_PATCH_SCENE    0
 set shadow   TOTK_PATCH_SHADOW   0
 set grass    TOTK_PATCH_GRASS    0
+set cascade  TOTK_PATCH_CASCADE  0
 
 # 60 fps: the adaptive present-interval controller (main+0x8f26c8, 1.0.0 0x8f6bec) gets the minimum interval 1.
 site fps60 main 8f273c 6b08015f 7100055f   # clamp: cmp w10, #1 (was cmp w10, w8 = minimum)
@@ -131,6 +132,22 @@ site aspect main cb4b10 bd414260 f81f0fea @page:x10 bd403940 f84107ea   # ldr s0
 site aspect main 12521cc bd414260 f81f0fea @page:x10 bd403940 f84107ea  # ldr s0, [x19, #0x140] (camera setup)
 site aspect main 19b36f0 1e211800 f81f0fea @page:x10 bd403940 f84107ea  # fdiv s0, s0, s1 (viewport)
 site aspect main 1ecdf68 1e211800 f81f0fea @page:x10 bd403940 f84107ea  # fdiv s0, s0, s1 (viewport)
+
+# Field of view (runtime/resolution.c res_fov_live writes TOTK_FOV / 100 to page +60 and switches the set). The same two
+# camera routines as the aspect set (update main+0xcb4208, setup main+0x1252024; 1.4.3 main+0x628460, main+0xb432bc)
+# load the camera's vertical view angle (+0x13c, radians) a few words before the ratio and hand it to sead's perspective
+# projection (+0xa0, then sinf / cosf / tanf of half of it at +0xa4..+0xac); 1.4.3's setup reads the same fields through
+# x22 = camera + 0xd8. Eight more places fill a perspective projection the same way, 1.4.3 has the same eight, and
+# neither version patches them: one more inlined copy that scales an angle of another object (main+0x6c5548, 1.4.3
+# main+0x4e9754), three projection routines (main+0xdde89c, main+0x1141ce8, main+0x1a5e994; 1.4.3 main+0xc02690,
+# main+0xd42730, main+0x27d53d8) and four that fill a projection on the stack (main+0x7800f0, main+0x7805fc,
+# main+0xc764cc, main+0x21ee474; 1.4.3 main+0x63e2b4, main+0x63e744, main+0x79344, main+0x2804fec). The replacement is
+# the one of patches-v143.txt (word for word the sites of patches-v110.txt): it loads the angle as before and
+# multiplies it by the factor on the page; s8 holds the factor because the next instruction (fmul s8, s0, s1) overwrites
+# it, and x10 is kept on the stack.
+set fov      TOTK_FOV_PATCH      0
+site fov    main cb4ad8 bd413e60 f81f0fea @page:x10 bd413e60 bd403d48 1e280800 f84107ea   # ldr s0, [x19, #0x13c] (camera update)
+site fov    main 1252194 bd413e60 f81f0fea @page:x10 bd413e60 bd403d48 1e280800 f84107ea  # ldr s0, [x19, #0x13c] (camera setup)
 
 # Texture pool offsets past 2 GiB (MacNativeGames ca311e2d). The texture loader keeps a texture's place in its pool as a
 # 32-bit offset (main+0xad4294: sub x25, x9, x10, stored as the word w25) and widens it as a signed number for
@@ -1128,6 +1145,18 @@ spin sdk 3d3250 3d3270   # 9 instructions; loads
 # computation). Found by a write watch on the size field (the writer was this function, and no other).
 site shadow main cec22c 11001d6b @page:x11 b9405d6b 11001d6b   # add w11, w11, #7 -> adrp x11, page; ldr w11, [x11, #92]; add w11, w11, #7
 
+# Sun shadow cascade distances (runtime/resolution.c res_shadow_range switches the set on; issue #606). On 1.2.1 the
+# depth shadow parameters (depth_shadow_near_0_0..3 and depth_shadow_far_0, whose constructor defaults at
+# main+0x114c2f8.. are 20, 40, 80, 160 and 2000 m) do not reach the sun's cascades: the game's shadow controller sets
+# bit 1 of the scene's depth shadow flags when it starts (main+0xc7b0e8), and with that bit the per-view update
+# (main+0xa2cff4) skips its copy of those parameters into the cascade boundaries. The controller writes the boundaries
+# itself each frame in main+0xcebdf4: d[0] at main+0xcec2ac, d[1..n-1] at main+0xcec314 and the far d[n] at
+# main+0xcec36c (d = [cascade set + 0x308], read by main+0xa2d6ec). The set multiplies d[1..n] where they are stored,
+# by page +64 (20 m times shadow_range / 100) over 20; d[0], the first cascade's start, stays. x3, s16 and s17 are
+# dead at both sites.
+site cascade main cec314 bd000446 @page:x3 bd404070 1e269011 1e311a10 1e3008d0 bd000450   # str s6, [x2, #4] -> adrp x3, page; ldr s16, [x3, #64]; fmov s17, #20.0; fdiv s16, s16, s17; fmul s16, s6, s16; str s16, [x2, #4]
+site cascade main cec36c bc29d945 @page:x3 bd404070 1e269011 1e311a10 1e3008b0 bc29d950   # str s5, [x10, w9, sxtw #2] -> the same with fmul s16, s5, s16; str s16, [x10, w9, sxtw #2]
+
 # Grass range (runtime/resolution.c res_grass_range; patches-v143.txt describes the set and the page). The near grass
 # map's constructor loads its extent, step and texture sizes at main+0xfe58b4..0xfe5950, and main+0x1a30a28 sets the
 # extent to 62.5 or 31.25 m, as on 1.4.3.
@@ -1151,3 +1180,32 @@ site optref main 1622bec b4000188 937ffd09 8a290108 b4000188   # cbz x8 -> asr x
 set ability  TOTK_ABILITY_GUARD  1
 site ability main 1622bf0 f9400115 94c424dc            # ldr x21, [x8] -> bl page+0xf60
 site ability main 1622bf4 b4000155 aa0903f5 b4000155   # cbz x21 -> mov x21, x9; cbz x21 (x9 dead after it)
+
+# Sound command lists above 200 updates a second (issue #337). The game thread hands its sound commands to the audio
+# thread in lists: 16 of them, of which 4 are always held (one being filled by the game thread, the others on the audio
+# thread's side), so at most 12 wait in the command ring. The game thread submits at most one list per update
+# (main+0x9bd144, when a free list is there), and the audio thread takes one per pass of its loop, one 5 ms audio frame:
+# after a list main+0x883780 goes on past the ring's check (b 0x883318). Above about 200 updates a second the ring
+# fills. A guard in the game (main+0x9bcdc4, at the end of each update) counts the updates that find the ring of free
+# lists empty and exactly 12 lists in the command ring (0x9bce1c cmp w9, #0xc); the count goes back to 0 whenever a free
+# list is there (0x9bce00), which takes two audio frames between two updates: the game thread picks up one of the two
+# lists, the other is still free at the guard. At every multiple of 300 (10 s at 30 fps, 1.25 s at 240) the guard clears
+# the sound command switch, the byte at [[engine + 0x1a0] + 8] (main+0x2268bfc), and stops every active voice
+# (main+0x226f29c). The switch is set to 1 only by its constructor (main+0xf31ce8, from the engine's init
+# main+0xf31530), so the game stays silent until it is restarted. By this reading the guard fires only when the audio
+# frames come evenly, 5 ms apart, through 300 updates in a row at more than 200 a second: that is the mixer pacing its
+# render thread by its own timer (runtime/audio_mixer.c, audio_mixer_pace_ns), with audio = none or while a device takes
+# nothing. While a device paces the rendering the frames come in bursts after each device period: on Linux with
+# PipeWire's 1024-frame periods 76% of the frames were measured 4 ms after the one before (audren.c, gap_ns), two of
+# them fall between two updates several times a second, and the game kept its sound in every run. On Windows gap_ns is 0
+# and the frames of a burst are rendered back to back: read from the code, not measured here. A device with periods of
+# 240 frames or less was not tried and may pace as evenly as the timer. The count and the switch have not been read in a
+# run. The site sends the audio thread back to the ring's check (0x8832e8, where the game's own 0x883c18 also branches;
+# x21, the engine, is not written between the check and the site), so it takes every queued list in the pass and the
+# ring does not stay full. Measured on 1.2.1 at fps_limit 240 (Linux, PipeWire), same save and input script, seconds
+# with sound in the mix with the set off and on: without a device 6 of 119 and 111 of 119; with a device 111 of 119 and
+# 112 of 119; with the game's stream paused for 5 s from outside (pw-cli, not a real device stalling) while the game ran
+# at 240 fps 4 of 120 (silent from the pause on, also after the device resumed) and 113 of 119. A pause of 2 s silenced
+# the game with the set off in two runs of two, a pause of 1 s in none of one.
+set audiodrain TOTK_AUDIO_DRAIN_FIX 1
+site audiodrain main 883780 17fffee6 17fffeda   # b 0x883318 -> b 0x8832e8

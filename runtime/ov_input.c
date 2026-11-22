@@ -94,6 +94,7 @@ static void npad_states(Cpu *c, uint32_t want) {
     if (live) {
         s.attributes = ATTR_CONNECTED;
         input_poll(&s.buttons, &s.lx, &s.ly, &s.rx, &s.ry);
+        quicksave_guest(c);   // quick save and load call into the game here, between two of its own calls
         vk_reflex_marker(6, vk_reflex_frame());   // VK_LATENCY_MARKER_INPUT_SAMPLE_NV
     }
     *out = s;

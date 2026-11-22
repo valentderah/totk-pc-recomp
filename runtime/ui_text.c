@@ -26,15 +26,13 @@ typedef struct { const char *lang; const char *const *text; } Row;
     [UI_SWKBD_TITLE] = title, [UI_SWKBD_PROMPT] = prompt, [UI_SWKBD_DEFAULT_NAME] = name, [UI_SWKBD_OK] = ok, \
     [UI_SWKBD_CANCEL] = cancel, [UI_SWKBD_PAD_HINT] = hint, LANG_NAMES
 
-// The DLSS model file, the RenHDrum library and the executable, as the player sees them on this platform.
+// The DLSS model file and the executable, as the player sees them on this platform.
 #ifdef _WIN32
 #define DLSS_FILE "nvngx_dlss.dll"
 #define EXE_FILE "totk.exe"
-#define RENHDRUM_FILE "renhdrum.dll"
 #else
 #define DLSS_FILE "libnvidia-ngx-dlss.so"
 #define EXE_FILE "totk"
-#define RENHDRUM_FILE "librenhdrum.so"
 #endif
 
 static const char *const text_en[UI_TEXT_COUNT] = {
@@ -63,12 +61,18 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PERF_OFF] = "Off", [UI_MENU_PERF_FPS] = "FPS", [UI_MENU_PERF_FULL] = "Full",
     // printf format of the overlay line in FPS mode: the frame rate
     [UI_PERF_LINE_FPS] = "%.0f fps",
+    [UI_PERF_LINE_FPS_GEN] = "%.0f fps drawn, %.0f shown",
     [UI_MENU_GRAPHICS] = "Picture",
     [UI_MENU_OUTPUT_RES] = "Game resolution",
     [UI_MENU_OUTPUT_RES_DESC] = "The size the game draws its picture and interface in. Above 1920 x 1080 the game needs "
                                 "more video memory and GPU time. A wider size (21:9) widens the camera's view and moves "
                                 "the HUD to the screen's corners; a taller one (16:10, 3:2) moves it to the top "
                                 "and bottom edges.",
+    [UI_MENU_HUD_WIDTH] = "HUD width",
+    [UI_MENU_HUD_WIDTH_DESC] = "On a screen wider than 16:9, how far apart the HUD's left and right sides are. Full puts "
+                               "them at the screen's edges; 21:9 or 16:9 keeps the HUD within the middle of the screen "
+                               "of that shape. A missing layout is made in the background and used after a restart.",
+    [UI_MENU_HUD_WIDTH_FULL] = "Full screen",
     [UI_MENU_RENDER_SCALE] = "3D render scale",
     [UI_MENU_RENDER_SCALE_DESC] = "Size of the 3D scene relative to the game resolution; the game's FSR scales it to "
                                   "that size. Above 100 % smooths jagged edges (supersampling) at a high GPU cost.",
@@ -88,7 +92,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                   "bars, or stretch them over the whole picture. Applies from the next movie.",
     [UI_MENU_MOVIE_ASPECT_KEEP] = "Black bars", [UI_MENU_MOVIE_ASPECT_STRETCH] = "Stretch",
     [UI_MENU_FOV] = "Field of view",
-    [UI_MENU_FOV_DESC] = "How much of the world the camera shows, in percent of the game's own. Game versions 1.1.0 and 1.4.3.",
+    [UI_MENU_FOV_DESC] = "How much of the world the camera shows, in percent of the game's own. Game versions 1.1.0, 1.2.1 and 1.4.3.",
     [UI_MENU_SHADOW_RES] = "Shadow map size",
     [UI_MENU_SHADOW_RES_DESC] = "Size of the sun's shadow map. The game's own size changes with the view, down to about 400 "
                                 "near the ground, so leaf shadows look blocky and jump; a fixed size keeps them still and "
@@ -149,10 +153,6 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_GRASS_RANGE_DESC] = "How far around the camera grass grows (the game's: 62.5 m). Higher keeps the "
                                  "grass in meadows further out instead of growing it in just in front of you; lower "
                                  "draws less of it. Takes effect at the next start.",
-    [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
-    [UI_MENU_DLAA_DESC] = "NVIDIA DLSS for the 3D scene (NVIDIA RTX GPUs; " DLSS_FILE " next to " EXE_FILE "): smoother "
-                          "edges and less shimmer. The HUD is not touched. The mode below sets the resolution it works "
-                          "from. Takes effect after a restart.",
     [UI_MENU_DLSS_PRESET] = "DLSS model",
     [UI_MENU_DLSS_PRESET_DESC] = "Which DLSS model runs. Automatic follows NVIDIA's advice per mode: K for DLAA, Quality "
                                  "and Balanced, M for Performance, L for Ultra Performance. J: slightly less ghosting "
@@ -166,11 +166,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                 "edges a little less smooth. Applies at once.",
     [UI_MENU_DLSS_CHARS_OFF] = "Off", [UI_MENU_DLSS_CHARS_LIGHT] = "Light", [UI_MENU_DLSS_CHARS_MEDIUM] = "Medium",
     [UI_MENU_DLSS_CHARS_FULL] = "Full",
-    [UI_MENU_DLSS] = "DLSS mode",
-    [UI_MENU_DLSS_DESC] = "DLAA draws the 3D scene at full resolution. Quality, Balanced, Performance and Ultra "
-                          "Performance draw it at 67, 58, 50 and 33 % and let DLSS scale it up, which saves GPU time; "
-                          "they replace the 3D render scale. Takes effect at once.",
-    [UI_MENU_DLSS_DLAA] = "DLAA (native)", [UI_MENU_DLSS_QUALITY] = "Quality", [UI_MENU_DLSS_BALANCED] = "Balanced",
+    [UI_MENU_DLSS] = "Upscaling mode",
+    [UI_MENU_DLSS_DESC] = "Native anti-aliases the 3D scene at full resolution. Quality, Balanced, Performance and Ultra "
+                          "Performance draw it at 67, 58, 50 and 33 % and let the upscaler (DLSS or FSR 3.1) scale it "
+                          "up, which saves GPU time; they replace the 3D render scale. Takes effect at once.",
+    [UI_MENU_DLSS_DLAA] = "Native", [UI_MENU_DLSS_QUALITY] = "Quality", [UI_MENU_DLSS_BALANCED] = "Balanced",
     [UI_MENU_DLSS_PERFORMANCE] = "Performance", [UI_MENU_DLSS_ULTRA] = "Ultra Performance",
     [UI_MENU_FXAA] = "Game anti-aliasing (FXAA)",
     [UI_MENU_FXAA_DESC] = "The game's own FXAA edge smoothing. It blurs fine detail a little; with DLAA on it is not needed.",
@@ -179,6 +179,18 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_REFLEX_OFF] = "Off",
     [UI_MENU_REFLEX_ON] = "On",
     [UI_MENU_REFLEX_BOOST] = "On + Boost",
+    [UI_MENU_SCENE_UPSCALER] = "3D scene upscaler",
+    [UI_MENU_SCENE_UPSCALER_DESC] = "A temporal upscaler for the 3D scene: smoother edges and less shimmer, and in a mode below Native it draws "
+                                    "the scene smaller and scales it up, which saves GPU time. NVIDIA DLSS needs an NVIDIA "
+                                    "RTX GPU and " DLSS_FILE " next to " EXE_FILE "; AMD FSR 3.1 runs on any GPU. Off keeps "
+                                    "the game's own scaling and FXAA. The HUD is not touched; the upscaler and sharpness "
+                                    "above still fit the game image to the window. Takes effect after a restart.",
+    [UI_MENU_SCENE_UPSCALER_OFF] = "Off", [UI_MENU_SCENE_UPSCALER_DLSS] = "NVIDIA DLSS",
+    [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU] = "DLSS: needs an NVIDIA RTX GPU",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL] = "DLSS: " DLSS_FILE " is missing",
+    [UI_MENU_FSR3_SHARPNESS] = "FSR 3.1 sharpness",
+    [UI_MENU_FSR3_SHARPNESS_DESC] = "Sharpening of the 3D scene after FSR 3.1; 0 turns it off.",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws. Above 60 is experimental and needs Game speed "
@@ -190,6 +202,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_QUEUE] = "Frame queue",
     [UI_MENU_FRAME_QUEUE_DESC] = "The game starts a frame while the previous one waits for its turn on screen: far fewer "
                                  "dropped frames at the limit, up to one frame more input delay. Applies at once.",
+    [UI_MENU_FRAME_GEN] = "Frame generation", [UI_MENU_FRAME_GEN_OFF] = "Off", [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
+    [UI_MENU_FRAME_GEN_DESC] = "A generated picture between each two the game draws: twice the pictures on screen, the "
+                               "game at half the frame limit and the controls about half a frame later. For displays "
+                               "of 120 Hz and more. Not with DLSS or HDR. Applies at once.",
     [UI_MENU_REALTIME] = "Game speed follows the clock",
     [UI_MENU_REALTIME_DESC] = "Steps the game by real time, so a slow frame does not slow the game down.",
     [UI_MENU_CLOTH_REALTIME] = "Cloth on the clock",
@@ -221,11 +237,12 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_ROW_DESC] = "Game files it replaces: %u. New files it adds: %u.",
     [UI_MENU_MODS_OVERRIDDEN] = "%u of its files come from %s, which is higher in the list.",
     [UI_MENU_MODS_MOVE_HINT] = "The top face button or Ctrl+Up moves it up, the left face button or Ctrl+Down moves it "
-                               "down. When two mods change the same file, the higher one wins. Changes apply after a "
-                               "restart.",
+                               "down. When two mods change the same file, game data or code, the higher one wins. "
+                               "Changes apply after a restart.",
     [UI_MENU_MODS_EMPTY] = "This folder has no romfs, exefs or cheats files.",
     [UI_MENU_MODS_SUBSDK] = "This mod brings its own game code (a subsdk plugin or a replaced main). The port cannot "
-                            "load code modules, so the whole mod stays off.",
+                            "load code modules, so the whole mod stays off. Its switch \"Use ... without its code\" "
+                            "below uses the rest of it.",
     [UI_MENU_MODS_EXEFS_LATER] = "This mod patches the game code (exefs). The game builds the patches in when it "
                                  "starts next (a rebuild of a few minutes); until then the whole mod stays off.",
     [UI_MENU_MODS_CHEATS] = "Cheats: %d. Switch them on the Cheats tab.",
@@ -270,6 +287,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_GYRO_CALIBRATED] = "%s, calibrated",
     [UI_MENU_GYRO_CALIBRATE_FAILED] = "Calibration failed",
     [UI_MENU_GYRO_CALIBRATE_MOVED] = "Controller moved: hold it still and try again",
+    [UI_MENU_GYRO_AUTO_BIAS] = "Gyro drift learning at rest",
+    [UI_MENU_GYRO_AUTO_BIAS_DESC] = "Learns the drift left in the gyro whenever the controller lies still on a "
+                                    "table, and subtracts it. For a bow aim that slowly slides even after "
+                                    "calibration. A controller held in the hand is not learned from. Experimental.",
     [UI_MENU_RUMBLE_STRENGTH] = "Vibration strength",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "How strong the controller vibrates.",
     [UI_MENU_RUMBLE_CURVE] = "Vibration curve",
@@ -288,19 +309,23 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_DESC] = "Which controller's buttons the game's prompts show. Nintendo: the game's own. Xbox: LB, "
                              "RB, LT, RT, Menu, View and a d-pad cross, and A, B, X and Y as labelled on the button "
                              "the layout above presses (with Nintendo (A right) the right button is labelled B, so the "
-                             "prompts for A show B). PC: the keys and mouse buttons of the keyboard's default layout "
-                             "(E, Shift, Space, left click...) and the mouse for the camera. The game reads its prompts "
-                             "at start, so they change after a restart. They are part of the game's files, so a button "
-                             "you remap in Controls keeps its old prompt on screen.",
-    [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox", [UI_MENU_PROMPTS_PC] = "PC",
+                             "prompts for A show B). PlayStation: the shapes on a PlayStation pad (○ × △ □, L1, R1, "
+                             "L2, R2, Options and Share), on the button the layout above presses. PC: the keys and "
+                             "mouse buttons of the keyboard's default layout (E, Shift, Space, left click...) and the "
+                             "mouse for the camera. The game reads its prompts at start, so they change after a "
+                             "restart. They are part of the game's files, so a button you remap in Controls keeps its "
+                             "old prompt on screen.",
+    [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_PLAYSTATION] = "PlayStation", [UI_MENU_PROMPTS_PC] = "PC",
     [UI_MENU_PROMPTS_MISSING] = "prompt files missing: run the setup again",
     [UI_MENU_PROMPTS_FAILED] = "prompt files damaged: run the setup again",
     [UI_MENU_PROMPTS_RESTART] = "prompts change after restart",
     [UI_MENU_PROMPTS_OFF_SHAPE] = "off at this game resolution (no layout made for it)",
     [UI_MENU_OUTPUT_RES_NO_LAYOUT] = "no layout made for this shape: run the setup again",
     [UI_MENU_OUTPUT_RES_PREPARING] = "layout being made in the background; used at the next start",
-    [UI_MENU_SHAPE_PREPARE] = "Prepare the layout for this screen",
-    [UI_MENU_SHAPE_PREPARE_DESC] = "Makes the interface layout and the chosen button prompts for this game resolution's shape in the background, with the setup's tools, as the setup does for the displays it saw. The game keeps running; it uses them from its next start.",
+    [UI_MENU_PROMPTS_PREPARING] = "prompt files being made in the background; used at the next start",
+    [UI_MENU_PREPARE_RETRY] = "Try again",
+    [UI_MENU_PREPARE_RETRY_DESC] = "Starts the setup's tools again to make the missing interface layout or button prompt files in the background. The game keeps running; it uses them from its next start.",
     [UI_MENU_SHAPE_PREPARE_FAILED] = "the setup's tools did not start: run the setup again",
     [UI_MENU_PROMPTS_OFF_MODS] = "off: a RomFS mod replaces their files",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "off while TOTK_ROMFS_PATCHES is set",
@@ -326,6 +351,17 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_DIALOGUE_CLICK_DESC] = "While a dialogue box is open, left click presses B (it continues the text and skips its scroll) and right click presses A, instead of the buttons they are bound to (Y by default, which opens the dialogue log, and ZL). Dialogue choices keep the pointer: left click picks (game 1.4.3).",
     [UI_MENU_POINTER_IMAGE] = "Game pointer",
     [UI_MENU_POINTER_IMAGE_DESC] = "While the cursor is not captured (the game's menus, this menu, after Esc), the window shows a gold arrowhead of its own instead of the system arrow, sized for the screen's scale.",
+    [UI_MENU_QUICKSAVE] = "Quick save and load",
+    [UI_MENU_QUICKSAVE_DESC] = "One key saves the game at once and another loads that save (the two rows below: F6 and F7 by default, as in Half-Life), with no menu on the screen. Keyboard and mouse keys only, game 1.4.3 only. Quick save asks the game for one of its own autosaves, so it replaces the oldest autosave (the manual save stays), keeps a copy of it as the quick save (the quicksave folder of the profile) and shows \"Game saved\" at the top of the picture. Quick load holds the picture on \"Loading the quick save\" while it goes through the game's load list out of sight, and the game loads the quick save (about 5 s). Where the game would not make an autosave itself (a cutscene, a dialogue), nothing is saved and the line says so.",
+    [UI_MENU_QUICKSAVE_KEY] = "Quick save key",
+    [UI_MENU_QUICKLOAD_KEY] = "Quick load key",
+    [UI_MENU_QUICKSAVE_KEY_DESC] = "The key that starts quick save or quick load; F6 and F7 by default, as in Half-Life. Select the cell and press any key or mouse button; Delete leaves that one without a key. While quick save is on, the two keys do nothing else (a note shows when a binding also uses the key). totk.ini takes any key name of the bindings (quicksave_key, quickload_key).",
+    [UI_QS_SAVED] = "Game saved",
+    [UI_QS_LOADING] = "Loading the quick save",
+    [UI_QS_NOT_NOW] = "Quick save is not possible right now",
+    [UI_QS_NONE] = "There is no quick save yet (the quick save key makes one)",
+    [UI_QS_FAILED] = "Quick save failed: see totk.log",
+    [UI_QS_LOAD_FAILED] = "Quick load failed: see totk.log",
     [UI_MENU_MOUSE_SENS] = "Mouse camera sensitivity",
     [UI_MENU_MOUSE_SENS_DESC] = "How fast the mouse turns the camera.",
     [UI_MENU_WALK_KEY] = "Walk key",
@@ -335,6 +371,23 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_SCALE] = "Walk scale",
     [UI_MENU_WALK_SCALE_DESC] = "The tilt the keyboard's sticks get while the walk key is held. Half is a walk, the "
                                 "full tilt a run.",
+    [UI_MENU_FREECAM] = "Free camera",
+    [UI_MENU_FREECAM_DESC] = "Lets a combo or a key below detach the view from Link and fly it. Off by default: "
+        "with it off the game's camera code runs as shipped. Takes effect after a restart. "
+        "Game version 1.4.3.",
+    [UI_MENU_FREECAM_OFF_NOTE] = "Turn on Free camera above, then restart",
+    [UI_MENU_FREECAM_PAD] = "Free camera combo",
+    [UI_MENU_FREECAM_PAD_DESC] = "Gamepad buttons pressed together that step the view through three stages: it leaves "
+        "Link and flies, it stays where it was left while Link plays on, and it comes back. While it flies the game "
+        "gets no input: the left stick flies along the view and sideways, the triggers up and down, the right stick "
+        "turns, and each press of L or R halves or doubles the speed. Locked, Link walks where the left stick points "
+        "on screen. Game version 1.4.3.",
+    [UI_MENU_FREECAM_PAD_V143] = "Game version 1.4.3 only",
+    [UI_MENU_FREECAM_KEY] = "Free camera key",
+    [UI_MENU_FREECAM_KEY_DESC] = "A key that steps the view through the same stages: it leaves Link and flies, it "
+        "stays while Link plays on, and it comes back. While it flies: W A S D fly along the view and sideways, the "
+        "keys bound to ZR and ZL (X and Z by default) up and down, the mouse and the arrow keys turn, and the keys "
+        "bound to L and R (Q and R) halve or double the speed. Game version 1.4.3.",
     [UI_MENU_GROUP_GAMEPLAY_TWEAKS] = "Gameplay tweaks",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED] = "Gameplay tweaks",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED_DESC] = "Mouse wheel controls for Ultrahand rotation and distance, item and weapon switching, and smooth map zoom.",
@@ -497,6 +550,17 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FIX_C0_DESC] = "Fills the driver-reserved constant bank c0 (storage sizes, dispatch size, point size, base instance) instead of reading zeros.",
     [UI_MENU_FIX_ZERO] = "Zero new GPU memory",
     [UI_MENU_FIX_ZERO_DESC] = "New GPU memory pools start zero-filled, as Switch memory does.",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "Fog and particles after DLAA",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "With DLAA, fog, dust and other particles are drawn over the picture DLSS has"
+                                        " already smoothed, as the game draws them without DLSS: small particles in "
+                                        "fog (shrines) no longer vanish or leave trails. Off: DLSS also processes "
+                                        "these effects, as before. DLAA mode only; the upscaling DLSS modes always "
+                                        "process them. Applies at once.",
+    [UI_MENU_DLSS_FIXED_EXPOSURE] = "Fixed DLSS exposure",
+    [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS takes the brightness of the game's picture as it is instead of "
+                                         "estimating the exposure from each frame: in dark scenes (the Depths) large "
+                                         "fogged areas no longer turn darker or lighter for a frame while the camera "
+                                         "moves. Off: DLSS estimates the exposure itself, as before. Applies at once.",
     [UI_MENU_BIND_SKIP] = "Skip repeated binds",
     [UI_MENU_BIND_SKIP_DESC] = "Optimisation: skips bindings that did not change.",
     [UI_MENU_SHADER_MEMO] = "Shader memo", [UI_MENU_SHADER_MEMO_DESC] = "Optimisation: remembers shader lookups.",
@@ -549,7 +613,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_MHZ] = "%.0f MHz", [UI_MENU_OV_FMT_GB] = "%.1f GB", [UI_MENU_OV_FMT_GB_OF] = "/ %.1f GB",
     [UI_MENU_OV_GAME_GB] = "game %.1f GB", [UI_MENU_OV_FMT_MS] = "%.2f ms", [UI_MENU_OV_PER_FRAME] = "%.1f per frame",
     [UI_MENU_OV_WINDOW] = "Window", [UI_MENU_OV_OUTPUT] = "Game image", [UI_MENU_OV_SCENE] = "3D scene",
-    [UI_MENU_OV_SCALING] = "Scaling", [UI_MENU_OV_LIMIT] = "Frame limit", [UI_MENU_OV_PRESENT] = "Presentation",
+    [UI_MENU_OV_UPSCALER] = "3D upscaler",
+    [UI_MENU_OV_SCALING] = "Scaling", [UI_MENU_OV_LIMIT] = "Frame limit", [UI_MENU_OV_PRESENT] = "Presentation", [UI_MENU_OV_SHOWN] = "Shown",
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, sharpness %d%%", [UI_MENU_OV_SCALE_NONE] = "none (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "bilinear",
@@ -579,65 +644,84 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                     "builds them in (a few minutes) and starts the game again. Progress since your "
                                     "last save is lost.",
     [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "This mod patches the game code (exefs) in a way the port cannot apply, so the "
-                                       "whole mod stays off. %s",
+                                       "whole mod stays off. Its switch \"Use ... without its code\" below uses the "
+                                       "rest of it. %s",
     [UI_MENU_MODS_EXEFS_OTHER] = "Its code patches (exefs) are made for another game version.",
     [UI_MENU_MODS_EXEFS_ON] = "Code patches in use: %d files.",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "Code patches in use: %d files. They replace the port's own patch %s, which "
                                       "stays off while this mod is on.",
+    [UI_MENU_MODS_CODE_SKIPPED] = "Its own game code (%s) does not load: the rest of the mod is used. Switch the mod "
+                                  "off if the game misbehaves with it.",
+    [UI_MENU_MODS_PLUGIN_ON] = "Its plugin runs: %d hooks into the game code.",
+    [UI_MENU_MODS_PLUGIN_REFUSED] = "Its plugin %s cannot run in the port: %s.",
+    [UI_MENU_MODS_PLUGIN_STAYS_OFF] = "The whole mod stays off. Its switch \"Use ... without its code\" below uses the "
+                                      "rest of it.",
+    [UI_MENU_MODS_PLUGIN_OFF] = "Its plugin stays off this time: it started differently from the build (%s). The game "
+                                "rebuilds it at the next start.",
+    [UI_MENU_MODS_WITHOUT_CODE] = "Use %s without its code",
+    [UI_MENU_MODS_WITHOUT_CODE_DESC] = "The mod above brings code the port cannot run: its own game code (a subsdk "
+                                       "plugin or a replaced main) or code patches (exefs) the port cannot apply. Off: "
+                                       "the whole mod stays off. On: that code is left out and the rest of the mod is "
+                                       "used: its RomFS files, cheats and the code patches that work. Its files may "
+                                       "expect the missing code; switch it off again if the game misbehaves. Applies "
+                                       "at the next start.",
+    [UI_MENU_MODS_WITHOUT_CODE_ALL] = "On for every mod: mods_without_code = 1 in totk.ini.",
+    [UI_MENU_MODS_EXEFS_SKIPPED] = "%u of its code patch files (exefs) cannot be applied and are left out: the rest of "
+                                   "the mod is used. %s",
+    [UI_MENU_MODS_OVERRIDES_FILES] = "%u of its files replace those of %s, which is lower in the list.",
+    [UI_MENU_MODS_DATA_OVERRIDDEN] = "%u bytes of its game data changes come from %s, which is higher in the list.",
+    [UI_MENU_MODS_OVERRIDES_DATA] = "%u bytes of its game data changes replace those of %s, which is lower in the "
+                                    "list.",
+    [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u of its code patch sites are overridden by %s, which is higher in the list.",
+    [UI_MENU_MODS_OVERRIDES_CODE] = "It overrides %u code patch sites of %s, which is lower in the list.",
     [UI_MENU_GROUP_HD_SWITCH] = "Switch Controller (Pro Controller & Joy-Con)",
     [UI_MENU_HD_RUMBLE] = "HD Rumble",
-    [UI_MENU_HD_RUMBLE_DESC] = "HD Rumble for Switch Pro Controller and Joy-Con via RenHDrum (" RENHDRUM_FILE "): sends the "
-                               "game's low and high frequency and amplitude bands directly to the linear resonant "
-                               "actuators (5 ms envelope, pitch inside the packet). Off: standard controller rumble.",
+    [UI_MENU_HD_RUMBLE_DESC] = "Uses native HD Rumble on Switch Pro Controller and Joy-Con. Off: standard controller rumble.",
     [UI_MENU_HD_BT_SPEED] = "Bluetooth send speed",
-    [UI_MENU_HD_BT_SPEED_DESC] = "How fast HD Rumble packets are sent over Bluetooth. Fast is the recommended level: "
-                                 "close to wired, and buttons do not lag because of rumble. Choose Balanced or Stable "
-                                 "if your Bluetooth adapter drops packets.",
+    [UI_MENU_HD_BT_SPEED_DESC] = "How fast HD Rumble updates are sent over Bluetooth. Fast feels closest to wired. "
+                                 "Choose Balanced or Stable if your Bluetooth adapter drops rumble or inputs.",
     [UI_MENU_HD_BT_STABLE] = "Stable", [UI_MENU_HD_BT_BALANCED] = "Balanced", [UI_MENU_HD_BT_FAST] = "Fast",
     [UI_MENU_HD_CRISP] = "Crisp notes (Wired)",
-    [UI_MENU_HD_CRISP_DESC] = "Sharpens short attacks and musical notes on a wired Pro Controller or Joy-Con.",
+    [UI_MENU_HD_CRISP_DESC] = "Makes short impacts and musical notes feel sharper over USB.",
     [UI_MENU_HD_BT_CRISP] = "Crisp notes (Bluetooth)",
-    [UI_MENU_HD_BT_CRISP_DESC] = "Sharpens short attacks and musical notes on a Bluetooth Pro Controller or Joy-Con.",
+    [UI_MENU_HD_BT_CRISP_DESC] = "Makes short impacts and musical notes feel sharper over Bluetooth.",
     [UI_MENU_GROUP_HD_DUALSENSE] = "DualSense",
     [UI_MENU_DS_HAPTICS] = "DualSense Haptics",
-    [UI_MENU_DS_HAPTICS_DESC] = "Rumble through the voice-coil haptic actuators in the PS5 DualSense controller via "
-                                "RenHDrum (" RENHDRUM_FILE "). Over USB, the controller's audio channel carries a continuous "
-                                "48,000 samples/sec waveform for the most detailed rumble. Over Bluetooth, it sends "
-                                "3,000 samples/sec haptics (Report 0x32). Off: standard controller rumble.",
+    [UI_MENU_DS_HAPTICS_DESC] = "HD Rumble for the PS5 DualSense controller. HD Haptics (default) adds controller "
+                                "speaker detail over USB and Bluetooth. Standard uses grip haptics only. Off: standard "
+                                "controller rumble.",
+    [UI_MENU_DS_HAPTICS_STANDARD] = "Standard",
+    [UI_MENU_DS_HAPTICS_HD] = "HD Haptics",
     [UI_MENU_DS_VOLUME] = "Haptics volume",
-    [UI_MENU_DS_VOLUME_DESC] = "Strength of the DualSense voice-coil haptics (10 % to 100 %).",
+    [UI_MENU_DS_VOLUME_DESC] = "Strength of the DualSense haptics (10 % to 100 %).",
     [UI_MENU_DS_CRISP] = "Crisp notes (Wired)",
-    [UI_MENU_DS_CRISP_DESC] = "Sharpens transient impacts and musical notes over a wired USB connection.",
+    [UI_MENU_DS_CRISP_DESC] = "Makes short impacts and musical notes feel sharper over USB.",
     [UI_MENU_DS_BT_CRISP] = "Crisp notes (Bluetooth)",
-    [UI_MENU_DS_BT_CRISP_DESC] = "Sharpens transient impacts over Bluetooth (off by default to keep the 3 kHz Bluetooth "
-                                 "haptic stream smooth).",
+    [UI_MENU_DS_BT_CRISP_DESC] = "Makes short impacts feel sharper over Bluetooth (off by default for smoother wireless rumble).",
     [UI_MENU_DS_TRIGGERS] = "Adaptive triggers",
-    [UI_MENU_DS_TRIGGERS_DESC] = "How hard the triggers resist; ZR gets heavier once the bow is drawn. 0 turns it off.",
+    [UI_MENU_DS_TRIGGERS_DESC] = "Resistance felt when pulling the triggers; gets heavier once the bow is drawn. 0 turns it off.",
     [UI_MENU_DS_TRIGGERS_MODE] = "Adaptive trigger buttons",
-    [UI_MENU_DS_TRIGGERS_MODE_DESC] = "Which triggers get the adaptive resistance: R2 only (bow), both R2 and L2, or L2 only.",
+    [UI_MENU_DS_TRIGGERS_MODE_DESC] = "Which triggers use adaptive resistance: R2 only (bow), both R2 and L2, or L2 only.",
     [UI_MENU_DS_TRIGGERS_R2] = "R2",
     [UI_MENU_DS_TRIGGERS_BOTH] = "R2 + L2",
     [UI_MENU_DS_TRIGGERS_L2] = "L2",
     [UI_MENU_DS_TRIGGER_VIBRATION] = "Trigger vibration",
-    [UI_MENU_DS_TRIGGER_VIBRATION_DESC] = "Also vibrates both adaptive triggers with the game's rumble. Pauses trigger resistance while vibrating.",
+    [UI_MENU_DS_TRIGGER_VIBRATION_DESC] = "Adds reactive rumble pulses to L2 and R2 on impacts and explosions while held. "
+                                         "Works alongside adaptive trigger resistance.",
     [UI_MENU_GROUP_HD_XBOX] = "Xbox Controller (Xbox One & Series X|S)",
     [UI_MENU_XBOX_RUMBLE] = "Xbox One Rumble",
-    [UI_MENU_XBOX_RUMBLE_DESC] = "Translates Switch HD Rumble for the four motors of a Microsoft Xbox One or Series X|S "
-                                 "controller via RenHDrum (" RENHDRUM_FILE "): the heavy left grip motor takes low-band hits, "
-                                 "the light right grip motor takes high-band taps and surface texture, and the two "
-                                 "trigger motors add left and right onset ticks. Off: standard controller rumble.",
+    [UI_MENU_XBOX_RUMBLE_DESC] = "Translates Switch HD Rumble to all four motors on an Xbox One or Series X|S controller. "
+                                 "Off: standard controller rumble.",
     [UI_MENU_XBOX_TRIGGERS] = "Trigger rumble (all 4 motors)",
-    [UI_MENU_XBOX_TRIGGERS_DESC] = "Lets the two impulse trigger motors join in with short left and right onset ticks on "
-                                   "impacts and beats when Xbox One Rumble is on.",
-    [UI_MENU_GROUP_HD_STEAM] = "Steam Controller (2026, Beta)",
-    [UI_MENU_STEAM_RUMBLE] = "Steam Controller HD Rumble (Beta)",
-    [UI_MENU_STEAM_RUMBLE_DESC] = "Beta grip HD Rumble for the Steam Controller (2026) via RenHDrum (" RENHDRUM_FILE "): "
-                                  "streams Switch HD Rumble PCM waveforms to both grips (8 kHz USB, 4 kHz wireless "
-                                  "dongle or Windows Bluetooth; requires Steam Input off). Off: standard controller rumble.",
+    [UI_MENU_XBOX_TRIGGERS_DESC] = "Adds trigger rumble pulses on impacts and beats when Xbox One Rumble is on.",
+    [UI_MENU_GROUP_HD_STEAM] = "Steam Controller (2026)",
+    [UI_MENU_STEAM_RUMBLE] = "Steam Controller HD Rumble",
+    [UI_MENU_STEAM_RUMBLE_DESC] = "HD Rumble for the Steam Controller (2026) grips (requires Steam Input off). "
+                                  "Off: standard controller rumble.",
     [UI_MENU_STEAM_VOLUME] = "Haptics volume",
-    [UI_MENU_STEAM_VOLUME_DESC] = "Strength of the Steam Controller (2026) grip HD Rumble (10 % to 100 %).",
+    [UI_MENU_STEAM_VOLUME_DESC] = "Strength of the Steam Controller (2026) haptics (10 % to 100 %).",
     [UI_MENU_STEAM_CRISP] = "Crisp notes",
-    [UI_MENU_STEAM_CRISP_DESC] = "Sharpens transient impacts and musical notes on the Steam Controller (2026) grips.",
+    [UI_MENU_STEAM_CRISP_DESC] = "Makes short impacts and musical notes feel sharper on the Steam Controller (2026).",
 };
 
 static const char *const text_ru[UI_TEXT_COUNT] = {
@@ -668,12 +752,18 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                   "режимы.",
     [UI_MENU_PERF_OFF] = "Выкл.", [UI_MENU_PERF_FPS] = "FPS", [UI_MENU_PERF_FULL] = "Полный",
     [UI_PERF_LINE_FPS] = "%.0f к/с",
+    [UI_PERF_LINE_FPS_GEN] = "%.0f к/с отрисовано, %.0f показано",
     [UI_MENU_GRAPHICS] = "Изображение",
     [UI_MENU_OUTPUT_RES] = "Разрешение игры",
     [UI_MENU_OUTPUT_RES_DESC] = "Размер, в котором игра рисует картинку и интерфейс. Выше 1920 × 1080 игре нужно больше "
                                 "видеопамяти и времени GPU. Более широкий размер (21:9) расширяет обзор камеры и "
                                 "переносит интерфейс в углы экрана, более высокий (16:10, 3:2) переносит его к "
                                 "верхнему и нижнему краям.",
+    [UI_MENU_HUD_WIDTH] = "Ширина интерфейса",
+    [UI_MENU_HUD_WIDTH_DESC] = "На экране шире 16:9: как далеко друг от друга левая и правая части интерфейса. "
+                               "«Весь экран» ставит их у краёв экрана; 21:9 или 16:9 держит интерфейс в середине "
+                               "экрана такой формы. Недостающая раскладка создаётся в фоне и будет после перезапуска.",
+    [UI_MENU_HUD_WIDTH_FULL] = "Весь экран",
     [UI_MENU_RENDER_SCALE] = "Масштаб 3D-отрисовки",
     [UI_MENU_RENDER_SCALE_DESC] = "Размер 3D-сцены относительно разрешения игры; FSR игры доводит её до этого размера. "
                                   "Выше 100 % сглаживает лесенки на краях (суперсэмплинг) ценой большой нагрузки на GPU.",
@@ -693,7 +783,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                   "растянуть их на всю картинку. Действует со следующего ролика.",
     [UI_MENU_MOVIE_ASPECT_KEEP] = "Чёрные полосы", [UI_MENU_MOVIE_ASPECT_STRETCH] = "Растянуть",
     [UI_MENU_FOV] = "Поле зрения",
-    [UI_MENU_FOV_DESC] = "Сколько мира показывает камера, в процентах от игрового. Для версий игры 1.1.0 и 1.4.3.",
+    [UI_MENU_FOV_DESC] = "Сколько мира показывает камера, в процентах от игрового. Для версий игры 1.1.0, 1.2.1 и 1.4.3.",
     [UI_MENU_SHADOW_RES] = "Размер карты теней",
     [UI_MENU_SHADOW_RES_DESC] = "Размер карты теней от солнца. Собственный размер игры меняется вместе с видом, у земли до "
                                 "примерно 400, поэтому тени листвы выглядят квадратными и дёргаются; постоянный размер делает "
@@ -755,10 +845,6 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_GRASS_RANGE_DESC] = "Как далеко вокруг камеры растёт трава (в игре 62,5 м). Выше: трава на лугах видна "
                                  "дальше и не вырастает прямо перед вами; ниже: травы меньше. Действует после "
                                  "перезапуска.",
-    [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
-    [UI_MENU_DLAA_DESC] = "NVIDIA DLSS для 3D-сцены (видеокарты NVIDIA RTX; " DLSS_FILE " рядом с " EXE_FILE "): ровнее "
-                          "края и меньше мерцания. Интерфейс не затрагивается. Режим ниже задаёт разрешение, с которым он "
-                          "работает. Действует после перезапуска.",
     [UI_MENU_DLSS_PRESET] = "Модель DLSS",
     [UI_MENU_DLSS_PRESET_DESC] = "Какая модель DLSS работает. «Автоматически» следует совету NVIDIA для каждого режима: K "
                                  "для DLAA, «Качества» и «Баланса», M для «Производительности», L для «Макс. "
@@ -772,11 +858,12 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                 "гладкие края. Действует сразу.",
     [UI_MENU_DLSS_CHARS_OFF] = "Выкл.", [UI_MENU_DLSS_CHARS_LIGHT] = "Слабо", [UI_MENU_DLSS_CHARS_MEDIUM] = "Средне",
     [UI_MENU_DLSS_CHARS_FULL] = "Полностью",
-    [UI_MENU_DLSS] = "Режим DLSS",
-    [UI_MENU_DLSS_DESC] = "DLAA рисует 3D-сцену в полном разрешении. «Качество», «Баланс», «Производительность» и "
-                          "«Макс. производительность» рисуют её в 67, 58, 50 и 33 % и масштабируют через DLSS, что "
-                          "экономит время видеокарты; они заменяют масштаб 3D-отрисовки. Действует сразу.",
-    [UI_MENU_DLSS_DLAA] = "DLAA (родное)", [UI_MENU_DLSS_QUALITY] = "Качество", [UI_MENU_DLSS_BALANCED] = "Баланс",
+    [UI_MENU_DLSS] = "Режим апскейлера",
+    [UI_MENU_DLSS_DESC] = "«Родное» сглаживает 3D-сцену в полном разрешении. «Качество», «Баланс», «Производительность» и "
+                          "«Макс. производительность» рисуют её в 67, 58, 50 и 33 % и масштабируют апскейлером (DLSS "
+                          "или FSR 3.1), что экономит время видеокарты; они заменяют масштаб 3D-отрисовки. Действует "
+                          "сразу.",
+    [UI_MENU_DLSS_DLAA] = "Родное", [UI_MENU_DLSS_QUALITY] = "Качество", [UI_MENU_DLSS_BALANCED] = "Баланс",
     [UI_MENU_DLSS_PERFORMANCE] = "Производительность", [UI_MENU_DLSS_ULTRA] = "Макс. производительность",
     [UI_MENU_FXAA] = "Сглаживание игры (FXAA)",
     [UI_MENU_FXAA_DESC] = "Собственное сглаживание FXAA. Слегка размывает мелкие детали; с DLAA оно не нужно.",
@@ -785,6 +872,19 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_REFLEX_OFF] = "Выкл",
     [UI_MENU_REFLEX_ON] = "Вкл",
     [UI_MENU_REFLEX_BOOST] = "Вкл + Ускорение",
+    [UI_MENU_SCENE_UPSCALER] = "Апскейлер 3D-сцены",
+    [UI_MENU_SCENE_UPSCALER_DESC] = "Временной апскейлер для 3D-сцены: ровнее края и меньше мерцания, а в режимах ниже «Родного» он "
+                                    "рисует сцену меньше и увеличивает её, что экономит время видеокарты. NVIDIA DLSS "
+                                    "нужна видеокарта NVIDIA RTX и " DLSS_FILE " рядом с " EXE_FILE "; AMD FSR 3.1 "
+                                    "работает на любой видеокарте. «Выкл» оставляет собственное масштабирование игры и "
+                                    "FXAA. Интерфейс не затрагивается; масштабирование и резкость выше по-прежнему "
+                                    "подгоняют изображение игры под окно. Действует после перезапуска.",
+    [UI_MENU_SCENE_UPSCALER_OFF] = "Выкл", [UI_MENU_SCENE_UPSCALER_DLSS] = "NVIDIA DLSS",
+    [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU] = "DLSS: нужна видеокарта NVIDIA RTX",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL] = "DLSS: нет " DLSS_FILE,
+    [UI_MENU_FSR3_SHARPNESS] = "Резкость FSR 3.1",
+    [UI_MENU_FSR3_SHARPNESS_DESC] = "Повышение резкости 3D-сцены после FSR 3.1; 0 выключает его.",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
     [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду. Выше 60 — экспериментальный режим, нужна «Скорость "
@@ -795,6 +895,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_QUEUE] = "Очередь кадров",
     [UI_MENU_FRAME_QUEUE_DESC] = "Игра начинает кадр, пока предыдущий ждёт показа: намного меньше пропущенных кадров на "
                                  "лимите, задержка ввода больше не более чем на кадр. Применяется сразу.",
+    [UI_MENU_FRAME_GEN] = "Генерация кадров", [UI_MENU_FRAME_GEN_OFF] = "Выкл.", [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
+    [UI_MENU_FRAME_GEN_DESC] = "Сгенерированный кадр между каждыми двумя, что рисует игра: на экране вдвое больше "
+                               "кадров, игра идёт на половине лимита, управление отвечает примерно на полкадра позже. "
+                               "Для мониторов от 120 Гц. Не работает с DLSS и HDR. Применяется сразу.",
     [UI_MENU_REALTIME] = "Скорость игры по часам",
     [UI_MENU_REALTIME_DESC] = "Игра идёт по реальному времени, медленный кадр её не замедляет.",
     [UI_MENU_CLOTH_REALTIME] = "Ткань по часам",
@@ -826,10 +930,12 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_ROW_DESC] = "Заменяет файлов игры: %u. Добавляет новых файлов: %u.",
     [UI_MENU_MODS_OVERRIDDEN] = "%u его файлов берутся из мода %s, он выше в списке.",
     [UI_MENU_MODS_MOVE_HINT] = "Верхняя кнопка или Ctrl+Вверх поднимает мод, левая кнопка или Ctrl+Вниз опускает. Если "
-                               "два мода меняют один файл, побеждает верхний. Изменения действуют после перезапуска.",
+                               "два мода меняют один файл, данные или код игры, побеждает верхний. Изменения действуют "
+                               "после перезапуска.",
     [UI_MENU_MODS_EMPTY] = "В этой папке нет файлов romfs, exefs или cheats.",
     [UI_MENU_MODS_SUBSDK] = "Этот мод приносит свой код игры (плагин subsdk или заменённый main). Порт не загружает "
-                            "модули кода, поэтому мод выключен целиком.",
+                            "модули кода, поэтому мод выключен целиком. Его переключатель «... без его кода» ниже "
+                            "включает остальную часть мода.",
     [UI_MENU_MODS_EXEFS_LATER] = "Этот мод меняет код игры (exefs). Игра соберёт эти патчи при следующем запуске "
                                  "(пересборка на несколько минут); до тех пор мод выключен целиком.",
     [UI_MENU_MODS_CHEATS] = "Читов: %d. Они включаются на вкладке «Читы».",
@@ -873,6 +979,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_GYRO_CALIBRATED] = "%s, откалиброван",
     [UI_MENU_GYRO_CALIBRATE_FAILED] = "Калибровка не удалась",
     [UI_MENU_GYRO_CALIBRATE_MOVED] = "Контроллер сдвинулся: держите его неподвижно и повторите",
+    [UI_MENU_GYRO_AUTO_BIAS] = "Учёт дрейфа гироскопа в покое",
+    [UI_MENU_GYRO_AUTO_BIAS_DESC] = "Измеряет остаточный дрейф гироскопа, пока контроллер лежит на столе, и вычитает "
+                                    "его. Для прицела лука, который медленно уплывает даже после калибровки. В руке "
+                                    "контроллер не измеряется. Экспериментально.",
     [UI_MENU_RUMBLE_STRENGTH] = "Сила вибрации",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "Насколько сильно вибрирует контроллер.",
     [UI_MENU_RUMBLE_CURVE] = "Кривая вибрации",
@@ -891,19 +1001,23 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_DESC] = "Кнопки какого контроллера показывают подсказки игры. Nintendo: как в самой игре. Xbox: "
                              "LB, RB, LT, RT, Menu, View и крестовина, а A, B, X и Y подписаны так же, как кнопка, "
                              "которую нажимает раскладка выше (в Nintendo (A справа) правая кнопка подписана B, и "
-                             "подсказки A показывают B). PC: клавиши и кнопки мыши стандартной раскладки клавиатуры "
-                             "(E, Shift, пробел, левый клик...) и мышь для камеры. Игра читает подсказки при запуске, "
-                             "так что они меняются после перезапуска. Подсказки записаны в файлах игры, поэтому у "
-                             "кнопки, переназначенной на вкладке управления, на экране остаётся прежняя подсказка.",
-    [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox", [UI_MENU_PROMPTS_PC] = "PC",
+                             "подсказки A показывают B). PlayStation: символы геймпада PlayStation (○ × △ □, L1, R1, "
+                             "L2, R2, Options и Share) на кнопке, которую нажимает раскладка выше. PC: клавиши и "
+                             "кнопки мыши стандартной раскладки клавиатуры (E, Shift, пробел, левый клик...) и мышь "
+                             "для камеры. Игра читает подсказки при запуске, так что они меняются после перезапуска. "
+                             "Подсказки записаны в файлах игры, поэтому у кнопки, переназначенной на вкладке "
+                             "управления, на экране остаётся прежняя подсказка.",
+    [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_PLAYSTATION] = "PlayStation", [UI_MENU_PROMPTS_PC] = "PC",
     [UI_MENU_PROMPTS_MISSING] = "нет файлов подсказок: запустите установку снова",
     [UI_MENU_PROMPTS_FAILED] = "файлы подсказок повреждены: запустите установку снова",
     [UI_MENU_PROMPTS_RESTART] = "подсказки сменятся после перезапуска",
     [UI_MENU_PROMPTS_OFF_SHAPE] = "выкл. при этом разрешении игры (для него нет раскладки)",
     [UI_MENU_OUTPUT_RES_NO_LAYOUT] = "для этой формы нет раскладки: запустите установщик снова",
     [UI_MENU_OUTPUT_RES_PREPARING] = "раскладка создаётся в фоне; будет при следующем запуске",
-    [UI_MENU_SHAPE_PREPARE] = "Подготовить раскладку для этого экрана",
-    [UI_MENU_SHAPE_PREPARE_DESC] = "Создаёт в фоне раскладку интерфейса и выбранные подсказки кнопок для формы этого разрешения игры инструментами установщика, как установщик делает для мониторов, которые видел. Игра продолжает работать; раскладка будет со следующего запуска.",
+    [UI_MENU_PROMPTS_PREPARING] = "файлы подсказок создаются в фоне; будут при следующем запуске",
+    [UI_MENU_PREPARE_RETRY] = "Повторить",
+    [UI_MENU_PREPARE_RETRY_DESC] = "Снова запускает инструменты установщика, чтобы создать в фоне недостающую раскладку интерфейса или файлы подсказок кнопок. Игра продолжает работать; они будут со следующего запуска.",
     [UI_MENU_SHAPE_PREPARE_FAILED] = "инструменты установщика не запустились: запустите установщик снова",
     [UI_MENU_PROMPTS_OFF_MODS] = "выкл.: мод RomFS заменяет их файлы",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "выкл., пока задан TOTK_ROMFS_PATCHES",
@@ -929,6 +1043,17 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_DIALOGUE_CLICK_DESC] = "Пока открыто окно диалога, левый щелчок нажимает B (продолжает текст и пропускает его прокрутку), а правый — A, вместо назначенных им кнопок (по умолчанию Y, она открывает журнал диалога, и ZL). В вариантах ответа по-прежнему работает указатель: левый щелчок выбирает (версия игры 1.4.3).",
     [UI_MENU_POINTER_IMAGE] = "Игровой курсор",
     [UI_MENU_POINTER_IMAGE_DESC] = "Пока курсор не захвачен (меню игры, это меню, после Esc), окно показывает собственный золотой наконечник вместо системной стрелки, по масштабу экрана.",
+    [UI_MENU_QUICKSAVE] = "Быстрое сохранение и загрузка",
+    [UI_MENU_QUICKSAVE_DESC] = "Одна клавиша сразу сохраняет игру, другая загружает это сохранение (две строки ниже: по умолчанию F6 и F7, как в Half-Life), без всяких меню на экране. Только клавиатура и мышь, только версия игры 1.4.3. Быстрое сохранение просит игру сделать одно из её собственных автосохранений, поэтому заменяет самое старое автосохранение (ручное сохранение остаётся), держит его копию как быстрое сохранение (папка quicksave профиля) и пишет «Игра сохранена» вверху экрана. Быстрая загрузка держит картинку с надписью «Загрузка быстрого сохранения», пока за кадром проходит список загрузки игры, и игра загружает быстрое сохранение (около 5 с). Где игра сама не стала бы автосохраняться (сценка, диалог), ничего не сохраняется, и надпись говорит об этом.",
+    [UI_MENU_QUICKSAVE_KEY] = "Клавиша быстрого сохранения",
+    [UI_MENU_QUICKLOAD_KEY] = "Клавиша быстрой загрузки",
+    [UI_MENU_QUICKSAVE_KEY_DESC] = "Клавиша, которая запускает быстрое сохранение или быструю загрузку; по умолчанию F6 и F7, как в Half-Life. Выберите ячейку и нажмите любую клавишу или кнопку мыши; Delete оставляет действие без клавиши. Пока быстрое сохранение включено, эти две клавиши больше ничего не делают (если клавиша занята в раскладке, это написано под значением). В totk.ini подходит любое имя клавиши из раскладки (quicksave_key, quickload_key).",
+    [UI_QS_SAVED] = "Игра сохранена",
+    [UI_QS_LOADING] = "Загрузка быстрого сохранения",
+    [UI_QS_NOT_NOW] = "Сейчас быстрое сохранение невозможно",
+    [UI_QS_NONE] = "Быстрого сохранения ещё нет (его делает клавиша быстрого сохранения)",
+    [UI_QS_FAILED] = "Быстрое сохранение не удалось: см. totk.log",
+    [UI_QS_LOAD_FAILED] = "Быстрая загрузка не удалась: см. totk.log",
     [UI_MENU_MOUSE_SENS] = "Чувствительность мыши",
     [UI_MENU_MOUSE_SENS_DESC] = "Как быстро мышь поворачивает камеру.",
     [UI_MENU_WALK_KEY] = "Клавиша шага",
@@ -938,6 +1063,23 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_SCALE] = "Сила шага",
     [UI_MENU_WALK_SCALE_DESC] = "Отклонение стиков клавиатуры при удержании клавиши шага. Половина — шаг, полное "
                                 "отклонение — бег.",
+    [UI_MENU_FREECAM] = "Свободная камера",
+    [UI_MENU_FREECAM_DESC] = "Позволяет сочетанию или клавише ниже отделить камеру от Линка и летать ею. По "
+        "умолчанию выключена: тогда код камеры игры работает без изменений. Включается после "
+        "перезапуска. Версия игры 1.4.3.",
+    [UI_MENU_FREECAM_OFF_NOTE] = "Включите «Свободную камеру» выше и перезапустите игру",
+    [UI_MENU_FREECAM_PAD] = "Сочетание свободной камеры",
+    [UI_MENU_FREECAM_PAD_DESC] = "Кнопки геймпада, нажатые вместе, переключают камеру по трём режимам: она отделяется "
+        "от Линка и летает, остаётся на месте, пока Линком снова можно управлять, и возвращается. Пока камера летает, "
+        "игра не получает ввод: левый стик ведёт камеру вдоль взгляда и вбок, курки — вверх и вниз, правый стик "
+        "поворачивает, а каждое нажатие L или R уменьшает или увеличивает скорость вдвое. Когда камера закреплена, "
+        "Линк идёт туда, куда левый стик указывает на экране. Версия игры 1.4.3.",
+    [UI_MENU_FREECAM_PAD_V143] = "Только для версии игры 1.4.3",
+    [UI_MENU_FREECAM_KEY] = "Клавиша свободной камеры",
+    [UI_MENU_FREECAM_KEY_DESC] = "Клавиша, которая переключает те же режимы: камера отделяется от Линка и летает, "
+        "остаётся на месте, пока Линком снова можно управлять, и возвращается. Пока она летает: W A S D ведут камеру "
+        "вдоль взгляда и вбок, клавиши ZR и ZL (по умолчанию X и Z) — вверх и вниз, мышь и стрелки поворачивают, а "
+        "клавиши L и R (Q и R) уменьшают или увеличивают скорость вдвое. Версия игры 1.4.3.",
     [UI_MENU_GROUP_GAMEPLAY_TWEAKS] = "Геймплей",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED] = "Настройки геймплея",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED_DESC] = "Управление колесом мыши: вращение и дистанция предметов в Ультраруке, выбор оружия и предметов, плавный зум карты.",
@@ -1104,6 +1246,17 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_FIX_C0_DESC] = "Заполняет зарезервированный драйвером банк констант c0 (размеры хранилищ, размер запуска, размер точки, базовый экземпляр) вместо чтения нулей.",
     [UI_MENU_FIX_ZERO] = "Обнулять новую память GPU",
     [UI_MENU_FIX_ZERO_DESC] = "Новые пулы памяти GPU заполняются нулями, как память Switch.",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "Туман и частицы после DLAA",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "С DLAA туман, пыль и другие частицы рисуются поверх картинки, уже сглаженной"
+                                        " DLSS, как игра рисует их без DLSS: мелкие частицы в тумане (святилища) "
+                                        "больше не пропадают и не оставляют шлейфов. Выкл.: DLSS обрабатывает и эти "
+                                        "эффекты, как раньше. Только в режиме DLAA; режимы DLSS с повышением "
+                                        "разрешения обрабатывают их всегда. Применяется сразу.",
+    [UI_MENU_DLSS_FIXED_EXPOSURE] = "Фиксированная экспозиция DLSS",
+    [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS берёт яркость картинки игры как есть, а не оценивает экспозицию по "
+                                         "каждому кадру: в тёмных сценах (Глубины) большие участки в тумане больше не "
+                                         "темнеют и не светлеют на кадр при движении камеры. Выкл.: DLSS сам "
+                                         "оценивает экспозицию, как раньше. Применяется сразу.",
     [UI_MENU_BIND_SKIP] = "Пропуск повторных привязок",
     [UI_MENU_BIND_SKIP_DESC] = "Оптимизация: пропускает неизменившиеся привязки.",
     [UI_MENU_SHADER_MEMO] = "Память шейдеров", [UI_MENU_SHADER_MEMO_DESC] = "Оптимизация: запоминает поиск шейдеров.",
@@ -1158,7 +1311,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_MHZ] = "%.0f МГц", [UI_MENU_OV_FMT_GB] = "%.1f ГБ", [UI_MENU_OV_FMT_GB_OF] = "/ %.1f ГБ",
     [UI_MENU_OV_GAME_GB] = "игра %.1f ГБ", [UI_MENU_OV_FMT_MS] = "%.2f мс", [UI_MENU_OV_PER_FRAME] = "%.1f за кадр",
     [UI_MENU_OV_WINDOW] = "Окно", [UI_MENU_OV_OUTPUT] = "Изображение игры", [UI_MENU_OV_SCENE] = "3D-сцена",
-    [UI_MENU_OV_SCALING] = "Масштабирование", [UI_MENU_OV_LIMIT] = "Лимит кадров", [UI_MENU_OV_PRESENT] = "Вывод кадров",
+    [UI_MENU_OV_UPSCALER] = "3D-апскейлер",
+    [UI_MENU_OV_SCALING] = "Масштабирование", [UI_MENU_OV_LIMIT] = "Лимит кадров", [UI_MENU_OV_PRESENT] = "Вывод кадров", [UI_MENU_OV_SHOWN] = "Показано",
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, резкость %d%%", [UI_MENU_OV_SCALE_NONE] = "нет (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "билинейное",
@@ -1187,65 +1341,83 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                     "собирает их (несколько минут) и снова запускает игру. Прогресс после последнего "
                                     "сохранения будет потерян.",
     [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "Этот мод меняет код игры (exefs) так, как порт применить не может, поэтому мод "
-                                       "выключен целиком. %s",
+                                       "выключен целиком. Его переключатель «... без его кода» ниже включает остальную "
+                                       "часть мода. %s",
     [UI_MENU_MODS_EXEFS_OTHER] = "Его патчи кода (exefs) сделаны для другой версии игры.",
     [UI_MENU_MODS_EXEFS_ON] = "Патчи кода в работе: файлов: %d.",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "Патчи кода в работе: файлов: %d. Они заменяют собственный патч порта %s, "
                                       "который выключен, пока этот мод включён.",
+    [UI_MENU_MODS_CODE_SKIPPED] = "Его собственный код игры (%s) не загружается: используется остальная часть мода. "
+                                  "Выключите мод, если игра с ним ведёт себя странно.",
+    [UI_MENU_MODS_PLUGIN_ON] = "Его плагин работает: перехватов в коде игры: %d.",
+    [UI_MENU_MODS_PLUGIN_REFUSED] = "Его плагин %s не может работать в порте: %s.",
+    [UI_MENU_MODS_PLUGIN_STAYS_OFF] = "Мод выключен целиком. Его переключатель «... без его кода» ниже включает "
+                                      "остальную часть мода.",
+    [UI_MENU_MODS_PLUGIN_OFF] = "Его плагин в этот раз выключен: он запустился не так, как при сборке (%s). Игра "
+                                "пересоберёт его при следующем запуске.",
+    [UI_MENU_MODS_WITHOUT_CODE] = "%s без его кода",
+    [UI_MENU_MODS_WITHOUT_CODE_DESC] = "Мод выше приносит код, который порт не может запустить: свой код игры (плагин "
+                                       "subsdk или заменённый main) или патчи кода (exefs), которые порт не может "
+                                       "применить. Выкл.: мод выключен целиком. Вкл.: этот код пропускается, а "
+                                       "остальная часть мода используется — его файлы RomFS, читы и работающие патчи "
+                                       "кода. Его файлы могут рассчитывать на отсутствующий код; выключите снова, если "
+                                       "игра ведёт себя странно. Применяется при следующем запуске.",
+    [UI_MENU_MODS_WITHOUT_CODE_ALL] = "Включено для всех модов: mods_without_code = 1 в totk.ini.",
+    [UI_MENU_MODS_EXEFS_SKIPPED] = "Патчи кода (exefs), которые порт не может применить, пропущены (файлов: %u): "
+                                   "используется остальная часть мода. %s",
+    [UI_MENU_MODS_OVERRIDES_FILES] = "%u его файлов заменяют файлы мода %s, он ниже в списке.",
+    [UI_MENU_MODS_DATA_OVERRIDDEN] = "%u байт его изменений данных игры берутся из мода %s, он выше в списке.",
+    [UI_MENU_MODS_OVERRIDES_DATA] = "%u байт его изменений данных игры заменяют изменения мода %s, он ниже в списке.",
+    [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u мест его патчей кода перекрыты модом %s, он выше в списке.",
+    [UI_MENU_MODS_OVERRIDES_CODE] = "Он перекрывает %u мест патчей кода мода %s, он ниже в списке.",
     [UI_MENU_GROUP_HD_SWITCH] = "Контроллер Switch (Pro Controller и Joy-Con)",
     [UI_MENU_HD_RUMBLE] = "Вибрация HD Rumble",
-    [UI_MENU_HD_RUMBLE_DESC] = "Вибрация HD Rumble для Switch Pro Controller и Joy-Con через RenHDrum (" RENHDRUM_FILE "): "
-                               "передаёт низкую и высокую частоты и амплитуды игры напрямую на линейные приводы. "
-                               "Выкл.: обычная вибрация геймпада.",
+    [UI_MENU_HD_RUMBLE_DESC] = "Включает родную вибрацию HD Rumble на Switch Pro Controller и Joy-Con. Выкл.: обычная вибрация геймпада.",
     [UI_MENU_HD_BT_SPEED] = "Скорость отправки по Bluetooth",
-    [UI_MENU_HD_BT_SPEED_DESC] = "Как часто пакеты HD Rumble отправляются по Bluetooth. «Быстро» — рекомендуемый "
-                                 "уровень: близко к проводу и без задержки кнопок. Выберите «Сбалансированно» или "
-                                 "«Стабильно», если адаптер Bluetooth теряет пакеты.",
+    [UI_MENU_HD_BT_SPEED_DESC] = "Как часто обновляется HD Rumble по Bluetooth. «Быстро» ближе всего к проводу. "
+                                 "Выберите «Сбалансированно» или «Стабильно», если адаптер теряет сигнал.",
     [UI_MENU_HD_BT_STABLE] = "Стабильно", [UI_MENU_HD_BT_BALANCED] = "Сбаланс.", [UI_MENU_HD_BT_FAST] = "Быстро",
     [UI_MENU_HD_CRISP] = "Чёткие ноты (по проводу)",
-    [UI_MENU_HD_CRISP_DESC] = "Подчёркивает короткие удары и ноты при проводном подключении Pro Controller или Joy-Con.",
+    [UI_MENU_HD_CRISP_DESC] = "Делает короткие удары и музыкальные ноты более чёткими по USB.",
     [UI_MENU_HD_BT_CRISP] = "Чёткие ноты (Bluetooth)",
-    [UI_MENU_HD_BT_CRISP_DESC] = "Подчёркивает короткие удары и ноты при подключении Pro Controller или Joy-Con по Bluetooth.",
+    [UI_MENU_HD_BT_CRISP_DESC] = "Делает короткие удары и музыкальные ноты более чёткими по Bluetooth.",
     [UI_MENU_GROUP_HD_DUALSENSE] = "DualSense",
     [UI_MENU_DS_HAPTICS] = "Тактильная отдача DualSense",
-    [UI_MENU_DS_HAPTICS_DESC] = "Вибрация через звуковые катушки контроллера PS5 DualSense с помощью RenHDrum "
-                                "(" RENHDRUM_FILE "). По USB аудиоканал контроллера передаёт непрерывный сигнал 48 000 "
-                                "отсчётов/с. По Bluetooth передаётся сигнал 3000 отсчётов/с (отчёт 0x32). Выкл.: "
-                                "обычная вибрация геймпада.",
+    [UI_MENU_DS_HAPTICS_DESC] = "HD Rumble для контроллера PS5 DualSense. HD Haptics (по умолчанию) добавляет "
+                                "детали через динамик контроллера по USB и Bluetooth. «Обычная» использует только "
+                                "вибрацию рукояток. Выкл.: обычная вибрация геймпада.",
+    [UI_MENU_DS_HAPTICS_STANDARD] = "Обычная",
+    [UI_MENU_DS_HAPTICS_HD] = "HD Haptics",
     [UI_MENU_DS_VOLUME] = "Громкость отдачи",
     [UI_MENU_DS_VOLUME_DESC] = "Сила тактильной отдачи DualSense (от 10 % до 100 %).",
     [UI_MENU_DS_CRISP] = "Чёткие ноты (по проводу)",
-    [UI_MENU_DS_CRISP_DESC] = "Подчёркивает короткие удары и ноты при проводном подключении по USB.",
+    [UI_MENU_DS_CRISP_DESC] = "Делает короткие удары и музыкальные ноты более чёткими по USB.",
     [UI_MENU_DS_BT_CRISP] = "Чёткие ноты (Bluetooth)",
-    [UI_MENU_DS_BT_CRISP_DESC] = "Подчёркивает короткие удары по Bluetooth (по умолчанию выключено для плавного потока 3 кГц).",
+    [UI_MENU_DS_BT_CRISP_DESC] = "Делает короткие удары более чёткими по Bluetooth (выкл. по умолчанию для более плавной отдачи).",
     [UI_MENU_DS_TRIGGERS] = "Адаптивные триггеры",
-    [UI_MENU_DS_TRIGGERS_DESC] = "Сила сопротивления триггеров; ZR становится туже, когда лук натянут. 0 выключает его.",
+    [UI_MENU_DS_TRIGGERS_DESC] = "Сила сопротивления триггеров; становится туже, когда лук натянут. 0 выключает его.",
     [UI_MENU_DS_TRIGGERS_MODE] = "Кнопки адаптивных триггеров",
     [UI_MENU_DS_TRIGGERS_MODE_DESC] = "Какие триггеры получают адаптивное сопротивление: только R2 (лук), R2 и L2 вместе или только L2.",
     [UI_MENU_DS_TRIGGERS_R2] = "R2",
     [UI_MENU_DS_TRIGGERS_BOTH] = "R2 + L2",
     [UI_MENU_DS_TRIGGERS_L2] = "L2",
     [UI_MENU_DS_TRIGGER_VIBRATION] = "Вибрация триггеров",
-    [UI_MENU_DS_TRIGGER_VIBRATION_DESC] = "Также передаёт вибрацию игры на оба адаптивных триггера. Приостанавливает сопротивление на время вибрации.",
+    [UI_MENU_DS_TRIGGER_VIBRATION_DESC] = "Добавляет отклик на L2 и R2 при ударах и взрывах, пока триггер нажат. "
+                                         "Работает вместе с сопротивлением адаптивных триггеров.",
     [UI_MENU_GROUP_HD_XBOX] = "Контроллер Xbox (Xbox One и Series X|S)",
     [UI_MENU_XBOX_RUMBLE] = "Вибрация Xbox One Rumble",
-    [UI_MENU_XBOX_RUMBLE_DESC] = "Переводит сигнал Switch HD Rumble на четыре мотора контроллера Microsoft Xbox One или "
-                                 "Series X|S через RenHDrum (" RENHDRUM_FILE "): левый мотор рукоятки берёт низкие удары, "
-                                 "правый — высокие касания и текстуру поверхности, а моторы триггеров добавляют "
-                                 "направленные отклики. Выкл.: обычная вибрация геймпада.",
+    [UI_MENU_XBOX_RUMBLE_DESC] = "Переводит Switch HD Rumble на все четыре мотора контроллера Xbox One или Series X|S. "
+                                 "Выкл.: обычная вибрация геймпада.",
     [UI_MENU_XBOX_TRIGGERS] = "Вибрация триггеров (все 4 мотора)",
-    [UI_MENU_XBOX_TRIGGERS_DESC] = "Подключает два импульсных мотора в триггерах для коротких левых и правых откликов "
-                                   "при ударах и ритме, когда включена вибрация Xbox One Rumble.",
-    [UI_MENU_GROUP_HD_STEAM] = "Steam Controller (2026, бета)",
-    [UI_MENU_STEAM_RUMBLE] = "Steam Controller HD Rumble (бета)",
-    [UI_MENU_STEAM_RUMBLE_DESC] = "Бета-поддержка HD Rumble в рукоятках Steam Controller (2026) через RenHDrum "
-                                  "(" RENHDRUM_FILE "): передаёт сигнал HD Rumble в обе рукоятки (8 кГц по USB, 4 кГц "
-                                  "через донгл или Bluetooth в Windows; Steam Input должен быть выключен). Выкл.: "
-                                  "обычная вибрация геймпада.",
+    [UI_MENU_XBOX_TRIGGERS_DESC] = "Добавляет короткие импульсы в триггерах при ударах, когда включена вибрация Xbox One Rumble.",
+    [UI_MENU_GROUP_HD_STEAM] = "Steam Controller (2026)",
+    [UI_MENU_STEAM_RUMBLE] = "Steam Controller HD Rumble",
+    [UI_MENU_STEAM_RUMBLE_DESC] = "HD Rumble в рукоятках Steam Controller (2026) (требуется отключённый Steam Input). "
+                                  "Выкл.: обычная вибрация геймпада.",
     [UI_MENU_STEAM_VOLUME] = "Громкость отдачи",
-    [UI_MENU_STEAM_VOLUME_DESC] = "Сила вибрации рукояток Steam Controller (2026) (от 10 % до 100 %).",
+    [UI_MENU_STEAM_VOLUME_DESC] = "Сила отдачи Steam Controller (2026) (от 10 % до 100 %).",
     [UI_MENU_STEAM_CRISP] = "Чёткие ноты",
-    [UI_MENU_STEAM_CRISP_DESC] = "Подчёркивает короткие удары и ноты в рукоятках Steam Controller (2026).",
+    [UI_MENU_STEAM_CRISP_DESC] = "Делает короткие удары и музыкальные ноты более чёткими на Steam Controller (2026).",
 };
 
 static const char *const text_pt_br[UI_TEXT_COUNT] = {
@@ -1267,10 +1439,12 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_ROW_DESC] = "Arquivos do jogo que substitui: %u. Arquivos novos que adiciona: %u.",
     [UI_MENU_MODS_OVERRIDDEN] = "%u dos seus arquivos vêm de %s, que está acima na lista.",
     [UI_MENU_MODS_MOVE_HINT] = "O botão de cima ou Ctrl+Cima sobe o mod, o botão da esquerda ou Ctrl+Baixo desce. "
-                               "Quando dois mods mudam o mesmo arquivo, vale o de cima. As mudanças valem após reiniciar.",
+                               "Quando dois mods mudam o mesmo arquivo, dado ou código do jogo, vale o de cima. As "
+                               "mudanças valem após reiniciar.",
     [UI_MENU_MODS_EMPTY] = "Esta pasta não tem arquivos romfs, exefs ou cheats.",
-    [UI_MENU_MODS_SUBSDK] = "Este mod traz código próprio do jogo (um plugin subsdk ou um main substituído). O port não "
-                            "carrega módulos de código, então o mod inteiro fica desligado.",
+    [UI_MENU_MODS_SUBSDK] = "Este mod traz código próprio do jogo (um plugin subsdk ou um main substituído). O port "
+                            "não carrega módulos de código, então o mod inteiro fica desligado. A chave \"Usar ... sem "
+                            "o código dele\", abaixo, usa o resto dele.",
     [UI_MENU_MODS_EXEFS_LATER] = "Este mod altera o código do jogo (exefs). O jogo compila esses patches na próxima "
                                  "vez que iniciar (uma recompilação de alguns minutos); até lá o mod inteiro fica "
                                  "desligado.",
@@ -1312,12 +1486,18 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                                   "renderização. F10 alterna os modos.",
     [UI_MENU_PERF_OFF] = "Desligado", [UI_MENU_PERF_FPS] = "FPS", [UI_MENU_PERF_FULL] = "Completo",
     [UI_PERF_LINE_FPS] = "%.0f fps",
+    [UI_PERF_LINE_FPS_GEN] = "%.0f fps desenhados, %.0f exibidos",
     [UI_MENU_GRAPHICS] = "Imagem",
     [UI_MENU_OUTPUT_RES] = "Resolução do jogo",
     [UI_MENU_OUTPUT_RES_DESC] = "O tamanho em que o jogo desenha a imagem e a interface. Acima de 1920 x 1080 o jogo "
                                 "precisa de mais memória de vídeo e tempo de GPU. Um tamanho mais largo (21:9) amplia a "
                                 "visão da câmera e leva o HUD para os cantos da tela; um mais alto (16:10, 3:2) "
                                 "leva-o para as bordas de cima e de baixo.",
+    [UI_MENU_HUD_WIDTH] = "Largura do HUD",
+    [UI_MENU_HUD_WIDTH_DESC] = "Em uma tela mais larga que 16:9: a distância entre os lados esquerdo e direito do HUD. "
+                               "Tela cheia os coloca nas bordas da tela; 21:9 ou 16:9 mantém o HUD no meio da tela "
+                               "desse formato. Um layout ausente é feito em segundo plano e usado depois de reiniciar o jogo.",
+    [UI_MENU_HUD_WIDTH_FULL] = "Tela cheia",
     [UI_MENU_RENDER_SCALE] = "Escala da renderização 3D",
     [UI_MENU_RENDER_SCALE_DESC] = "Tamanho da cena 3D em relação à resolução do jogo; o FSR do jogo a amplia até esse "
                                   "tamanho. Acima de 100 % suaviza bordas serrilhadas (supersampling) com alto custo de "
@@ -1354,6 +1534,10 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_QUEUE] = "Fila de quadros",
     [UI_MENU_FRAME_QUEUE_DESC] = "O jogo começa um quadro enquanto o anterior espera a vez de aparecer: muito menos quadros "
                                  "perdidos no limite, com até um quadro a mais de atraso na entrada. Vale na hora.",
+    [UI_MENU_FRAME_GEN] = "Geração de quadros", [UI_MENU_FRAME_GEN_OFF] = "Desligado", [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
+    [UI_MENU_FRAME_GEN_DESC] = "Um quadro gerado entre cada dois que o jogo desenha: o dobro de quadros na tela, o "
+                               "jogo na metade do limite e os controles cerca de meio quadro mais tarde. Para telas de "
+                               "120 Hz ou mais. Não funciona com DLSS nem HDR. Vale na hora.",
     [UI_MENU_REALTIME] = "Velocidade do jogo pelo relógio",
     [UI_MENU_REALTIME_DESC] = "Avança o jogo pelo tempo real, para que um quadro lento não deixe o jogo mais lento.",
     [UI_MENU_CLOTH_REALTIME] = "Tecidos pelo relógio",
@@ -1393,6 +1577,10 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_GYRO_CALIBRATED] = "%s, calibrado",
     [UI_MENU_GYRO_CALIBRATE_FAILED] = "Falha na calibração",
     [UI_MENU_GYRO_CALIBRATE_MOVED] = "O controle se moveu: segure-o parado e tente de novo",
+    [UI_MENU_GYRO_AUTO_BIAS] = "Aprender o desvio do giroscópio em repouso",
+    [UI_MENU_GYRO_AUTO_BIAS_DESC] = "Mede o desvio que resta no giroscópio sempre que o controle fica parado sobre a "
+                                    "mesa e o subtrai. Para a mira do arco que desliza devagar mesmo após a "
+                                    "calibração. Na mão, o controle não é medido. Experimental.",
     [UI_MENU_RUMBLE_STRENGTH] = "Intensidade da vibração",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "Quão forte o controle vibra.",
     [UI_MENU_RUMBLE_CURVE] = "Curva da vibração",
@@ -1561,6 +1749,18 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_FIX_C0_DESC] = "Preenche o banco de constantes c0 reservado ao driver (tamanhos de armazenamento, tamanho do dispatch, tamanho do ponto, instância base) em vez de ler zeros.",
     [UI_MENU_FIX_ZERO] = "Zerar memória nova da GPU",
     [UI_MENU_FIX_ZERO_DESC] = "Novos pools de memória da GPU começam zerados, como a memória do Switch.",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "Névoa e partículas após o DLAA",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Com DLAA, a névoa, a poeira e outras partículas são desenhadas sobre a "
+                                        "imagem já suavizada pelo DLSS, como o jogo as desenha sem DLSS: partículas "
+                                        "pequenas na névoa (santuários) não somem mais nem deixam rastros. Desligado:"
+                                        " o DLSS também processa esses efeitos, como antes. Só no modo DLAA; os modos"
+                                        " de DLSS que aumentam a resolução sempre os processam. Aplica-se na hora.",
+    [UI_MENU_DLSS_FIXED_EXPOSURE] = "Exposição fixa do DLSS",
+    [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "O DLSS usa o brilho da imagem do jogo como ele é, em vez de estimar a "
+                                         "exposição a cada quadro: em cenas escuras (as Profundezas), grandes áreas com "
+                                         "névoa não ficam mais escuras ou claras por um quadro enquanto a câmera se "
+                                         "move. Desligado: o DLSS estima a exposição sozinho, como antes. Aplica-se na "
+                                         "hora.",
     [UI_MENU_BIND_SKIP] = "Pular bindings repetidos",
     [UI_MENU_BIND_SKIP_DESC] = "Otimização: pula bindings que não mudaram.",
     [UI_MENU_SHADER_MEMO] = "Memória de shaders", [UI_MENU_SHADER_MEMO_DESC] = "Otimização: lembra as buscas de shaders.",
@@ -1615,13 +1815,14 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_MHZ] = "%.0f MHz", [UI_MENU_OV_FMT_GB] = "%.1f GB", [UI_MENU_OV_FMT_GB_OF] = "/ %.1f GB",
     [UI_MENU_OV_GAME_GB] = "jogo %.1f GB", [UI_MENU_OV_FMT_MS] = "%.2f ms", [UI_MENU_OV_PER_FRAME] = "%.1f por quadro",
     [UI_MENU_OV_WINDOW] = "Janela", [UI_MENU_OV_OUTPUT] = "Imagem do jogo", [UI_MENU_OV_SCENE] = "Cena 3D",
-    [UI_MENU_OV_SCALING] = "Escala", [UI_MENU_OV_LIMIT] = "Limite de quadros", [UI_MENU_OV_PRESENT] = "Apresentação",
+    [UI_MENU_OV_UPSCALER] = "Upscaler 3D",
+    [UI_MENU_OV_SCALING] = "Escala", [UI_MENU_OV_LIMIT] = "Limite de quadros", [UI_MENU_OV_PRESENT] = "Apresentação", [UI_MENU_OV_SHOWN] = "Exibidos",
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, nitidez %d%%", [UI_MENU_OV_SCALE_NONE] = "nenhuma (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "bilinear",
     [UI_MENU_FOV] = "Campo de visão",
-    [UI_MENU_FOV_DESC] = "Quanto do mundo a câmera mostra, em porcentagem do original do jogo. Nas versões 1.1.0 e 1.4.3 do "
-                         "jogo.",
+    [UI_MENU_FOV_DESC] = "Quanto do mundo a câmera mostra, em porcentagem do original do jogo. Nas versões 1.1.0, 1.2.1 e 1.4.3 "
+                         "do jogo.",
     [UI_MENU_SHADOW_RES] = "Tamanho do mapa de sombras",
     [UI_MENU_SHADOW_RES_DESC] = "Tamanho do mapa de sombras do sol. O tamanho do jogo muda com a vista, até cerca de "
                                 "400 perto do chão, então as sombras das folhas ficam quadriculadas e pulam; um "
@@ -1674,13 +1875,15 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_DESC] = "Os botões de qual controle os ícones do jogo mostram. Nintendo: os do próprio jogo. "
                              "Xbox: LB, RB, LT, RT, Menu, Exibir e uma cruz direcional, e A, B, X e Y com a letra do "
                              "botão que o layout acima aperta (com Nintendo (A à direita) o botão da direita tem a "
-                             "letra B, então os ícones de A mostram B). PC: as teclas e os botões do mouse do layout "
-                             "padrão do teclado (E, Shift, Espaço, clique esquerdo...) e o mouse para a câmera. O jogo "
-                             "lê os ícones ao iniciar, então eles mudam depois de reiniciar. Eles fazem parte dos "
-                             "arquivos do jogo, então um botão remapeado em Controles continua com o ícone antigo na "
-                             "tela.",
+                             "letra B, então os ícones de A mostram B). PlayStation: os símbolos de um controle "
+                             "PlayStation (○ × △ □, L1, R1, L2, R2, Options e Share), no botão que o layout acima "
+                             "aperta. PC: as teclas e os botões do mouse do layout padrão do teclado (E, Shift, "
+                             "Espaço, clique esquerdo...) e o mouse para a câmera. O jogo lê os ícones ao iniciar, "
+                             "então eles mudam depois de reiniciar. Eles fazem parte dos arquivos do jogo, então um "
+                             "botão remapeado em Controles continua com o ícone antigo na tela.",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo",
     [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_PLAYSTATION] = "PlayStation",
     [UI_MENU_PROMPTS_PC] = "PC",
     [UI_MENU_MOUSE_MODE] = "Câmera com o mouse",
     [UI_MENU_MOUSE_MODE_DESC] = "Direta: a câmera gira o quanto o mouse se move, como num jogo de PC, sem zona morta nem curva do analógico (jogos 1.4.3 e 1.2.1; o 1.1.0 usa a emulação do analógico). Emulação do analógico: o mouse age como o analógico direito.",
@@ -1694,14 +1897,26 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_DIALOGUE_CLICK_DESC] = "Enquanto uma caixa de diálogo está aberta, o clique esquerdo aperta B (continua o texto e pula a rolagem) e o direito aperta A, em vez dos botões aos quais estão atribuídos (Y por padrão, que abre o registro do diálogo, e ZL). As escolhas de diálogo continuam com o ponteiro: o clique esquerdo escolhe (jogo 1.4.3).",
     [UI_MENU_POINTER_IMAGE] = "Ponteiro do jogo",
     [UI_MENU_POINTER_IMAGE_DESC] = "Enquanto o cursor não está capturado (os menus do jogo, este menu, depois de Esc), a janela mostra uma ponta de flecha dourada própria em vez da seta do sistema, no tamanho da escala da tela.",
+    [UI_MENU_QUICKSAVE] = "Salvamento e carregamento rápidos",
+    [UI_MENU_QUICKSAVE_DESC] = "Uma tecla salva o jogo na hora e outra carrega esse salvamento (as duas linhas abaixo: F6 e F7 por padrão, como no Half-Life), sem nenhum menu na tela. Só teclado e mouse, só o jogo 1.4.3. O salvamento rápido pede ao jogo um dos seus próprios salvamentos automáticos, então substitui o salvamento automático mais antigo (o salvamento manual fica), guarda uma cópia dele como salvamento rápido (a pasta quicksave do perfil) e mostra \"Jogo salvo\" no alto da imagem. O carregamento rápido segura a imagem em \"Carregando o salvamento rápido\" enquanto passa pela lista de carregamento do jogo fora de vista, e o jogo carrega o salvamento rápido (cerca de 5 s). Onde o próprio jogo não faria um salvamento automático (uma cena, um diálogo), nada é salvo e a linha avisa.",
+    [UI_MENU_QUICKSAVE_KEY] = "Tecla de salvamento rápido",
+    [UI_MENU_QUICKLOAD_KEY] = "Tecla de carregamento rápido",
+    [UI_MENU_QUICKSAVE_KEY_DESC] = "A tecla que inicia o salvamento ou o carregamento rápido; F6 e F7 por padrão, como no Half-Life. Selecione a célula e aperte qualquer tecla ou botão do mouse; Delete deixa essa ação sem tecla. Com o salvamento rápido ligado, as duas teclas não fazem mais nada (uma nota aparece quando um mapeamento também usa a tecla). O totk.ini aceita qualquer nome de tecla dos mapeamentos (quicksave_key, quickload_key).",
+    [UI_QS_SAVED] = "Jogo salvo",
+    [UI_QS_LOADING] = "Carregando o salvamento rápido",
+    [UI_QS_NOT_NOW] = "Salvamento rápido não é possível agora",
+    [UI_QS_NONE] = "Ainda não há salvamento rápido (a tecla de salvamento rápido faz um)",
+    [UI_QS_FAILED] = "O salvamento rápido falhou: veja o totk.log",
+    [UI_QS_LOAD_FAILED] = "O carregamento rápido falhou: veja o totk.log",
     [UI_MENU_PROMPTS_MISSING] = "faltam os arquivos dos ícones: execute a instalação de novo",
     [UI_MENU_PROMPTS_FAILED] = "arquivos dos ícones danificados: execute a instalação de novo",
     [UI_MENU_PROMPTS_RESTART] = "os ícones mudam após reiniciar",
     [UI_MENU_PROMPTS_OFF_SHAPE] = "desligados nesta resolução de jogo (sem layout feito para ela)",
     [UI_MENU_OUTPUT_RES_NO_LAYOUT] = "sem layout feito para este formato: rode o instalador de novo",
     [UI_MENU_OUTPUT_RES_PREPARING] = "layout sendo feito em segundo plano; usado na próxima vez que o jogo abrir",
-    [UI_MENU_SHAPE_PREPARE] = "Preparar o layout para esta tela",
-    [UI_MENU_SHAPE_PREPARE_DESC] = "Faz em segundo plano o layout da interface e os botões escolhidos para o formato desta resolução de jogo, com as ferramentas do instalador, como o instalador faz para os monitores que viu. O jogo continua rodando; ele os usa a partir da próxima vez que abrir.",
+    [UI_MENU_PROMPTS_PREPARING] = "arquivos dos ícones sendo feitos em segundo plano; usados na próxima vez que o jogo abrir",
+    [UI_MENU_PREPARE_RETRY] = "Tentar de novo",
+    [UI_MENU_PREPARE_RETRY_DESC] = "Abre de novo as ferramentas do instalador para fazer em segundo plano o layout da interface ou os arquivos dos ícones que faltam. O jogo continua rodando; ele os usa a partir da próxima vez que abrir.",
     [UI_MENU_SHAPE_PREPARE_FAILED] = "as ferramentas do instalador não abriram: rode o instalador de novo",
     [UI_MENU_PROMPTS_OFF_MODS] = "desligados: um mod de RomFS substitui os arquivos deles",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "desligados enquanto TOTK_ROMFS_PATCHES está definido",
@@ -1722,6 +1937,23 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_SCALE] = "Intensidade do andar",
     [UI_MENU_WALK_SCALE_DESC] = "A inclinação dos analógicos do teclado enquanto a tecla de andar está segura. Metade "
                                 "é andar, a inclinação total é correr.",
+    [UI_MENU_FREECAM] = "Câmera livre",
+    [UI_MENU_FREECAM_DESC] = "Permite que uma combinação ou uma tecla abaixo solte a câmera do Link e a faça voar."
+        " Desligada por padrão: assim o código de câmera do jogo roda como foi lançado. Vale "
+        "depois de reiniciar. Versão 1.4.3 do jogo.",
+    [UI_MENU_FREECAM_OFF_NOTE] = "Ligue a Câmera livre acima e reinicie",
+    [UI_MENU_FREECAM_PAD] = "Combinação da câmera livre",
+    [UI_MENU_FREECAM_PAD_DESC] = "Botões do controle pressionados juntos que passam a câmera por três etapas: ela se "
+        "solta do Link e voa, fica parada onde foi deixada enquanto o Link volta a ser controlado, e volta. Enquanto "
+        "ela voa o jogo não recebe comandos: o analógico esquerdo voa na direção da visão e para os lados, os gatilhos "
+        "sobem e descem, o analógico direito gira, e cada toque em L ou R reduz a velocidade à metade ou a dobra. Com "
+        "a câmera parada, o Link anda para onde o analógico esquerdo aponta na tela. Versão do jogo 1.4.3.",
+    [UI_MENU_FREECAM_PAD_V143] = "Só na versão 1.4.3 do jogo",
+    [UI_MENU_FREECAM_KEY] = "Tecla da câmera livre",
+    [UI_MENU_FREECAM_KEY_DESC] = "Uma tecla que passa a câmera pelas mesmas etapas: ela se solta do Link e voa, fica "
+        "parada enquanto o Link volta a ser controlado, e volta. Enquanto ela voa: W A S D voam na direção da visão e "
+        "para os lados, as teclas de ZR e ZL (X e Z por padrão) sobem e descem, o mouse e as setas giram, e as teclas "
+        "de L e R (Q e R) reduzem a velocidade à metade ou a dobram. Versão do jogo 1.4.3.",
     [UI_MENU_GROUP_GAMEPLAY_TWEAKS] = "Ajustes de jogabilidade",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED] = "Ajustes de jogabilidade",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED_DESC] = "Controles com a roda do mouse para rotação e distância na Ultramão, seleção de armas e itens, e zoom suave no mapa.",
@@ -1772,15 +2004,11 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_PCSS] = "Sombras suaves",
     [UI_MENU_PCSS_DESC] = "Sombras do sol nítidas onde um objeto toca o chão e mais suaves quanto mais longe a sombra "
                           "cai (PCSS). 0 mantém o filtro do jogo. Vale no próximo início.",
-    [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
-    [UI_MENU_DLAA_DESC] = "NVIDIA DLSS para a cena 3D (placas NVIDIA RTX; nvngx_dlss.dll ao lado do totk.exe): bordas "
-                          "mais suaves e menos cintilação. O HUD não é afetado. O modo abaixo define a resolução de "
-                          "onde ele parte. Vale após reiniciar.",
-    [UI_MENU_DLSS] = "Modo do DLSS",
-    [UI_MENU_DLSS_DESC] = "DLAA desenha a cena 3D na resolução cheia. Qualidade, Equilibrado, Desempenho e Ultra "
-                          "Desempenho a desenham em 67, 58, 50 e 33 % e deixam o DLSS ampliá-la, o que poupa tempo da "
-                          "GPU; eles substituem a escala 3D. Vale na hora.",
-    [UI_MENU_DLSS_DLAA] = "DLAA (nativo)",
+    [UI_MENU_DLSS] = "Modo de upscaling",
+    [UI_MENU_DLSS_DESC] = "Nativo suaviza a cena 3D na resolução cheia. Qualidade, Equilibrado, Desempenho e Ultra "
+                          "Desempenho a desenham em 67, 58, 50 e 33 % e deixam o upscaler (DLSS ou FSR 3.1) ampliá-la, "
+                          "o que poupa tempo da GPU; eles substituem a escala 3D. Vale na hora.",
+    [UI_MENU_DLSS_DLAA] = "Nativo",
     [UI_MENU_DLSS_QUALITY] = "Qualidade",
     [UI_MENU_DLSS_BALANCED] = "Equilibrado",
     [UI_MENU_DLSS_PERFORMANCE] = "Desempenho", [UI_MENU_DLSS_ULTRA] = "Ultra Desempenho",
@@ -1805,6 +2033,19 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_REFLEX_OFF] = "Desligado",
     [UI_MENU_REFLEX_ON] = "Ligado",
     [UI_MENU_REFLEX_BOOST] = "Ligado + Boost",
+    [UI_MENU_SCENE_UPSCALER] = "Upscaler da cena 3D",
+    [UI_MENU_SCENE_UPSCALER_DESC] = "Um upscaler temporal para a cena 3D: bordas mais suaves e menos cintilação, e nos modos abaixo do "
+                                    "Nativo ele desenha a cena menor e a amplia, o que poupa tempo da GPU. O NVIDIA DLSS "
+                                    "precisa de uma GPU NVIDIA RTX e do " DLSS_FILE " ao lado do " EXE_FILE "; o AMD FSR "
+                                    "3.1 roda em qualquer GPU. Desligado mantém a escala e o FXAA do próprio jogo. O HUD "
+                                    "não é afetado; o upscaler e a nitidez acima continuam ajustando a imagem do jogo à "
+                                    "janela. Vale após reiniciar.",
+    [UI_MENU_SCENE_UPSCALER_OFF] = "Desligado", [UI_MENU_SCENE_UPSCALER_DLSS] = "NVIDIA DLSS",
+    [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU] = "DLSS: precisa de uma GPU NVIDIA RTX",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL] = "DLSS: falta o " DLSS_FILE,
+    [UI_MENU_FSR3_SHARPNESS] = "Nitidez do FSR 3.1",
+    [UI_MENU_FSR3_SHARPNESS_DESC] = "Aumento de nitidez da cena 3D após o FSR 3.1; 0 desliga.",
     [UI_MENU_TAB_CHEATS] = "Cheats",
     [UI_MENU_CHEATS_NONE] = "Nenhum cheat para esta versão do jogo. Os cheats de um mod são um arquivo de cheats do "
                             "Atmosphere na pasta cheats dele, com o nome da build do jogo: mods\\<mod>\\cheats\\%s. "
@@ -1830,66 +2071,86 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                                     "jogo; o instalador os compila (alguns minutos) e inicia o jogo de novo. O "
                                     "progresso desde o último salvamento é perdido.",
     [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "Este mod altera o código do jogo (exefs) de um jeito que o port não consegue "
-                                       "aplicar, então o mod inteiro fica desligado. %s",
+                                       "aplicar, então o mod inteiro fica desligado. A chave \"Usar ... sem o código "
+                                       "dele\", abaixo, usa o resto dele. %s",
     [UI_MENU_MODS_EXEFS_OTHER] = "Os patches de código dele (exefs) são para outra versão do jogo.",
     [UI_MENU_MODS_EXEFS_ON] = "Patches de código em uso: %d arquivos.",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "Patches de código em uso: %d arquivos. Eles substituem o patch do próprio port "
                                       "%s, que fica desligado enquanto este mod está ligado.",
-    [UI_MENU_GROUP_HD_SWITCH] = "Controle do Switch (Pro Controller e Joy-Con)",
-    [UI_MENU_HD_RUMBLE] = "Vibração HD (HD Rumble)",
-    [UI_MENU_HD_RUMBLE_DESC] = "Vibração HD para Pro Controller e Joy-Con via RenHDrum (" RENHDRUM_FILE "): envia as bandas "
-                               "de frequência e amplitude baixa e alta do jogo diretamente aos atuadores lineares "
-                               "(envelope de 5 ms, tom no pacote). Desligado: vibração padrão do controle.",
+    [UI_MENU_MODS_CODE_SKIPPED] = "O código próprio do jogo dele (%s) não é carregado: o resto do mod é usado. "
+                                  "Desligue o mod se o jogo se comportar mal com ele.",
+    [UI_MENU_MODS_PLUGIN_ON] = "O plugin dele está ativo: %d ganchos no código do jogo.",
+    [UI_MENU_MODS_PLUGIN_REFUSED] = "O plugin %s dele não pode rodar no port: %s.",
+    [UI_MENU_MODS_PLUGIN_STAYS_OFF] = "O mod inteiro fica desligado. A chave \"Usar ... sem o código dele\", abaixo, "
+                                      "usa o resto dele.",
+    [UI_MENU_MODS_PLUGIN_OFF] = "O plugin dele fica desligado desta vez: ele iniciou de forma diferente da compilação "
+                                "(%s). O jogo o recompila na próxima inicialização.",
+    [UI_MENU_MODS_WITHOUT_CODE] = "Usar %s sem o código dele",
+    [UI_MENU_MODS_WITHOUT_CODE_DESC] = "O mod acima traz código que o port não consegue rodar: código próprio do jogo "
+                                       "(um plugin subsdk ou um main substituído) ou patches de código (exefs) que o "
+                                       "port não consegue aplicar. Desligado: o mod inteiro fica desligado. Ligado: "
+                                       "esse código fica de fora e o resto do mod é usado: os arquivos RomFS, cheats e "
+                                       "os patches de código que funcionam. Os arquivos dele podem depender do código "
+                                       "que falta; desligue de novo se o jogo se comportar mal. Vale na próxima "
+                                       "inicialização.",
+    [UI_MENU_MODS_WITHOUT_CODE_ALL] = "Ligado para todos os mods: mods_without_code = 1 no totk.ini.",
+    [UI_MENU_MODS_EXEFS_SKIPPED] = "%u arquivos de patch de código (exefs) dele não podem ser aplicados e ficam de "
+                                   "fora: o resto do mod é usado. %s",
+    [UI_MENU_MODS_OVERRIDES_FILES] = "%u dos seus arquivos substituem os de %s, que está abaixo na lista.",
+    [UI_MENU_MODS_DATA_OVERRIDDEN] = "%u bytes das suas mudanças nos dados do jogo vêm de %s, que está acima na lista.",
+    [UI_MENU_MODS_OVERRIDES_DATA] = "%u bytes das suas mudanças nos dados do jogo substituem as de %s, que está abaixo "
+                                    "na lista.",
+    [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u pontos dos seus patches de código são sobrepostos por %s, que está acima na "
+                                     "lista.",
+    [UI_MENU_MODS_OVERRIDES_CODE] = "Ele sobrepõe %u pontos dos patches de código de %s, que está abaixo na lista.",
+    [UI_MENU_GROUP_HD_SWITCH] = "Controle Switch (Pro Controller e Joy-Con)",
+    [UI_MENU_HD_RUMBLE] = "HD Rumble",
+    [UI_MENU_HD_RUMBLE_DESC] = "Usa o HD Rumble nativo no Switch Pro Controller e Joy-Con. Desligado: vibração padrão do controle.",
     [UI_MENU_HD_BT_SPEED] = "Velocidade de envio (Bluetooth)",
-    [UI_MENU_HD_BT_SPEED_DESC] = "Velocidade de envio dos pacotes de vibração HD via Bluetooth. Rápido é o nível "
-                                 "recomendado: próximo ao cabo e os botões não atrasam por causa da vibração. Escolha "
-                                 "Equilibrado ou Estável se o seu adaptador Bluetooth perder pacotes.",
+    [UI_MENU_HD_BT_SPEED_DESC] = "Velocidade de envio do HD Rumble via Bluetooth. Rápido fica mais próximo ao cabo. "
+                                 "Escolha Equilibrado ou Estável se o adaptador perder sinal.",
     [UI_MENU_HD_BT_STABLE] = "Estável", [UI_MENU_HD_BT_BALANCED] = "Equilibrado", [UI_MENU_HD_BT_FAST] = "Rápido",
     [UI_MENU_HD_CRISP] = "Notas nítidas (Cabo)",
-    [UI_MENU_HD_CRISP_DESC] = "Realça impactos curtos e notas musicais no Pro Controller ou Joy-Con via cabo USB.",
+    [UI_MENU_HD_CRISP_DESC] = "Deixa impactos curtos e notas musicais mais nítidos via USB.",
     [UI_MENU_HD_BT_CRISP] = "Notas nítidas (Bluetooth)",
-    [UI_MENU_HD_BT_CRISP_DESC] = "Realça impactos curtos e notas musicais no Pro Controller ou Joy-Con via Bluetooth.",
+    [UI_MENU_HD_BT_CRISP_DESC] = "Deixa impactos curtos e notas musicais mais nítidos via Bluetooth.",
     [UI_MENU_GROUP_HD_DUALSENSE] = "DualSense",
     [UI_MENU_DS_HAPTICS] = "Vibração háptica do DualSense",
-    [UI_MENU_DS_HAPTICS_DESC] = "Vibração pelos alto-falantes hápticos (voice-coil) do controle PS5 DualSense via "
-                                "RenHDrum (" RENHDRUM_FILE "). Por cabo USB, o canal de áudio do controle recebe 48.000 "
-                                "amostras/s para a vibração mais detalhada. Por Bluetooth, envia 3.000 amostras/s "
-                                "(Relatório 0x32). Desligado: vibração padrão do controle.",
+    [UI_MENU_DS_HAPTICS_DESC] = "HD Rumble para o controle PS5 DualSense. HD Haptics (padrão) adiciona detalhes pelo "
+                                "alto-falante do controle via USB e Bluetooth. Padrão usa apenas a vibração das "
+                                "pegadas. Desligado: vibração padrão do controle.",
+    [UI_MENU_DS_HAPTICS_STANDARD] = "Padrão",
+    [UI_MENU_DS_HAPTICS_HD] = "HD Haptics",
     [UI_MENU_DS_VOLUME] = "Volume da vibração háptica",
-    [UI_MENU_DS_VOLUME_DESC] = "Intensidade dos atuadores hápticos do DualSense (10 % a 100 %).",
+    [UI_MENU_DS_VOLUME_DESC] = "Intensidade da vibração háptica do DualSense (10 % a 100 %).",
     [UI_MENU_DS_CRISP] = "Notas nítidas (Cabo)",
-    [UI_MENU_DS_CRISP_DESC] = "Realça impactos curtos e notas musicais conectado por cabo USB.",
+    [UI_MENU_DS_CRISP_DESC] = "Deixa impactos curtos e notas musicais mais nítidos via USB.",
     [UI_MENU_DS_BT_CRISP] = "Notas nítidas (Bluetooth)",
-    [UI_MENU_DS_BT_CRISP_DESC] = "Realça impactos curtos via Bluetooth (desligado por padrão para manter o fluxo de "
-                                 "3 kHz suave).",
+    [UI_MENU_DS_BT_CRISP_DESC] = "Deixa impactos curtos mais nítidos via Bluetooth (desligado por padrão para uma vibração mais suave).",
     [UI_MENU_DS_TRIGGERS] = "Gatilhos adaptáveis",
-    [UI_MENU_DS_TRIGGERS_DESC] = "Quanta resistência os gatilhos oferecem; o ZR fica mais pesado com o arco retesado. 0 desliga.",
+    [UI_MENU_DS_TRIGGERS_DESC] = "Resistência ao apertar os gatilhos; fica mais pesado com o arco retesado. 0 desliga.",
     [UI_MENU_DS_TRIGGERS_MODE] = "Botões dos gatilhos adaptáveis",
     [UI_MENU_DS_TRIGGERS_MODE_DESC] = "Quais gatilhos recebem a resistência adaptável: apenas R2 (arco), R2 e L2, ou apenas L2.",
     [UI_MENU_DS_TRIGGERS_R2] = "R2",
     [UI_MENU_DS_TRIGGERS_BOTH] = "R2 + L2",
     [UI_MENU_DS_TRIGGERS_L2] = "L2",
     [UI_MENU_DS_TRIGGER_VIBRATION] = "Vibração dos gatilhos",
-    [UI_MENU_DS_TRIGGER_VIBRATION_DESC] = "Também vibra ambos os gatilhos adaptáveis com a vibração do jogo. Pausa a resistência enquanto vibra.",
+    [UI_MENU_DS_TRIGGER_VIBRATION_DESC] = "Adiciona pulsos reativos em L2 e R2 em impactos e explosões enquanto pressionados. "
+                                         "Funciona junto com a resistência dos gatilhos adaptáveis.",
     [UI_MENU_GROUP_HD_XBOX] = "Controle Xbox (Xbox One e Series X|S)",
     [UI_MENU_XBOX_RUMBLE] = "Xbox One Rumble",
-    [UI_MENU_XBOX_RUMBLE_DESC] = "Traduz o HD Rumble do Switch para os quatro motores de um controle Microsoft Xbox One "
-                                 "ou Series X|S via RenHDrum (" RENHDRUM_FILE "): o motor esquerdo (pesado) recebe impactos "
-                                 "graves, o direito (leve) recebe toques agudos e textura de superfície, e os dois "
-                                 "motores dos gatilhos adicionam pulsos direcionais. Desligado: vibração padrão.",
+    [UI_MENU_XBOX_RUMBLE_DESC] = "Traduz o HD Rumble do Switch para os quatro motores de um controle Xbox One ou Series X|S. "
+                                 "Desligado: vibração padrão do controle.",
     [UI_MENU_XBOX_TRIGGERS] = "Vibração nos gatilhos (todos os 4 motores)",
-    [UI_MENU_XBOX_TRIGGERS_DESC] = "Permite que os dois motores dos gatilhos participem com pulsos curtos à esquerda e à "
-                                   "direita em impactos e batidas quando o Xbox One Rumble está ligado.",
-    [UI_MENU_GROUP_HD_STEAM] = "Steam Controller (2026, Beta)",
-    [UI_MENU_STEAM_RUMBLE] = "Steam Controller HD Rumble (Beta)",
-    [UI_MENU_STEAM_RUMBLE_DESC] = "Suporte beta de HD Rumble nas pegadas do Steam Controller (2026) via RenHDrum "
-                                  "(" RENHDRUM_FILE "): envia ondas PCM de HD Rumble para ambas as pegadas (8 kHz por USB, "
-                                  "4 kHz via dongle sem fio ou Bluetooth no Windows; requer Steam Input desligado). "
+    [UI_MENU_XBOX_TRIGGERS_DESC] = "Adiciona pulsos nos gatilhos em impactos e batidas quando o Xbox One Rumble está ligado.",
+    [UI_MENU_GROUP_HD_STEAM] = "Steam Controller (2026)",
+    [UI_MENU_STEAM_RUMBLE] = "Steam Controller HD Rumble",
+    [UI_MENU_STEAM_RUMBLE_DESC] = "HD Rumble nas pegadas do Steam Controller (2026) (requer Steam Input desligado). "
                                   "Desligado: vibração padrão do controle.",
     [UI_MENU_STEAM_VOLUME] = "Volume da vibração háptica",
-    [UI_MENU_STEAM_VOLUME_DESC] = "Intensidade do HD Rumble nas pegadas do Steam Controller (2026) (10 % a 100 %).",
+    [UI_MENU_STEAM_VOLUME_DESC] = "Intensidade da vibração háptica do Steam Controller (2026) (10 % a 100 %).",
     [UI_MENU_STEAM_CRISP] = "Notas nítidas",
-    [UI_MENU_STEAM_CRISP_DESC] = "Realça impactos curtos e notas musicais nas pegadas do Steam Controller (2026).",
+    [UI_MENU_STEAM_CRISP_DESC] = "Deixa impactos curtos e notas musicais mais nítidos no Steam Controller (2026).",
 };
 
 // Simplified Chinese: this row covers the software keyboard and the whole menu, so the menu and the overlay read Chinese
@@ -1918,10 +2179,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_OPEN_DESC] = "显示游戏加载模组的文件夹。不存在时会创建它。",
     [UI_MENU_MODS_ROW_DESC] = "替换的游戏文件：%u。新增的文件：%u。",
     [UI_MENU_MODS_OVERRIDDEN] = "它的 %u 个文件改用列表中更靠上的 %s 的文件。",
-    [UI_MENU_MODS_MOVE_HINT] = "上方按钮或 Ctrl+上 上移，左侧按钮或 Ctrl+下 下移。两个模组修改同一个文件时，以靠上的为准。"
-                               "更改在重启后生效。",
+    [UI_MENU_MODS_MOVE_HINT] = "上方按钮或 Ctrl+上 上移，左侧按钮或 Ctrl+下 下移。两个模组修改同一个文件、游戏数据或代码时，以靠上的为准。更改在重启后生效。",
     [UI_MENU_MODS_EMPTY] = "此文件夹中没有 romfs、exefs 或 cheats 文件。",
-    [UI_MENU_MODS_SUBSDK] = "此模组带有自己的游戏代码（subsdk 插件或替换的 main）。移植版无法加载代码模块，因此整个模组保持关闭。",
+    [UI_MENU_MODS_SUBSDK] = "此模组带有自己的游戏代码（subsdk 插件或替换的 main）。移植版无法加载代码模块，因此整个模组保持关闭。打开下方它的“不带代码使用 ...”开关即可使用其余部分。",
     [UI_MENU_MODS_EXEFS_LATER] = "此模组修改游戏代码（exefs）。游戏会在下次启动时把这些补丁构建进去（重新构建需要几分钟）；在此之前整个模组保持关闭。",
     [UI_MENU_MODS_CHEATS] = "金手指：%d 个。在“金手指”标签页中开关。",
     [UI_MENU_MODS_CHEATS_FILE] = "此游戏版本的金手指在启动时从此模组的 cheats\\%s 读取。",
@@ -1968,6 +2228,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_PERF_FULL] = "完整",
 
     [UI_PERF_LINE_FPS] = "%.0f fps",
+    [UI_PERF_LINE_FPS_GEN] = "绘制 %.0f fps，显示 %.0f",
 
     [UI_MENU_GRAPHICS] = "画面",
     [UI_MENU_OUTPUT_RES] = "游戏分辨率",
@@ -1975,6 +2236,11 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                                 "高于 1920 x 1080 会占用更多显存和 GPU 时间。"
                                 "更宽的尺寸（21:9）会扩大视野，并把界面移到屏幕四角；"
                                 "更高的尺寸（16:10、3:2）则移到上下边缘。",
+    [UI_MENU_HUD_WIDTH] = "界面宽度",
+    [UI_MENU_HUD_WIDTH_DESC] = "在比 16:9 更宽的屏幕上，界面左右两侧相距多远。"
+                               "“整个屏幕”把它们放在屏幕边缘；21:9 或 16:9 则把界面保持在屏幕中间该比例的区域内。"
+                               "缺少的布局会在后台制作，重启游戏后生效。",
+    [UI_MENU_HUD_WIDTH_FULL] = "整个屏幕",
     [UI_MENU_RENDER_SCALE] = "3D 渲染比例",
     [UI_MENU_RENDER_SCALE_DESC] = "3D 场景相对于游戏分辨率的尺寸；"
                                   "游戏的 FSR 会将其缩放到该尺寸。"
@@ -1999,7 +2265,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MOVIE_ASPECT_STRETCH] = "拉伸",
     [UI_MENU_FOV] = "视野",
     [UI_MENU_FOV_DESC] = "镜头能看到多大范围，以游戏自身视野的百分比表示。"
-                          "支持游戏版本 1.1.0 和 1.4.3。",
+                          "支持游戏版本 1.1.0、1.2.1 和 1.4.3。",
     [UI_MENU_SHARPNESS] = "FSR 锐度",
     [UI_MENU_SHARPNESS_DESC] = "FSR 缩放后的锐化强度；0 为关闭。",
     [UI_MENU_COLOR] = "色彩",
@@ -2032,6 +2298,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_FPS_DISPLAY_HZ] = "显示器刷新率（%.0f Hz）",
     [UI_MENU_FRAME_QUEUE] = "帧队列",
     [UI_MENU_FRAME_QUEUE_DESC] = "前一帧等待显示时游戏就开始绘制下一帧：在帧率上限下掉帧大幅减少，输入延迟最多增加一帧。立即生效。",
+    [UI_MENU_FRAME_GEN] = "帧生成", [UI_MENU_FRAME_GEN_OFF] = "关", [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
+    [UI_MENU_FRAME_GEN_DESC] = "在游戏绘制的每两帧之间插入一帧生成画面：屏幕上的帧数翻倍，游戏以帧率上限的一半运行，操作响应约晚半帧。适合 120 Hz 及以上的显示器。不能与 DLSS 或 HDR 同时使用。立即生效。",
     [UI_MENU_REALTIME] = "游戏速度跟随时钟",
     [UI_MENU_REALTIME_DESC] = "按真实时间推进游戏，帧率低时游戏速度也不会变慢。",
     [UI_MENU_CLOTH_REALTIME] = "布料跟随时钟",
@@ -2078,6 +2346,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_GYRO_CALIBRATED] = "%s，已校准",
     [UI_MENU_GYRO_CALIBRATE_FAILED] = "校准失败",
     [UI_MENU_GYRO_CALIBRATE_MOVED] = "手柄移动了：请保持静止后重试",
+    [UI_MENU_GYRO_AUTO_BIAS] = "静止时学习陀螺仪漂移",
+    [UI_MENU_GYRO_AUTO_BIAS_DESC] = "手柄平放在桌上不动时测量陀螺仪的剩余漂移并将其减去。适用于校准后弓箭准星仍缓慢漂"
+                                    "移的情况。手持时不会测量。实验性功能。",
     [UI_MENU_RUMBLE_STRENGTH] = "振动强度",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "手柄振动的强弱。",
     [UI_MENU_RUMBLE_CURVE] = "振动曲线",
@@ -2322,6 +2593,13 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                             "基础实例），而不是读取零值。",
     [UI_MENU_FIX_ZERO] = "清零新的 GPU 内存",
     [UI_MENU_FIX_ZERO_DESC] = "新的 GPU 内存池初始内容为零，与 Switch 内存一致。",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "DLAA 之后绘制雾和粒子",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "开启 DLAA 时，雾、灰尘和其他粒子绘制在 DLSS 已平滑的画面之上，与游戏不用 DLSS 时的"
+                                        "绘制方式相同：雾中的细小粒子（神庙中）不再消失，也不再留下拖影。关闭：DLSS 也处理这些效果，与以"
+                                        "前相同。仅用于 DLAA 模式；提升分辨率的 DLSS 模式始终处理它们。立即生效。",
+    [UI_MENU_DLSS_FIXED_EXPOSURE] = "固定 DLSS 曝光",
+    [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS 直接使用游戏画面的亮度，而不是逐帧自行估算曝光：在暗场景（地底）中，"
+                                         "镜头移动时大片雾中区域不再忽暗忽亮一帧。关闭：DLSS 自行估算曝光，与以前相同。立即生效。",
     [UI_MENU_BIND_SKIP] = "跳过重复绑定",
     [UI_MENU_BIND_SKIP_DESC] = "优化：跳过没有变化的绑定。",
     [UI_MENU_SHADER_MEMO] = "着色器查找缓存",
@@ -2400,9 +2678,11 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_OV_WINDOW] = "窗口",
     [UI_MENU_OV_OUTPUT] = "游戏画面",
     [UI_MENU_OV_SCENE] = "3D 场景",
+    [UI_MENU_OV_UPSCALER] = "3D 超分",
     [UI_MENU_OV_SCALING] = "缩放",
     [UI_MENU_OV_LIMIT] = "帧率上限",
     [UI_MENU_OV_PRESENT] = "呈现模式",
+    [UI_MENU_OV_SHOWN] = "显示帧率",
     [UI_MENU_OV_FMT_SIZE] = "%ux%u",
     [UI_MENU_OV_FMT_SCENE] = "%ux%u，%.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1，锐度 %d%%",
@@ -2431,10 +2711,12 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS] = "按键提示",
     [UI_MENU_PROMPTS_DESC] = "游戏的按键提示显示哪种手柄的按键。Nintendo：游戏原有的提示。Xbox：LB、RB、LT、RT、Menu、View 和十字键，以及上方布局所按下的按键上标注的 "
                              "A、B、X、Y（使用 Nintendo（A 在右）时右侧按键标为 B，因此 A 的提示显示 "
-                             "B）。PC：键盘默认布局的按键和鼠标按键（E、Shift、空格、左键……），镜头用鼠标。"
+                             "B）。PlayStation：PlayStation 手柄上的符号（○ × △ □、L1、R1、L2、R2、Options 和 Share），"
+                             "显示在上方布局所按下的按键上。PC：键盘默认布局的按键和鼠标按键（E、Shift、空格、左键……），镜头用鼠标。"
                              "游戏在启动时读取按键提示，因此重启后才会改变。提示属于游戏文件，在“操作”中重新映射的按键在屏幕上仍显示原来的提示。",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo",
     [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_PLAYSTATION] = "PlayStation",
     [UI_MENU_PROMPTS_PC] = "PC",
     [UI_MENU_MOUSE_MODE] = "鼠标视角",
     [UI_MENU_MOUSE_MODE_DESC] = "直接：镜头按鼠标移动的距离转动，与电脑游戏相同，没有摇杆死区和响应曲线（游戏 1.4.3 和 1.2.1；1.1.0 使用摇杆模拟）。摇杆模拟：鼠标相当于右摇杆。",
@@ -2448,14 +2730,26 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_DIALOGUE_CLICK_DESC] = "对话框打开时，鼠标左键按下 B 键（继续对话并跳过文字滚动），右键按下 A 键，而不是它们所绑定的按键（默认为 Y，会打开对话记录；以及 ZL）。对话选项仍使用指针：左键选择（游戏 1.4.3）。",
     [UI_MENU_POINTER_IMAGE] = "游戏指针",
     [UI_MENU_POINTER_IMAGE_DESC] = "光标未被捕获时（游戏菜单、本菜单、按 Esc 之后），窗口显示自带的金色箭头，而不是系统箭头，大小随屏幕缩放。",
+    [UI_MENU_QUICKSAVE] = "快速存档与读档",
+    [UI_MENU_QUICKSAVE_DESC] = "一个键立即保存游戏，另一个键读取该存档（见下方两行：默认 F6 和 F7，与 Half-Life 相同），屏幕上不会出现任何菜单。仅限键盘和鼠标按键，仅限游戏 1.4.3。快速存档会让游戏自己进行一次自动存档，因此会替换最旧的自动存档（手动存档保留），并将其副本保存为快速存档（配置文件中的 quicksave 文件夹），画面顶部显示“游戏已保存”。快速读档时画面停留在“正在读取快速存档”，同时在后台走完游戏的读档列表，游戏随即读取快速存档（约 5 秒）。在游戏本身不会自动存档的地方（过场动画、对话），不会保存，并会显示提示。",
+    [UI_MENU_QUICKSAVE_KEY] = "快速存档键",
+    [UI_MENU_QUICKLOAD_KEY] = "快速读档键",
+    [UI_MENU_QUICKSAVE_KEY_DESC] = "启动快速存档或快速读档的按键；默认 F6 和 F7，与 Half-Life 相同。选中该格后按下任意键盘按键或鼠标按键；按 Delete 则该操作没有按键。快速存档开启时，这两个键不再有其他作用（若按键映射也使用该键，值下方会有提示）。totk.ini 接受按键映射中的任意按键名（quicksave_key、quickload_key）。",
+    [UI_QS_SAVED] = "游戏已保存",
+    [UI_QS_LOADING] = "正在读取快速存档",
+    [UI_QS_NOT_NOW] = "现在无法快速存档",
+    [UI_QS_NONE] = "还没有快速存档（按快速存档键创建）",
+    [UI_QS_FAILED] = "快速存档失败：请查看 totk.log",
+    [UI_QS_LOAD_FAILED] = "快速读档失败：请查看 totk.log",
     [UI_MENU_PROMPTS_MISSING] = "缺少按键提示文件：请重新运行安装程序",
     [UI_MENU_PROMPTS_FAILED] = "按键提示文件已损坏：请重新运行安装程序",
     [UI_MENU_PROMPTS_RESTART] = "按键提示重启后生效",
     [UI_MENU_PROMPTS_OFF_SHAPE] = "此游戏分辨率下关闭（未为其制作布局）",
     [UI_MENU_OUTPUT_RES_NO_LAYOUT] = "未为此比例制作布局：请重新运行安装程序",
     [UI_MENU_OUTPUT_RES_PREPARING] = "布局正在后台制作；下次启动时使用",
-    [UI_MENU_SHAPE_PREPARE] = "为此屏幕准备布局",
-    [UI_MENU_SHAPE_PREPARE_DESC] = "使用安装程序的工具，在后台为此游戏分辨率的比例制作界面布局和所选按键提示，与安装程序为其检测到的显示器所做的相同。游戏继续运行；下次启动时生效。",
+    [UI_MENU_PROMPTS_PREPARING] = "按键提示文件正在后台制作；下次启动时使用",
+    [UI_MENU_PREPARE_RETRY] = "重试",
+    [UI_MENU_PREPARE_RETRY_DESC] = "再次启动安装程序的工具，在后台制作缺少的界面布局或按键提示文件。游戏继续运行；下次启动时生效。",
     [UI_MENU_SHAPE_PREPARE_FAILED] = "安装程序的工具未能启动：请重新运行安装程序",
     [UI_MENU_PROMPTS_OFF_MODS] = "已关闭：RomFS 模组替换了它们的文件",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "设置了 TOTK_ROMFS_PATCHES 时关闭",
@@ -2471,6 +2765,14 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_KEY_TAKEN] = "同时为 %s",
     [UI_MENU_WALK_SCALE] = "步行幅度",
     [UI_MENU_WALK_SCALE_DESC] = "按住步行键时键盘摇杆的推动幅度。一半为走路，推满为奔跑。",
+    [UI_MENU_FREECAM] = "自由镜头",
+    [UI_MENU_FREECAM_DESC] = "允许用下方的组合键或按键让镜头脱离林克自由飞行。默认关闭：关闭时游戏的镜头代码保持原样运行。重启后生效。仅限游戏版本 1.4.3。",
+    [UI_MENU_FREECAM_OFF_NOTE] = "请先打开上方的“自由镜头”，然后重启",
+    [UI_MENU_FREECAM_PAD] = "自由镜头组合键",
+    [UI_MENU_FREECAM_PAD_DESC] = "同时按下的手柄按键，让镜头依次切换三个阶段：脱离林克自由飞行、停在原处而林克恢复操作、回到林克。飞行期间游戏不接收输入：左摇杆沿视线方向和左右移动，扳机键上升和下降，右摇杆转动视角，每按一次 L 或 R 速度减半或加倍。镜头固定时，林克朝左摇杆在屏幕上指向的方向移动。游戏版本 1.4.3。",
+    [UI_MENU_FREECAM_PAD_V143] = "仅限游戏版本 1.4.3",
+    [UI_MENU_FREECAM_KEY] = "自由镜头键",
+    [UI_MENU_FREECAM_KEY_DESC] = "让镜头依次切换相同阶段的按键：脱离林克自由飞行、停在原处而林克恢复操作、回到林克。飞行期间：W A S D 沿视线方向和左右移动，ZR 和 ZL 对应的按键（默认 X 和 Z）上升和下降，鼠标和方向键转动视角，L 和 R 对应的按键（默认 Q 和 R）让速度减半或加倍。游戏版本 1.4.3。",
     [UI_MENU_GROUP_GAMEPLAY_TWEAKS] = "游戏操作微调",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED] = "启用操作微调",
     [UI_MENU_GAMEPLAY_TWEAKS_ENABLED_DESC] = "使用鼠标滚轮控制究极手物体旋转与距离、武器与道具切换以及地图平滑缩放。",
@@ -2511,12 +2813,10 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_CONTACT_SHADOWS_DESC] = "阴影贴图遗漏的细小太阳阴影：脚下、石头下、草丛和褶皱中。在光照之后于屏幕空间追踪。下次启动时生效。",
     [UI_MENU_PCSS] = "柔和阴影",
     [UI_MENU_PCSS_DESC] = "物体接触地面处的太阳阴影锐利，阴影投得越远越柔和（PCSS）。0 保留游戏自身的过滤。下次启动时生效。",
-    [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
-    [UI_MENU_DLAA_DESC] = "用于 3D 场景的 NVIDIA DLSS（NVIDIA RTX 显卡；nvngx_dlss.dll 放在 totk.exe 旁）：边缘更平滑，闪烁更少。HUD "
-                          "不受影响。下方的模式决定它的工作分辨率。重启后生效。",
-    [UI_MENU_DLSS] = "DLSS 模式",
-    [UI_MENU_DLSS_DESC] = "DLAA 以全分辨率绘制 3D 场景。质量、平衡、性能和超级性能分别以 67%、58%、50% 和 33% 绘制，再由 DLSS 放大，以节省 GPU 时间；它们会取代 3D 渲染比例。立即生效。",
-    [UI_MENU_DLSS_DLAA] = "DLAA（原生）",
+    [UI_MENU_DLSS] = "超分模式",
+    [UI_MENU_DLSS_DESC] = "原生以全分辨率对 3D 场景做抗锯齿。质量、平衡、性能和超级性能分别以 67%、58%、50% 和 33% 绘制，再由超分"
+                          "（DLSS 或 FSR 3.1）放大，以节省 GPU 时间；它们会取代 3D 渲染比例。立即生效。",
+    [UI_MENU_DLSS_DLAA] = "原生",
     [UI_MENU_DLSS_QUALITY] = "质量",
     [UI_MENU_DLSS_BALANCED] = "平衡",
     [UI_MENU_DLSS_PERFORMANCE] = "性能",
@@ -2538,6 +2838,17 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_REFLEX_OFF] = "关",
     [UI_MENU_REFLEX_ON] = "开",
     [UI_MENU_REFLEX_BOOST] = "开 + 增强",
+    [UI_MENU_SCENE_UPSCALER] = "3D 场景超分",
+    [UI_MENU_SCENE_UPSCALER_DESC] = "用于 3D 场景的时间性超分：边缘更平滑，闪烁更少；低于“原生”的模式会以更小的尺寸绘制场景再放大，以节省 GPU "
+                                    "时间。NVIDIA DLSS 需要 NVIDIA RTX 显卡，并将 " DLSS_FILE " 放在 " EXE_FILE " 旁；AMD "
+                                    "FSR 3.1 可在任何显卡上运行。“关”保留游戏自己的缩放和 FXAA。HUD 不受影响；上方的缩放"
+                                    "方式和锐度仍负责把游戏画面适配到窗口。重启后生效。",
+    [UI_MENU_SCENE_UPSCALER_OFF] = "关", [UI_MENU_SCENE_UPSCALER_DLSS] = "NVIDIA DLSS",
+    [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU] = "DLSS：需要 NVIDIA RTX 显卡",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL] = "DLSS：缺少 " DLSS_FILE,
+    [UI_MENU_FSR3_SHARPNESS] = "FSR 3.1 锐度",
+    [UI_MENU_FSR3_SHARPNESS_DESC] = "FSR 3.1 之后 3D 场景的锐化强度；0 为关闭。",
     [UI_MENU_TAB_CHEATS] = "金手指",
     [UI_MENU_CHEATS_NONE] = "此游戏版本没有金手指。模组的金手指是它的 cheats 文件夹中以游戏构建命名的 Atmosphere "
                             "金手指文件：mods\\<模组>\\cheats\\%s。重启游戏后才会读取。对于修改游戏代码的金手指，"
@@ -2556,56 +2867,66 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "此金手指不能用于此游戏版本：",
     [UI_MENU_CHEATS_REBUILD] = "立即重新构建游戏",
     [UI_MENU_CHEATS_REBUILD_DESC] = "有些金手指会修改游戏代码，但尚未构建进游戏：它们是新增或修改的，或上次重新构建失败或被取消。将关闭游戏；安装程序会把它们构建进去（几分钟）并重新启动游戏。上次存档之后的进度会丢失。",
-    [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "此模组修改游戏代码（exefs）的方式本移植无法应用，因此整个模组保持关闭。%s",
+    [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "此模组修改游戏代码（exefs）的方式本移植无法应用，因此整个模组保持关闭。打开下方它的“不带代码使用 ...”开关即可使用其余部分。%s",
     [UI_MENU_MODS_EXEFS_OTHER] = "它的代码补丁（exefs）是为其他游戏版本制作的。",
     [UI_MENU_MODS_EXEFS_ON] = "正在使用的代码补丁：%d 个文件。",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "正在使用的代码补丁：%d 个文件。它们取代本移植自带的补丁 %s，此模组开启时该补丁保持关闭。",
+    [UI_MENU_MODS_CODE_SKIPPED] = "它自带的游戏代码（%s）不会加载：模组的其余部分照常使用。如果游戏因此表现异常，请关闭此模组。",
+    [UI_MENU_MODS_PLUGIN_ON] = "它的插件正在运行：游戏代码中有 %d 处挂钩。",
+    [UI_MENU_MODS_PLUGIN_REFUSED] = "它的插件 %s 无法在移植版中运行：%s。",
+    [UI_MENU_MODS_PLUGIN_STAYS_OFF] = "整个模组保持关闭。打开下方它的“不带代码使用 ...”开关即可使用其余部分。",
+    [UI_MENU_MODS_PLUGIN_OFF] = "它的插件本次保持关闭：启动情况与构建时不同（%s）。游戏会在下次启动时重新构建它。",
+    [UI_MENU_MODS_WITHOUT_CODE] = "不带代码使用 %s",
+    [UI_MENU_MODS_WITHOUT_CODE_DESC] = "上方的模组带有移植版无法运行的代码：它自己的游戏代码（subsdk 插件或替换的 main），或移植版无法应用的代码补丁（exefs）。关闭：整个模组保持关闭。开启：跳过这些代码，使用模组的其余部分：其 RomFS 文件、金手指和可用的代码补丁。它的文件可能依赖缺失的代码；如果游戏表现异常，请再次关闭。下次启动时生效。",
+    [UI_MENU_MODS_WITHOUT_CODE_ALL] = "已对所有模组开启：totk.ini 中 mods_without_code = 1。",
+    [UI_MENU_MODS_EXEFS_SKIPPED] = "它有 %u 个代码补丁文件（exefs）无法应用，已跳过：模组的其余部分照常使用。%s",
+    [UI_MENU_MODS_OVERRIDES_FILES] = "它的 %u 个文件取代了列表中更靠下的 %s 的文件。",
+    [UI_MENU_MODS_DATA_OVERRIDDEN] = "它对游戏数据的修改中有 %u 字节改用列表中更靠上的 %s 的修改。",
+    [UI_MENU_MODS_OVERRIDES_DATA] = "它对游戏数据的修改中有 %u 字节取代了列表中更靠下的 %s 的修改。",
+    [UI_MENU_MODS_CODE_OVERRIDDEN] = "它有 %u 处代码补丁位置被列表中更靠上的 %s 覆盖。",
+    [UI_MENU_MODS_OVERRIDES_CODE] = "它覆盖了 %u 处代码补丁位置，这些位置原属于列表中更靠下的 %s。",
     [UI_MENU_GROUP_HD_SWITCH] = "Switch 手柄（Pro 手柄与 Joy-Con）",
     [UI_MENU_HD_RUMBLE] = "HD 震动",
-    [UI_MENU_HD_RUMBLE_DESC] = "通过 RenHDrum (" RENHDRUM_FILE ") 为 Switch Pro 手柄和 Joy-Con 提供 HD 震动：将游戏的低频与高频"
-                               "频率和振幅直接发送给线性谐振马达（5 毫秒包络、包内音高）。关闭：使用普通手柄震动。",
+    [UI_MENU_HD_RUMBLE_DESC] = "为 Switch Pro 手柄和 Joy-Con 开启原生 HD 震动。关闭：使用标准手柄震动。",
     [UI_MENU_HD_BT_SPEED] = "蓝牙发送速度",
-    [UI_MENU_HD_BT_SPEED_DESC] = "蓝牙下发送 HD 震动包的速度。推荐使用“快速”：接近有线连接，且按键不会因震动而延迟。如果蓝牙适配器丢包，可选择“均衡”或“稳定”。",
+    [UI_MENU_HD_BT_SPEED_DESC] = "蓝牙下 HD 震动的更新速度。“快速”手感最接近有线；如果蓝牙出现丢包，请选择“均衡”或“稳定”。",
     [UI_MENU_HD_BT_STABLE] = "稳定", [UI_MENU_HD_BT_BALANCED] = "均衡", [UI_MENU_HD_BT_FAST] = "快速",
     [UI_MENU_HD_CRISP] = "清脆音符（有线）",
-    [UI_MENU_HD_CRISP_DESC] = "有线连接 Pro 手柄或 Joy-Con 时增强短促震动与音符清晰度。",
+    [UI_MENU_HD_CRISP_DESC] = "USB 连接时让短促冲击和音符更清晰。",
     [UI_MENU_HD_BT_CRISP] = "清脆音符（蓝牙）",
-    [UI_MENU_HD_BT_CRISP_DESC] = "蓝牙连接 Pro 手柄或 Joy-Con 时增强短促震动与音符清晰度。",
+    [UI_MENU_HD_BT_CRISP_DESC] = "蓝牙连接时让短促冲击和音符更清晰。",
     [UI_MENU_GROUP_HD_DUALSENSE] = "DualSense",
     [UI_MENU_DS_HAPTICS] = "DualSense 触觉反馈",
-    [UI_MENU_DS_HAPTICS_DESC] = "通过 RenHDrum (" RENHDRUM_FILE ") 使用 PS5 DualSense 手柄中的音圈触觉马达表现震动。USB 有线连接下，"
-                                "手柄音频通道传输连续的 48,000 采样/秒波形，呈现最细腻的震动；蓝牙连接下传输 3,000 采样/秒波形（报告 0x32）。关闭：使用普通手柄震动。",
+    [UI_MENU_DS_HAPTICS_DESC] = "为 PS5 DualSense 手柄开启 HD 震动。HD 触觉（默认）在有线与蓝牙下同时加入手柄扬声器细节；标准模式仅使用握把触觉；关闭则使用标准手柄震动。",
+    [UI_MENU_DS_HAPTICS_STANDARD] = "标准",
+    [UI_MENU_DS_HAPTICS_HD] = "HD 触觉",
     [UI_MENU_DS_VOLUME] = "触觉反馈音量",
-    [UI_MENU_DS_VOLUME_DESC] = "DualSense 音圈触觉反馈的强度（10 % 至 100 %）。",
+    [UI_MENU_DS_VOLUME_DESC] = "DualSense 触觉反馈的强度（10 % 至 100 %）。",
     [UI_MENU_DS_CRISP] = "清脆音符（有线）",
-    [UI_MENU_DS_CRISP_DESC] = "USB 有线连接下增强瞬态冲击与音符清晰度。",
+    [UI_MENU_DS_CRISP_DESC] = "USB 连接时让短促冲击和音符更清晰。",
     [UI_MENU_DS_BT_CRISP] = "清脆音符（蓝牙）",
-    [UI_MENU_DS_BT_CRISP_DESC] = "蓝牙连接下增强瞬态冲击（默认关闭，以保持 3 kHz 蓝牙触觉流平滑）。",
+    [UI_MENU_DS_BT_CRISP_DESC] = "蓝牙连接时让短促冲击更清晰（默认关闭以保持无线震动平滑）。",
     [UI_MENU_DS_TRIGGERS] = "自适应扳机",
-    [UI_MENU_DS_TRIGGERS_DESC] = "扳机的阻力大小；拉满弓后 ZR 会更重。0 为关闭。",
+    [UI_MENU_DS_TRIGGERS_DESC] = "扣动扳机时的阻力大小；拉弓后会更重。0 为关闭。",
     [UI_MENU_DS_TRIGGERS_MODE] = "自适应扳机按键",
     [UI_MENU_DS_TRIGGERS_MODE_DESC] = "选择启用自适应阻力的扳机：仅 R2（弓）、R2 + L2 或仅 L2。",
     [UI_MENU_DS_TRIGGERS_R2] = "R2",
     [UI_MENU_DS_TRIGGERS_BOTH] = "R2 + L2",
     [UI_MENU_DS_TRIGGERS_L2] = "L2",
     [UI_MENU_DS_TRIGGER_VIBRATION] = "扳机振动",
-    [UI_MENU_DS_TRIGGER_VIBRATION_DESC] = "游戏振动时也让两个自适应扳机随之振动。振动期间会暂停扳机阻力。",
+    [UI_MENU_DS_TRIGGER_VIBRATION_DESC] = "按住 L2 或 R2 时在撞击与爆炸瞬间加入扳机振动反馈，可与自适应扳机阻力同时使用。",
     [UI_MENU_GROUP_HD_XBOX] = "Xbox 手柄（Xbox One 与 Series X|S）",
     [UI_MENU_XBOX_RUMBLE] = "Xbox One 震动（Xbox One Rumble）",
-    [UI_MENU_XBOX_RUMBLE_DESC] = "通过 RenHDrum (" RENHDRUM_FILE ") 将 Switch 的 HD 震动转换为微软 Xbox One 或 Series X|S 手柄的四马达震动："
-                                 "左侧重握把马达表现低频重击，右侧轻握把马达表现高频轻触与表面纹理，左右扳机马达补充短促的方向起振反馈。"
-                                 "关闭：使用普通手柄震动。",
+    [UI_MENU_XBOX_RUMBLE_DESC] = "将 Switch HD 震动转换为 Xbox One 或 Series X|S 手柄的四马达震动。关闭：使用标准手柄震动。",
     [UI_MENU_XBOX_TRIGGERS] = "扳机震动（全部 4 个马达）",
-    [UI_MENU_XBOX_TRIGGERS_DESC] = "开启 Xbox One 震动时，让两个脉冲扳机马达共同参与，在冲击与节拍时提供左右短促震动。",
-    [UI_MENU_GROUP_HD_STEAM] = "Steam 手柄（2026，测试版）",
-    [UI_MENU_STEAM_RUMBLE] = "Steam 手柄 HD 震动（测试版）",
-    [UI_MENU_STEAM_RUMBLE_DESC] = "通过 RenHDrum (" RENHDRUM_FILE ") 为 Steam 手柄（2026）握把提供测试版 HD 震动：向左右握把"
-                                  "流式传输 Switch HD 震动 PCM 波形（USB 有线 8 kHz，无线接收器或 Windows 蓝牙 4 kHz；需关闭 "
-                                  "Steam 输入）。关闭：使用普通手柄震动。",
+    [UI_MENU_XBOX_TRIGGERS_DESC] = "开启 Xbox One 震动时，在撞击与节拍瞬间加入扳机振动脉冲。",
+    [UI_MENU_GROUP_HD_STEAM] = "Steam Controller (2026)",
+    [UI_MENU_STEAM_RUMBLE] = "Steam Controller HD 震动",
+    [UI_MENU_STEAM_RUMBLE_DESC] = "为 Steam Controller (2026) 握把开启 HD 震动（需关闭 Steam 输入）。关闭：使用标准手柄震动。",
     [UI_MENU_STEAM_VOLUME] = "触觉反馈音量",
-    [UI_MENU_STEAM_VOLUME_DESC] = "Steam 手柄（2026）握把 HD 震动的强度（10 % 至 100 %）。",
+    [UI_MENU_STEAM_VOLUME_DESC] = "Steam Controller (2026) 触觉反馈的强度（10 % 至 100 %）。",
     [UI_MENU_STEAM_CRISP] = "清脆音符",
-    [UI_MENU_STEAM_CRISP_DESC] = "在 Steam 手柄（2026）握把上增强瞬态冲击与音符清晰度。",
+    [UI_MENU_STEAM_CRISP_DESC] = "在 Steam Controller (2026) 上让短促冲击和音符更清晰。",
 };
 
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}

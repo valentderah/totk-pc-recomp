@@ -58,6 +58,27 @@ int menu_cursor_menu(void);
 int menu_cursor_strip(void);
 // The Purah Pad's camera is open: its frame and pointer without the map the Scope has. 0 with the menu cursor off.
 int menu_cursor_camera(void);
+// menu_cursor.c, the game's menus by name for quicksave.c (game thread, 1.4.3): a screen of that layout is open; the
+// screen with the focus box (its layout name) and the focused node, 0 with none; the focused screen's shown button of
+// parts layout parts with root pane root (usable_out: it can be pressed), 0 none; the load list's first entry with a
+// save; the focus to node (1 once it is there)
+int menu_ui_open(const char *layout);
+int menu_ui_focus(char *screen, size_t n, uint64_t *node);
+uint64_t menu_ui_button(const char *parts, const char *root, int *usable_out);
+uint64_t menu_ui_first_save(void);
+int menu_ui_focus_to(uint64_t node);
+// quicksave.c (TOTK_QUICKSAVE): keys: the keys held now, its two keys (TOTK_QUICKSAVE_KEY, TOTK_QUICKLOAD_KEY) start
+// it when pressed and act is set, and are cleared from down either way; request: save (0) or load (1), as the keys
+// and the script lines QUICKSAVE / QUICKLOAD do; guest: once per game pad read on the game thread, where quick save
+// calls into the game; poll: once per game pad read, 1 while quick load drives the game's load menu with its own
+// presses in place of the input; busy: quick load runs
+struct Cpu;
+int quicksave_on(void);   // TOTK_QUICKSAVE is on and the game is 1.4.3
+void quicksave_keys(uint8_t *down, int act);
+void quicksave_request(int load);
+void quicksave_guest(struct Cpu *c);
+int quicksave_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
+int quicksave_busy(void);
 // The same for host UI (the text entry): never blocked. input_block(1) while a text entry is open: input_poll then
 // reports nothing; input_block(0) when it closes: nothing until all buttons and stick directions are released.
 void input_poll_ui(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
@@ -70,9 +91,25 @@ void input_menu(int open);
 // of the combo, sticks are lx, ly, rx, ry. Returns 1 in the poll where the combo goes down (toggle the menu once).
 int input_menu_gate(int *held, int menu_open, uint64_t *buttons, int32_t sticks[4]);
 int input_overlay_gate(int *held, uint64_t *buttons);   // L3+R3: 1 in the poll both go down
+// A gamepad combo setting: buttons by position joined with '+' (guide+south: Home and the bottom face button, the
+// pad: names of the bind_ lines plus guide or home). Bit p is PAD_* p, bit PAD_COUNT the Home button; 0 for an empty
+// value or one with a name that is no button, which logs a line naming env.
+uint32_t input_pad_combo(const char *env, const char *s);
 int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly);
 // The gamepad layout in effect (PAD_LAYOUT_*, input_map.h; TOTK_PAD_LAYOUT, live); -1 without a gamepad. Any thread.
 int input_pad_layout(void);
+
+// Free camera (freecam.c). input.c steps it with TOTK_FREECAM_PAD and, while it moves, hands it the gamepad and gives
+// the game none: sticks -1..1 with up +y after the dead zone, triggers 0..1; each L or R press is one speed click.
+// Locked, the view stays and the game gets the input.
+typedef struct { float lx, ly, rx, ry, lt, rt; } FreecamPad;
+enum { FREECAM_OFF, FREECAM_MOVE, FREECAM_LOCK };
+int freecam_available(void);   // game 1.4.3 with the freecam patch set on
+int freecam_state(void);       // FREECAM_*
+void freecam_cycle(void);      // off, move, lock, off; logs; input thread
+void freecam_pad(const FreecamPad *p);
+void freecam_speed_click(int faster);   // R (1) doubles the speed, L (0) halves it
+void freecam_mouse(double right_deg, double down_deg);   // a turn from the mouse, added at the next step
 // How far the open gamepad's left (pct[0]) and right (pct[1]) sticks are from the centre now, in percent of full
 // deflection, before the dead zone: the menu shows it on the dead zone rows, so a drifting stick's resting value can be
 // read off. 0 (and both 0) without a connected gamepad. Any thread.
@@ -104,28 +141,23 @@ int input_cursor_released(void);   // Esc or a non-client activation released th
 // Rumble: SDL_RumbleGamepad on the open gamepad, low (heavy, left) and high (light, right) motor 0..65535 for ms
 // milliseconds. 1 if a gamepad with rumble took it. Callable from any thread.
 int input_rumble(uint16_t low, uint16_t high, uint32_t ms);
-// Switch HD rumble via RenHDrum (renhdrum.dll when present): DualSense 48 kHz USB audio VCM / Bluetooth HID report
-// 0x32, Switch Pro / Joy-Con HD rumble packets, Xbox One / Series X|S 4-motor rumble, or Steam Controller (2026) grip
-// PCM streaming (HID report 0x86 / 0x88). side is 0 (left), 1 (right), or -1 (both). Returns 1 when RenHDrum handled the
-// vibration (skipping basic ERM downmixing), 0 to fall back to input_rumble. Callable from any thread.
-int input_hd_rumble(int side, float left_al, float left_fl, float left_ah, float left_fh,
-                    float right_al, float right_fl, float right_ah, float right_fh);
-// Leaves the controller silent (neutral HD rumble packet / silent DualSense report 0x32 / zero Xbox motors / Steam grip
-// off), frees the triggers of a DualSense that was given trigger effects (TOTK_DUALSENSE_TRIGGERS,
-// TOTK_DUALSENSE_TRIGGER_VIBRATION, TOTK_RUMBLE_TRIGGERS) and
-// destroys the RenHDrum DSP and engines. The exit paths call it before plat_exit, which runs no atexit handlers. Any thread.
-void input_haptics_stop(void);
-// The HD rumble / haptics controller connected now (for the Controls tab's "in use" notes); any thread.
-enum { HD_PAD_NONE, HD_PAD_SWITCH_USB, HD_PAD_SWITCH_BT, HD_PAD_DUALSENSE_USB, HD_PAD_DUALSENSE_BT, HD_PAD_XBOX_USB, HD_PAD_XBOX_BT, HD_PAD_STEAM_USB, HD_PAD_STEAM_BT };
-int input_hd_pad_kind(void);
-// 1 when renhdrum.dll / librenhdrum.so is present next to the executable and matches RENHDRUM_VERSION; any thread.
-int input_renhdrum_available(void);
 // Motor value for a normalised amplitude: pow(a, curve) * strength, saturated to 0..65535. Pure.
 uint16_t rumble_motor(float a, float curve, float strength);
-// TOTK_RUMBLE_TRIGGERS=1: input_rumble also drives the impulse triggers (Xbox) with the high motor's value. On a
-// DualSense, TOTK_DUALSENSE_TRIGGER_VIBRATION=1 (or TOTK_RUMBLE_TRIGGERS=1) vibrates its adaptive triggers at the level
-// of that value (dualsense.h), and at the level of the high band while input_hd_rumble plays the rumble.
+// TOTK_RUMBLE_TRIGGERS=1: input_rumble also drives the impulse triggers (Xbox) with the high motor's value.
 int input_rumble_triggers_enabled(void);
+
+// RenHDrum HD Rumble (Switch Pro Controller / Joy-Con), DualSense voice-coil & HD Haptics, Xbox One / Series X|S
+// 4-motor rumble, and Steam Controller (2026) grip HD Rumble: pushes Switch HD rumble bands (amplitude 0..1, frequency
+// Hz) for side 0 (left), 1 (right), or -1 (both). Returns 1 when an active RenHDrum device handled it (caller skips
+// standard SDL_RumbleGamepad fallback).
+enum { HD_PAD_NONE, HD_PAD_SWITCH_USB, HD_PAD_SWITCH_BT, HD_PAD_DUALSENSE_USB, HD_PAD_DUALSENSE_BT, HD_PAD_XBOX_USB,
+       HD_PAD_XBOX_BT, HD_PAD_STEAM_USB, HD_PAD_STEAM_BT };
+int input_hd_pad_kind(void);
+int input_renhdrum_available(void);
+int input_hd_rumble(int side, float left_al, float left_fl, float left_ah, float left_fh,
+                    float right_al, float right_fl, float right_ah, float right_fh);
+// Cleanly shuts down active RenHDrum streams, clears DualSense trigger effects, and closes the gamepad before plat_exit.
+void input_haptics_stop(void);
 
 // Motion (TOTK_MOTION=0 turns it off, live). input_motion_start starts the sensor thread once: every 4 ms it reads the
 // gamepad's gyro and accelerometer (when it has them) and feeds motion_global(). Callable from any thread.
@@ -146,6 +178,9 @@ int input_motion_calib_state(char *pad, size_t cap);
 int input_gyro_calibration_enabled(void);
 // The fusion's own read of the same switch (motion_fusion.c); input.c reaches it for the row's state.
 int motion_calibration_enabled(void);
+// The drift tracker's switch (gyro_auto_bias, live): the drift left after calibration, learned while the controller
+// lies still, is subtracted too.
+int motion_auto_bias_enabled(void);
 // SDL sensor values (accelerometer m/s^2, gyro rad/s, SDL gamepad axes) to the Switch controller frame motion_feed
 // takes (acceleration in G as gravity reads, rotation rad/s). The mapping is documented in input_win.c.
 void input_motion_axes(const float sdl_acc[3], const float sdl_gyro[3], double acc_g[3], double gyro[3]);

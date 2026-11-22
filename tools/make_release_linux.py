@@ -408,6 +408,7 @@ def collect_licenses(out, sysroot):
         (WORK / 'zstd' / 'LICENSE', 'zstd-LICENSE.txt'),
         (out / 'python' / 'lib' / f'python{sys_version(out)}' / 'LICENSE.txt', 'python-LICENSE.txt'),
         (ROOT / 'runtime' / 'shaders' / 'ffx' / 'LICENSE.txt', 'FidelityFX-FSR-LICENSE.txt'),
+        (ROOT / 'runtime' / 'third_party' / 'FidelityFX' / 'LICENSE.txt', 'FidelityFX-SDK-LICENSE.txt'),
         (WORK / 'hactool-linux' / 'LICENSE', 'hactool-LICENSE.txt'),
         (MAIN_ROOT / 'refs' / 'MacNativeGames' / 'LICENSE', 'MacNativeGames-LICENSE.txt'),
     ]
@@ -524,7 +525,7 @@ def check_bundle(out):
                        capture_output=True, text=True, timeout=300)
     if r.returncode:
         sys.exit(f'bundle check: window selftest exit {r.returncode}\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}')
-    print('bundle check: the window built every screen in both languages and closed')
+    print('bundle check: the window built every screen in every language and closed')
 
 
 def prove(out, cpu='v3'):

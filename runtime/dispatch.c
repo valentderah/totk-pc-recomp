@@ -214,6 +214,21 @@ void rt_dispatch(Cpu *c) {
     __attribute__((musttail)) return f(c);
 }
 
+// The plugin trace (plugin_init.c, TOTK_PLUGIN_TRACE): the slot of the function start a runs fn from now on. Once per
+// traced function, before the game's code runs; the hot path stays as it is. 0 when a is no function start of the
+// table or fn lies out of the reach of a slot's 32-bit offset.
+int rt_dispatch_reroute(uint64_t a, GuestFn fn) {
+    uint64_t i = (a - D.lo) >> 2;
+    if (!g_ready || (a & 3) || a < D.lo || i >= D.slots || !D.slot[i]) return 0;
+    uintptr_t f = (uintptr_t)fn;
+    if (f <= D.anchor || f - D.anchor > UINT32_MAX) return 0;
+    uint64_t page = (uint64_t)(uintptr_t)&D.slot[i] & ~0xFFFull;
+    if (!plat_mem_protect(page, 0x1000, PLAT_PROT_RW)) return 0;
+    ((uint32_t *)D.slot)[i] = (uint32_t)(f - D.anchor);   // the table is sealed read-only, unsealed above
+    plat_mem_protect(page, 0x1000, PLAT_PROT_READ);
+    return 1;
+}
+
 RtDispatchStats rt_dispatch_stats(void) {
     return (RtDispatchStats){D.lo, D.lo + D.slots * 4, D.slots, g_table_bytes, g_functions, g_nhost};
 }

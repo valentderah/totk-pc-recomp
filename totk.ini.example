@@ -20,6 +20,11 @@
 # Frame queue: the game starts a frame while the previous one waits for its display time, so a frame that runs long
 # still makes its turn. Far fewer dropped frames at the limit for up to one frame more input delay. Takes effect at once.
 # frame_queue = 0
+# Frame generation: off, or fsr3 (AMD FSR 3 frame interpolation). A generated picture goes on screen between each two
+# the game draws: twice the pictures, the game at half of fps_limit (the limit counts the pictures shown), the controls
+# about half a frame later. For displays of 120 Hz and more; off with DLSS, FSR 3.1 (scene_upscaler) or HDR, and in
+# menus and fades. Applies at once.
+# frame_gen = off
 # Real-time frame step: game speed follows the clock instead of the frame count.
 # realtime = 1
 # Cloth simulation on the real-time clock. Needs realtime = 1.
@@ -28,6 +33,14 @@
 # highfps_fix = 1
 # Climbing walls and ladders at full speed above 60 fps; 30 and 60 fps are unchanged. Needs realtime = 1.
 # climb_fix = 1
+# The game's audio thread takes every queued sound command list each 5 ms instead of one, so the queue does not stay
+# full above 200 fps. With the queue full through 300 updates the game switches its sound off for good: measured with
+# audio = none and after the game's audio stream was paused for 2 s and for 5 s in test runs, not while a device plays.
+# 0 = the game's own code.
+# audio_drain_fix = 1
+# Game 1.4.3: the two launchers in Tenbez Shrine throw the stone ball into the other launcher's seat above 30 fps.
+# 0 = the game's own speed, tuned for 30 fps.
+# shutter_fix = 1
 
 [performance]
 # The keys of this section and of [diagnostics] are for testing and troubleshooting, and take effect at the next start.
@@ -56,12 +69,15 @@
 # Let the game build the next frame while the GPU still draws the previous one, 0 or 1. Default: off. Each frame the
 # game waits once for the GPU to finish the frame it presented last; with 1 that wait covers the frame before it
 # instead. On Great Sky Island (Linux, RX 9070 XT) with shadow_defer = 1 this took about 73 to 100 fps. Costs one more
-# frame of input delay, and frame times vary more from frame to frame than with 0. GPU results the game reads back after that wait, for example occlusion queries, can be a frame old.
-# Works on 1.2.1 and 1.4.3; 1.1.0 ignores it. Needs shadow storage (shadow below), which is on by default on Linux and
-# Wine and needs shadow = 1 on native Windows; without it the setting is ignored and the log says so.
+# frame of input delay, and frame times vary more from frame to frame than with 0. GPU results the game reads back every frame after that wait, for example its depth queries, can be a frame old; a result it reads only once is waited for.
+# Works on 1.1.0, 1.2.1 and 1.4.3. With shadow storage (shadow below; on by default on Linux and Wine) the GPU
+# reads copies of the game's memory; without it, on a discrete GPU (memory = mirror or auto), the GPU reads the
+# game's memory in place and guards copy or wait for what the game rewrites while the GPU still reads it (no shadow
+# copies, about 1 ms a frame less on a weak CPU). With memory = import and no shadow storage the setting is ignored
+# and the log says so.
 # sync_ahead = 0
 # Shadow storage, 0 or 1: each CPU-visible memory pool of the game gets a host-visible copy that the GPU reads, in
-# place of importing the game's memory. Default: on under Linux and Wine, off on native Windows. sync_ahead needs it.
+# place of importing the game's memory. Default: on under Linux and Wine, off on native Windows.
 # Costs about 0.2 ms a frame and doubles the memory of those pools (about 1.1 GB; docs/building.md). Read at start.
 # shadow = 0
 # With sync_ahead = 1: when the game changes memory the GPU still reads, queue the copy into the GPU's shadow of that
@@ -200,6 +216,13 @@
 # laptop, 2560x1080 on a 21:9 monitor), so the picture fills the screen without black bars, with prompts = xbox or pc
 # too (on an install by an older setup, which built the Xbox prompts for 16:9 only, prompts = xbox keeps 1920x1080).
 # output_res = 1920x1080
+# HUD width on a game resolution wider than 16:9: full, the default, puts the HUD at the screen's left and right edges;
+# 21:9 keeps it within the middle 21:9 of the screen and 16:9 within the middle 16:9 (the game's own HUD), so the
+# corners of a 32:9 screen stay clear. A cap not narrower than the screen is the same as full, and a 16:9 or taller
+# screen ignores it. The installer's Shapes step prepares only the selected cap for the shapes of connected displays
+# and output_res, with the selected button prompts. full creates no capped layouts. After changing this setting,
+# prepare a missing layout in the Screen tab or rerun setup, then restart. A missing capped folder keeps the full HUD.
+# hud_width = full
 # 3D render scale: the scene's size relative to the game resolution, game (5/6, the game's own 1600x900 at 1080p) or
 # a percentage (25 to 400); above 100 supersamples the scene (anti-aliasing). The scene stays within 8192 pixels a side
 # and within a texture heap under 2 GiB (8192x2304 at most on a 5120x1440 output); the log says when it is smaller.
@@ -207,8 +230,8 @@
 # render_scale = game
 # Dynamic resolution: 1 lets the game lower the scene to 90 or 80 % of that size, 0 keeps it at 100 %. The game decides
 # by a cost estimate made for the Switch, which grows with the scene's width and ignores how fast your GPU is: a
-# scene wider than about 3000 pixels can drop to 80 % on any GPU. 1 is the default. 1.2.1 and 1.4.3. Changes in
-# the menu take effect at once.
+# scene wider than about 3000 pixels can drop to 80 % on any GPU. 1 is the default. 1.1.0, 1.2.1 and 1.4.3. Changes in
+# the menu take effect at once. While FSR 3.1 upscales the scene (scene_upscaler = fsr3) it stays at 100 %.
 # dynamic_res = 1
 # Scaling to the window when it is larger than the game resolution: fsr (AMD FSR 1) or bilinear, and FSR's sharpening
 # from 0 (off) to 100. Changes while the game runs take effect at once.
@@ -224,7 +247,7 @@
 # does. Read when a movie starts, so a change takes effect at the next movie.
 # movie_aspect = keep
 # Field of view, in percent of the game's own: 70 to 140, 100 (the default) leaves the camera as it is. Higher shows
-# more of the world around Link. Game versions 1.1.0 and 1.4.3. Changes while the game runs take effect at once.
+# more of the world around Link. Game versions 1.1.0, 1.2.1 and 1.4.3. Changes while the game runs take effect at once.
 # fov = 100
 # Anisotropic filtering of surface textures: game (the level the game asks for, as on the Switch) or 2, 4, 8, 16. Keeps
 # ground, roads and walls seen at a shallow angle sharp into the distance. Only filtered, mipmapped textures that tile
@@ -266,20 +289,32 @@
 # shadows at feet, under stones and in grass that the shadow maps miss. Read at start.
 # contact_shadows = 0
 # Soft sun shadows (PCSS), percent of the default penumbra width (0 to 200; 0 = the game's own four-tap filter): sharp
-# where an object meets the ground and softer the further its shadow falls. Done in the translated shaders (translator
-# patch 0010), so the shader cache is rebuilt once after an update. Read at start.
+# where an object meets the ground and softer the further its shadow falls. The blur keeps its width on the ground
+# from one shadow cascade to the next, so it does not step up where a farther cascade begins. Done in the translated
+# shaders (translator patches 0010 and 0017), so the shader cache is rebuilt once after an update. Read at start.
 # pcss = 0
 
-# NVIDIA DLSS / DLAA for the 3D scene, on NVIDIA RTX GPUs with the DLSS model from NVIDIA's DLSS SDK next to the
-# executable (Windows: nvngx_dlss.dll next to totk.exe; Linux: libnvidia-ngx-dlss.so.<version> next to totk, with the
-# NVIDIA driver's libnvidia-ngx.so.1 installed); elsewhere the setting does nothing. The HUD is drawn after it and is not touched.
-# Read at start.
+# The temporal upscaler for the 3D scene: off (the game's own scaling and FXAA), dlss (NVIDIA DLSS, on NVIDIA RTX GPUs
+# with the DLSS model from NVIDIA's DLSS SDK next to the executable: Windows nvngx_dlss.dll next to totk.exe; Linux
+# libnvidia-ngx-dlss.so.<version> next to totk, with the NVIDIA driver's libnvidia-ngx.so.1 installed) or fsr3 (AMD FSR
+# 3.1 from AMD's FidelityFX SDK, on any GPU). FSR 3.1 below native (dlss = quality and down) pays where the GPU limits
+# the frame rate: integrated GPUs, weak cards, 4K output; where the CPU limits it, its own GPU and CPU time make the game
+# slower. An engine that cannot run here leaves the game's own scaling in place. The HUD is drawn after it, at the
+# output size, and is not touched. The present's upscaler and sharpness below still scale the game image to the window.
+# Frame generation stays off with fsr3. Read at start. Without this line, dlaa = 1 (the older switch) means dlss.
+# scene_upscaler = off
+# The older DLSS switch, read only when scene_upscaler is not set: 1 is scene_upscaler = dlss.
 # dlaa = 0
-# What DLSS works from: dlaa (the 3D scene at full size), quality, balanced, performance or ultra_performance (the
-# scene at 67, 58, 50 or 33 % of the output, scaled up by DLSS; these replace render_scale and sharpen texture filtering
-# to match). They apply only with dlaa = 1 and the DLSS model next to the executable; otherwise the scene follows
-# render_scale. Changes while the game runs take effect at once (1.4.3; 1.2.1 at the next start).
+# The upscaling mode of the scene upscaler, DLSS or FSR 3.1: dlaa (native: the 3D scene at full size, anti-aliased
+# only), quality, balanced, performance or ultra_performance (the scene at 67, 58, 50 or 33 % of the output, scaled up by
+# the upscaler; these replace render_scale and sharpen texture filtering to match). They apply only while a scene
+# upscaler runs; otherwise the scene follows render_scale. Changes while the game runs take effect at once (1.4.3; 1.2.1
+# at the next start).
 # dlss = dlaa
+# FSR 3.1's own sharpening of the 3D scene, from 0 (off) to 100. The game's sharpening is part of its FXAA, which FSR
+# 3.1 replaces, so at 0 FSR's picture is softer than the game's own. Only with scene_upscaler = fsr3. Changes while the
+# game runs take effect at once.
+# fsr_sharpness = 80
 # The DLSS model: default (NVIDIA's advice per mode: K for dlaa, quality and balanced, M for performance, L for
 # ultra_performance), k (K in every mode) or j (the other transformer model: slightly less ghosting behind moving
 # characters, a little more flicker). Any other model by its letter, a to m: on slower RTX cards the older model e is
@@ -294,6 +329,16 @@
 # frame before, DLSS is told to favour the current frame by this percentage (0, 35, 65 or 100; 0 off). Higher removes
 # more of the trails and leaves those edges a little less smooth. Changes while the game runs take effect at once.
 # dlss_char_mask = 65
+# 1: DLSS takes the brightness of the game's picture as it is (exposure 1) instead of estimating the exposure from each
+# frame. In dark scenes (the Depths) the estimate moves with the camera, and large fogged areas turn darker or lighter
+# for a frame. 0, the default: DLSS estimates the exposure itself, as before. Every DLSS mode. Changes while the game
+# runs take effect at once.
+# dlss_fixed_exposure = 0
+# With DLAA (dlaa = 1, dlss = dlaa), fog, dust and other particles are drawn over the picture DLSS has already smoothed,
+# as the game draws them without DLSS, so small particles in fog (shrines) no longer vanish or leave trails. 0: DLSS
+# processes these effects too, as before (the default until the inventory preview, the scope and water edges are
+# checked on NVIDIA). The upscaling DLSS modes always process them. Changes while the game runs take effect at once.
+# dlaa_effects_after = 0
 # NVIDIA Reflex Low Latency (NVIDIA GPUs supporting VK_NV_low_latency2): off, on, or boost.
 # Reduces system input latency; boost keeps GPU clocks high in CPU-bound scenes. Read at start.
 # reflex = off
@@ -365,6 +410,12 @@
 # gyro and an attempt in progress is dropped; the four keys below stay in the file, so turning it back on restores the
 # last calibration.
 # gyro_calibration = 1
+# Gyro drift at rest (1 = on, off by default): whenever the controller lies still (on a table, not held) for half a second, the game
+# learns the drift left in its gyro, after the calibration above if there is one, and subtracts it, as the Switch's
+# hid service does for its own controllers. It catches a bias that changes as the controller warms up and works
+# without a calibration. The log says "gyro drift at rest learned" once it has settled. A controller held in the hand
+# is not learned from, and there is no dead zone, so slow aiming is untouched. Off, nothing is learned or subtracted.
+# gyro_auto_bias = 0
 # The measured bias in rad/s and the controller it was measured from, written by the game when calibration finishes;
 # they are not meant to be typed. The bias applies only while gyro_bias_pad names the connected controller (its name,
 # plus a hash of its serial number when it reports one), so another controller starts with no bias. One controller's
@@ -379,43 +430,42 @@
 # rumble_strength = 130
 # rumble_curve = 0.6
 # rumble_triggers = 0
-# Switch Pro Controller / Joy-Con HD Rumble, PS5 DualSense voice-coil haptics, and Xbox One / Series X|S 4-motor rumble
-# (with renhdrum.dll next to totk.exe). hd_rumble = 0, dualsense_haptics = 0 or xbox_rumble = 0 falls back to standard
-# SDL rumble. hd_rumble_bt_speed: stable, balanced or fast. xbox_triggers = 1 includes the two impulse trigger motors.
+# Switch Pro Controller / Joy-Con HD Rumble via optional renhdrum.dll / librenhdrum.so next to totk.exe (live).
+# hd_rumble_bt_speed: stable, balanced or fast (default: fast).
 # hd_rumble = 1
 # hd_rumble_bt_speed = fast
 # hd_rumble_crisp = 1
 # hd_rumble_bt_crisp = 1
-# dualsense_haptics = 1
+# PS5 DualSense haptics via optional renhdrum.dll / librenhdrum.so (live): hd (default: grip haptics + controller
+# speaker detail), standard (grip haptics only), or off (standard controller rumble). dualsense_volume: 10 to 100.
+# dualsense_trigger_vibration = 1 enables reactive L2/R2 trigger pulses via RenHDrum while triggers are held.
+# dualsense_haptics = hd
 # dualsense_volume = 100
 # dualsense_crisp = 1
 # dualsense_bt_crisp = 0
+# dualsense_trigger_vibration = 0
+# PS5 DualSense native adaptive triggers (no extra DLL needed, live): dualsense_triggers sets resistance 0 (off) to 8;
+# dualsense_triggers_mode picks r2 (bow only, default), both (R2 + L2), or l2 (L2 only).
+# dualsense_triggers = 0
+# dualsense_triggers_mode = r2
+# Xbox One / Series X|S 4-motor HD Rumble translation via optional renhdrum.dll / librenhdrum.so (live).
 # xbox_rumble = 1
 # xbox_triggers = 1
-# Steam Controller (2026) grip HD Rumble via RenHDrum (Beta, requires Steam Input off): 8 kHz PCM over USB, 4 kHz over
-# wireless dongle or Bluetooth (Windows). steam_volume is 10 to 100 %; steam_crisp sharpens short impacts and notes.
+# Steam Controller (2026) grip HD Rumble via optional renhdrum.dll / librenhdrum.so (live; steam_volume: 10 to 100).
 # steam_rumble = 1
 # steam_volume = 100
 # steam_crisp = 1
-# Adaptive triggers of a DualSense (PS5): dualsense_triggers is how hard the trigger resists, 1 (light) to 8 (heavy);
-# 0 = off. dualsense_triggers_mode selects which triggers resist: r2 (only R2 gets the drawn-bow resistance, L2 is
-# free), both (R2 + L2, with L2 lighter for shield/lock-on), or l2 (only L2). dualsense_trigger_vibration = 1 vibrates
-# both adaptive triggers with the game's rumble (0 = off). Needs neither renhdrum.dll nor dualsense_haptics, but the
-# game must see the DualSense itself, not a virtual Xbox pad (Steam Input, DS4Windows). Changes while the game runs
-# take effect at once.
-# dualsense_triggers = 0
-# dualsense_triggers_mode = r2
-# dualsense_trigger_vibration = 0
 # Which gamepad button is Switch A: nintendo (by position: east A, south B, west Y, north X), xbox (south A, east B,
 # west X, north Y, as an Xbox pad labels them; cross A on a PlayStation pad) or auto (nintendo for a pad with Nintendo
 # labels, xbox for the others). The bind_ lines below apply on top. Changes while the game runs take effect at once.
 # 0.1.9's xbox_prompts is read as nintendo with prompts = xbox.
 # pad_layout = auto
 # The buttons the game's prompts show: nintendo (the game's own), xbox (LB RB LT RT, Menu, View and a d-pad cross,
-# and A B X Y as labelled on the button pad_layout presses: with nintendo, A shows as B and X as Y). Read at start
-# (docs/controls.md, "Xbox button prompts"). pc: the key or mouse button the keyboard defaults press each button with
-# (E, Shift, Space, left click, Q, R, right click, F, Tab, M, 1 to 4, W A S D, Ctrl, C) and the mouse for the right
-# stick, whatever pad_layout (docs/controls.md, "PC button prompts").
+# and A B X Y as labelled on the button pad_layout presses: with nintendo, A shows as B and X as Y), playstation
+# (○ × △ □, L1 R1 L2 R2, Options and Share, on the button pad_layout presses: with nintendo, A shows as ○), or pc
+# (the key or mouse button the keyboard defaults press each button with: E, Shift, Space, left click, Q, R, right
+# click, F, Tab, M, 1 to 4, W A S D, Ctrl, C, and the mouse for the right stick, whatever pad_layout). Read at start
+# (docs/controls.md, "Xbox and PlayStation button prompts", "PC button prompts").
 # prompts = nintendo
 # Gamepad stick dead zone in percent of full deflection (0 to 50). Raise it for a stick that drifts: inside the circle
 # the stick reads centred, and the rest of its travel is scaled to start there.
@@ -452,6 +502,20 @@
 # Esc). 1: a gold arrowhead with a dark edge and a turquoise gem, drawn by the port at the window's DPI, instead of
 # the system arrow. 0 (the default) keeps the system arrow. Changes while the game runs.
 # pointer_image = 0
+# Quick save and quick load, 1.4.3 only. 1: quicksave_key saves the game at once and quickload_key loads that save
+# (F6 and F7 by default, as in Half-Life), with no menu on the screen. Quick save makes one of the game's own
+# autosaves and keeps a copy of it in the profile's quicksave folder; quick load loads that copy through the game's
+# load list, which runs out of sight (the picture holds on "Loading the quick save" for about 5 s).
+# "Game saved" shows at the top of the picture. Where the game would not autosave itself (a cutscene, an event, a
+# fight), or while a menu or a dialogue box is open, nothing is saved and the line says so. A quick save replaces the
+# oldest autosave, as the game's own autosaves do; the manual save is not touched. Keyboard and mouse keys only.
+# While it is on, the two keys do nothing else. 0 (the default) leaves both keys alone. Changes while the game runs.
+# quicksave = 0
+# The keys of quick save and quick load: a key name of the bind_ lines below (f2-f7 f9 f12, letters, mouse buttons,
+# ...) or none; the Controls tab sets them by pressing the key. An unknown name is logged and the default is used.
+# Changes while the game runs.
+# quicksave_key = f6
+# quickload_key = f7
 # Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture). With mouse_mode = direct, 1 turns the
 # camera 0.08 degrees per count, the same in every camera mode (about 14.3 cm a turn at 800 DPI).
 # mouse_sens = 1
@@ -466,6 +530,19 @@
 # reads as a partial tilt only.
 # walk_key = lshift
 # walk_scale = 0.51
+# Free camera (game 1.4.3): 1 puts its hook in the game's camera update; 0, the default, runs the game's camera code
+# as shipped and the combo and key below do nothing. Read at start.
+# freecam_patch = 0
+# The gamepad combo that steps it through move, lock and off, buttons by position joined with +, the pad: names of the
+# bind_ lines. While it moves the game gets no input and the view flies: the left stick along
+# the view and sideways, the triggers straight up and down, the right stick turns; each press of L halves the speed, of
+# R doubles it. Locked, the view stays and Link walks where the left stick points on screen (docs/controls.md, "Free
+# camera"). none turns the combo off. Default: none;
+# freecam_pad = zl+zr+lstick
+# A key that does the same, by its name in the bind_ lines; on the keyboard the keys bound to the sticks fly and turn,
+# the keys of ZR and ZL go up and down, those of R and L change the speed, and the mouse turns. none turns it off.
+# Default: none.
+# freecam_key = f2
 # Write the input of this run to a file that replays as a script (docs/controls.md, "Scripted input"). Default: off.
 # input_record = input.txt
 # Remap buttons: the Controls tab of the settings menu (F1) writes these lines. One line per Switch button or stick
@@ -493,13 +570,24 @@
 # to totk.exe.
 # mods_dir =
 # Load order, top first, names separated by |. The in-game menu (Mods) writes it; a mod not listed goes to the bottom.
+# The higher mod wins whatever two mods both change: a file, bytes of the game's data, an instruction of its code.
+# Read at start.
 # mods_order =
 # Mods switched off, names separated by |.
 # mods_disabled =
+# Mods used without their code part, names separated by |: the Mods tab's switch "Use <mod> without its code". Such a
+# mod's code modules (exefs/subsdk*, a replaced exefs/main) and the ExeFS patch files the port cannot apply are left out
+# and the rest of it is used, where otherwise the whole mod stays off. Read at start.
+# mods_no_code =
 # auto: when an enabled mod has cheats that change the game's code and the game was built without them, the game starts
 # the setup's rebuild at start (a few minutes) and starts again after it. off: the game starts with the code it has.
 # A rebuild that failed or was cancelled is not started again for the same cheats. Default: auto.
 # mods_rebuild = auto
+# 1: every mod is used without the code part the port cannot run, as if mods_no_code named them all: its code modules
+# (exefs/subsdk*, a replaced exefs/main) and the ExeFS patch files the port cannot apply are left out, its RomFS files,
+# cheats and the other patch files load. Its files may expect the missing code. 0: only the mods mods_no_code names.
+# Read at start. Default: 0.
+# mods_without_code = 0
 # Extra room in MiB (0 to 4096) for the heap the world's textures stream into, for HD texture packs. Packs made for
 # emulators with 8 GB of DRAM grow it in their own HeapDef table (System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs):
 # the port reads that growth at start and applies it itself (about 3339 MiB for the HDPacks 4K pack), so such a pack
@@ -551,6 +639,11 @@
 # last one it finished. Unset: on AMD GPUs (VK_AMD_buffer_marker). 1: also on NVIDIA GPUs
 # (VK_NV_device_diagnostic_checkpoints), which NVIDIA says costs a little. 0: off.
 # pass_crumbs = 1
+# GPU address map: after a GPU memory fault (device lost) the log names the image or buffer that held the faulting
+# address and whether it was freed before the fault. 1: on, where the driver has VK_EXT_device_address_binding_report.
+# It slows the recording of GPU commands, on AMD's Windows driver more and more over a session, so turn it on only for
+# the run that reproduces the crash. Default: 0.
+# addr_report = 0
 # Render targets up to this size (bytes, 0 to 1073741824) go back to their game memory whenever the game waits for a
 # GPU fence. A larger target goes back too unless the GPU drew it in each of the last 16 frames. A game that reads a
 # larger target drawn every frame without invalidating it sees stale bytes at the default. With trace = gfx the log

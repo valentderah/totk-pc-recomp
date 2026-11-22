@@ -121,7 +121,258 @@ static void probe_data(const char *root) {
         mods_exefs_apply(base, sizeof img, 8, store_buffer);
         CHECK(img[0x28] == 0xAA, "two mods write the same byte: the top mod's byte stays");
         CHECK(!memcmp(img + 0x10, "ABC", 3) && !img[0x30], "the other mods' data as each one stores it alone");
+        const ModInfo *xm = by_name("X"), *ym = by_name("Y");
+        CHECK(mods_conflict_count() == 1 && xm && ym && mods_conflict_at(0)->winner == ym->id &&
+                  mods_conflict_at(0)->loser == xm->id && mods_conflict_at(0)->part == MOD_PART_DATA &&
+                  mods_conflict_at(0)->count == 1,
+              "the conflict table: Y overrides X at one byte of data");
     }
+    mods_probe_cache(NULL, NULL);
+    remove_tree(root);
+}
+
+// "mod_<key>": the name tools/exefs_patches.py gives the patch set of the file at rel (mod folder name / path in it).
+static void set_name(char *out, size_t cap, const char *rel) { snprintf(out, cap, "mod_%08x", fnv(rel, strlen(rel))); }
+
+// Code sites several mods patch (patches.c rt_patch_picks): a set table of the probe's own, with the sets of the ExeFS
+// patch files of A (one file), B (two files) and C (one, switched off) and three contested sites:
+//   0: A and B's first file    the higher mod's set runs; a conflict of B over A or A over B
+//   1: B's two files           the later file in the mod runs; no conflict
+//   2: C and A                 C is off, so A's runs; no conflict
+static void probe_code(const char *root) {
+    remove_tree(root);
+    plat_file_mkdir_p(root);
+    const char *bid = *mods_main_build_id() ? mods_main_build_id() : "0";
+    char a[160], b1[160], b2[160], c[160];
+    snprintf(a, sizeof a, "A/exefs/%s.ips", bid);
+    snprintf(b1, sizeof b1, "B/atmosphere/exefs_patches/one/%s.ips", bid);
+    snprintf(b2, sizeof b2, "B/atmosphere/exefs_patches/two/%s.ips", bid);
+    snprintf(c, sizeof c, "C/exefs/%s.ips", bid);
+    const char *files[] = {a, b1, b2, c};
+    static char names[5][16];
+    static const char *const table[] = {"fps60", names[1], names[2], names[3], names[4]};
+    char status[512] = "";
+    for (int i = 0; i < 4; i++) {
+        put(root, files[i]);
+        set_name(names[i + 1], sizeof names[i + 1], files[i]);
+        size_t at = strlen(status);
+        snprintf(status + at, sizeof status - at, "%08X\t%08X\tcode\t-\t\n", fnv(files[i], strlen(files[i])),
+                 fnv("probe", 5));
+    }
+    static const int16_t s0[] = {1, 2}, s1[] = {2, 3}, s2[] = {4, 1};
+    static const RtPatchPick picks[] = {{"main", 0x100, s0, 2}, {"main", 0x200, s1, 2}, {"main", 0x300, s2, 2}};
+    mods_probe_cache(status, "");
+    cfg_set("TOTK_MODS_DIR", root);
+    cfg_set("TOTK_MODS_DISABLED", "C");
+    for (int round = 0; round < 2; round++) {
+        cfg_set("TOTK_MODS_ORDER", round ? "A|B" : "B|A");
+        mods_rescan();
+        mods_scan();
+        rt_patch_probe_table(table, 5, picks, 3);
+        mods_exefs_apply(0, 0, 0, NULL);
+        const ModInfo *am = by_name("A"), *bm = by_name("B");
+        CHECK(am && bm && am->nsets == 1 && bm->nsets == 2 && am->problem == MOD_OK, "code scan: A one set, B two");
+        if (!am || !bm) break;
+        const ModInfo *hi = round ? am : bm, *lo = round ? bm : am;
+        CHECK(rt_patch_pick_winner(0) == (round ? 0 : 1), round ? "A above B: A's code runs at their site"
+                                                                : "B above A: B's code runs at their site");
+        CHECK(rt_patch_pick_winner(1) == 1, "two files of one mod on a site: the later file's code runs");
+        CHECK(rt_patch_pick_winner(2) == 1 && !rt_patch_enabled(4), "a switched-off mod's set stays off");
+        CHECK(mods_conflict_count() == 1 && mods_conflict_at(0)->winner == hi->id &&
+                  mods_conflict_at(0)->loser == lo->id && mods_conflict_at(0)->part == MOD_PART_CODE &&
+                  mods_conflict_at(0)->count == 1,
+              "the conflict table: the higher mod overrides the lower one at one code site, and only there");
+        // the winner switched off at run time: the site takes the other mod's set
+        rt_patch_switch(round ? 1 : 2, 0);
+        CHECK(rt_patch_pick_winner(0) == (round ? 1 : 0), "a contested site follows a switch of its winner");
+    }
+    // the table itself: one entry per pair and part, counts adding up
+    mods_conflict(7, 8, MOD_PART_FILES, 2);
+    mods_conflict(7, 8, MOD_PART_FILES, 3);
+    const ModConflict *last = mods_conflict_at(mods_conflict_count() - 1);
+    CHECK(last && last->winner == 7 && last->count == 5, "mods_conflict adds to the pair's entry");
+    rt_patch_probe_table(NULL, 0, NULL, 0);
+    cfg_set("TOTK_MODS_DISABLED", "");
+    mods_probe_cache(NULL, NULL);
+    remove_tree(root);
+}
+
+// build-cache/plugins.status lines (tools/exefs_plugins.py) that refuse the probe's subsdk9 files of E and H: they stay
+// code the port cannot run.
+static const char *refused_plugins(void) {
+    static char text[256];
+    snprintf(text, sizeof text, "%08X\t%08X\tunsupported\t-\tthe init called svc 0x40\n"
+             "%08X\t%08X\tunsupported\t-\tthe init called svc 0x40\n", fnv("E/exefs/subsdk9", 15), fnv("probe", 5),
+             fnv("H/exefs/subsdk9", 15), fnv("probe", 5));
+    return text;
+}
+
+// Mod plugins (build-cache/plugins.status, plugins.stale; mods.c plugin_file, mods_plugin_off) in a folder of their own:
+//   P  RomFS + a built plugin (7 hooks)       its set on, ranked by the order; a contested site with Q's patch file
+//   Q  an ExeFS patch file on P's site
+//   R  a plugin the build has no line for     waits for the rebuild
+//   S  RomFS + a refused plugin               off, the reason kept; used without its code, the rest runs
+//   T  a built plugin + a refused one         each judged alone: off for the refused one, its reason kept; used
+//                                             without its code, the built one's set runs
+// Then P's start differs from the build (mods_plugin_off): its set goes off, Q's code runs at the site, the conflict
+// goes, a stale line marks P's file, and the next scan has P wait for the rebuild.
+static void probe_plugins(const char *root) {
+    remove_tree(root);
+    plat_file_mkdir_p(root);
+    const char *bid = *mods_main_build_id() ? mods_main_build_id() : "0";
+    char q[160];
+    snprintf(q, sizeof q, "Q/exefs/%s.ips", bid);
+    static const char *const files[] = {"P/romfs/p.bin", "P/exefs/subsdk9", "R/exefs/subsdk9", "S/romfs/s.bin",
+                                        "S/exefs/subsdk9", "T/exefs/subsdk8", "T/exefs/subsdk9"};
+    for (size_t i = 0; i < sizeof files / sizeof *files; i++) put(root, files[i]);
+    put(root, q);
+    static char names[4][16];
+    static const char *const table[] = {"fps60", names[1], names[2], names[3]};
+    set_name(names[1], sizeof names[1], "P/exefs/subsdk9");
+    set_name(names[2], sizeof names[2], q);
+    set_name(names[3], sizeof names[3], "T/exefs/subsdk9");
+    char status[256], plugins[512];
+    snprintf(status, sizeof status, "%08X\t%08X\tcode\t-\t\n", fnv(q, strlen(q)), fnv("probe", 5));
+    snprintf(plugins, sizeof plugins, "%08X\t%08X\tplugin\tfps60\tplugin0, 7 hooks\n"
+             "%08X\t%08X\tunsupported\t-\tthe code its hooks reach has svc 0x40\n"
+             "%08X\t%08X\tplugin\t-\tplugin1, 2 hooks\n"
+             "%08X\t%08X\tunsupported\t-\tthe run was refused: svc 0x1 at plugin2+0x50a0\n", fnv("P/exefs/subsdk9", 15),
+             fnv("probe", 5), fnv("S/exefs/subsdk9", 15), fnv("probe", 5), fnv("T/exefs/subsdk9", 15), fnv("probe", 5),
+             fnv("T/exefs/subsdk8", 15), fnv("probe", 5));
+    static const int16_t s0[] = {1, 2};
+    static const RtPatchPick picks[] = {{"main", 0x100, s0, 2}};
+    mods_probe_cache(status, "");
+    mods_probe_plugins(plugins, "");
+    cfg_set("TOTK_MODS_DIR", root);
+    cfg_set("TOTK_MODS_DISABLED", "");
+    cfg_set("TOTK_MODS_NO_CODE", "");
+    for (int round = 0; round < 2; round++) {
+        cfg_set("TOTK_MODS_ORDER", round ? "Q|P" : "P|Q");
+        mods_rescan();
+        mods_scan();
+        rt_patch_probe_table(table, 4, picks, 1);
+        rt_patch_switch(0, 1);
+        mods_exefs_apply(0, 0, 0, NULL);
+        const ModInfo *pm = by_name("P"), *qm = by_name("Q"), *rm = by_name("R"), *sm = by_name("S"),
+                      *tm = by_name("T");
+        CHECK(pm && qm && rm && sm && tm, "plugin scan: five mods");
+        if (!pm || !qm || !rm || !sm || !tm) break;
+        CHECK(pm->problem == MOD_OK && pm->nsets == 1 && pm->nplugins == 1 && pm->plugin_hooks == 7 && !pm->code[0] &&
+                  EQ(pm->overrides, "fps60"), "a built plugin: its set, its hooks, the built-in set it replaces");
+        CHECK(rt_patch_enabled(1) && !rt_patch_enabled(0), "the plugin's set on, the built-in set it replaces off");
+        CHECK(rt_patch_pick_winner(0) == (round ? 1 : 0), round ? "Q above P: Q's patch runs at their site"
+                                                                : "P above Q: P's plugin hook runs at their site");
+        CHECK(mods_conflict_count() == 1 && mods_conflict_at(0)->part == MOD_PART_CODE &&
+                  mods_conflict_at(0)->winner == (round ? qm : pm)->id,
+              "the conflict table: a plugin site against a patch file goes by the order");
+        CHECK(rm->problem == MOD_EXEFS_LATER && rm->pending == 1, "a plugin the build lacks waits for the rebuild");
+        CHECK(sm->problem == MOD_PLUGIN && EQ(sm->code, "subsdk9") && strstr(sm->plugin_note, "svc 0x40"),
+              "a refused plugin keeps its mod off and says why");
+        CHECK(tm->problem == MOD_PLUGIN && tm->nplugins == 1 && tm->plugin_hooks == 2 && EQ(tm->code, "subsdk8") &&
+                  strstr(tm->plugin_note, "svc 0x1") && !rt_patch_enabled(3),
+              "a built plugin beside a refused one: the mod off, the refused one's reason on its row");
+    }
+    // P above Q, then P's start differs from the build
+    cfg_set("TOTK_MODS_ORDER", "P|Q");
+    mods_rescan();
+    mods_scan();
+    rt_patch_probe_table(table, 4, picks, 1);
+    mods_exefs_apply(0, 0, 0, NULL);
+    mods_plugin_off(1, "probe: 1 of the words the build recorded were not written");
+    const ModInfo *pm = by_name("P");
+    CHECK(!rt_patch_enabled(1) && rt_patch_pick_winner(0) == 1, "a plugin off at start: the other mod's patch runs");
+    CHECK(pm && strstr(pm->plugin_off, "were not written"), "its row says why");
+    CHECK(mods_conflict_count() == 0, "its conflict goes with it");
+    cfg_set("TOTK_MODS_NO_CODE", "S|T");
+    mods_rescan();
+    mods_scan();
+    rt_patch_probe_table(table, 4, picks, 1);
+    mods_exefs_apply(0, 0, 0, NULL);
+    pm = by_name("P");
+    const ModInfo *sm = by_name("S"), *tm = by_name("T");
+    CHECK(pm && pm->problem == MOD_EXEFS_LATER && pm->pending == 1, "the next start: its file waits for the rebuild");
+    CHECK(sm && sm->problem == MOD_OK && sm->plugin_note[0], "a refused plugin used without its code: the rest runs");
+    CHECK(tm && tm->problem == MOD_OK && tm->plugin_note[0] && rt_patch_enabled(3),
+          "a built plugin beside a refused one, used without its code: the built one's set runs");
+    rt_patch_probe_table(NULL, 0, NULL, 0);
+    cfg_set("TOTK_MODS_NO_CODE", "");
+    cfg_set("TOTK_MODS_ORDER", "");
+    mods_probe_cache(NULL, NULL);
+    mods_probe_plugins(refused_plugins(), "");
+    remove_tree(root);
+}
+
+// Mods with code the port cannot run (a code module, an ExeFS patch file it cannot apply): used without that code
+// by their own switch (mods_no_code) or by mods_without_code for every mod.
+static void probe_without_code(const char *root) {
+    remove_tree(root);
+    plat_file_mkdir_p(root);
+    const char *bid = *mods_main_build_id() ? mods_main_build_id() : "0";
+    char u[160], v[160];
+    snprintf(u, sizeof u, "U/exefs/%s.ips", bid);   // with RomFS files: the rest is usable
+    snprintf(v, sizeof v, "V/exefs/%s.ips", bid);   // nothing else
+    static const char *const files[] = {"E/exefs/subsdk9", "H/romfs/h.bin", "H/exefs/subsdk9", "I/romfs/i.bin",
+                                        "I/exefs/main", "U/romfs/u.bin"};
+    for (size_t i = 0; i < sizeof files / sizeof *files; i++) put(root, files[i]);
+    put(root, u);
+    put(root, v);
+    char status[256];
+    snprintf(status, sizeof status, "%08X\t%08X\tunsupported\t-\tit writes outside main\n"
+             "%08X\t%08X\tunsupported\t-\tit writes outside main\n", fnv(u, strlen(u)), fnv("probe", 5),
+             fnv(v, strlen(v)), fnv("probe", 5));
+    mods_probe_cache(status, "");
+    cfg_set("TOTK_MODS_NO_CODE", "H|U|V");
+    cfg_set("TOTK_MODS_DIR", root);
+    cfg_set("TOTK_MODS_ORDER", "");
+    cfg_set("TOTK_MODS_DISABLED", "");
+    mods_rescan();
+    mods_scan();
+    {
+        ModInfo *h = by_name("H"), *im = by_name("I"), *um = by_name("U"), *vm = by_name("V");
+        CHECK(h && im && um && vm, "per-mod scan: four mods");
+        if (h && im && um && vm) {
+            CHECK(h->problem == MOD_OK && h->no_code && EQ(h->code, "subsdk9"),
+                  "its own switch: RomFS + subsdk9 is used without the code module");
+            CHECK(im->problem == MOD_PLUGIN && !im->no_code, "a mod without the switch stays off");
+            CHECK(um->problem == MOD_OK && um->unsupported == 1 && um->note[0],
+                  "its own switch: RomFS + an unsupported patch file is used without that file");
+            CHECK(vm->problem == MOD_EXEFS_UNSUPPORTED, "an unsupported patch file and nothing else stays off");
+            int ii = 0;
+            while (mods_at(ii) != im) ii++;
+            mods_set_no_code(ii, 1);
+            CHECK(EQ(cfg_get("TOTK_MODS_NO_CODE"), "H|I|U|V") && mods_changed(), "the switch writes mods_no_code");
+        }
+    }
+    cfg_set("TOTK_MODS_NO_CODE", "");
+    cfg_set("TOTK_MODS_WITHOUT_CODE", "0");
+    mods_rescan();
+    mods_scan();
+    CHECK(by_name("U") && by_name("U")->problem == MOD_EXEFS_UNSUPPORTED, "without the switch an unsupported file "
+                                                                           "keeps the whole mod off");
+    remove_tree(root);
+    plat_file_mkdir_p(root);
+    for (size_t i = 0; i < 5; i++) put(root, files[i]);
+    mods_probe_cache("", "");
+    cfg_set("TOTK_MODS_DIR", root);
+    cfg_set("TOTK_MODS_ORDER", "");
+    cfg_set("TOTK_MODS_DISABLED", "");
+    cfg_set("TOTK_MODS_WITHOUT_CODE", "1");
+    mods_rescan();
+    mods_scan();
+    ModInfo *e = by_name("E"), *h = by_name("H"), *im = by_name("I");
+    CHECK(e && h && im, "without-code scan: three mods");
+    if (e && h && im) {
+        CHECK(e->problem == MOD_PLUGIN, "mods_without_code: a mod with only a code module stays off");
+        CHECK(h->problem == MOD_OK && EQ(h->code, "subsdk9"), "mods_without_code: RomFS + subsdk9 is used without it");
+        CHECK(im->problem == MOD_OK && EQ(im->code, "main"), "mods_without_code: RomFS + replaced main is used");
+    }
+    cfg_set("TOTK_MODS_WITHOUT_CODE", "0");
+    mods_rescan();
+    mods_scan();
+    h = by_name("H");
+    CHECK(h && h->problem == MOD_PLUGIN && !h->without_code, "without mods_without_code a mod with a code module stays "
+                                                              "off");
+    cfg_set("TOTK_MODS_WITHOUT_CODE", "");
     mods_probe_cache(NULL, NULL);
     remove_tree(root);
 }
@@ -146,6 +397,7 @@ int probe_mods(void) {
     if (back > cut) cut = back;
     if (!cut) return 1;
     strcpy(cut + 1, "mods-probe");
+    mods_probe_plugins(refused_plugins(), "");   // not the build's own plugins.status
     remove_tree(root);
     plat_file_mkdir_p(root);
     static const char *const files[] = {
@@ -214,6 +466,10 @@ int probe_mods(void) {
         CHECK(mods_changed(), "changes seen");
     }
     probe_data(root);
+    probe_without_code(root);
+    probe_code(root);
+    probe_plugins(root);
+    mods_probe_plugins(NULL, NULL);
     printf("mods: %s\n", fails ? "FAIL" : "ok");
     int table = restbl_probe();
     return fails || table ? 1 : 0;

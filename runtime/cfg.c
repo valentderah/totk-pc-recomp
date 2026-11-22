@@ -14,6 +14,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "input_map.h"
 #include "platform/platform.h"
 
 #define PREFIX "TOTK_"
@@ -32,7 +33,7 @@ static int save_ok = 1;                         // the last cfg_save_to wrote (o
 // logged as unknown. A new variable goes here too, or its ini key logs a harmless "unknown key" line, and gets a
 // description in totk.ini.example or docs/settings.md (tests/settings_doc_check.py checks both).
 static const char *const known[] = {
-    "AB", "ABILITY_GUARD", "ADDR_REPORT", "AMIIBO_DIR", "ANISO", "APP_POOL", "ASPECT", "ASPECT_PATCH", "ASSUME_FOCUS", "ASTC", "ASTC_BC", "ASTC_TIME", "ASYNC_PREEMPT", "AUDIO", "AUDIO_CHANNELS", "AUDIO_DEVICE", "AUDIO_OFF", "AUDIO_PREFILL_MS",
+    "AB", "ABILITY_GUARD", "ADDR_REPORT", "AMIIBO_DIR", "ANISO", "APP_POOL", "ASPECT", "ASPECT_PATCH", "ASSUME_FOCUS", "ASTC", "ASTC_BC", "ASTC_TIME", "ASYNC_PREEMPT", "AUDIO", "AUDIO_CHANNELS", "AUDIO_DEVICE", "AUDIO_DRAIN_FIX", "AUDIO_OFF", "AUDIO_PREFILL_MS",
     "BACKGROUND_WINDOW", "BIND_A", "BIND_B", "BIND_DOWN", "BIND_L", "BIND_LCLICK", "BIND_LEFT", "BIND_LSTICK_DOWN", "BIND_LSTICK_LEFT",
     "BIND_LSTICK_RIGHT", "BIND_LSTICK_UP", "BIND_MINUS",
     "BIND_PLUS", "BIND_R", "BIND_RCLICK", "BIND_RIGHT", "BIND_RSTICK_DOWN", "BIND_RSTICK_LEFT", "BIND_RSTICK_RIGHT", "BIND_RSTICK_UP",
@@ -40,69 +41,71 @@ static const char *const known[] = {
     "BIND_INC", "BIND_SKIP", "BIND_STATS", "BIND_UP", "BIND_X", "BIND_Y",
     "BIND_ZL", "BIND_ZR", "BARRIER_MERGE", "BLOCK_VIEWS_3D", "CLIMB_FIX", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA",
     "COLOR_PRESET", "COLOR_SATURATION", "CONTACT_DEBUG", "CONTACT_SHADOWS", "CORE_DIAG", "CRIT", "CRIT_OUT",
-    "DESC_TEMPLATE", "DESWIZZLE", "DEVICE_PROFILE", "DIALOGUE_CLICK", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_SURVEY", "DLAA_TIMES", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET", "DLSS_REACTIVE", "DUALSENSE_BT_CRISP", "DUALSENSE_CRISP", "DUALSENSE_HAPTICS", "DUALSENSE_TRIGGERS", "DUALSENSE_TRIGGERS_MODE", "DUALSENSE_TRIGGER_VIBRATION", "DUALSENSE_VOLUME", "DUMP", "DUMP_BUF", "DUMP_DIR",
-    "DUMP_LOG", "DYNAMIC_RES", "DYN_DELTA", "EXEFS", "FEEDBACK", "FIXED_RES_PATCH", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
-    "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FLUSH_SPAN", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FRAME_QUEUE",
-    "FREEZE_IDLE", "FREE_CORES",
+    "DESC_TEMPLATE", "DESWIZZLE", "DEVICE_PROFILE", "DIALOGUE_CLICK", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_CAM_JITTER", "DLAA_EFFECTS_AFTER", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_SURVEY", "DLAA_TIMES", "DLSS", "DLSS_CHAR_MASK", "DLSS_FIXED_EXPOSURE", "DLSS_PRESET", "DLSS_REACTIVE", "DUALSENSE_BT_CRISP", "DUALSENSE_CRISP", "DUALSENSE_HAPTICS", "DUALSENSE_TRIGGER_VIBRATION", "DUALSENSE_TRIGGERS", "DUALSENSE_TRIGGERS_MODE", "DUALSENSE_VOLUME", "DUMP", "DUMP_BUF", "DUMP_DIR",
+    "DUMP_LOG", "DYNAMIC_RES", "DYN_DELTA", "EXEFS", "FEEDBACK", "FG_DEBUG", "FG_OBJECTS", "FG_SHOT", "FG_SHOT_DIR", "FG_TEST", "FG_TIMES", "FIXED_RES_PATCH", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
+    "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FLUSH_SPAN", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FRAME_GEN", "FRAME_QUEUE", "FREECAM_KEY", "FREECAM_PAD", "FREECAM_PATCH",
+    "FREEZE_IDLE", "FREE_CORES", "FSR3_DEBUG", "FSR3_VIEW", "FSR_SHARPNESS",
     "FULLSCREEN", "FXAA",
     "GAMEPLAY_DISTANCE_SENSITIVITY", "GAMEPLAY_ITEM_AD", "GAMEPLAY_ITEM_SENSITIVITY", "GAMEPLAY_ITEM_WHEEL",
     "GAMEPLAY_MAP_ZOOM", "GAMEPLAY_MAP_ZOOM_SENSITIVITY", "GAMEPLAY_ROTATION_SENSITIVITY", "GAMEPLAY_TWEAKS_ENABLED",
     "GAMEPLAY_ULTRAHAND_C_AXIS", "GAMEPLAY_ULTRAHAND_DISTANCE", "GAMEPLAY_ULTRAHAND_ROTATE", "GAMEPLAY_WEAPON_SENSITIVITY",
     "GAMEPLAY_WEAPON_WHEEL",
     "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "GRASS_RANGE",
-    "GYRO_BIAS_PAD", "GYRO_BIAS_X", "GYRO_BIAS_Y", "GYRO_BIAS_Z", "GYRO_CALIBRATION", "HDR", "HDR_GAME_NITS", "HDR_HUE",
-    "HDR_PEAK_NITS", "HDR_UI_NITS", "HD_RUMBLE", "HD_RUMBLE_BT_CRISP", "HD_RUMBLE_BT_SPEED", "HD_RUMBLE_CRISP", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "KSPIN_US", "LANG", "LIB_PREBUILD",
+    "GYRO_AUTO_BIAS", "GYRO_BIAS_PAD", "GYRO_BIAS_X", "GYRO_BIAS_Y", "GYRO_BIAS_Z", "GYRO_CALIBRATION", "HD_RUMBLE", "HD_RUMBLE_BT_CRISP", "HD_RUMBLE_BT_SPEED", "HD_RUMBLE_CRISP", "HDR", "HDR_GAME_NITS", "HDR_HUE",
+    "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "HUD_WIDTH", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "KSPIN_US", "LANG", "LIB_PREBUILD",
     "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LOCALE", "LOD_GUARD", "LOD_STEADY", "LSTICK_DEADZONE", "MAP_CLICK", "MEMORY", "MEMX", "MENU_LANG", "MENU_TEST", "MENU_FONT_FONTCONFIG",
-    "MEM_RESERVE_MIB", "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "MOUSE_AIM_SCALE", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOVIE_ASPECT", "MOVIE_HOST", "MOVIE_PACE",
+    "MEM_RESERVE_MIB", "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_NO_CODE", "MODS_ORDER", "MODS_REBUILD", "MODS_WITHOUT_CODE", "MOTION", "MOUSE_AIM_SCALE", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOVIE_ASPECT", "MOVIE_HOST", "MOVIE_PACE",
     "MVOBJ_ALL", "MVOBJ_BANKS", "MVOBJ_EQUAL", "MVOBJ_EXACT", "MVOBJ_EXEC", "MVOBJ_NOC4", "MVOBJ_ONLY", "MVOBJ_TIMES", "MVPREV_CHECK", "MVPREV_GROW", "MVPREV_SKIP", "MVPREV_TRUST", "MV_CHECK",
     "MV_SURVEY",
-    "ONE_PER_CORE", "OPERATION_MODE", "OPTREF_GUARD", "OUTPUT_RES", "PAD_LAYOUT", "PASS_CRUMBS", "PATCH_OUTPUT", "PATCH_SCENE", "PCORE", "PCSS", "PCSS_K", "PERF_OVERLAY", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT", "POINTER_IMAGE",
+    "ONE_PER_CORE", "OPERATION_MODE", "OPTREF_GUARD", "OUTPUT_RES", "PAD_LAYOUT", "PASS_CRUMBS", "PATCH_OUTPUT", "PATCH_SCENE", "PCORE", "PCSS", "PCSS_K", "PERF_CENSUS", "PERF_OVERLAY", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT", "PLUGIN_TICK_OFFSET", "PLUGIN_TRACE", "POINTER_IMAGE",
     "PREWARM_XLATE", "PROBE_MOVIE", "PROBE_MOVIE_BENCH", "PROBE_MOVIE_SHOT", "PROFILE", "PROFILE_CHAINS", "PROFILE_DIR", "PROFILE_FRAMES",
-    "PROFILE_MAIN", "PROFILE_RENDER", "PROMPTS", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_ASYNC", "REC_END", "REC_SPIN_US", "REEXEC", "REFLEX",
+    "PROFILE_MAIN", "PROFILE_RENDER", "PROMPTS", "PUSH_SKIP", "PUSH_STAGE", "QUICKLOAD_KEY", "QUICKSAVE", "QUICKSAVE_KEY", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_ASYNC", "REC_END", "REC_SPIN_US", "REEXEC", "REFLEX",
     "RENDER_SCALE", "REPLAY_ASYNC", "REPLAY_CHUNKS", "REPLAY_CHUNK_DRAWS", "REPLAY_SKEW_US", "REPLAY_STATE_CHECK", "REPLAY_WORKERS",
     "REPLAY_CHECK", "REPORT_GUARD", "RESOLVE_CHECK", "RESTART_WAIT", "ROMFS", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
-    "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RSTICK_DEADZONE", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SHADER_CACHE",
-    "SHADER_MEMO", "SHADOW", "SHADOW_DEFER", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHADOW_SNAP", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
+    "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RSTICK_DEADZONE", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SCENE_UPSCALER", "SHADER_CACHE",
+    "SHADER_MEMO", "SHADOW", "SHADOW_DEFER", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHADOW_SNAP", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR", "SHUTTER_FIX",
     "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_US", "STEAM_CRISP", "STEAM_RUMBLE", "STEAM_VOLUME", "STICK_DEADZONE", "STICK_SENS",
     "SWKBD_ANSWER", "SYNC_AHEAD",
-    "SWKBD_TEST", "TEST_OOM", "TEST_PAD", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_BLOCK_MIB", "TEX_HEAP_EXTRA_MB", "TEX_MEMO", "TEX_RELEASED_MIB", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UB_OVERLAY", "UB_OVERLAY_OUT", "UPSCALER", "VB_USED", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64",
-    "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VMA_BLOCK_MIB", "VOLUME", "VOLUME_MUSIC", "VOLUME_SFX", "VOLUME_VOICE", "VRAM_HEADROOM", "VRAM_LIMIT_MIB", "VS_OUTS",
-    "WALK_KEY", "WALK_SCALE", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WINDOW_SIZE", "XBOX_RUMBLE", "XBOX_TRIGGERS", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
+    "SWKBD_TEST", "TEST_OOM", "TEST_PAD", "TEST_PAD_RUMBLE_MS", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_BLOCK_MIB", "TEX_HEAP_EXTRA_MB", "TEX_MEMO", "TEX_RELEASED_MIB", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UB_OVERLAY", "UB_OVERLAY_OUT", "UPSCALER", "VB_USED", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64",
+    "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VMA_BLOCK_MIB", "VOLUME", "VOLUME_MASK_BIAS", "VOLUME_MUSIC", "VOLUME_SFX", "VOLUME_VOICE", "VRAM_HEADROOM", "VRAM_LIMIT_MIB", "VS_OUTS",
+    "WALK_KEY", "WALK_SCALE", "WB_EAGER", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WINDOW_SIZE", "XBOX_RUMBLE", "XBOX_TRIGGERS", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
     "ZSTD_CHECK", "ZSTD_NATIVE",
 };
 
 // The totk.ini section a key cfg_set may write goes to when the file lacks it (totk.ini.example's sections).
 static const struct { const char *key, *section; } sections[] = {
-    {"FPS_LIMIT", "frame rate"}, {"FPS60", "frame rate"}, {"FRAME_QUEUE", "frame rate"},
+    {"FPS_LIMIT", "frame rate"}, {"FPS60", "frame rate"}, {"FRAME_QUEUE", "frame rate"}, {"FRAME_GEN", "frame rate"},
     {"REALTIME", "frame rate"}, {"CLOTH_REALTIME", "frame rate"}, {"HIGHFPS_FIX", "frame rate"},
-    {"CLIMB_FIX", "frame rate"},
+    {"CLIMB_FIX", "frame rate"}, {"AUDIO_DRAIN_FIX", "frame rate"}, {"SHUTTER_FIX", "frame rate"},
     {"FULLSCREEN", "display"}, {"WINDOW_SIZE", "display"}, {"PERF_OVERLAY", "display"}, {"VK_PRESENT", "display"},
     {"GPU_INDEX", "display"}, {"OUTPUT_RES", "display"}, {"RENDER_SCALE", "display"}, {"UPSCALER", "display"},
+    {"HUD_WIDTH", "display"},
     {"SHARPNESS", "display"}, {"DYNAMIC_RES", "display"}, {"ASPECT", "display"}, {"MOVIE_ASPECT", "display"}, {"FOV", "display"}, {"ANISO", "display"},
     {"LOD_STEADY", "display"}, {"COLOR_PRESET", "display"},
     {"COLOR_BRIGHTNESS", "display"}, {"COLOR_CONTRAST", "display"}, {"COLOR_SATURATION", "display"},
     {"COLOR_GAMMA", "display"}, {"HDR", "display"}, {"HDR_PEAK_NITS", "display"}, {"HDR_GAME_NITS", "display"},
     {"HDR_UI_NITS", "display"}, {"HDR_HUE", "display"}, {"SHADOW_RES", "display"},
-    {"DLAA", "display"}, {"DLSS", "display"}, {"DLSS_PRESET", "display"}, {"DLSS_CHAR_MASK", "display"}, {"REFLEX", "display"}, {"FXAA", "display"},
+    {"SCENE_UPSCALER", "display"}, {"DLAA", "display"}, {"DLSS", "display"}, {"FSR_SHARPNESS", "display"}, {"DLSS_PRESET", "display"}, {"DLSS_CHAR_MASK", "display"}, {"DLSS_FIXED_EXPOSURE", "display"}, {"DLAA_EFFECTS_AFTER", "display"}, {"REFLEX", "display"}, {"FXAA", "display"},
     {"DEVICE_PROFILE", "display"}, {"ASSUME_FOCUS", "display"},
     {"DISCORD_RPC", "discord"}, {"DISCORD_APP_ID", "discord"}, {"DISCORD_IMAGE", "discord"},
     {"SHADOW_SCALE", "display"}, {"SHADOW_RANGE", "display"}, {"GRASS_RANGE", "display"}, {"CONTACT_SHADOWS", "display"},
     {"PCSS", "display"},
-    {"MODS_DIR", "mods"}, {"MODS_ORDER", "mods"}, {"MODS_DISABLED", "mods"}, {"MODS_REBUILD", "mods"},
+    {"MODS_DIR", "mods"}, {"MODS_ORDER", "mods"}, {"MODS_DISABLED", "mods"}, {"MODS_NO_CODE", "mods"}, {"MODS_REBUILD", "mods"}, {"MODS_WITHOUT_CODE", "mods"},
     {"TEX_HEAP_EXTRA_MB", "mods"},
     {"MENU_LANG", "language"}, {"MENU_FONT_FONTCONFIG", "language"}, {"LANG", "language"}, {"OPERATION_MODE", "language"},
     {"VOLUME", "audio"}, {"VOLUME_MUSIC", "audio"}, {"VOLUME_SFX", "audio"}, {"VOLUME_VOICE", "audio"}, {"AUDIO_CHANNELS", "audio"},
     {"AUDIO_DEVICE", "audio"},
-    {"MOTION", "input"}, {"GYRO_CALIBRATION", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
-    {"GYRO_BIAS_X", "input"}, {"GYRO_BIAS_Y", "input"}, {"GYRO_BIAS_Z", "input"}, {"GYRO_BIAS_PAD", "input"},
+    {"MOTION", "input"}, {"GYRO_CALIBRATION", "input"}, {"GYRO_AUTO_BIAS", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
     {"HD_RUMBLE", "input"}, {"HD_RUMBLE_BT_SPEED", "input"}, {"HD_RUMBLE_CRISP", "input"}, {"HD_RUMBLE_BT_CRISP", "input"},
-    {"DUALSENSE_HAPTICS", "input"}, {"DUALSENSE_VOLUME", "input"}, {"DUALSENSE_CRISP", "input"}, {"DUALSENSE_BT_CRISP", "input"},
+    {"DUALSENSE_HAPTICS", "input"}, {"DUALSENSE_VOLUME", "input"},
+    {"DUALSENSE_CRISP", "input"}, {"DUALSENSE_BT_CRISP", "input"},
     {"DUALSENSE_TRIGGERS", "input"}, {"DUALSENSE_TRIGGERS_MODE", "input"}, {"DUALSENSE_TRIGGER_VIBRATION", "input"},
     {"XBOX_RUMBLE", "input"}, {"XBOX_TRIGGERS", "input"},
     {"STEAM_RUMBLE", "input"}, {"STEAM_VOLUME", "input"}, {"STEAM_CRISP", "input"},
+    {"GYRO_BIAS_X", "input"}, {"GYRO_BIAS_Y", "input"}, {"GYRO_BIAS_Z", "input"}, {"GYRO_BIAS_PAD", "input"},
     {"PAD_LAYOUT", "input"}, {"PROMPTS", "input"}, {"STICK_DEADZONE", "input"}, {"LSTICK_DEADZONE", "input"}, {"RSTICK_DEADZONE", "input"},
     {"STICK_SENS", "input"},
-    {"MENU_CURSOR", "input"}, {"MAP_CLICK", "input"}, {"DIALOGUE_CLICK", "input"}, {"POINTER_IMAGE", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"MOUSE_AIM_SCALE", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"INPUT_RECORD", "input"},
+    {"MENU_CURSOR", "input"}, {"MAP_CLICK", "input"}, {"DIALOGUE_CLICK", "input"}, {"POINTER_IMAGE", "input"}, {"QUICKSAVE", "input"}, {"QUICKSAVE_KEY", "input"}, {"QUICKLOAD_KEY", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"MOUSE_AIM_SCALE", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"FREECAM_PATCH", "input"}, {"FREECAM_PAD", "input"}, {"FREECAM_KEY", "input"}, {"INPUT_RECORD", "input"},
     {"BIND_A", "input"}, {"BIND_B", "input"}, {"BIND_X", "input"}, {"BIND_Y", "input"}, {"BIND_LCLICK", "input"},
     {"BIND_RCLICK", "input"}, {"BIND_L", "input"}, {"BIND_R", "input"}, {"BIND_ZL", "input"}, {"BIND_ZR", "input"},
     {"BIND_PLUS", "input"}, {"BIND_MINUS", "input"}, {"BIND_LEFT", "input"}, {"BIND_UP", "input"},
@@ -119,8 +122,8 @@ static const struct { const char *key, *section; } sections[] = {
     {"VK_DYN_VERTEX", "performance"}, {"VK_DYN_A2C", "performance"}, {"VK_SUBGROUP_PIN", "performance"},
     {"OPTREF_GUARD", "performance"}, {"ABILITY_GUARD", "performance"}, {"REPORT_GUARD", "performance"},
     {"TRACE", "diagnostics"}, {"FLIGHT", "diagnostics"}, {"PASS_CRUMBS", "diagnostics"}, {"ADDR_REPORT", "diagnostics"}, {"FLIGHT_SPIKE_MS", "diagnostics"},
-    {"WB_FENCE_LIMIT", "diagnostics"}, {"WB_MERGE", "diagnostics"}, {"WB_EXACT", "diagnostics"},
-    {"MV_SURVEY", "diagnostics"},
+    {"WB_FENCE_LIMIT", "diagnostics"}, {"WB_MERGE", "diagnostics"}, {"WB_EXACT", "diagnostics"}, {"WB_EAGER", "diagnostics"},
+    {"MV_SURVEY", "diagnostics"}, {"PLUGIN_TRACE", "diagnostics"},
     {"GAMEPLAY_TWEAKS_ENABLED", "gameplay tweaks"}, {"GAMEPLAY_ULTRAHAND_ROTATE", "gameplay tweaks"},
     {"GAMEPLAY_ULTRAHAND_C_AXIS", "gameplay tweaks"}, {"GAMEPLAY_ULTRAHAND_DISTANCE", "gameplay tweaks"},
     {"GAMEPLAY_ITEM_WHEEL", "gameplay tweaks"}, {"GAMEPLAY_ITEM_AD", "gameplay tweaks"},
@@ -141,10 +144,13 @@ static const CfgMeta metas[] = {
     {"VK_PRESENT", "mailbox", "mailbox|fifo|immediate", LIVE}, {"GPU_INDEX", "", NULL, RESTART},
     {"PERF_OVERLAY", "off", "off|fps|full", LIVE},
     {"OUTPUT_RES", "1920x1080", NULL, RESTART}, {"RENDER_SCALE", "game", "game|50|67|75|100|125|150|200", RESTART},
+    {"HUD_WIDTH", "full", "full|21:9|16:9", RESTART},
     {"DYNAMIC_RES", "1", "0|1", LIVE},   // resolution.c res_dynres_live
     {"UPSCALER", "fsr", "fsr|bilinear", LIVE}, {"SHARPNESS", "80", "0..100", LIVE},
-    {"DLAA", "0", "0|1", RESTART}, {"DLSS", "dlaa", "dlaa|quality|balanced|performance|ultra_performance", LIVE},
-    {"DLSS_PRESET", "default", "default|k|j", LIVE},
+    {"SCENE_UPSCALER", "off", "off|dlss|fsr3", RESTART}, {"DLAA", "0", "0|1", RESTART},
+    {"DLSS", "dlaa", "dlaa|quality|balanced|performance|ultra_performance", LIVE},
+    {"FSR_SHARPNESS", "80", "0..100", LIVE},   // vk_dlaa.c fsr_evaluate
+    {"DLSS_PRESET", "default", "default|k|j", LIVE}, {"DLSS_FIXED_EXPOSURE", "0", "0|1", LIVE}, {"DLAA_EFFECTS_AFTER", "0", "0|1", LIVE},
     {"DLSS_CHAR_MASK", "65", "0|35|65|100", LIVE}, {"REFLEX", "off", "off|on|boost", RESTART}, {"FXAA", "1", "0|1", LIVE},
     {"LOD_STEADY", "0", "0|1", RESTART},   // sets steady
     {"ASPECT", "fit", "fit|stretch", LIVE}, {"MOVIE_ASPECT", "keep", "keep|stretch", LIVE}, {"FOV", "100", "70..140", LIVE},
@@ -163,16 +169,19 @@ static const CfgMeta metas[] = {
     {"PCSS", "0", "0..200", RESTART},
     // Game
     {"FPS_LIMIT", "60", "30|40|45|60|90|120|144|display", LIVE}, {"FPS60", "1", "0|1", LIVE}, {"FRAME_QUEUE", "0", "0|1", LIVE},
+    {"FRAME_GEN", "off", "off|fsr3", LIVE},   // the generator; vk_fg.cpp vk_fg_engine maps it
     {"REALTIME", "1", "0|1", RESTART}, {"CLOTH_REALTIME", "1", "0|1", RESTART},
     {"MODS_REBUILD", "auto", "auto|off", RESTART},
-    {"HIGHFPS_FIX", "1", "0|1", RESTART}, {"CLIMB_FIX", "1", "0|1", RESTART},
+    {"MODS_WITHOUT_CODE", "0", "0|1", RESTART},   // 1: a mod is used without the code module it cannot run (mods.c)
+    {"HIGHFPS_FIX", "1", "0|1", RESTART}, {"CLIMB_FIX", "1", "0|1", RESTART}, {"AUDIO_DRAIN_FIX", "1", "0|1", RESTART},
+    {"SHUTTER_FIX", "1", "0|1", RESTART},
     {"LANG", "", "ja|en-US|fr|de|it|es|zh-CN|ko|nl|pt|ru|zh-TW|en-GB|fr-CA|es-419|zh-Hans|zh-Hant|pt-BR", RESTART},
     {"OPERATION_MODE", "docked", "docked|handheld", RESTART},
     {"ASSUME_FOCUS", "1", "0|1", LIVE},   // read on every focus change (ov_system.c)
     // Sound, Controls, Menu
     {"VOLUME", "100", "0..100", LIVE}, {"VOLUME_MUSIC", "100", "0..100", LIVE}, {"VOLUME_SFX", "100", "0..100", LIVE}, {"VOLUME_VOICE", "100", "0..100", LIVE}, {"AUDIO_CHANNELS", "stereo", "auto|stereo|5.1", RESTART},
     {"AUDIO_DEVICE", "", NULL, LIVE},   // audio_mixer.c output_worker: a device name, empty for the system default
-    {"MOTION", "1", "0|1", LIVE}, {"GYRO_CALIBRATION", "1", "0|1", LIVE},
+    {"MOTION", "1", "0|1", LIVE}, {"GYRO_CALIBRATION", "1", "0|1", LIVE}, {"GYRO_AUTO_BIAS", "0", "0|1", LIVE},
     {"RUMBLE_STRENGTH", "130", "0..300", LIVE}, {"RUMBLE_CURVE", "0.6", "0.2..1.5", LIVE},
     // Written by the Calibrate gyro row (motion_fusion.c save_bias), not by hand; read by input.c pad_bias_select when a
     // controller connects and gyro_bias_pad names it.
@@ -181,15 +190,15 @@ static const CfgMeta metas[] = {
     {"RUMBLE_TRIGGERS", "0", "0|1", LIVE},
     {"HD_RUMBLE", "1", "0|1", LIVE}, {"HD_RUMBLE_BT_SPEED", "fast", "stable|balanced|fast", LIVE},
     {"HD_RUMBLE_CRISP", "1", "0|1", LIVE}, {"HD_RUMBLE_BT_CRISP", "1", "0|1", LIVE},
-    {"DUALSENSE_HAPTICS", "1", "0|1", LIVE}, {"DUALSENSE_VOLUME", "100", "10..100", LIVE},
+    {"DUALSENSE_HAPTICS", "hd", "off|standard|hd", LIVE},
+    {"DUALSENSE_VOLUME", "100", "10..100", LIVE},
     {"DUALSENSE_CRISP", "1", "0|1", LIVE}, {"DUALSENSE_BT_CRISP", "0", "0|1", LIVE},
     {"DUALSENSE_TRIGGERS", "0", "0..8", LIVE}, {"DUALSENSE_TRIGGERS_MODE", "r2", "r2|both|l2", LIVE},
-    {"DUALSENSE_TRIGGER_VIBRATION", "0", "0|1", LIVE},   // input.c triggers_update
+    {"DUALSENSE_TRIGGER_VIBRATION", "0", "0|1", LIVE},
     {"XBOX_RUMBLE", "1", "0|1", LIVE}, {"XBOX_TRIGGERS", "1", "0|1", LIVE},
-    {"STEAM_RUMBLE", "1", "0|1", LIVE}, {"STEAM_VOLUME", "100", "10..100", LIVE},
-    {"STEAM_CRISP", "1", "0|1", LIVE},
+    {"STEAM_RUMBLE", "1", "0|1", LIVE}, {"STEAM_VOLUME", "100", "10..100", LIVE}, {"STEAM_CRISP", "1", "0|1", LIVE},
     {"PAD_LAYOUT", "auto", "auto|nintendo|xbox", LIVE},
-    {"PROMPTS", "nintendo", "nintendo|xbox|pc", RESTART},
+    {"PROMPTS", "nintendo", "nintendo|xbox|playstation|pc", RESTART},
     {"STICK_DEADZONE", "8", "0..50", LIVE}, {"STICK_SENS", "1", "0.1..3", RESTART},
     {"LSTICK_DEADZONE", "", "0..50", LIVE}, {"RSTICK_DEADZONE", "", "0..50", LIVE},
     {"MOUSE_MODE", "direct", "stick|direct", LIVE},
@@ -197,7 +206,11 @@ static const CfgMeta metas[] = {
     {"MAP_CLICK", "0", "0|1", LIVE},   // input.c: the left mouse button is A on the Purah Pad's map
     {"DIALOGUE_CLICK", "0", "0|1", LIVE},   // menu_cursor.c: in a dialogue box left click is B, right click A
     {"POINTER_IMAGE", "0", "0|1", LIVE},    // input_win.c / input_sdl.c: the game window's own pointer (cursor_art.c)
+    {"QUICKSAVE", "0", "0|1", LIVE},        // quicksave.c: one key saves (an autosave), another loads it
+    {"QUICKSAVE_KEY", "f6", NULL, LIVE}, {"QUICKLOAD_KEY", "f7", NULL, LIVE},   // Half-Life's keys; a key name or none
     {"WALK_KEY", "none", NULL, LIVE}, {"WALK_SCALE", "0.51", "0.2..0.9", LIVE},
+    // freecam.c: the patch set of its hook (off: the game's camera code as shipped), then the combo and key that step it
+    {"FREECAM_PATCH", "0", "0|1", RESTART}, {"FREECAM_PAD", "none", NULL, LIVE}, {"FREECAM_KEY", "none", NULL, LIVE},
     // Gameplay Tweaks
     {"GAMEPLAY_TWEAKS_ENABLED", "0", "0|1", LIVE},
     {"GAMEPLAY_ULTRAHAND_ROTATE", "1", "0|1", LIVE}, {"GAMEPLAY_ULTRAHAND_C_AXIS", "1", "0|1", LIVE},
@@ -220,12 +233,12 @@ static const CfgMeta metas[] = {
     {"REPLAY_WORKERS", "0", "0..16", RESTART}, {"REPLAY_CHUNKS", "0", "0..64", RESTART},
     {"REPLAY_CHUNK_DRAWS", "128", "1..100000", RESTART}, {"REPLAY_STATE_CHECK", "0", "0|1", RESTART},
     {"REPLAY_SKEW_US", "0", "0..100000", RESTART},
-    {"SYNC_AHEAD", "0", "0|1", RESTART}, {"SHADOW_DEFER", "1", "0|1", RESTART},
+    {"SYNC_AHEAD", "0", "0|1|check", RESTART}, {"SHADOW_DEFER", "1", "0|1", RESTART},
     {"FREE_CORES", "0", "0|1", RESTART}, {"TIMER_1MS", "1", "0|1", RESTART},
     // shaders and pipelines
     {"PIPE_WAIT", "default", "default|draw", RESTART}, {"PIPE_SKIP", "fullscreen", "strict|any|fullscreen", RESTART},
-    {"LIB_PREBUILD", "1", "0|1", RESTART}, {"LIB_PREBUILD_THREADS", "", "1..64", RESTART},
-    {"PIPE_PREBUILD", "1", "0|1", RESTART}, {"PREWARM_XLATE", "", "1..64", RESTART}, {"GPL", "1", "0|1", RESTART}, {"BARRIER_MERGE", "0", "0|1", RESTART},
+    {"BARRIER_MERGE", "0", "0|1", RESTART}, {"LIB_PREBUILD", "1", "0|1", RESTART}, {"LIB_PREBUILD_THREADS", "", "1..64", RESTART},
+    {"PIPE_PREBUILD", "1", "0|1", RESTART}, {"PREWARM_XLATE", "", "1..64", RESTART}, {"GPL", "1", "0|1", RESTART},
     // textures and memory
     {"ASTC", "auto", "auto|gpu|native|cpu", RESTART}, {"MEMORY", "auto", "auto|import|mirror|verify", RESTART},
     {"TEX_ALIAS", "1", "0|1", RESTART}, {"TEX_VRAM_PRESSURE", "90", "0..100", RESTART},
@@ -245,8 +258,10 @@ static const CfgMeta metas[] = {
     // diagnostics
     {"TRACE", "", NULL, RESTART}, {"FLIGHT", "0", "0|1", RESTART}, {"FLIGHT_SPIKE_MS", "100", "0..60000", RESTART},
     {"WB_FENCE_LIMIT", "65536", "0..1073741824", RESTART}, {"WB_MERGE", "1", "0|1", RESTART}, {"WB_EXACT", "1", "0|1", RESTART},
+    {"WB_EAGER", "1", "0|1|check", RESTART},   // vk_texture.c: part of sync_ahead; 0 and check for comparing
     {"PASS_CRUMBS", "", "0|1", RESTART},   // vk_crumbs.c pass marks; unset: VK_AMD_buffer_marker only
-    {"ADDR_REPORT", "0", "0|1", RESTART},   // vk_device.c device_address_binding_report
+    {"ADDR_REPORT", "0", "0|1", RESTART},   // vk_device.c GPU address map for device faults
+    {"PLUGIN_TRACE", "0", "0|1", RESTART},   // plugin_init.c: the first call of each mod plugin hook entry
     {"INPUT_RECORD", "", NULL, RESTART},
 };
 
@@ -399,8 +414,8 @@ static const char *raw_get(const char *name) {
 // picture between black bars. The sizes are the ones the installer lays the HUD out for (installer/steps.py
 // ASPECT_SIZES, ui/menu.cpp row_output_res): of the display's shape within 1%, the smallest at least 1080 high that fits
 // the display, else the largest that fits. A 16:9 display, an unknown one or one of another shape keeps 1920x1080.
-// Xbox and keyboard prompts need their folder for that size's shape too (romfs-patches-xbox-<w>x<h>, -xbox-label-,
-// -pc-, written by installer/steps.py Shapes for the style totk.ini selects and the connected displays' shapes): they
+// Xbox, PlayStation and keyboard prompts need their folder for that size's shape too (romfs-patches-<style>-<w>x<h>,
+// written by installer/steps.py Shapes for the style totk.ini selects and the connected displays' shapes): they
 // keep 1920x1080 when it is missing, as in a source build without make_romfs_patches.py --prompts <style> --aspect or
 // after a switch of prompts in the menu, where a default of another shape would trade the prompts the player chose for
 // the Switch ones.
@@ -430,22 +445,21 @@ int cfg_shape_size(unsigned w, unsigned h, unsigned out[2]) {
 }
 
 static char screen_res[16];   // set once by cfg_init, "" for none
-// romfs-patches-xbox-, romfs-patches-xbox-label- and romfs-patches-pc-<screen_res> have a manifest (set once by
-// cfg_init)
-static const char *const screen_folders[3] = {"romfs-patches-xbox", "romfs-patches-xbox-label", "romfs-patches-pc"};
-static int screen_prompts[3];
+// Which pad and keyboard prompts' folders have a manifest at screen_res's shape (<folder>-<screen_res>; set once by
+// cfg_init): the folders input_map.c input_prompts_folder names
+static const char *const screen_folders[5] = {"romfs-patches-xbox", "romfs-patches-xbox-label",
+                                              "romfs-patches-playstation", "romfs-patches-playstation-xbox",
+                                              "romfs-patches-pc"};
+static int screen_prompts[5];
 
-// Whether the prompts in effect have their folder at screen_res. The same picks as input_map.c input_prompts_pick and
-// input_prompts_folder: an unknown or empty value is the Nintendo prompts, an unset one Xbox while the pad layout is
-// "xbox_prompts"; the Xbox prompts take romfs-patches-xbox with the Nintendo pad layout (or "xbox_prompts") and
-// romfs-patches-xbox-label with any other.
+// Whether the prompts in effect have their folder at screen_res: the folder input_map.c input_prompts_pick and
+// input_prompts_folder pick at start. The game's own prompts need none.
 static int shape_keeps_prompts(void) {
-    const char *p = raw_get(PREFIX "PROMPTS"), *l = raw_get(PREFIX "PAD_LAYOUT");
-    if (p && *p && !strcasecmp(p, "pc")) return screen_prompts[2];
-    int xbox = p && *p ? !strcasecmp(p, "xbox") : l && !strcasecmp(l, "xbox_prompts");
-    if (!xbox) return 1;
-    int by_position = l && (!strcasecmp(l, "nintendo") || !strcasecmp(l, "xbox_prompts"));
-    return screen_prompts[by_position ? 0 : 1];
+    const char *layout = raw_get(PREFIX "PAD_LAYOUT");
+    const char *want = input_prompts_folder(input_prompts_pick(raw_get(PREFIX "PROMPTS"), layout), layout);
+    for (int i = 0; want && i < 5; i++)
+        if (!strcmp(screen_folders[i], want)) return screen_prompts[i];
+    return 1;
 }
 
 static void screen_default(void) {
@@ -463,11 +477,18 @@ static void screen_default(void) {
     if (best < 0) best = fit;
     if (best < 0) return;
     snprintf(screen_res, sizeof screen_res, "%ux%u", SHAPED[best][0], SHAPED[best][1]);
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < 5; i++)
         screen_prompts[i] = romfs_shaped_prompts_ready(screen_folders[i], SHAPED[best][0], SHAPED[best][1]);
     if (!raw_get(PREFIX "OUTPUT_RES") && shape_keeps_prompts())
         rt_log("cfg: the display is %dx%d: output_res defaults to %s, its shape (totk.ini output_res sets another)", sw,
                sh, screen_res);
+}
+
+int cfg_screen_size(unsigned out[2]) {
+    unsigned w = 0, h = 0;
+    if (raw_get(PREFIX "OUTPUT_RES") || !screen_res[0] || sscanf(screen_res, "%ux%u", &w, &h) != 2) return 0;
+    out[0] = w, out[1] = h;
+    return 1;
 }
 
 const char *cfg_get(const char *name) {
@@ -854,4 +875,12 @@ void cfg_init(void) {
     if (profile_of())
         rt_log("cfg: device profile Steam Deck: defaults for the keys totk.ini does not set (TOTK_DEVICE_PROFILE=desktop "
                "turns it off)");
+}
+
+// scene_upscaler, or for a totk.ini that predates it the dlaa switch it replaced: dlaa = 1 is DLSS, anything else off.
+// FSR 3.1 is never the answer for a player who did not pick it. An unknown value is off.
+const char *cfg_scene_upscaler(void) {
+    if (!cfg_is_set("TOTK_SCENE_UPSCALER")) return cfg_bool("TOTK_DLAA") ? "dlss" : "off";
+    const char *v = cfg_value("TOTK_SCENE_UPSCALER");
+    return !strcmp(v, "dlss") ? "dlss" : !strcmp(v, "fsr3") ? "fsr3" : "off";
 }
