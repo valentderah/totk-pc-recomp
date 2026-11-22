@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
@@ -103,9 +104,43 @@ class PackageTest(unittest.TestCase):
             with self.subTest(out=out):
                 self.out = out
                 result = self.run_package(expected_returncode=1)
-                self.assertIn('--out must not be a patch source or inside one', result.stderr)
+                self.assertIn('--out must not copy a source folder into itself', result.stderr)
                 self.assertEqual({p.relative_to(folder): p.read_bytes() for p in folder.rglob('*') if p.is_file()},
                                  before)
+
+    def test_every_tree_source_is_checked_before_any_copy(self):
+        cache = self.build / 'shader-cache'
+        self.put(cache / 'entry', b'synthetic cache')
+        for source in (self.extracted / 'exefs', self.fonts, cache):
+            for out in (source, source / 'portable', source.parent):
+                with self.subTest(source=source, out=out):
+                    command = ['package_build.py', '--build', str(self.build), '--extracted', str(self.extracted),
+                               '--xlate', str(self.xlate), '--out', str(out)]
+                    # Stop an unfixed run before it can recursively copy a fixture into itself.
+                    with patch.object(sys, 'argv', command), \
+                         patch.object(package, 'copy', side_effect=AssertionError('copy ran before overlap check')):
+                        with self.assertRaisesRegex(SystemExit, '--out.*(?:source|build dir)'):
+                            package.main()
+
+    def test_cli_rejects_output_inside_each_tree_source_without_writing(self):
+        cache = self.build / 'shader-cache'
+        self.put(cache / 'entry', b'synthetic cache')
+        for source in (self.extracted / 'exefs', self.fonts, cache):
+            with self.subTest(source=source):
+                before = {p.relative_to(source): p.read_bytes() for p in source.rglob('*') if p.is_file()}
+                self.out = source / 'portable'
+                result = self.run_package(expected_returncode=1)
+                self.assertIn('--out must not copy a source folder into itself', result.stderr)
+                self.assertFalse(self.out.exists())
+                self.assertEqual({p.relative_to(source): p.read_bytes() for p in source.rglob('*') if p.is_file()}, before)
+
+    def test_output_in_an_excluded_cache_is_allowed(self):
+        cache = self.build / 'shader-cache'
+        self.put(cache / 'entry', b'synthetic cache')
+        self.out = cache / 'portable'
+        self.run_package('--no-shader-cache')
+        self.assertTrue((self.out / 'exefs' / 'module').is_file())
+        self.assertFalse((self.out / 'shader-cache').exists())
 
 
 if __name__ == '__main__':

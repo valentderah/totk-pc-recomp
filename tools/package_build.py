@@ -80,8 +80,13 @@ def main():
     # folder. Snapshot before creating out so the package cannot become another source during this run.
     overlays = [build / 'romfs-patches'] + sorted(p for p in build.glob('romfs-patches-*')
                  if p.is_dir() and '.part-' not in p.name and (p / 'manifest.tsv').is_file())
-    if any(out.is_relative_to(p.resolve()) for p in overlays):
-        sys.exit('package_build: --out must not be a patch source or inside one')
+    trees = overlays + [exefs]
+    if fonts.is_dir():   # needed only for the languages that use shared fonts
+        trees.append(fonts)
+    if not a.no_shader_cache and (build / 'shader-cache').is_dir():
+        trees.append(build / 'shader-cache')
+    if any((out / p.name).resolve().is_relative_to(p.resolve()) for p in trees):
+        sys.exit('package_build: --out must not copy a source folder into itself')
     if not str(out).startswith(str(ROOT / 'build')) and not str(out).startswith(str(ROOT / 'generated')):
         print('package_build: warning: the folder holds game code; keep it out of the repository')
 
@@ -98,12 +103,7 @@ def main():
             copy(build / f, out / f)
         else:
             print(f'package_build: {f} not in {build}, skipped')
-    n = sum(copy_tree(folder, out / folder.name) for folder in overlays)
-    n += copy_tree(exefs, out / 'exefs')
-    if fonts.is_dir():   # the installer and source build need these only for the languages that use shared fonts
-        n += copy_tree(fonts, out / 'shared-fonts')
-    if not a.no_shader_cache and (build / 'shader-cache').is_dir():
-        n += copy_tree(build / 'shader-cache', out / 'shader-cache')
+    n = sum(copy_tree(folder, out / folder.name) for folder in trees)
     (out / 'profile').mkdir(exist_ok=True)
     if a.with_romfs:
         (out / 'romfs').mkdir(exist_ok=True)
