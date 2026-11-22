@@ -163,6 +163,23 @@ class UnpackTest(unittest.TestCase):
             ncz.unpack(self.padded_nsz((-1,), truncate=True), self.dir / 'out.nsp')
         self.assertFalse((self.dir / 'out.nsp').exists())
 
+    def test_block_of_the_wrong_size_is_a_damaged_file(self):
+        """The installer turns DamagedFile into check.input_damaged, which asks for a fresh copy of the file."""
+        def short(data):
+            head = ncz.HEADER + 16 + 0x40 * len(SECTIONS)
+            count = struct.unpack_from('<I', data, head + 12)[0]
+            lengths = struct.unpack_from(f'<{count}I', data, head + 24)
+            start = head + 24 + 4 * count + lengths[0]
+            frame = zstd.compress(self.body[1 << 14:(2 << 14) - 100])   # block 1 is zeros, stored compressed
+            data[start:start + lengths[1]] = frame
+            struct.pack_into('<I', data, head + 24 + 4, len(frame))
+            return data
+
+        with self.assertRaises(ncz.DamagedFile) as e:
+            ncz.unpack(self.nsz(blocks=True, damage=short), self.dir / 'out.nsp')
+        self.assertIn('decompressed size', e.exception.detail)
+        self.assertFalse((self.dir / 'out.nsp').exists())
+
     def test_plain_nsp_is_not_compressed(self):
         path = self.dir / 'plain.nsp'
         path.write_bytes(self.expected())

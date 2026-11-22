@@ -35,6 +35,10 @@ class DamagedFile(ValueError):
         super().__init__(f'{self.path} is damaged or incomplete ({detail})')
 
 
+class BlockSizeError(ValueError):
+    """An NCZBLOCK block whose data decompresses to more or fewer bytes than its header declares."""
+
+
 def compressed(path):
     """('nsz' or 'xcz', entries) for a game file holding NCZ files, else None. Raises ValueError for a file that is
     neither an NSP nor an XCI."""
@@ -135,7 +139,8 @@ def blocks(f, pos, end, total):
             # ZstdFile also preserves support for concatenated frames within a block.
             with zstd.ZstdFile(io.BytesIO(data)) as z:
                 data = z.read(plain + 1)
-            require(len(data) == plain, 'NCZ block decompressed size does not match its header')
+            if len(data) != plain:
+                raise BlockSizeError(f'NCZ block decompressed size does not match its header (block {i})')
         yield data
 
 
@@ -184,7 +189,9 @@ def unpack_ncz(f, start, end, out, name, source, progress):
                 progress(n)
             if at == total:
                 break
-    except (zstd.ZstdError, EOFError) as e:   # EOFError: the stream ends before its end-of-frame marker
+    # EOFError: the stream ends before its end-of-frame marker. BlockSizeError: a block's data is damaged; like the
+    # other two it is a damaged file, so the installer asks for a fresh copy (installer/steps.py, Check.unpack).
+    except (zstd.ZstdError, EOFError, BlockSizeError) as e:
         raise DamagedFile(source, f'{name}: {e}') from None
     if at != total or pending:
         raise DamagedFile(source, f'{name}: {at - HEADER:,} of {total - HEADER:,} bytes')
