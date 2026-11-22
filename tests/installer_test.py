@@ -906,6 +906,35 @@ class ShapesTest(unittest.TestCase):
                          (['2560x1080', '3440x1440', '1280x800', '1920x1280'], 'pc'))
         self.assertEqual(screens.wanted(self.dest / 'none', [(2560, 1440)]), ([], None))
 
+    def test_layout_settings_keep_the_last_nonempty_value(self):
+        for empty in ('', '   ', '""'):
+            with self.subTest(empty=empty):
+                text = f'prompts = xbox\nTOTK_PROMPTS = "pc"\nprompts = {empty}\n'
+                self.assertEqual(screens.ini_value(text, 'prompts'), 'pc')
+                self.assertEqual(screens.prompts_style(text), 'pc')
+        self.assertEqual(screens.ini_value('prompts = pc\n# prompts = xbox\n; prompts = xbox', 'prompts'), 'pc')
+        # cfg.c trims the whole value and removes matching quotes; it does not strip inline comments.
+        self.assertEqual(screens.ini_value('prompts = pc # comment', 'prompts'), 'pc # comment')
+
+    def test_quoted_pad_layout_selects_the_matching_prompts(self):
+        self.assertEqual(screens.prompts_style('TOTK_PAD_LAYOUT = "nintendo"\nprompts = "PS"'), 'playstation')
+        self.assertEqual(screens.prompts_style('pad_layout = "xbox_prompts"'), 'xbox')
+
+    def test_shapes_generate_the_layouts_selected_by_quoted_or_repeated_settings(self):
+        screens.displays = lambda: []
+        (self.dest / 'romfs-patches-pc').mkdir()
+        (self.dest / 'romfs-patches-pc' / 'manifest.tsv').write_text('#\n')
+        for trailing in ('', '\noutput_res =\nTOTK_PROMPTS = ""\nhud_width =   \n'):
+            with self.subTest(trailing=trailing):
+                (self.dest / 'totk.ini').write_text('[display]\nTOTK_OUTPUT_RES = "3840x1080"\n'
+                                                  'hud_width = "16:9"\n[input]\nprompts = "pc"\n' + trailing)
+                ctx = SimpleNamespace(**vars(self.ctx))
+                record = steps.Shapes().run(ctx)
+                self.assertEqual(record['folders'], ['romfs-patches-3840x1080', 'romfs-patches-pc-3840x1080',
+                                                     'romfs-patches-3840x1080-hud16x9',
+                                                     'romfs-patches-pc-3840x1080-hud16x9'])
+                self.assertTrue(steps.Shapes().current(ctx, record))
+
     def test_run_writes_only_the_wanted_folders(self):
         screens.displays = lambda: [(2560, 1080)]
         (self.dest / 'totk.ini').write_text('pad_layout = nintendo\nprompts = xbox\n')
