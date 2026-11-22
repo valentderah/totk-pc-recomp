@@ -721,10 +721,16 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
 
 static int (*fault_hook)(uint64_t addr);
 
-// A write access violation (ExceptionInformation[0] == 1) goes to the hook; registered first, before the crash handler.
+static ULONG_PTR fault_kinds = 1;   // highest ExceptionInformation[0] the hook takes: 1 writes, 0 also reads
+
+// A write access violation (ExceptionInformation[0] == 1) goes to the hook, and a read (0) too once
+// plat_mem_fault_reads asked for it; registered first, before the crash handler. Writes thaw frozen regions; with
+// TOTK_HEAP_LAZY reads and writes both commit heap pages on first use (memory.c, heap_fault). An execute fault (8) is
+// never the hook's.
 static LONG CALLBACK fault_veh(EXCEPTION_POINTERS *ep) {
     const EXCEPTION_RECORD *er = ep->ExceptionRecord;
-    if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2 || er->ExceptionInformation[0] != 1)
+    ULONG_PTR kind = er->NumberParameters >= 2 ? er->ExceptionInformation[0] : 8;
+    if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || kind > 1 || (kind == 0 && fault_kinds != 0))
         return EXCEPTION_CONTINUE_SEARCH;
     return fault_hook((uint64_t)er->ExceptionInformation[1]) ? EXCEPTION_CONTINUE_EXECUTION : EXCEPTION_CONTINUE_SEARCH;
 }
@@ -733,6 +739,8 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
     fault_hook = fn;
     AddVectoredExceptionHandler(1, fault_veh);
 }
+
+void plat_mem_fault_reads(int on) { fault_kinds = on ? 0 : 1; }
 
 static void (*crash_fn)(const PlatCrash *c);
 

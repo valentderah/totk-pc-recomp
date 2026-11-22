@@ -31,7 +31,8 @@ RtStats rt_stats(void) {
     return (RtStats){__atomic_load_n(&g_svcs, __ATOMIC_RELAXED), kern_threads_created(), hostfn_calls()};
 }
 
-static int readable(uint64_t a, uint64_t n) { return plat_mem_readable(a, n); }
+// The heap by the layout (its pages may not be committed before first use), anything else by the OS.
+static int readable(uint64_t a, uint64_t n) { return mem_guest_readable(a, n); }
 
 void kern_backtrace(const Cpu *c) {
     char d[160];

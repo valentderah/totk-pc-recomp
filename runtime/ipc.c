@@ -66,7 +66,8 @@ void ipc_handle_closed(int kind, void *obj) {
 }
 
 // ---- helpers for services
-static int readable(uint64_t a, uint64_t n) { return plat_mem_readable(a, n); }
+// The heap by the layout (its pages may not be committed before first use), anything else by the OS.
+static int readable(uint64_t a, uint64_t n) { return mem_guest_readable(a, n); }
 
 void ipc_backtrace(void) {
     const Cpu *c = t_req;
