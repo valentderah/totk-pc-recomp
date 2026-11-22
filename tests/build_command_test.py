@@ -27,7 +27,7 @@ class CommandTest(unittest.TestCase):
         self.probe.write_text('import json, pathlib, sys\n'
                               'pathlib.Path(sys.argv[1]).write_text(json.dumps(sys.argv[2:]))\n')
 
-    def ninja(self, target, command, posix=False):
+    def ninja(self, target, command, posix=False, bindings=''):
         if posix:
             # Ninja on Unix uses sh -c. An expanded response file lets Windows exercise those same shell bytes too.
             shell = subprocess.list2cmdline([SHELL]) if os.name == 'nt' else shlex.quote(SHELL)
@@ -35,7 +35,7 @@ class CommandTest(unittest.TestCase):
                     f'  rspfile = $out.rsp\n  rspfile_content = {command}\n')
         else:
             text = f'rule probe\n  command = {command}\n'
-        (self.folder / 'build.ninja').write_text(text + f'build {target}: probe\n', encoding='utf-8')
+        (self.folder / 'build.ninja').write_text(bindings + text + f'build {target}: probe\n', encoding='utf-8')
         env = dict(os.environ, BUILD_QUOTE_TEST='expanded', MSYS2_ARG_CONV_EXCL='*')
         run = subprocess.run([NINJA, '-f', 'build.ninja', target], cwd=self.folder, env=env,
                              capture_output=True, text=True, timeout=30)
@@ -79,6 +79,33 @@ class CommandTest(unittest.TestCase):
         self.ninja(target, command, posix=True)
         run = subprocess.run([str(self.folder / target)], timeout=10)
         self.assertEqual(run.returncode, 0)
+
+    @unittest.skipUnless(SHELL and (os.environ.get('CC') or shutil.which('clang')), 'needs a POSIX shell and clang')
+    def test_linker_writes_the_map_in_the_literal_build_directory(self):
+        self.link_map(posix=True)
+
+    @unittest.skipUnless(os.name == 'nt' and (os.environ.get('CC') or shutil.which('clang')), 'native Windows linker')
+    def test_windows_linker_keeps_the_map_path_as_one_argument(self):
+        self.link_map(posix=False)
+
+    def link_map(self, posix):
+        output = self.folder / "O'Reilly $BUILD_QUOTE_TEST (output), comma"
+        output.mkdir()
+        source = self.folder / 'link.c'
+        source.write_text('int main(void) { return 0; }\n')
+        compiler = os.environ.get('CC') or shutil.which('clang')
+        target = 'link.exe' if os.name == 'nt' else 'link'
+        with patch.object(build, 'WIN', not posix), patch.object(build, 'vma_include', return_value=self.folder), \
+                patch.object(build, 'runtime_sources', return_value=[]):
+            # Use production Ninja bindings, but link only our own tiny program, without runtime or game inputs.
+            ninja, _, _ = build.ninja_file(self.folder, output, {}, 1)
+            bindings = '\n'.join(line for line in ninja.splitlines()
+                                 if line.startswith(('builddir = ', 'ldflags = '))) + '\n'
+            command = (f'{build.cmd_arg(Path(compiler).as_posix())} {build.cmd_path(source)} '
+                       f'$ldflags -o {build.cmd_arg(target)}')
+        self.ninja(target, command, posix=posix, bindings=bindings)
+        self.assertTrue((output / 'totk.map').is_file(), 'the linker must write the map at the requested path')
+        self.assertIn('main', (output / 'totk.map').read_text())
 
 
 if __name__ == '__main__':
