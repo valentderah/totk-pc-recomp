@@ -69,8 +69,9 @@ run's record; the design follows #845 by itaskaev2):
     the original code and not the hook again.
 A replacement word `@call:<module>+<offset>` is a call of the function there that writes no x30: every register in
 the Cpu at the call and all read back after it (the callback may change any of them, as exlaunch's hook context
-allows); the flags stay as they were. It may stand before the site's last word, which is then the original
-instruction.
+allows); the flags are published before it and taken back after it, since exlaunch's hook impl saves no NZCV and the
+game code goes on with the flags the callback left (recomp/flags.py plan's hooks). It may stand before the site's last
+word, which is then the original instruction.
 
 A `hook` line names guest functions (module offsets of function starts; gen.py stops on any other address) whose
 entry the runtime watches: their lifted C starts with FN_ENTER (runtime/cpu.h), a load of g_fnprof and a predicted

@@ -613,6 +613,55 @@ class Generator(unittest.TestCase):
         self.assertIn(f'X(0, "main", {FN:#x}, 0xaa0003f3u, 0x14000000u)', h)
         self.assertIn('X("plugin0", 0x4100) X("plugin0", 0x4200)', h)
 
+    # exlaunch's hook impl saves no NZCV: flags pass from the site to the callback and back (recomp/flags.py)
+    def code(self, main_words, plugin_words=None):
+        """Main's hooked function and the plugin image's words replaced; the plugin hash follows."""
+        (self.d / 'exefs' / 'main').write_bytes(code_nso(main_words))
+        img = bytearray((self.d / 'plugin0.img').read_bytes())
+        for off, w in (plugin_words or {}).items():
+            struct.pack_into('<I', img, off, w)
+        (self.d / 'plugin0.img').write_bytes(bytes(img))
+        n = Nso(str(self.plugin_file))
+        self.sha = hashlib.sha256(bytes(img[n.text[0]:n.text[0] + n.text[1]])).hexdigest()
+
+    def test_hook_site_hands_the_flags_to_the_callback_and_back(self):
+        # cmp x0, x1; b.eq +8 (hooked); mov x0, x19; ret
+        self.code({FN: 0xEB01001F, FN + 4: 0x54000040, FN + 8: 0xAA1303E0, FN + 12: RET_W})
+        t = self.table(f'site mod_x main {FN + 4:x} 54000040 @call:plugin0+4000 54000040', ['stub plugin0 4000'])
+        m = self.bases['main'] + FN
+        c = self.emit(t, 'main', m, m + 16)
+        stub = self.bases['plugin0'] + 0x4000
+        on = c[c.index('if (rt_patch_on[0])'):]
+        on, off = on[:on.index('} else {')], on[on.index('} else {'):]
+        call = on.index(f'f_{stub:x}(c);')
+        self.assertIn('c->nzcv = fnz_', on[:call])             # the callback sees the cmp's flags
+        self.assertIn('F.nz = c->nzcv;', on[call:])            # the b.eq reads what the callback left
+        self.assertIn('fc_nz(&F, CC_EQ)', on[call:])
+        self.assertIn('fc_nz(&F, CC_EQ)', off[:off.index('}', 8)])   # off: the cmp's flags, packed into F.nz
+        self.assertIn('F.nz = fnz_sub64(&F);', c)
+
+    def test_plugin_return_leaves_its_flags(self):
+        pb = self.bases['plugin0']
+        # the callback: cmp w1, #5; ret
+        self.code({FN: 0xAA0003F3, FN + 4: 0xAA1303E0, FN + 8: RET_W}, {0x4200: 0x7100143F, 0x4204: RET_W})
+        t = self.table(f'site mod_x main {FN:x} aa0003f3 @call:plugin0+4000 aa0003f3',
+                       ['stub plugin0 4000', 'seed plugin0 4100 4200'])
+        c = self.emit(t, 'plugin0', pb + 0x4200, pb + 0x4208)
+        self.assertIn('c->nzcv = fnz_sub32(&F); return;', c)
+
+    def test_plugin_call_takes_the_callee_flags(self):
+        pb = self.bases['plugin0']
+        # bl 0x4200; b.eq +8; ret; ret
+        self.code({FN: 0xAA0003F3, FN + 4: 0xAA1303E0, FN + 8: RET_W},
+                  {0x4100: b(pb + 0x4100, pb + 0x4200, True), 0x4104: 0x54000040, 0x4108: RET_W, 0x410c: RET_W})
+        t = self.table(f'site mod_x main {FN:x} aa0003f3 @call:plugin0+4000 aa0003f3',
+                       ['stub plugin0 4000', 'seed plugin0 4100 4200'])
+        c = self.emit(t, 'plugin0', pb + 0x4100, pb + 0x4110)
+        body = c[c.index(f'void f_{pb + 0x4100:x}(Cpu *c) {{'):]
+        self.assertLess(body.index(f'c->pc = {pb + 0x4200:#x}ull; rt_dispatch(c);'), body.index('F.nz = c->nzcv;'))
+        self.assertIn('fc_nz(&F, CC_EQ)', body)
+        self.assertEqual(body.count('c->nzcv = fnz_nz(&F); return;'), 2)   # both returns leave the flags
+
     def test_stub_returns_instead_of_branching_to_its_trampoline(self):
         t = self.table(f'site mod_x main {FN:x} aa0003f3 @call:plugin0+4000 aa0003f3', ['stub plugin0 4000'])
         stub = self.bases['plugin0'] + 0x4000
