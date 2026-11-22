@@ -132,11 +132,16 @@ def displays():
 # ---- totk.ini (runtime/cfg.c reads the same keys, in any section, with or without the totk_ prefix)
 
 def ini_value(text, name):
+    """The last nonempty value, with matching quotes removed, as runtime/cfg.c cfg_load and add read it."""
     value = None
     for line in text.splitlines():
-        m = re.match(rf'^\s*(?:totk_)?{name}\s*=\s*([^\s#;]*)', line, re.IGNORECASE)
+        m = re.match(rf'^\s*(?:totk_)?{re.escape(name)}\s*=(.*)$', line, re.IGNORECASE)
         if m:
-            value = m.group(1)
+            candidate = m.group(1).strip()
+            if len(candidate) >= 2 and candidate[0] == candidate[-1] == '"':
+                candidate = candidate[1:-1]
+            if candidate:
+                value = candidate
     return value
 
 

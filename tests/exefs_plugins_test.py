@@ -10,6 +10,7 @@ Run with .venv (lz4 and numpy, as recomp/): python tests/exefs_plugins_test.py
 import hashlib
 import json
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -428,6 +429,47 @@ class Lines(unittest.TestCase):
             rec['modules'][2]['image'] = 'plugin0.img'
             return xp.plugin_lines(rec, xp.hooks_of(hooks, 'plugin0'), 'mod_x', d, 'plugin0')
 
+    def test_image_path_roundtrips_through_the_patch_table(self):
+        rec = record()
+        mods = [(m['name'], m['base'], m['size']) for m in rec['modules']]
+        with tempfile.TemporaryDirectory() as d:
+            for folder in ('plain', 'with spaces', 'with#hash', 'caf\u00e9 #1'):
+                with self.subTest(folder=folder):
+                    dest = Path(d) / folder
+                    dest.mkdir()
+                    image = dest / 'plugin0.img'
+                    image.write_bytes(rec['images']['plugin0'])
+                    rec['modules'][2]['image'] = image.name
+                    lines = xp.plugin_lines(rec, [], 'mod_x', dest, 'plugin0')
+                    patch = dest / 'patches.txt'
+                    patch.write_text('set mod_x TOTK_MODPATCH_X 0 ordered\n' + '\n'.join(lines), encoding='utf-8')
+                    actual = patches.load(patch, mods).plugins['plugin0']['image']
+                    self.assertEqual(actual, image.resolve().as_posix())
+                    self.assertEqual(Path(actual).read_bytes(), rec['images']['plugin0'])
+
+    def test_quoted_image_and_legacy_unquoted_paths(self):
+        mods = [('main', MAIN, 0x200000), ('plugin0', PLUGIN, 0x14000)]
+        with tempfile.TemporaryDirectory() as d:
+            patch = Path(d) / 'patches.txt'
+            for image, field in (('C:/folder #1/plugin.img', '"C:/folder #1/plugin.img" # comment'),
+                                 ('C:/plain/plugin.img', 'C:/plain/plugin.img # comment'),
+                                 (r'C:\with space\plugin.img', json.dumps(r'C:\with space\plugin.img')),
+                                 (r'C:\plain\plugin.img', r'C:\plain\plugin.img')):
+                with self.subTest(field=field):
+                    patch.write_text(f'set x ENV 0\nplugin x plugin0 {"0" * 64} {field}\n')
+                    self.assertEqual(patches.load(patch, mods).plugins['plugin0']['image'], image)
+
+    def test_malformed_quoted_image_names_the_patch_line(self):
+        mods = [('main', MAIN, 0x200000), ('plugin0', PLUGIN, 0x14000)]
+        with tempfile.TemporaryDirectory() as d:
+            patch = Path(d) / 'patches.txt'
+            for field in ('"unfinished', '""', '"image.img" extra', '"image.img" "#not a comment"'):
+                with self.subTest(field=field):
+                    patch.write_text(f'set x ENV 0\nplugin x plugin0 {"0" * 64} {field}\n')
+                    with self.assertRaises(patches.PatchError) as error:
+                        patches.load(patch, mods)
+                    self.assertIn(f'{patch}:2:', str(error.exception))
+
     def test_inline(self):
         out = self.lines(record(original=0xAA0003F3))
         self.assertIn(f'site mod_x main {SITE_OFF:x} aa0003f3 @call:plugin0+{STUB_OFF:x} aa0003f3', out)
@@ -584,12 +626,33 @@ class Generator(unittest.TestCase):
         n = Nso(str(self.plugin_file))
         self.sha = hashlib.sha256(bytes(img[n.text[0]:n.text[0] + n.text[1]])).hexdigest()
 
-    def table(self, site_line, extra=()):
+    def table(self, site_line, extra=(), image=None):
+        image = image or self.d / 'plugin0.img'
         text = '\n'.join(['set mod_x TOTK_MODPATCH_X 0 ordered',
-                          f'plugin mod_x plugin0 {self.sha} {(self.d / "plugin0.img").as_posix()}',
+                          f'plugin mod_x plugin0 {self.sha} {json.dumps(image.as_posix())}',
                           f'expect mod_x main {FN:x} aa0003f3 14000000', site_line, *extra]) + '\n'
         (self.d / 'p.txt').write_text(text)
         return patches.load(self.d / 'p.txt', self.mods)
+
+    def test_generator_cli_reads_image_in_a_folder_with_spaces_and_hash(self):
+        # The direct-emitter fixture needs a discoverable caller for a full CLI lift.
+        main = self.d / 'exefs' / 'main'
+        raw = bytearray(main.read_bytes())
+        struct.pack_into('<II', raw, 0x108, b(8, FN, True), RET_W)
+        main.write_bytes(raw)
+        image = self.d / 'record files #1' / 'plugin0.img'
+        image.parent.mkdir()
+        image.write_bytes((self.d / 'plugin0.img').read_bytes())
+        self.table(f'site mod_x main {FN:x} aa0003f3 @call:plugin0+4000 aa0003f3',
+                   ['stub plugin0 4000', 'seed plugin0 4100 4200'], image=image)
+        out = self.d / 'generated'
+        run = subprocess.run([sys.executable, str(ROOT / 'recomp/gen.py'), '--exefs', str(self.d / 'exefs'),
+                              '--out', str(out), '--modules', 'main', '--plugins', str(self.plugin_file),
+                              '--patches', str(self.d / 'p.txt'), '--jobs', '1'],
+                             capture_output=True, text=True, timeout=30)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual(layout.read(out), self.mods)
+        self.assertTrue(list((out / 'plugin0').glob('*.c')))
 
     def emit(self, table, name, entry, end, origs=()):
         mod = gen.open_module(name, self.d / ('exefs/main' if name == 'main' else 'subsdk9'), self.bases[name], table,
