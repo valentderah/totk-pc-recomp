@@ -399,7 +399,8 @@ def plugin_lines(rec, hooks, name, record_dir, module):
     p = mods[module]
     img = rec['images'][p['name']]
     text_sha = hashlib.sha256(img[:p['text_end']]).hexdigest()
-    lines.append(f'plugin {name} {p["name"]} {text_sha} {(Path(record_dir) / p["image"]).resolve().as_posix()}')
+    image = json.dumps((Path(record_dir) / p['image']).resolve().as_posix(), ensure_ascii=False)
+    lines.append(f'plugin {name} {p["name"]} {text_sha} {image}')
     own = {int(h['site'].split('+')[1], 16) for h in hooks}
     for w in rec['writes']:
         if w['module'] == 'main' and w['offset'] in own:
