@@ -35,36 +35,47 @@ GAME_NEEDS = {'exefs', 'exe', 'romfs', 'embed', 'gui'}
 
 
 def interp(venv):
-    """.venv / .venv-py314, falling back to this interpreter when the venv is absent."""
+    """The requested venv, this interpreter if absent, or its standalone base for user-site tests."""
+    if venv == 'system':
+        return Path(getattr(sys, '_base_executable', None) or sys.executable)
     d = ROOT / venv
     p = d / ('Scripts/python.exe' if WIN else 'bin/python')
     return p if p.exists() else Path(sys.executable)
 
 
 # name: (venv, needs, args, why the need is there)
+#   venv: .venv | .venv-py314 | system (the standalone base interpreter)
 #   needs: None | needs joined by '+' (exefs | exe | romfs | embed | gui | cc)
 #   name: the script below tests/, without .py (diff/simd is tests/diff/simd.py)
 TESTS = {
     # ---- no game files, no build ----
-    'flags_check':              ('.venv', None, [], ''),
-    'excl_mt':                  ('.venv', None, [], ''),
+    'flags_check':              ('.venv', 'cc', [], 'compiles the CPU flag helpers with clang'),
+    'excl_mt':                  ('.venv', 'cc', [], 'compiles the threaded exclusive-monitor harness with clang'),
     'pack_shader_cache_test':   ('.venv', None, [], ''),
     'spin_waits_test':          ('.venv', None, [], ''),
     'worktree_test':            ('.venv', None, [], ''),
     'installer_test':           ('.venv-py314', None, [], ''),
     'ncz_test':                 ('.venv-py314', None, [], ''),
     'romfs_prompts_test':       ('.venv-py314', None, [], ''),
+    'hud_layout_test':          ('.venv-py314', None, [], ''),
+    'release_linux_apprun_test': ('system', None, [], ''),
     'exefs_patches_test':       ('.venv', None, [], ''),
     'exefs_plugins_test':       ('.venv', None, [], ''),
+    'lift_cache_test':          ('.venv', None, [], ''),
     'settings_doc_check':       ('.venv', None, [], ''),
     'mouse_direct_check':       ('.venv', 'cc', ['--cc', '<cc>'], 'compiles its checks with clang'),
     'cheats_vm_check':          ('.venv', 'cc', ['--cc', '<cc>'], 'compiles runtime/cheats.c into a harness with clang'),
-    'diff/atomic':              ('.venv', None, [], ''),
-    'diff/simd':                ('.venv', None, [], ''),
+    'romfs_shapes_check':       ('.venv', 'cc', ['--cc', '<cc>'], 'compiles the production overlay selection helpers'),
+    'frame_world_check':        ('.venv', 'cc', ['--cc', '<cc>'], 'compiles the production world-clock player walk'),
+    'sync_ahead_check':         ('.venv', 'cc', ['--cc', '<cc>'], 'compiles the production sync-ahead wait selection'),
+    'patches_v110_check':       ('.venv', 'cc', [], 'compiles synthetic patch contracts for comparison with Unicorn'),
+    'patches_v110_highfps_check': ('.venv', 'cc', [], 'compiles synthetic high-fps contracts for comparison with Unicorn'),
+    'diff/atomic':              ('.venv', 'cc', [], 'compiles generated atomic checks for comparison with Unicorn'),
+    'diff/simd':                ('.venv', 'cc', [], 'compiles generated SIMD checks for comparison with Unicorn'),
     # ---- read the game or a build ----
-    'diff/lift':                ('.venv', 'exefs', ['--exefs', '<exefs>'],
+    'diff/lift':                ('.venv', 'exefs+cc', ['--exefs', '<exefs>'],
                                  'samples instructions from the game modules; needs an unpacked exefs'),
-    'diff/func':                ('.venv', 'exefs', ['--exefs', '<exefs>'],
+    'diff/func':                ('.venv', 'exefs+cc', ['--exefs', '<exefs>'],
                                  'lifts whole functions of the game modules; needs an unpacked exefs'),
     'jumptables_check':         ('.venv', 'exefs', ['--exefs', '<exefs>'],
                                  'replays the modules through Unicorn; needs an unpacked exefs'),
@@ -100,10 +111,11 @@ def find_exefs():
 
 
 def find_exe():
-    """A built totk.exe: the plain v143 tree, else the newest variant (v143-heropath, ...)."""
-    if (ROOT / 'build' / 'v143' / 'totk.exe').exists():
-        return ROOT / 'build' / 'v143' / 'totk.exe'
-    builds = sorted(ROOT.glob('build/v143-*/totk.exe'),
+    """A built totk[.exe]: the plain v143 tree, else the newest variant (v143-heropath, ...)."""
+    name = 'totk.exe' if WIN else 'totk'
+    if (ROOT / 'build' / 'v143' / name).exists():
+        return ROOT / 'build' / 'v143' / name
+    builds = sorted(ROOT.glob('build/v143-*/' + name),
                     key=lambda p: p.stat().st_mtime, reverse=True)
     return builds[0] if builds else None
 
@@ -133,7 +145,11 @@ def find_embed():
 
 
 def find_cc():
-    """clang for the tests that compile C: MSYS2 UCRT64's on Windows, else the one on PATH."""
+    """The compiler the differential harness uses: CC, MSYS2 UCRT64, or clang on PATH."""
+    cc = os.environ.get('CC')
+    if cc:
+        found = shutil.which(cc)
+        return Path(found) if found else None
     c = MSYS_BIN / 'clang.exe'
     if WIN and c.exists():
         return c
@@ -153,7 +169,7 @@ def resolve(needs):
             else: vals['<exefs>'] = str(p)
         elif need == 'exe':
             p = find_exe()
-            if p is None: missing.append('no built build/v143/totk.exe')
+            if p is None: missing.append('no built build/v143/totk' + ('.exe' if WIN else ''))
             else: vals['<exe>'] = str(p)
         elif need == 'romfs':
             p = find_romfs()
