@@ -34,7 +34,8 @@ def main():
         iv, rp, secs = means(side[k])
         print(f'{name}: {len(side[k]):3d} windows ({secs:5.1f} s), interval {iv:6.2f} ms ({1000 / iv:5.1f} fps), replay {rp:5.2f} ms')
     (ia, ra, _), (ib, rb, _) = means(side[0]), means(side[1])
-    print(f'B - A: interval {ib - ia:+.2f} ms ({100 * (ib - ia) / ia:+.1f}%), replay {rb - ra:+.2f} ms ({100 * (rb - ra) / ra:+.1f}%)')
+    replay_change = f'{100 * (rb - ra) / ra:+.1f}%' if ra else 'n/a: A is zero'
+    print(f'B - A: interval {ib - ia:+.2f} ms ({100 * (ib - ia) / ia:+.1f}%), replay {rb - ra:+.2f} ms ({replay_change})')
     return 0
 
 
