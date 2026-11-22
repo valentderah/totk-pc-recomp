@@ -1365,6 +1365,8 @@ class HostProbeTest(unittest.TestCase):
            '{"name": "Intel(R) UHD Graphics", "api": [1, 3, 215], "type": 1}]}\n'
     CRASHED_IN_VULKAN = '{"x86_64_v2": true, "x86_64_v3": true, "loader": true, '
     ACCESS_VIOLATION = 0xC0000005
+    LAYERS = [('VK_LAYER_VALVE_steam_overlay_64', Path('C:/Steam/SteamOverlayVulkanLayer64.json')),
+              ('VK_LAYER_BAD_overlay', Path('C:/Bad/BadOverlay64.json'))]
 
     def setUp(self):
         self.ctx = SimpleNamespace(reporter=Reporter(out=io.StringIO()))
@@ -1373,20 +1375,36 @@ class HostProbeTest(unittest.TestCase):
     def tearDown(self):
         self.ctx.reporter.close()
 
-    def probe(self, *results):
-        """Runs probe_host with subprocess.run answering each call with the next of results (an exception is raised)."""
+    def probe(self, *results, layers=()):
+        """Runs probe_host with subprocess.run answering each call with the next of results (an exception is raised,
+        a callable gets the run's VK_LOADER_LAYERS_DISABLE)."""
         answers = iter(results)
 
         def run(command, **kwargs):
-            self.calls.append(kwargs.get('env'))
+            env = kwargs.get('env')
+            self.calls.append(env)
             r = next(answers)
+            if callable(r):
+                r = r((env or {}).get('VK_LOADER_LAYERS_DISABLE'))
             if isinstance(r, BaseException):
                 raise r
             return subprocess.CompletedProcess(command, r[0], r[1], '')
 
         with mock.patch.object(steps.subprocess, 'run', run), \
-                mock.patch.object(steps, 'implicit_vulkan_layers', lambda: ['BadOverlay64.json']):
+                mock.patch.object(steps, 'implicit_vulkan_layers', lambda: list(layers)):
             return steps.Check().probe_host(self.ctx, Path('hostcheck.exe'))
+
+    def bad_layer(self, disabled):
+        """The probe on a PC whose VK_LAYER_BAD_overlay is broken, with the layers in disabled turned off."""
+        if disabled in ('~implicit~', 'VK_LAYER_BAD_overlay'):
+            return 0, self.GOOD
+        return self.ACCESS_VIOLATION, self.CRASHED_IN_VULKAN
+
+    def only_all_off(self, disabled):
+        """The probe on a PC whose broken layer is not in the list (a driver's, under its adapter key)."""
+        if disabled == '~implicit~':
+            return 0, self.GOOD
+        return self.ACCESS_VIOLATION, self.CRASHED_IN_VULKAN
 
     def events(self, kind):
         return [e for e in map(json.loads, self.ctx.reporter.out.getvalue().splitlines()) if e['type'] == kind]
@@ -1397,20 +1415,33 @@ class HostProbeTest(unittest.TestCase):
         self.assertEqual(self.calls, [None])
         self.assertEqual(self.events('warning'), [])
 
-    def test_a_crash_in_a_vulkan_layer_is_run_again_without_the_implicit_layers(self):
-        host = self.probe((self.ACCESS_VIOLATION, self.CRASHED_IN_VULKAN), (0, self.GOOD))
-        self.assertEqual(host['devices'][0]['name'], 'Intel(R) UHD Graphics')
-        self.assertIsNone(self.calls[0])
-        self.assertEqual(self.calls[1]['VK_LOADER_LAYERS_DISABLE'], '~implicit~')
-        [w] = self.events('warning')
-        self.assertEqual(w['id'], 'warn.vulkan_layer_crash')
-        self.assertEqual(w['params']['layers'], 'BadOverlay64.json')
+    def test_a_crashing_layer_is_named_and_stops_the_install(self):
+        # totk.exe --prepare-shaders and the game load the same layer, so going on would fail after lift and compile
+        with self.assertRaises(steps.InstallError) as e:
+            self.probe(*[self.bad_layer] * 4, layers=self.LAYERS)
+        self.assertEqual(e.exception.id, 'check.vulkan_layer_crash')
+        self.assertEqual(e.exception.params['disable'], 'VK_LAYER_BAD_overlay')
+        self.assertIn('VK_LAYER_BAD_overlay (', e.exception.params['layers'])
+        self.assertNotIn('steam', e.exception.params['layers'])
+        self.assertEqual([c and c['VK_LOADER_LAYERS_DISABLE'] for c in self.calls],
+                         [None, '~implicit~', 'VK_LAYER_VALVE_steam_overlay_64', 'VK_LAYER_BAD_overlay'])
         if os.name == 'nt':
-            self.assertEqual(w['params']['code'], '0xC0000005')
+            self.assertEqual(e.exception.params['code'], '0xC0000005')
+
+    def test_a_crashing_layer_that_cannot_be_singled_out_lists_the_installed_ones(self):
+        with self.assertRaises(steps.InstallError) as e:
+            self.probe(*[self.only_all_off] * 4, layers=self.LAYERS)
+        self.assertEqual(e.exception.id, 'check.vulkan_layers_crash')
+        self.assertIn('VK_LAYER_VALVE_steam_overlay_64', e.exception.params['layers'])
+        self.assertIn('VK_LAYER_BAD_overlay', e.exception.params['layers'])
+        with self.assertRaises(steps.InstallError) as e:
+            self.probe(self.only_all_off, self.only_all_off)
+        self.assertEqual((e.exception.id, e.exception.params['layers']), ('check.vulkan_layers_crash', '?'))
 
     def test_a_driver_that_crashes_without_the_layers_too_stops_the_install(self):
         with self.assertRaises(steps.InstallError) as e:
-            self.probe((self.ACCESS_VIOLATION, self.CRASHED_IN_VULKAN), (self.ACCESS_VIOLATION, self.CRASHED_IN_VULKAN))
+            self.probe((self.ACCESS_VIOLATION, self.CRASHED_IN_VULKAN), (self.ACCESS_VIOLATION, self.CRASHED_IN_VULKAN),
+                       layers=self.LAYERS)
         self.assertEqual(e.exception.id, 'check.vulkan_crash')
         self.assertEqual(len(self.calls), 2)
 
@@ -1424,12 +1455,14 @@ class HostProbeTest(unittest.TestCase):
 
     @unittest.skipUnless(os.name == 'nt', 'winerror is set on Windows only')
     def test_a_probe_blocked_by_smart_app_control_names_the_policy(self):
-        blocked = OSError(None, 'An Application Control policy has blocked this file', None, 4551)
-        with self.assertRaises(steps.InstallError) as e:
-            self.probe(blocked)
-        self.assertEqual(e.exception.id, 'check.host_blocked')
-        self.assertIn('Application Control', e.exception.params['detail'])
-        self.assertTrue(e.exception.params['path'].endswith('hostcheck.exe'))
+        for code in (4551, 4559, 1260, 225):
+            with self.subTest(code=code):
+                blocked = OSError(None, 'An Application Control policy has blocked this file', None, code)
+                with self.assertRaises(steps.InstallError) as e:
+                    self.probe(blocked)
+                self.assertEqual(e.exception.id, 'check.host_blocked')
+                self.assertIn('Application Control', e.exception.params['detail'])
+                self.assertTrue(e.exception.params['path'].endswith('hostcheck.exe'))
 
     def test_another_start_failure_is_reported_not_raised(self):
         with self.assertRaises(steps.InstallError) as e:
@@ -1437,14 +1470,40 @@ class HostProbeTest(unittest.TestCase):
         self.assertEqual(e.exception.id, 'check.host_probe_failed')
         self.assertIn('cannot find', e.exception.params['code'])
 
+    def test_a_failed_host_check_runs_once_per_install(self):
+        # key() probes first and run() reports: the crashing probe and its retries must not run twice
+        check, ctx = steps.Check(), SimpleNamespace()
+        failure = steps.InstallError('check.vulkan_crash', code='1')
+        with mock.patch.object(steps.Check, 'check_host', side_effect=failure) as probe:
+            check.key(ctx)
+            with self.assertRaises(steps.InstallError) as e:
+                check.host(ctx)
+        self.assertEqual(e.exception.id, 'check.vulkan_crash')
+        self.assertEqual(probe.call_count, 1)
+
+    def test_layer_names_come_from_the_manifests_the_loader_reads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            (folder / 'one.json').write_text(json.dumps({'file_format_version': '1.1.2', 'layer': {
+                'name': 'VK_LAYER_TEST_one', 'library_path': 'one.dll'}}), encoding='utf-8-sig')
+            (folder / 'two.json').write_text(json.dumps({'file_format_version': '1.0.1', 'layers': [
+                {'name': 'VK_LAYER_TEST_a'}, {'name': 'VK_LAYER_TEST_b'}]}), encoding='utf-8')
+            (folder / 'broken.json').write_text('{', encoding='utf-8')
+            with mock.patch.dict(os.environ, {'VK_ADD_IMPLICIT_LAYER_PATH': tmp}):
+                mine = [(n, p.name) for n, p in steps.implicit_vulkan_layers() if p.parent == folder]
+        self.assertEqual(mine, [('VK_LAYER_TEST_one', 'one.json'), ('VK_LAYER_TEST_a', 'two.json'),
+                                ('VK_LAYER_TEST_b', 'two.json')])
+
     def test_messages_in_every_language(self):
+        need = {'check.host_blocked': ('{path}', '{detail}'), 'check.vulkan_crash': ('{code}',),
+                'check.vulkan_layer_crash': ('{code}', '{layers}', '{disable}', 'VK_LOADER_LAYERS_DISABLE'),
+                'check.vulkan_layers_crash': ('{code}', '{layers}', 'VK_LOADER_LAYERS_DISABLE', '~implicit~')}
         for path in sorted((ROOT / 'installer' / 'text').glob('*.json')):
             text = json.loads(path.read_text(encoding='utf-8'))
-            self.assertIn('{path}', text['check.host_blocked'], path.name)
-            self.assertIn('{detail}', text['check.host_blocked'], path.name)
-            self.assertIn('{code}', text['check.vulkan_crash'], path.name)
-            self.assertIn('{code}', text['warn.vulkan_layer_crash'], path.name)
-            self.assertIn('{layers}', text['warn.vulkan_layer_crash'], path.name)
+            self.assertNotIn('warn.vulkan_layer_crash', text, path.name)
+            for key, parts in need.items():
+                for part in parts:
+                    self.assertIn(part, text[key], f'{path.name} {key}')
 
 
 if __name__ == '__main__':
