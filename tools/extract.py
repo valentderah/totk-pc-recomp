@@ -37,9 +37,9 @@ from extract_update_romfs import copy_range, hactool_prod_keys  # noqa: E402
 DATA = ROOT / 'tools' / 'data'
 EXEFS_CODE = ('main', 'sdk', 'subsdk0', 'rtld')
 LONG_HEX = re.compile(r'[0-9A-Fa-f]{32,}')
-# hactool checks two signatures with Nintendo public keys it does not ship, so these two lines always read (FAIL) and
-# say nothing about the data. The IVFC levels and the image hash decide.
-UNSIGNED = re.compile(r'\s*(?:Fixed-Key Signature|NPDM Signature) \(FAIL\)')
+# Signature warnings can occur on dumps whose data is intact. hactool's npdm.c npdm_print labels the ACID check simply
+# "Signature", alongside nca.c nca_print's Fixed-Key and NPDM signatures. The IVFC levels and image hash still decide.
+UNSIGNED = re.compile(r'\s*(?:Fixed-Key Signature|NPDM Signature|Signature) \(FAIL\):')
 HACTOOL_ERROR = re.compile(r'\(FAIL\)|\(INVALID\)|Failed to|Error:')
 # hactool lines of a hash check that failed: a RomFS level, a section's superblock or its hash table.
 HACTOOL_HASH_FAIL = re.compile(r'^\s*(?:Level \d|Superblock Hash|Hash Table) \(FAIL\)', re.M)
