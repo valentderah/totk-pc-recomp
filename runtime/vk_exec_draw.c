@@ -1743,12 +1743,11 @@ static uint32_t feedback_written(VkExec *ex, const VkPipeState *s) {
 // result in some 16x16 pixel tiles and the floor under it in others: tile and dirt swapping in screen-aligned squares
 // that changed from frame to frame. The draw is recorded as runs of triangles that share vertices with each other, a
 // feedback_barrier between runs: a piece connected through its vertices is one surface, which does not cover itself on
-// the screen, so a run needs no barrier inside. That is 290 barriers a frame in the dining hall instead of 3,900 for one
-// per triangle. At 3840x2160 on an RTX 5070 the frame's GPU time stayed at 6.2 ms there (7.1-7.2 ms in the field, from
-// 7.4 ms), as the colour-only feedback_barrier saves what the runs' barriers cost; one barrier per triangle took it to
-// 13.1 ms. A draw cut into more than FB_SPLIT_MAX runs (separate quads, such as particles) is recorded whole, as
-// before: a barrier per piece would cost more than the frame.
-enum { FB_SPLIT_MAX = 64 };
+// the screen, so a run needs no barrier inside. The dining hall's floor decals come in draws of up to 67 such runs, 290
+// to 560 barriers a frame, where one per triangle would be 3,900 (13.1 ms of GPU time a frame instead of 6.2 ms at
+// 3840x2160 on an RTX 5070). A draw of more than FB_SPLIT_MAX runs is recorded whole, as before, so that a draw of
+// thousands of separate quads costs at most about 3.5 ms of barriers (about 3.5 us each there).
+enum { FB_SPLIT_MAX = 1024 };
 
 static uint32_t find_root(uint32_t *par, uint32_t a) {
     while (par[a] != a) a = par[a] = par[par[a]];
@@ -1756,8 +1755,8 @@ static uint32_t find_root(uint32_t *par, uint32_t a) {
 }
 
 // The runs of connected triangles of the triangle list whose 3 * ntri indices of type itype are at ib: the index of the
-// triangle after each run, in order, into end[]. Returns their number, 0 when there are more than FB_SPLIT_MAX.
-static int connected_runs(const void *ib, int itype, uint32_t ntri, uint32_t *end) {
+// triangle after each run, in order, into end[] (room for ntri). Returns their number.
+static uint32_t connected_runs(const void *ib, int itype, uint32_t ntri, uint32_t *end) {
     uint32_t n = 3 * ntri, hn = 1;
     while (hn < 2 * n) hn <<= 1;
     uint32_t *key = malloc(sizeof *key * hn), *node = malloc(sizeof *node * hn), *par = malloc(sizeof *par * n),
@@ -1779,14 +1778,11 @@ static int connected_runs(const void *ib, int itype, uint32_t ntri, uint32_t *en
             uint32_t a = find_root(par, tri[3 * t]), b = find_root(par, tri[3 * t + k]);
             if (a != b) par[b] = a;
         }
-    int runs = 0;
-    for (uint32_t t = 1; t <= ntri && runs <= FB_SPLIT_MAX; t++)
-        if (t == ntri || find_root(par, tri[3 * t]) != find_root(par, tri[3 * t - 3])) {
-            if (runs < FB_SPLIT_MAX) end[runs] = t;
-            runs++;
-        }
+    uint32_t runs = 0;
+    for (uint32_t t = 1; t <= ntri; t++)
+        if (t == ntri || find_root(par, tri[3 * t]) != find_root(par, tri[3 * t - 3])) end[runs++] = t;
     free(key), free(node), free(par), free(tri);
-    return runs <= FB_SPLIT_MAX ? runs : 0;
+    return runs;
 }
 
 // The indexed draw being recorded (op_draw_idx), its indices bound: when its fragment shader samples a colour target
@@ -1796,15 +1792,16 @@ static int feedback_split(VkExec *ex, const p_draw_idx *d, int host_readable) {
     VkExecDraw *D = ex->draw;
     if (!D->fb_self || d->prim != NVN_DRAW_PRIMITIVE_TRIANGLES || d->instances > 1 || !host_readable || d->count < 6)
         return 0;
-    uint32_t end[FB_SPLIT_MAX], ntri = (uint32_t)d->count / 3;
-    int runs = connected_runs((const void *)(uintptr_t)d->ibuf, d->itype, ntri, end);
-    if (runs < 2) return 0;
-    for (int r = 0, start = 0; r < runs; start = (int)end[r++]) {
+    uint32_t ntri = (uint32_t)d->count / 3, *end = malloc(sizeof *end * ntri);
+    if (!end) rt_fatal("vk: out of memory");
+    uint32_t runs = connected_runs((const void *)(uintptr_t)d->ibuf, d->itype, ntri, end);
+    if (runs < 2 || runs > FB_SPLIT_MAX) return free(end), 0;
+    for (uint32_t r = 0, start = 0; r < runs; start = end[r++]) {
         if (r) feedback_barrier(ex, D->fb_self);
-        vkCmdDrawIndexed(ex->cb, 3 * (end[r] - (uint32_t)start), 1, 3 * (uint32_t)start, d->base_vertex,
-                         (uint32_t)d->base_instance);
+        vkCmdDrawIndexed(ex->cb, 3 * (end[r] - start), 1, 3 * start, d->base_vertex, (uint32_t)d->base_instance);
         ex->recorded++;
     }
+    free(end);
     ex->fb_dirty |= D->fb_wr;   // the last run wrote them after the barrier before it
     ex->fr.fb_splits++;
     return 1;
