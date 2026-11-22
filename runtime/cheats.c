@@ -591,6 +591,7 @@ static void rebuild_if_needed(const char *dir) {
         return;
     }
     prof_write();   // plat_exit runs no atexit handlers
+    input_haptics_stop();
     plat_exit(0);
 }
 

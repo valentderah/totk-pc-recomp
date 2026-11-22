@@ -146,6 +146,19 @@ uint16_t rumble_motor(float a, float curve, float strength);
 // TOTK_RUMBLE_TRIGGERS=1: input_rumble also drives the impulse triggers (Xbox) with the high motor's value.
 int input_rumble_triggers_enabled(void);
 
+// RenHDrum HD Rumble (Switch Pro Controller / Joy-Con), DualSense voice-coil & HD Haptics, Xbox One / Series X|S
+// 4-motor rumble, and Steam Controller (2026) grip HD Rumble: pushes Switch HD rumble bands (amplitude 0..1, frequency
+// Hz) for side 0 (left), 1 (right), or -1 (both). Returns 1 when an active RenHDrum device handled it (caller skips
+// standard SDL_RumbleGamepad fallback).
+enum { HD_PAD_NONE, HD_PAD_SWITCH_USB, HD_PAD_SWITCH_BT, HD_PAD_DUALSENSE_USB, HD_PAD_DUALSENSE_BT, HD_PAD_XBOX_USB,
+       HD_PAD_XBOX_BT, HD_PAD_STEAM_USB, HD_PAD_STEAM_BT };
+int input_hd_pad_kind(void);
+int input_renhdrum_available(void);
+int input_hd_rumble(int side, float left_al, float left_fl, float left_ah, float left_fh,
+                    float right_al, float right_fl, float right_ah, float right_fh);
+// Cleanly shuts down active RenHDrum streams, clears DualSense trigger effects, and closes the gamepad before plat_exit.
+void input_haptics_stop(void);
+
 // Motion (TOTK_MOTION=0 turns it off, live). input_motion_start starts the sensor thread once: every 4 ms it reads the
 // gamepad's gyro and accelerometer (when it has them) and feeds motion_global(). Callable from any thread.
 void input_motion_start(void);

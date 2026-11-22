@@ -10,6 +10,7 @@
 
 #include "fs.h"
 #include "host.h"
+#include "input.h"
 #include "kernel.h"
 #include "vk.h"
 #include "platform/platform.h"
@@ -234,6 +235,7 @@ static void svc_body(Cpu *c, uint32_t imm, uint64_t pc) {
         prof_write();
         fflush(NULL);
         if (svc_test_exit_hook) return svc_test_exit_hook(0);
+        input_haptics_stop();
         plat_exit(0);
     }
     }

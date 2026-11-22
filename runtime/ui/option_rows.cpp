@@ -260,11 +260,11 @@ int opt_save_tick(int force) {
 
 // ---- rows
 
-bool opt_toggle(const char *key, UiTextId label, UiTextId desc, bool inverted) {
+bool opt_toggle(const char *key, UiTextId label, UiTextId desc, bool inverted, const char *note) {
     const CfgMeta *m = cfg_meta(key);
     bool set = cfg_bool(key) != 0, def = m && strcmp(m->def, "0") != 0;
     bool on = set != inverted;   // what the row shows
-    RowView v = {menu_text(on ? UI_MENU_ON : UI_MENU_OFF), set == def, false, NULL};
+    RowView v = {menu_text(on ? UI_MENU_ON : UI_MENU_OFF), set == def, false, note};
     if (!row(key, label, desc, v)) return false;   // any step flips it
     apply(key, set ? "0" : "1");
     return true;

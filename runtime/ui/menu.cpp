@@ -930,6 +930,38 @@ static const char *pad_layout_note(void) {
     return note;
 }
 
+enum { HD_NOTE_SWITCH, HD_NOTE_DUALSENSE, HD_NOTE_XBOX, HD_NOTE_STEAM };
+static const char *hd_pad_note(int group) {
+    int k = input_hd_pad_kind();
+    if (group == HD_NOTE_DUALSENSE) {
+        const char *ds = cfg_value("TOTK_DUALSENSE_HAPTICS");
+        if (!strcasecmp(ds, "0") || !strcasecmp(ds, "off") || !strcasecmp(ds, "false")) return nullptr;
+        if (k != HD_PAD_DUALSENSE_USB && k != HD_PAD_DUALSENSE_BT) return nullptr;
+        static char note[64];
+        snprintf(note, sizeof note, menu_text(UI_MENU_PAD_LAYOUT_IN_USE), k == HD_PAD_DUALSENSE_BT ? "Bluetooth" : "USB");
+        return note;
+    }
+    if (group == HD_NOTE_XBOX) {
+        if (!cfg_bool("TOTK_XBOX_RUMBLE")) return nullptr;
+        if (k != HD_PAD_XBOX_USB && k != HD_PAD_XBOX_BT) return nullptr;
+        static char note[64];
+        snprintf(note, sizeof note, menu_text(UI_MENU_PAD_LAYOUT_IN_USE), k == HD_PAD_XBOX_BT ? "Bluetooth" : "USB");
+        return note;
+    }
+    if (group == HD_NOTE_STEAM) {
+        if (!cfg_bool("TOTK_STEAM_RUMBLE")) return nullptr;
+        if (k != HD_PAD_STEAM_USB && k != HD_PAD_STEAM_BT) return nullptr;
+        static char note[64];
+        snprintf(note, sizeof note, menu_text(UI_MENU_PAD_LAYOUT_IN_USE), k == HD_PAD_STEAM_BT ? "Wireless" : "USB");
+        return note;
+    }
+    if (!cfg_bool("TOTK_HD_RUMBLE")) return nullptr;
+    if (k != HD_PAD_SWITCH_USB && k != HD_PAD_SWITCH_BT) return nullptr;
+    static char note[64];
+    snprintf(note, sizeof note, menu_text(UI_MENU_PAD_LAYOUT_IN_USE), k == HD_PAD_SWITCH_BT ? "Bluetooth" : "USB");
+    return note;
+}
+
 // The action a key presses, or -1: the walk key is a key of its own, but Shift is B in the default bindings, and a
 // walk key that also presses something walks and does that something at the same time. The bindings come from a
 // snapshot, and every key of an action is looked at: binds_refresh rebuilds the live table on the polling thread while
@@ -1155,6 +1187,43 @@ static void tab_controls(float scale) {
     opt_slider("TOTK_WALK_SCALE", UI_MENU_WALK_SCALE, 0.2f, 0.9f, UI_MENU_WALK_SCALE_DESC, 0.01f, "%.2f");
     rows_freecam();
     rows_gameplay_tweaks();
+    bool have_rh = input_renhdrum_available() != 0;
+    if (have_rh) {
+        opt_group(UI_MENU_GROUP_HD_SWITCH);
+        opt_toggle("TOTK_HD_RUMBLE", UI_MENU_HD_RUMBLE, UI_MENU_HD_RUMBLE_DESC, false, hd_pad_note(HD_NOTE_SWITCH));
+        static const UiTextId bt_speed[] = {UI_MENU_HD_BT_STABLE, UI_MENU_HD_BT_BALANCED, UI_MENU_HD_BT_FAST};
+        opt_choice("TOTK_HD_RUMBLE_BT_SPEED", UI_MENU_HD_BT_SPEED, bt_speed, 3, UI_MENU_HD_BT_SPEED_DESC);
+        opt_toggle("TOTK_HD_RUMBLE_CRISP", UI_MENU_HD_CRISP, UI_MENU_HD_CRISP_DESC);
+        opt_toggle("TOTK_HD_RUMBLE_BT_CRISP", UI_MENU_HD_BT_CRISP, UI_MENU_HD_BT_CRISP_DESC);
+    }
+    opt_group(UI_MENU_GROUP_HD_DUALSENSE);
+    if (have_rh) {
+        static const char *const ds_vals[] = {"off", "standard", "hd"};
+        const char *ds_names[] = {menu_text(UI_MENU_OFF), menu_text(UI_MENU_DS_HAPTICS_STANDARD),
+                                  menu_text(UI_MENU_DS_HAPTICS_HD)};
+        const char *ds_now = cfg_value("TOTK_DUALSENSE_HAPTICS");
+        int ds_cur = !strcasecmp(ds_now, "0") || !strcasecmp(ds_now, "off") || !strcasecmp(ds_now, "false") ? 0
+                   : !strcasecmp(ds_now, "standard") || !strcasecmp(ds_now, "haptics")                      ? 1
+                                                                                                            : 2;
+        opt_choice_list("TOTK_DUALSENSE_HAPTICS", UI_MENU_DS_HAPTICS, ds_vals, ds_names, 3, UI_MENU_DS_HAPTICS_DESC,
+                        ds_cur, hd_pad_note(HD_NOTE_DUALSENSE));
+        opt_slider("TOTK_DUALSENSE_VOLUME", UI_MENU_DS_VOLUME, 10, 100, UI_MENU_DS_VOLUME_DESC, 5, "%.0f %%");
+        opt_toggle("TOTK_DUALSENSE_CRISP", UI_MENU_DS_CRISP, UI_MENU_DS_CRISP_DESC);
+        opt_toggle("TOTK_DUALSENSE_BT_CRISP", UI_MENU_DS_BT_CRISP, UI_MENU_DS_BT_CRISP_DESC);
+        opt_toggle("TOTK_DUALSENSE_TRIGGER_VIBRATION", UI_MENU_DS_TRIGGER_VIBRATION, UI_MENU_DS_TRIGGER_VIBRATION_DESC);
+    }
+    opt_slider("TOTK_DUALSENSE_TRIGGERS", UI_MENU_DS_TRIGGERS, 0, 8, UI_MENU_DS_TRIGGERS_DESC, 1, "%.0f");
+    static const UiTextId ds_trigger_modes[] = {UI_MENU_DS_TRIGGERS_R2, UI_MENU_DS_TRIGGERS_BOTH, UI_MENU_DS_TRIGGERS_L2};
+    opt_choice("TOTK_DUALSENSE_TRIGGERS_MODE", UI_MENU_DS_TRIGGERS_MODE, ds_trigger_modes, 3, UI_MENU_DS_TRIGGERS_MODE_DESC);
+    if (have_rh) {
+        opt_group(UI_MENU_GROUP_HD_XBOX);
+        opt_toggle("TOTK_XBOX_RUMBLE", UI_MENU_XBOX_RUMBLE, UI_MENU_XBOX_RUMBLE_DESC, false, hd_pad_note(HD_NOTE_XBOX));
+        opt_toggle("TOTK_XBOX_TRIGGERS", UI_MENU_XBOX_TRIGGERS, UI_MENU_XBOX_TRIGGERS_DESC);
+        opt_group(UI_MENU_GROUP_HD_STEAM);
+        opt_toggle("TOTK_STEAM_RUMBLE", UI_MENU_STEAM_RUMBLE, UI_MENU_STEAM_RUMBLE_DESC, false, hd_pad_note(HD_NOTE_STEAM));
+        opt_slider("TOTK_STEAM_VOLUME", UI_MENU_STEAM_VOLUME, 10, 100, UI_MENU_STEAM_VOLUME_DESC, 5, "%.0f %%");
+        opt_toggle("TOTK_STEAM_CRISP", UI_MENU_STEAM_CRISP, UI_MENU_STEAM_CRISP_DESC);
+    }
     // Analog sticks: one dead zone row per stick, falling back to TOTK_STICK_DEADZONE (both sticks) while unset. With
     // a gamepad connected each row shows its stick's deflection now, before the dead zone: a drifting stick's resting
     // value, to set it above.

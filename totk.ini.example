@@ -430,6 +430,31 @@
 # rumble_strength = 130
 # rumble_curve = 0.6
 # rumble_triggers = 0
+# Switch Pro Controller / Joy-Con HD Rumble via optional renhdrum.dll / librenhdrum.so next to totk.exe (live).
+# hd_rumble_bt_speed: stable, balanced or fast (default: fast).
+# hd_rumble = 1
+# hd_rumble_bt_speed = fast
+# hd_rumble_crisp = 1
+# hd_rumble_bt_crisp = 1
+# PS5 DualSense haptics via optional renhdrum.dll / librenhdrum.so (live): hd (default: grip haptics + controller
+# speaker detail), standard (grip haptics only), or off (standard controller rumble). dualsense_volume: 10 to 100.
+# dualsense_trigger_vibration = 1 enables reactive L2/R2 trigger pulses via RenHDrum while triggers are held.
+# dualsense_haptics = hd
+# dualsense_volume = 100
+# dualsense_crisp = 1
+# dualsense_bt_crisp = 0
+# dualsense_trigger_vibration = 0
+# PS5 DualSense native adaptive triggers (no extra DLL needed, live): dualsense_triggers sets resistance 0 (off) to 8;
+# dualsense_triggers_mode picks r2 (bow only, default), both (R2 + L2), or l2 (L2 only).
+# dualsense_triggers = 0
+# dualsense_triggers_mode = r2
+# Xbox One / Series X|S 4-motor HD Rumble translation via optional renhdrum.dll / librenhdrum.so (live).
+# xbox_rumble = 1
+# xbox_triggers = 1
+# Steam Controller (2026) grip HD Rumble via optional renhdrum.dll / librenhdrum.so (live; steam_volume: 10 to 100).
+# steam_rumble = 1
+# steam_volume = 100
+# steam_crisp = 1
 # Which gamepad button is Switch A: nintendo (by position: east A, south B, west Y, north X), xbox (south A, east B,
 # west X, north Y, as an Xbox pad labels them; cross A on a PlayStation pad) or auto (nintendo for a pad with Nintendo
 # labels, xbox for the others). The bind_ lines below apply on top. Changes while the game runs take effect at once.
