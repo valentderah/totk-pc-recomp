@@ -130,6 +130,11 @@ def b(src, dst, link=False):
     return (0x94000000 if link else 0x14000000) | ((dst - src) >> 2) & 0x3FFFFFF
 
 
+def quad(v):
+    """The two words of a .quad v."""
+    return [v & 0xFFFFFFFF, v >> 32]
+
+
 def record(original=0x94000010, trampoline_first=None, stub=None, writes=None, **extra):
     """A record of one inline hook at main+SITE_OFF whose original is `original` (default bl main+SITE_OFF+0x40)."""
     site, stub_at, tramp = MAIN + SITE_OFF, PLUGIN + STUB_OFF, PLUGIN + TRAMP_OFF
@@ -271,6 +276,74 @@ class Check(unittest.TestCase):
 
     def test_indirect_original(self):
         self.refused(record(original=0xD65F03C0), 'is a br, blr or ret')
+
+    # exlaunch's long forms (tools/exefs_plugins.py relocation_end, returns_to): the trampoline at plugin0+off
+    def long_form(self, original, off, words):
+        rec = record(original=original)
+        img = bytearray(rec['images']['plugin0'])
+        struct.pack_into('<I', img, STUB_OFF + 12, b(PLUGIN + STUB_OFF + 12, PLUGIN + off))
+        struct.pack_into(f'<{len(words)}I', img, off, *words)
+        rec['images']['plugin0'] = bytes(img)
+        return rec
+
+    def test_trampoline_tbnz_long(self):   # Challenge: tbnz w0, #0 out of the plugin's reach
+        site, t = MAIN + SITE_OFF, PLUGIN + TRAMP_OFF
+        words = [0x37000040, 0x14000005, xp.LDR_X17_8, xp.BR_X17, *quad(site + 0x14), b(t + 24, site + 4)]
+        hooks, reasons = xp.check_record(self.long_form(0x370000A0, TRAMP_OFF, words), IMPLS)
+        self.assertEqual(reasons, [])
+        self.assertEqual(hooks[0]['relocated'], '0x37000040 +5 words')
+
+    def test_trampoline_backward_unsigned(self):   # Challenge: b.eq back 0x2ec; exlaunch's .quad lacks the sign
+        site, t = MAIN + SITE_OFF, PLUGIN + TRAMP_OFF
+        form = [0x54000040, 0x14000005, xp.LDR_X17_8, xp.BR_X17]
+        for target in (site + 0x1FFD14, site - 0x2EC):
+            words = [*form, *quad(target), b(t + 24, site + 4)]
+            self.assertEqual(self.reasons(self.long_form(0x54FFE8A0, TRAMP_OFF, words)), [], hex(target))
+        self.refused(self.long_form(0x54FFE8A0, TRAMP_OFF, [*form, *quad(site + 0x1FFD18), b(t + 24, site + 4)]),
+                     'not the original')
+
+    def test_trampoline_long_nop(self):   # the .quad 8-byte aligned by one nop before the form
+        site, t = MAIN + SITE_OFF, PLUGIN + TRAMP_OFF + 4
+        form = [0x37000040, 0x14000005, xp.LDR_X17_8, xp.BR_X17, *quad(site + 0x14)]
+        self.assertEqual(self.reasons(self.long_form(0x370000A0, TRAMP_OFF + 4,
+                                                     [xp.NOP, *form, b(t + 28, site + 4)])), [])
+        self.refused(self.long_form(0x370000A0, TRAMP_OFF + 4, [*form, b(t + 24, site + 4)]), 'not the original')
+
+    def test_trampoline_long_wrong_target(self):
+        site, t = MAIN + SITE_OFF, PLUGIN + TRAMP_OFF
+        words = [0x37000040, 0x14000005, xp.LDR_X17_8, xp.BR_X17, *quad(site + 0x18), b(t + 24, site + 4)]
+        self.refused(self.long_form(0x370000A0, TRAMP_OFF, words), 'not the original')
+
+    def test_trampoline_bl_long(self):   # ldr x17, #12; adr x30, #16; br x17; .quad, behind a nop here
+        site, t = MAIN + SITE_OFF, PLUGIN + TRAMP_OFF
+        words = [xp.NOP, xp.LDR_X17_12, xp.ADR_X30_16, xp.BR_X17, *quad(site + 0x40), b(t + 24, site + 4)]
+        self.assertEqual(self.reasons(self.long_form(0x94000010, TRAMP_OFF, words)), [])
+
+    def test_trampoline_adrp_long(self):   # adrp x8: ldr x8, #8; b #12; .quad <page>
+        site, t = MAIN + SITE_OFF, PLUGIN + TRAMP_OFF
+        words = [0x58000048, 0x14000003, *quad(site & ~0xFFF), b(t + 16, site + 4)]
+        self.assertEqual(self.reasons(self.long_form(0x90000008, TRAMP_OFF, words)), [])
+
+    def test_trampoline_ldr_literal_long(self):   # ldr x1, <literal>: ldr x1, #8; b over the 8 bytes; the bytes
+        site, t = MAIN + SITE_OFF, PLUGIN + TRAMP_OFF
+        words = [0x58000041, 0x14000003, 0x11223344, 0x55667788, b(t + 16, site + 4)]
+        self.assertEqual(self.reasons(self.long_form(0x58000801, TRAMP_OFF, words)), [])
+
+    def test_trampoline_absolute_return(self):   # back to the site + 4 by ldr x17, #8; br x17; .quad, nop-aligned
+        site = MAIN + SITE_OFF
+        words = [0xAA0003F3, xp.NOP, xp.LDR_X17_8, xp.BR_X17, *quad(site + 4)]
+        self.assertEqual(self.reasons(self.long_form(0xAA0003F3, TRAMP_OFF, words)), [])
+        words[-2:] = quad(site + 8)
+        self.refused(self.long_form(0xAA0003F3, TRAMP_OFF, words), 'no b to the site + 4')
+
+    def test_replace_hook_adrp_orig(self):   # a function starting with adrp: its Orig trampoline is the long form
+        site, t, adrp = MAIN + SITE_OFF, PLUGIN + TRAMP_OFF, 0x90000008
+        w = [{'module': 'main', 'offset': SITE_OFF, 'old': adrp, 'new': b(site, PLUGIN + THUNK_OFF), 'fn_start': True}]
+        rec = self.long_form(adrp, TRAMP_OFF, [0x58000048, 0x14000003, *quad(site & ~0xFFF), b(t + 16, site + 4)])
+        rec['writes'] = w
+        hooks, reasons = xp.check_record(rec, IMPLS)
+        self.assertEqual(reasons, [])
+        self.assertEqual(hooks[0]['trampoline'], f'plugin0+{TRAMP_OFF:#x}')
 
 
 class Diff(unittest.TestCase):
@@ -602,6 +675,55 @@ class Generator(unittest.TestCase):
         self.assertIn('#define RT_PLUGIN_COUNT 1', h)
         self.assertIn(f'X(0, "main", {FN:#x}, 0xaa0003f3u, 0x14000000u)', h)
         self.assertIn('X("plugin0", 0x4100) X("plugin0", 0x4200)', h)
+
+    # exlaunch's hook impl saves no NZCV: flags pass from the site to the callback and back (recomp/flags.py)
+    def code(self, main_words, plugin_words=None):
+        """Main's hooked function and the plugin image's words replaced; the plugin hash follows."""
+        (self.d / 'exefs' / 'main').write_bytes(code_nso(main_words))
+        img = bytearray((self.d / 'plugin0.img').read_bytes())
+        for off, w in (plugin_words or {}).items():
+            struct.pack_into('<I', img, off, w)
+        (self.d / 'plugin0.img').write_bytes(bytes(img))
+        n = Nso(str(self.plugin_file))
+        self.sha = hashlib.sha256(bytes(img[n.text[0]:n.text[0] + n.text[1]])).hexdigest()
+
+    def test_hook_site_hands_the_flags_to_the_callback_and_back(self):
+        # cmp x0, x1; b.eq +8 (hooked); mov x0, x19; ret
+        self.code({FN: 0xEB01001F, FN + 4: 0x54000040, FN + 8: 0xAA1303E0, FN + 12: RET_W})
+        t = self.table(f'site mod_x main {FN + 4:x} 54000040 @call:plugin0+4000 54000040', ['stub plugin0 4000'])
+        m = self.bases['main'] + FN
+        c = self.emit(t, 'main', m, m + 16)
+        stub = self.bases['plugin0'] + 0x4000
+        on = c[c.index('if (rt_patch_on[0])'):]
+        on, off = on[:on.index('} else {')], on[on.index('} else {'):]
+        call = on.index(f'f_{stub:x}(c);')
+        self.assertIn('c->nzcv = fnz_', on[:call])             # the callback sees the cmp's flags
+        self.assertIn('F.nz = c->nzcv;', on[call:])            # the b.eq reads what the callback left
+        self.assertIn('fc_nz(&F, CC_EQ)', on[call:])
+        self.assertIn('fc_nz(&F, CC_EQ)', off[:off.index('}', 8)])   # off: the cmp's flags, packed into F.nz
+        self.assertIn('F.nz = fnz_sub64(&F);', c)
+
+    def test_plugin_return_leaves_its_flags(self):
+        pb = self.bases['plugin0']
+        # the callback: cmp w1, #5; ret
+        self.code({FN: 0xAA0003F3, FN + 4: 0xAA1303E0, FN + 8: RET_W}, {0x4200: 0x7100143F, 0x4204: RET_W})
+        t = self.table(f'site mod_x main {FN:x} aa0003f3 @call:plugin0+4000 aa0003f3',
+                       ['stub plugin0 4000', 'seed plugin0 4100 4200'])
+        c = self.emit(t, 'plugin0', pb + 0x4200, pb + 0x4208)
+        self.assertIn('c->nzcv = fnz_sub32(&F); return;', c)
+
+    def test_plugin_call_takes_the_callee_flags(self):
+        pb = self.bases['plugin0']
+        # bl 0x4200; b.eq +8; ret; ret
+        self.code({FN: 0xAA0003F3, FN + 4: 0xAA1303E0, FN + 8: RET_W},
+                  {0x4100: b(pb + 0x4100, pb + 0x4200, True), 0x4104: 0x54000040, 0x4108: RET_W, 0x410c: RET_W})
+        t = self.table(f'site mod_x main {FN:x} aa0003f3 @call:plugin0+4000 aa0003f3',
+                       ['stub plugin0 4000', 'seed plugin0 4100 4200'])
+        c = self.emit(t, 'plugin0', pb + 0x4100, pb + 0x4110)
+        body = c[c.index(f'void f_{pb + 0x4100:x}(Cpu *c) {{'):]
+        self.assertLess(body.index(f'c->pc = {pb + 0x4200:#x}ull; rt_dispatch(c);'), body.index('F.nz = c->nzcv;'))
+        self.assertIn('fc_nz(&F, CC_EQ)', body)
+        self.assertEqual(body.count('c->nzcv = fnz_nz(&F); return;'), 2)   # both returns leave the flags
 
     def test_stub_returns_instead_of_branching_to_its_trampoline(self):
         t = self.table(f'site mod_x main {FN:x} aa0003f3 @call:plugin0+4000 aa0003f3', ['stub plugin0 4000'])
