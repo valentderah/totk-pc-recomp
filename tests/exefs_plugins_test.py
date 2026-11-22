@@ -292,6 +292,15 @@ class Check(unittest.TestCase):
         self.assertEqual(reasons, [])
         self.assertEqual(hooks[0]['relocated'], '0x37000040 +5 words')
 
+    def test_trampoline_backward_unsigned(self):   # Challenge: b.eq back 0x2ec; exlaunch's .quad lacks the sign
+        site, t = MAIN + SITE_OFF, PLUGIN + TRAMP_OFF
+        form = [0x54000040, 0x14000005, xp.LDR_X17_8, xp.BR_X17]
+        for target in (site + 0x1FFD14, site - 0x2EC):
+            words = [*form, *quad(target), b(t + 24, site + 4)]
+            self.assertEqual(self.reasons(self.long_form(0x54FFE8A0, TRAMP_OFF, words)), [], hex(target))
+        self.refused(self.long_form(0x54FFE8A0, TRAMP_OFF, [*form, *quad(site + 0x1FFD18), b(t + 24, site + 4)]),
+                     'not the original')
+
     def test_trampoline_long_nop(self):   # the .quad 8-byte aligned by one nop before the form
         site, t = MAIN + SITE_OFF, PLUGIN + TRAMP_OFF + 4
         form = [0x37000040, 0x14000005, xp.LDR_X17_8, xp.BR_X17, *quad(site + 0x14)]

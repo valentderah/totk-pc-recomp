@@ -214,7 +214,12 @@ def relocation_end(word, orig, site, at):
         return literal_end(word, orig, at)
     p = at + 4 if w0 == NOP else at
     w = [word(p + 4 * i) for i in range(4)]
+    targets = {target}
     if kind in ('b.cond', 'cbz', 'tbz'):
+        # exlaunch's __fix_cond_comp_test_branch takes the offset field without its sign: a backward target lands
+        # 2^21 (b.cond, cbz) or 2^16 (tbz) bytes too far. Challenge Mode's trampolines hold such .quads; the generated
+        # code runs main's own branch instead, to its real target.
+        targets.add(site + ((orig >> 5 & (0x3FFF if kind == 'tbz' else 0x7FFFF)) << 2))
         form, data = pc_relative(w[0], p) == (rel[0], p + 8) and w[1:] == [0x14000005, LDR_X17_8, BR_X17], p + 16
     elif kind == 'b' and orig >> 31:
         form, data = w[:3] == [LDR_X17_12, ADR_X30_16, BR_X17], p + 12
@@ -222,7 +227,7 @@ def relocation_end(word, orig, site, at):
         form, data = w[:2] == [LDR_X17_8, BR_X17], p + 8
     else:   # adr, adrp
         form, data = w[:2] == [0x58000040 | orig & 0x1F, 0x14000003], p + 8
-    return data + 8 if form and data % 8 == 0 and quad(word, data) == target else None
+    return data + 8 if form and data % 8 == 0 and quad(word, data) in targets else None
 
 
 def returns_to(word, at, back):
