@@ -573,6 +573,107 @@ class IniTest(unittest.TestCase):
             self.assertEqual(ini.get_language(text), 'ja')
 
 
+class ExtractMergeTest(unittest.TestCase):
+    """The real merge wrapper with synthetic inputs and hactool output; no game files or keys."""
+
+    LEVELS = '\n'.join(f'        Level {i} (GOOD):' for i in range(6))
+    LOG = ('NCA:\nFixed-Key Signature (FAIL): omitted\nNPDM Signature (GOOD): omitted\n'
+           'NPDM:\n    ACID:\n        Signature Key (GOOD): 0\n        Signature (FAIL): omitted\n'
+           + LEVELS + '\nDone!\n')
+    IMAGE = b'synthetic merged image'
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.output, self.logs = self.root / 'romfs', self.root / 'logs'
+        self.logs.mkdir()
+        self.base, self.update, self.keys = (self.root / name for name in ('base.nsp', 'update.nsp', 'prod.keys'))
+        self.log, self.code, self.base_log = self.LOG, 0, self.LEVELS
+        self.phases = []
+        header = bytearray(0xc00)
+        header[0x404] = 4   # one BKTR section
+        inputs = [(source, {'size': 1, 'nca_offset': 0}, bytes(header)) for source in (self.base, self.update)]
+        self.enterContext(mock.patch.object(steps.extract, 'program_ncas', return_value=({}, inputs)))
+        self.enterContext(mock.patch.object(steps.extract, 'copy_range'))
+        self.enterContext(mock.patch.object(steps.extract, 'hactool_prod_keys'))
+        self.enterContext(mock.patch.object(steps.extract.shutil, 'disk_usage',
+                                           return_value=SimpleNamespace(free=100 * steps.GiB)))
+        self.enterContext(mock.patch.object(steps.extract, 'run_hactool', side_effect=self.hactool))
+        self.index = self.enterContext(mock.patch.object(steps.extract, 'index_romfs', return_value=[]))
+
+    def hactool(self, command, environment):
+        if '-x' not in command:
+            return 0, self.base_log   # the extra verification that identifies a damaged input
+        image = Path(next(arg.split('=', 1)[1] for arg in command if arg.startswith('--section0=')))
+        image.write_bytes(self.IMAGE)
+        return self.code, self.log
+
+    def merge(self):
+        steps.extract.merge_update_romfs(self.base, self.update, self.keys, self.root / 'hactool', self.output,
+                                         self.logs, phase=self.phases.append)
+
+    def test_acid_signature_warning_keeps_a_verified_merge(self):
+        self.merge()
+        image = self.output / 'romfs.bin'
+        self.assertEqual(image.read_bytes(), self.IMAGE)
+        report = json.loads((self.output / 'index.json').read_text())
+        self.assertEqual((report['status'], report['romfs_size'], report['romfs_sha256']),
+                         ('pass', len(self.IMAGE), steps.extract.sha256(image)))
+        self.assertEqual(self.phases, ['copy', 'merge', 'index'])
+        self.assertEqual((self.logs / f'merge_romfs-{self.root.name}.log').read_text(), self.LOG)
+
+    def test_existing_npdm_signature_warning_is_still_allowed(self):
+        self.log = self.LOG.replace('NPDM Signature (GOOD)', 'NPDM Signature (FAIL)')
+        self.merge()
+        self.assertTrue((self.output / 'index.json').is_file())
+
+    def test_data_hash_failures_still_identify_the_damaged_update(self):
+        for label in [*(f'Level {i}' for i in range(6)), 'Superblock Hash', 'Hash Table']:
+            with self.subTest(label=label):
+                self.log = self.LOG + f'        {label} (FAIL): omitted\n'
+                with self.assertRaises(steps.extract.DamagedFile) as error:
+                    self.merge()
+                self.assertEqual(error.exception.path, self.update)
+                self.assertIn('diagnose', self.phases)
+                self.index.assert_not_called()
+                self.assertFalse(self.output.exists())
+
+    def test_base_hash_failure_is_still_identified(self):
+        self.log = self.LOG.replace('Level 5 (GOOD)', 'Level 5 (FAIL)')
+        self.base_log = self.LEVELS.replace('Level 5 (GOOD)', 'Level 5 (FAIL)')
+        with self.assertRaises(steps.extract.DamagedFile) as error:
+            self.merge()
+        self.assertEqual(error.exception.path, self.base)
+        self.index.assert_not_called()
+
+    def test_every_ivfc_level_is_still_required(self):
+        for level in range(6):
+            with self.subTest(level=level):
+                self.log = self.LOG.replace(f'        Level {level} (GOOD):\n', '')
+                with self.assertRaisesRegex(ValueError, 'did not verify all six IVFC levels'):
+                    self.merge()
+                self.index.assert_not_called()
+                self.assertFalse(self.output.exists())
+
+    def test_other_hactool_errors_are_still_rejected(self):
+        for message in ('Signature Key (FAIL): 0', 'Fixed-Key Index (FAIL): 0', 'Other Signature (FAIL): omitted',
+                        'Section (INVALID)', 'Failed to read section', 'Error: cannot save section'):
+            with self.subTest(message=message):
+                self.log = self.LOG + message + '\n'
+                with self.assertRaisesRegex(ValueError, 'hactool merge failed'):
+                    self.merge()
+                self.index.assert_not_called()
+                self.assertFalse(self.output.exists())
+
+    def test_nonzero_exit_is_still_rejected(self):
+        self.code = 1
+        with self.assertRaisesRegex(ValueError, 'hactool merge failed'):
+            self.merge()
+        self.index.assert_not_called()
+        self.assertFalse(self.output.exists())
+
+
 class CleanupTest(unittest.TestCase):
     """The real Cleanup step on a finished install whose romfs/ is intact, emptied or gone (#107)."""
 
