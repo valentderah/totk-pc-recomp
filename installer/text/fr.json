@@ -152,6 +152,7 @@
  "ui.close": "Fermer",
  "ui.back": "Retour",
  "ui.open_folder": "Ouvrir le dossier",
+ "ui.graphics_drivers": "Télécharger un pilote graphique",
  "ui.update_mode": "Ce dossier contient une installation antérieure. L'installation la poursuit ou la met à jour ; les fichiers du jeu ne sont demandés que s'ils sont de nouveau nécessaires.",
  "ui.need_dest": "Choisissez le dossier d'installation.",
  "ui.need_base": "Choisissez le fichier du jeu de base.",

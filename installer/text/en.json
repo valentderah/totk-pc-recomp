@@ -158,6 +158,7 @@
  "ui.close": "Close",
  "ui.back": "Back",
  "ui.open_folder": "Open folder",
+ "ui.graphics_drivers": "Graphics driver downloads",
  "ui.update_mode": "This folder holds an earlier installation. The setup continues or updates it; the game files are asked for only if they are needed again.",
  "ui.need_dest": "Choose the install folder.",
  "ui.need_base": "Choose the base game file.",

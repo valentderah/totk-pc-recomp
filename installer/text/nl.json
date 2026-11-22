@@ -152,6 +152,7 @@
  "ui.close": "Sluiten",
  "ui.back": "Terug",
  "ui.open_folder": "Map openen",
+ "ui.graphics_drivers": "Grafische stuurprogramma's downloaden",
  "ui.update_mode": "Deze map bevat een eerdere installatie. De installatie zet die voort of werkt die bij; de spelbestanden worden alleen gevraagd als ze opnieuw nodig zijn.",
  "ui.need_dest": "Kies de installatiemap.",
  "ui.need_base": "Kies het basisspelbestand.",

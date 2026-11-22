@@ -40,6 +40,17 @@ PRIMARY_LANGS = {0x04: 'zh-Hans', 0x19: 'ru', 0x07: 'de', 0x0c: 'fr', 0x0a: 'es'
                  0x12: 'ko'}
 # window language -> the game language the form starts with (default_game_language)
 GAME_LANGUAGE_FOR_UI = {'ru': 'ru', 'de': 'de', 'fr': 'fr', 'es': 'es', 'it': 'it', 'nl': 'nl', 'ja': 'ja'}
+# The vendors' own driver pages, offered on the finish page when the check stopped on the graphics driver
+# (DRIVER_ERRORS). A page opens only when the player clicks its vendor.
+DRIVER_PAGES = (('NVIDIA', 'https://www.nvidia.com/en-us/drivers/'),
+                ('AMD', 'https://www.amd.com/en/support/download/drivers.html'),
+                ('Intel', 'https://www.intel.com/content/www/us/en/download-center/home.html'))
+DRIVER_ERRORS = frozenset({'check.vulkan_missing', 'check.vulkan_no_device', 'check.vulkan_too_old'})
+
+
+def driver_help(error):
+    """Whether the finish page offers the driver pages for error (Model.error: id, params, step)."""
+    return bool(error) and error[0] in DRIVER_ERRORS
 
 
 def load_texts(lang):

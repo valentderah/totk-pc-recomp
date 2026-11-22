@@ -158,6 +158,7 @@
  "ui.close": "Fechar",
  "ui.back": "Voltar",
  "ui.open_folder": "Abrir pasta",
+ "ui.graphics_drivers": "Baixar driver de vídeo",
  "ui.update_mode": "Esta pasta tem uma instalação anterior. A instalação vai continuar ou atualizá-la; os arquivos do jogo só são pedidos se forem necessários de novo.",
  "ui.need_dest": "Escolha a pasta de instalação.",
  "ui.need_base": "Escolha o arquivo do jogo base.",

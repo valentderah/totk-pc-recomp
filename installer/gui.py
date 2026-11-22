@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import webbrowser
 from pathlib import Path
 
 from . import dpi
@@ -38,8 +39,9 @@ except ImportError:
 from . import ini
 from . import layout as layouts
 from . import recent
-from .guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGE_LABELS, UI_LANGUAGES, Catalog, Form, Model,
-                       Process, amount, default_game_language, describe_event, parse_line, windows_ui_language)
+from .guilogic import (DONE, DRIVER_PAGES, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGE_LABELS, UI_LANGUAGES, Catalog,
+                       Form, Model, Process, amount, default_game_language, describe_event, driver_help, parse_line,
+                       windows_ui_language)
 
 POLL_MS = 100
 GLYPH = {PENDING: '\u25cb', RUNNING: '\u25b6', DONE: '\u2714', SKIPPED: '\u2013', FAILED: '\u2716'}
@@ -428,6 +430,13 @@ class App:
         self.finish_steps.pack(fill='x', pady=(0, dpi.px(8)))
         self.finish_notice = self.notice(f)
         self.finish_notice.pack(fill='x', pady=(dpi.px(8), 0))
+        # A check that stopped on the graphics driver (guilogic.driver_help): one button per vendor opens its driver
+        # page in the browser. Packed by refresh_finish only for those errors.
+        self.driver_frame = ttk.LabelFrame(f)
+        self.bind_text(self.driver_frame, 'text', 'ui.graphics_drivers')
+        for vendor, url in DRIVER_PAGES:
+            ttk.Button(self.driver_frame, text=vendor, command=lambda u=url: webbrowser.open(u)).pack(
+                side='left', padx=dpi.px(8), pady=dpi.px(8))
         return f
 
     # ---- form -----------------------------------------------------------------------------------------------------
@@ -677,6 +686,10 @@ class App:
             if m.log_path:
                 text += '\n\n' + self.cat('ui.log_file', path=m.log_path)
         self.finish_text.configure(text=text)
+        if result == 'failed' and driver_help(m.error):
+            self.driver_frame.pack(fill='x', pady=(dpi.px(8), 0))
+        else:
+            self.driver_frame.pack_forget()
         for w in self.finish_steps.winfo_children():
             w.destroy()
         for s in m.steps:
@@ -815,6 +828,18 @@ def selftest(layout, shots=None):
             app.model.finish(1)
             app.refresh_finish()
             shot(f'finish-failed-{tag}')
+            if app.driver_frame.winfo_manager():
+                raise AssertionError('driver pages offered for a disk space error')
+            app.model = Model()
+            for e in SAMPLE_RUN[:3] + [{'type': 'error', 'id': 'check.vulkan_too_old', 'step': 'check',
+                                        'params': {'devices': 'Intel(R) HD Graphics 4600 (1.2)'}},
+                                       {'type': 'end', 'result': 'failed', 'seconds': 3}]:
+                app.model.apply(e)
+            app.model.finish(1)
+            app.refresh_finish()
+            shot(f'finish-driver-{tag}')
+            if not app.driver_frame.winfo_manager():
+                raise AssertionError('no driver pages offered for an old graphics driver')
             app.model = Model()
             app.model.finish(3)
             app.refresh_finish()
