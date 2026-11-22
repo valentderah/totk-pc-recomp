@@ -24,11 +24,11 @@ from . import state as statefile
 from .events import render
 
 TEXT = Path(__file__).resolve().parent / 'text'
-UI_LANGUAGES = ('en', 'ru', 'pt-BR', 'zh-Hans', 'de', 'fr', 'es', 'it', 'nl', 'ja', 'ko')
+UI_LANGUAGES = ('en', 'ru', 'pt-BR', 'zh-Hans', 'de', 'fr', 'es', 'it', 'nl', 'ja', 'ko', 'vi')
 # what the language switch in the window's corner shows for each
 UI_LANGUAGE_LABELS = {'en': 'English', 'ru': 'Русский', 'pt-BR': 'Português (Brasil)', 'zh-Hans': '简体中文',
                       'de': 'Deutsch', 'fr': 'Français', 'es': 'Español', 'it': 'Italiano', 'nl': 'Nederlands',
-                      'ja': '日本語', 'ko': '한국어'}
+                      'ja': '日本語', 'ko': '한국어', 'vi': 'Tiếng Việt'}
 STEP_ORDER = ('check', 'kit', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss',
               'cleanup')
 # message parameter -> catalog id prefix of the names that replace its raw values
@@ -37,7 +37,7 @@ LANG_PT_BR = 0x0416   # Portuguese (Brazil), the whole LANGID: Portugal's Portug
 # primary language id in a Windows LANGID -> window language, for the languages whose every region gets the same text.
 # Every Chinese gets Simplified Chinese: the setup has no Traditional Chinese text, as the in-game menu has none.
 PRIMARY_LANGS = {0x04: 'zh-Hans', 0x19: 'ru', 0x07: 'de', 0x0c: 'fr', 0x0a: 'es', 0x10: 'it', 0x13: 'nl', 0x11: 'ja',
-                 0x12: 'ko'}
+                 0x12: 'ko', 0x2a: 'vi'}
 # window language -> the game language the form starts with (default_game_language)
 GAME_LANGUAGE_FOR_UI = {'ru': 'ru', 'de': 'de', 'fr': 'fr', 'es': 'es', 'it': 'it', 'nl': 'nl', 'ja': 'ja'}
 
