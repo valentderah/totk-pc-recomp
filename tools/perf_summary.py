@@ -11,6 +11,7 @@ import sys
 
 PERF = re.compile(r'perf: frame (\d+): interval avg ([\d.]+) ms max ([\d.]+) ms \(([\d.]+) fps\); render thread blocked: '
                   r'pacing (\d+)%.*?pipeline build (\d+)%.*?texture (\d+)%')
+FRAME_COUNT = re.compile(r'; ab \d+/(\d+);')
 GPU = re.compile(r'perf: frame (\d+): gpu avg (?:([\d.]+) ms|n/a).*?fence wait per frame: render thread ([\d.]+) ms, '
                  r'other threads ([\d.]+) ms; vram (?:([\d.]+) of ([\d.]+) MiB|n/a).*?ram working set ([\d.]+) MiB, '
                  r'private ([\d.]+) MiB; bound: (\w+)')
@@ -69,6 +70,7 @@ def main():
     lo = int(sys.argv[2]) if len(sys.argv) > 2 else 1560
     hi = int(sys.argv[3]) if len(sys.argv) > 3 else 10**9
     fr, fps, mx, gpu, vram, ram, bound = None, [], [], [], [], [], {}
+    frame_counts = []
     dirty, dframes, dlast = [], [], None
     for line in open(sys.argv[1], encoding='utf-8', errors='replace'):
         if line.startswith('run_game:'):
@@ -86,6 +88,8 @@ def main():
             f = int(m[1])
             if lo < f <= hi:
                 fps.append(float(m[4]))
+                count = FRAME_COUNT.search(line)
+                frame_counts.append(int(count[1]) if count else 60)   # assume full windows when older logs omit the count
                 mx.append(float(m[3]))
                 print(f'perf {f}: {m[4]} fps max {m[3]} pacing {m[5]}% pipe {m[6]}% tex {m[7]}%')
         elif m := GPU.search(line):
@@ -109,7 +113,9 @@ def main():
         elif (m := RWAIT.search(line)) and fr and lo < fr <= hi:
             print(f'    rw{m[1]}: {m[2]}')
     if fps:
-        print(f'SUMMARY frames {lo}-{hi}: mean fps {statistics.mean(fps):.1f}, min window fps {min(fps):.1f}, '
+        # Windows contain frames, not equal durations: total frames / total time is the weighted harmonic mean.
+        mean_fps = statistics.harmonic_mean(fps, weights=frame_counts)
+        print(f'SUMMARY frames {lo}-{hi}: mean fps {mean_fps:.1f}, min window fps {min(fps):.1f}, '
               f'max frame {max(mx):.1f} ms')
     if ram:
         g = f'gpu mean {statistics.mean(gpu):.2f} ms' if gpu else 'gpu n/a'
