@@ -136,6 +136,23 @@ set gears    TOTK_HIGHFPS_FIX    1
 site gears main 213eee4 f9402001 bd40082c f9402001
 site gears main 213f0d4 1e24180c 3c9f0fe4 1e241804 1e2c088c 3cc107e4
 
+# Thunderstorm lightning (issue #1287), as in patches-v143.txt: the same state machine update (main+0xbdd27c,
+# called once at main+0xbdcad4) and the same three chance draws. State 0 skips the draw; every other state
+# compares a random [0,1) with the distant-bolt chance (rodata 0.013333 at main+0x3816c5c, bit 0 of the +8 flags),
+# state 1 draws the 0.01 chance (rodata 0.01 at main+0x3816f50) through s9 for the near strike (90 units countdown
+# at +0xa0) and for bit 3, and the timer branch states 3, 4 and 5 draw the same 0.01 through s1 for bit 3.
+# The frame ratio is the time object's +0x38, loaded as the game's own slow-motion check does at main+0xbee7d8:
+# its GOT slot main+0x4630920, the storage it points at, then +0xc8. After each site x10, s2, s3 and s4 are dead
+# on every path (no read before a write) and s9's prologue save keeps the caller's value; s3/s4 hold the clamped
+# ratio and the 1.0, the chance stays in its register. At 30 fps and slower the ratio is 1 and the chance is
+# unchanged bit for bit. TOTK_LIGHTNING_FIX=0 runs the game's loads.
+set lightning TOTK_LIGHTNING_FIX 1
+site lightning main bddb30 bd4c5d01 bd4c5d01 f001d28a f944914a f940014a f940654a bd403943 1e2e1004 1e247863 1e230821   # ldr s1, [x8, #0xc5c] (0.013333)
+site lightning main bddd70 bd4f5101 bd4f5101 f001d28a f944914a f940014a f940654a bd403943 1e2e1004 1e247863 1e230821   # ldr s1, [x8, #0xf50] (0.01)
+site lightning main bdddf4 bd4f5109 bd4f5109 f001d28a f944914a f940014a f940654a bd403943 1e2e1004 1e247863 1e230929   # ldr s9, [x8, #0xf50] (0.01)
+#   each: the game's load; adrp x10, main+0x4630000; ldr x10, [x10, #0x920]; ldr x10, [x10];
+#   ldr x10, [x10, #0xc8]; ldr s3, [x10, #0x38] (ratio); fmov s4, #1.0; fminnm s3, s3, s4; fmul (chance * ratio)
+
 # Spin waits, from tools/spin_waits.py --exefs build/extracted/v110/exefs --patches recomp/patches-v110.txt: loops that only
 # another thread can end; their back-edges pass rt_spin_gate (runtime/kernel.c), TOTK_SPIN=0 keeps the core.
 
