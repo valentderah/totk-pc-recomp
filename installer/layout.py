@@ -223,7 +223,9 @@ def kit_folder(dest):
 def temp_folder(base, dest):
     """One temp folder per install folder below a shared base (dev mode, --temp), so two installs never share
     generated files."""
-    tag = hashlib.sha256(str(dest).lower().encode()).hexdigest()[:8]
+    # Parent directories differing only in case are separate on POSIX; Windows aliases keep their existing tag.
+    destination = str(dest)
+    tag = hashlib.sha256((destination.lower() if WIN else destination).encode()).hexdigest()[:8]
     return base / f'{dest.name or "root"}-{tag}'
 
 
