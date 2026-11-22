@@ -157,7 +157,7 @@ typedef struct {
     // src 1: from the sun's shadow passes (scam: the cascade camera's key the frame it was first drawn); sbox: lo/hi known
     // even when not cached; inview: that box is in the scene camera's view (the G-buffer has it: not cached from shadows)
     uint32_t src, scam, sbox, inview;
-    uint32_t tw;                         // the material word its cached triangles hold (0 none)
+    uint32_t tw, mgen;                   // the material word its cached triangles hold (0 none), MT.gone_gen when last checked
     uint32_t ban;                        // the frame + 1 its copy came back without a triangle: not cached for AMBIG_FRAMES
     float ccam[3];                       // the camera when its copy was captured (the compare's error grows with distance)
     uint32_t nshape;                     // compares that found triangles appearing or disappearing (culled by distance)
@@ -463,7 +463,7 @@ static struct {
     RtCell C[CELL_MAX];
     int32_t hidx[HASH_SIZE];             // entry + 1; 0 empty, -1 deleted
     int32_t mfree[MESH_MAX];
-    int nfree, tombs, nret;
+    int nfree, tombs, nret, mhigh;
     RtAlloc wa, ba, ga;                  // the cache's triangles, the BLAS pool's bytes, gtab's entries
     RtAlloc xa;                          // step 6: the cache's part of MT.pext (vec4)
     RtRetired ret[RET_MAX];
@@ -1000,6 +1000,7 @@ static struct {
     uint32_t fifo[2][MT_MAX], fhead[2], fcount[2], fresh[2];   // freed slots (oldest first); slots never used
     uint32_t nused[2];
     uint64_t st_new, st_gone, st_full;
+    uint32_t gone_gen;                   // bumped whenever an image is dropped from MT (for lazy mfix checks on cached meshes)
     VkDescriptorSetLayout dsl;
     VkDescriptorPool pool;
     VkDescriptorSet set;
@@ -2415,7 +2416,7 @@ static uint32_t mesh_hash(uint64_t id) { return (uint32_t)(id * 0x9E3779B97F4A7C
 
 static void mesh_reset(void) {
     memset(R.hidx, 0, sizeof R.hidx), memset(R.M, 0, sizeof R.M), memset(R.C, 0, sizeof R.C);
-    R.tombs = 0, R.nfree = 0;
+    R.tombs = 0, R.nfree = 0, R.mhigh = 0;
     for (int i = MESH_MAX - 1; i >= 0; i--) R.mfree[R.nfree++] = i;
 }
 
@@ -2434,6 +2435,7 @@ static RtMesh *mesh_find(uint64_t id, int make, int *made) {
         if (v) continue;
         if (!make || !R.nfree) return NULL;
         int32_t m = R.mfree[--R.nfree];
+        if (m + 1 > R.mhigh) R.mhigh = m + 1;
         if (tomb != UINT32_MAX) s = tomb, R.tombs--;
         R.hidx[s] = m + 1;
         RtMesh *e = &R.M[m];
@@ -2667,7 +2669,7 @@ static void cache_upkeep(VkCtx *c, const float *vp, const float *cam) {
             }
         }
     }
-    for (int i = 0; i < MESH_MAX; i++) {
+    for (int i = 0; i < R.mhigh; i++) {
         RtMesh *e = &R.M[i];
         if (e->state == MS_FREE) continue;
         if (e->ambig && f - (e->ambig - 1) > AMBIG_FRAMES) e->ambig = 0;   // tried again
@@ -2693,7 +2695,9 @@ static void cache_upkeep(VkCtx *c, const float *vp, const float *cam) {
                 e->hidden = 0;   // not drawn in the view (occluded, or off the screen) but still in the sun's cascades: kept
                 R.cs_skept++;
             } else if (!e->src && e->has_bounds == 1 && !box_outside(vp, e->lo, e->hi)) {
-                gone = ++e->hidden >= 3, why = 1;   // in the view and not drawn: hidden, another level of detail, gone
+                // Keep occluded in-frustum static meshes for 30 frames (0.5 s at 60 fps) instead of 3 frames so
+                // transient occlusion culling behind mist/overhangs does not churn the mesh cache or pop cave reflections.
+                gone = ++e->hidden >= 30, why = 1;   // in the view and not drawn: hidden, another level of detail, gone
             } else {
                 gone = f - e->seen > (e->has_bounds == 1 ? R.keep : 3u), why = 2;
             }
@@ -3381,6 +3385,7 @@ void vk_rt_image_gone(VkImage image) {
             mt_gen_write(k, i);
             MT.fifo[k][(MT.fhead[k] + MT.fcount[k]) % MT_MAX] = i, MT.fcount[k]++;
             MT.nused[k]--, MT.st_gone++;
+            __atomic_fetch_add(&MT.gone_gen, 1, __ATOMIC_RELEASE);
         }
     }
     plat_mutex_unlock(&MT.lock);
@@ -3565,10 +3570,11 @@ void vk_rt_prog_note(uint32_t w, const void *fs, const uint32_t *tex, const uint
 }
 
 int vk_rt_xfb_begin(VkCommandBuffer cb, uint32_t verts, uint64_t tag, uint32_t flags, uint64_t id, const void *scam,
-                    const uint32_t *mat) {
+                    void (*mat_fn)(void *, uint32_t[5]), void *mat_ctx) {
     if (!scam) __atomic_fetch_add(&R.xfb_calls, 1, __ATOMIC_RELAXED);
     if (!verts) return 0;
-    RtMesh *pe = NULL, *ve = NULL;
+    RtMesh *pe = NULL, *ve = NULL, *mfix_e = NULL;
+    uint32_t gg = __atomic_load_n(&MT.gone_gen, __ATOMIC_ACQUIRE);
     uint32_t gmesh = 0;   // a G-buffer draw's geometry (VisEnt slot + 1) for its drawn test's counts, bit 31: left out
     int gcas = 0;         // the sun's cascades draw its geometry too: the game gives it a shadow (rt_unproject.comp bit 6)
     if (scam) {
@@ -3602,24 +3608,33 @@ int vk_rt_xfb_begin(VkCommandBuffer cb, uint32_t verts, uint64_t tag, uint32_t f
             if (e->seen == f) {
                 e->ambig = f + 1;   // drawn twice in one frame: two objects with one identity, not cached
             } else if (!e->ambig) {
-                if ((e->state == MS_READY || e->state == MS_COPIED) && mat && R.mat && (e->tw >> 31) && (mat[2] >> 31) &&
-                    mat[2] != e->tw && R.nmfix < MFIX_MAX) {   // another material word (a new texture): refreshed in the cache
-                    uint32_t *q = R.mfix[R.nmfix++];
-                    q[0] = e->woff, q[1] = e->tris, q[2] = mat[2], q[3] = (uint32_t)(e - R.M), e->tw = mat[2];
-                }
+                if ((e->state == MS_READY || e->state == MS_COPIED) && mat_fn && R.mat && (e->tw >> 31) && e->mgen != gg)
+                    mfix_e = e;   // an image was dropped since this mesh's material was checked: refresh lazily outside mesh_lock
                 if (e->state == MS_READY) {
                     e->seen = f, R.cs_hit_draws++, R.cs_hit_tris += e->tris;
                     // once in VERIFY_FRAMES (spread over the meshes) captured again, to be compared with its copy
                     uint32_t ei = (uint32_t)(e - R.M);
                     if (e->vfy || R.nvfy >= VFY_MAX || (f + ei * 7u) % VERIFY_FRAMES || verts / 3 != e->tris) {
                         plat_mutex_unlock(&mesh_lock);
+                        if (mfix_e) {
+                            uint32_t mw[5] = {0};
+                            mat_fn(mat_ctx, mw);
+                            plat_mutex_lock(&mesh_lock);
+                            if (mfix_e->state == MS_READY || mfix_e->state == MS_COPIED) {
+                                mfix_e->mgen = gg;
+                                if ((mw[2] >> 31) && mw[2] != mfix_e->tw && R.nmfix < MFIX_MAX) {
+                                    uint32_t *q = R.mfix[R.nmfix++];
+                                    q[0] = mfix_e->woff, q[1] = mfix_e->tris, q[2] = mw[2], q[3] = (uint32_t)(mfix_e - R.M), mfix_e->tw = mw[2];
+                                }
+                            }
+                            plat_mutex_unlock(&mesh_lock);
+                        }
                         return 0;   // its cell stands in: not captured
                     }
                     e->vfy = UINT32_MAX, e->vclip = UINT32_MAX, R.vfyl[R.nvfy++] = (int32_t)ei, ve = e;
                 } else if (e->state == MS_SEEN && f - e->seen <= 2 && !e->anim && !e->ban && !e->invis && R.npend < PEND_MAX &&
                            R.new_tris + verts / 3 <= R.new_budget) {
                     e->state = MS_PENDING, R.pend[R.npend++] = (int32_t)(e - R.M), R.new_tris += verts / 3;
-                    e->tw = mat && R.mat ? mat[2] : 0;
                     pe = e;
                 }
             }
@@ -3643,6 +3658,24 @@ int vk_rt_xfb_begin(VkCommandBuffer cb, uint32_t verts, uint64_t tag, uint32_t f
     if (off == UINT32_MAX) {
         if (pe) plat_mutex_lock(&mesh_lock), pe->state = MS_SEEN, plat_mutex_unlock(&mesh_lock);
         return 0;   // a compare without a capture: cache_copy drops it (vclip UINT32_MAX)
+    }
+    uint32_t matw[5] = {0};
+    const uint32_t *mat = NULL;
+    if (mat_fn && R.mat) {
+        mat_fn(mat_ctx, matw);
+        mat = matw;
+    }
+    if (pe) pe->tw = mat ? mat[2] : 0, pe->mgen = gg;
+    if (mfix_e && mat) {
+        plat_mutex_lock(&mesh_lock);
+        if (mfix_e->state == MS_READY || mfix_e->state == MS_COPIED) {
+            mfix_e->mgen = gg;
+            if ((mat[2] >> 31) && mat[2] != mfix_e->tw && R.nmfix < MFIX_MAX) {
+                uint32_t *q = R.mfix[R.nmfix++];
+                q[0] = mfix_e->woff, q[1] = mfix_e->tris, q[2] = mat[2], q[3] = (uint32_t)(mfix_e - R.M), mfix_e->tw = mat[2];
+            }
+        }
+        plat_mutex_unlock(&mesh_lock);
     }
     // step 6: a draw with a program records its varyings (vk_exec_draw.c rt_mat_words: mat[3] slots, mat[4] the uv and
     // layer slots) into the half of the ext ring captures go to now; none left: into the sink (16 bytes, the rest dropped)

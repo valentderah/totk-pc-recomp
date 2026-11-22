@@ -3368,23 +3368,24 @@ static void tex_info(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage,
 static void tex_lock(int *locked);
 // A draw whose albedo texture or UV is not found gets a flat material (words 0, 1 zero): its shader's, the colour the
 // G-buffer shows for it measured by the GI (rt_gi.comp mode 13).
-static void rt_mat_words0(VkExec *ex, const VkPipeState *s);
+static _Thread_local const GfxShader *rt_vs, *rt_fs;
+static void rt_mat_words0(VkExec *ex, const GfxShader *vs, const GfxShader *fs);
 // Step 6: the program's record (vk_rt_prog_note): its textures registered in the bindless table and its uniforms read
 // now, once a frame per material.
-static void rt_mat_words(VkExec *ex, const VkPipeState *s) {
-    rt_mat_words0(ex, s);
+static void rt_mat_words(VkExec *ex, const GfxShader *vs, const GfxShader *fs) {
+    rt_mat_words0(ex, vs, fs);
     rt_matw[3] = rt_matw[4] = 0;
     if (!rt_matw[2] || !vk_rt_programs()) return;
     uint8_t locs[12];
-    int us, ls, n = vk_prog_ext(s->vs, s->fs, locs, &us, &ls);
+    int us, ls, n = vk_prog_ext(vs, fs, locs, &us, &ls);
     if (!n) return;
     rt_matw[3] = (uint32_t)n;
     if (rt_matw[0] >> 31) rt_matw[4] = (uint32_t)(us < 0 ? 0 : us) | (uint32_t)(ls < 0 ? 0 : ls) << 4 | 0x100u;
     if (!vk_rt_prog_due(rt_matw[2])) return;
-    const GfxProg *p = gfx_shader_prog(s->fs);
+    const GfxProg *p = gfx_shader_prog(fs);
     uint32_t tw[8] = {0}, uni[GFX_PROG_UNI] = {0};
     const GfxShaderRes *tres, *ures;
-    int nt = gfx_shader_resources(s->fs, GFX_RES_TEX, &tres), nu = gfx_shader_resources(s->fs, GFX_RES_UBO, &ures);
+    int nt = gfx_shader_resources(fs, GFX_RES_TEX, &tres), nu = gfx_shader_resources(fs, GFX_RES_UBO, &ures);
     int locked = 0;
     tex_lock(&locked);
     for (int i = 0; i < p->ntex && i < 8; i++) {
@@ -3397,7 +3398,7 @@ static void rt_mat_words(VkExec *ex, const VkPipeState *s) {
         tex_info(ex, r, h, 0, r->separate, &ii, &locked);
         const VkTexImage *img = vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL);
         if (img && !img->gone && img->samples <= 1 && ii.imageView)
-            tw[i] = vk_rt_mat_tex(img->image, ii.imageView, p->tex_arr[i], s->fs);
+            tw[i] = vk_rt_mat_tex(img->image, ii.imageView, p->tex_arr[i], fs);
     }
     vk_texture_unlock();
     for (int i = 0; i < p->nuni; i++) {
@@ -3418,15 +3419,19 @@ static void rt_mat_words(VkExec *ex, const VkPipeState *s) {
         const uint8_t *v = b->addr && b->size >= (uint64_t)off + 4 ? vk_usnap_bytes(b->addr + off, 4) : NULL;
         if (v) memcpy(&uni[i], v, 4);
     }
-    vk_rt_prog_note(rt_matw[2], s->fs, tw, uni);
+    vk_rt_prog_note(rt_matw[2], fs, tw, uni);
 }
-static void rt_mat_words0(VkExec *ex, const VkPipeState *s) {
+static void rt_mat_cb(void *ctx, uint32_t out[5]) {
+    rt_mat_words((VkExec *)ctx, rt_vs, rt_fs);
+    memcpy(out, rt_matw, sizeof rt_matw);
+}
+static void rt_mat_words0(VkExec *ex, const GfxShader *vs, const GfxShader *fs) {
     rt_matw[0] = rt_matw[1] = rt_matw[2] = 0;
-    if (!vk_rt_materials() || !s->fs || !s->vs) return;
-    const GfxAlbedo *a = gfx_shader_albedo(s->fs);
+    if (!vk_rt_materials() || !fs || !vs) return;
+    const GfxAlbedo *a = gfx_shader_albedo(fs);
     if (a->kind != GFX_ALB_2D && a->kind != GFX_ALB_ARRAY) goto flat;
     GfxShaderIo io[32];
-    uint32_t om = gfx_shader_outputs(s->vs, io);
+    uint32_t om = gfx_shader_outputs(vs, io);
     if (a->uv_loc >= 32 || !(om >> a->uv_loc & 1)) goto flat;
     uint32_t m = a->uv_comp | 1u << 31 | (a->discard ? 1u << 24 : 0), l = 0;
     if (a->kind == GFX_ALB_ARRAY && a->layer_loc == 0xff) {
@@ -3446,7 +3451,7 @@ static void rt_mat_words0(VkExec *ex, const VkPipeState *s) {
              (uint32_t)(a->layer_bits & 63) << 17 | (a->layer_loc != a->uv_loc ? 1u << 23 : 0);
     }
     const GfxShaderRes *res;
-    int nres = gfx_shader_resources(s->fs, GFX_RES_TEX, &res);
+    int nres = gfx_shader_resources(fs, GFX_RES_TEX, &res);
     if (a->tex_res < 0 || a->tex_res >= nres) goto flat;
     const GfxShaderRes *r = &res[a->tex_res];
     uint64_t h = r->slot >= 0 && r->slot < 128 ? ex->tex[NVN_STAGE_FS][r->slot] : 0;
@@ -3458,12 +3463,12 @@ static void rt_mat_words0(VkExec *ex, const VkPipeState *s) {
     tex_info(ex, r, h, 0, r->separate, &ii, &locked);
     const VkTexImage *img = vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL);
     if (img && !img->gone && img->samples <= 1) image = img->image;
-    if (image) rt_matw[2] = vk_rt_mat_tex(image, ii.imageView, a->kind == GFX_ALB_ARRAY, s->fs);
+    if (image) rt_matw[2] = vk_rt_mat_tex(image, ii.imageView, a->kind == GFX_ALB_ARRAY, fs);
     vk_texture_unlock();
     if (rt_matw[2]) { rt_matw[0] = m, rt_matw[1] = l; return; }
 flat:
     rt_matw[0] = rt_matw[1] = 0;
-    rt_matw[2] = vk_rt_mat_flat(s->fs);
+    rt_matw[2] = vk_rt_mat_flat(fs);
 }
 
 // The transform feedback variant of pipeline p (state s), remembered per thread by p: the pipeline key alone takes a
@@ -3736,11 +3741,11 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     }
     if (pending) return 0;   // a background worker is building it: the draw is skipped until it is ready
     if (!p || !info) return warn_once(W_PIPELINE, "a graphics pipeline could not be created: draws with it are skipped"), 0;
-    int rk = rt_capture_draw(ex, &s, prim, count);
-    if (rk == 1) fs_dump(ex, &s, (uint32_t)count), alb_note(&s, (uint32_t)count);
-    VkPipeline px = rk ? rt_xfb_pipe(p, &s) : VK_NULL_HANDLE;
+    int rk = rt_capture_draw(ex, sp, prim, count);
+    if (rk == 1) fs_dump(ex, sp, (uint32_t)count), alb_note(sp, (uint32_t)count);
+    VkPipeline px = rk ? rt_xfb_pipe(p, sp) : VK_NULL_HANDLE;
     rt_xfb = px != VK_NULL_HANDLE ? rk : 0;
-    if (rt_xfb == 1) rt_mat_words(ex, &s);
+    if (rt_xfb == 1) rt_vs = sp->vs, rt_fs = sp->fs;
     bind_pipeline(ex, VK_PIPELINE_BIND_POINT_GRAPHICS, px ? px : p);
     // On a generation hit the state recorded last is the memo's when st_pm says so (both were the last draw's).
     int st_same = D->B.st_valid && (pg_take && D->B.st_pm ? 1 : MX_EQ(&D->B.st, sp, sizeof *sp));
@@ -4675,18 +4680,30 @@ typedef struct { uint64_t id, frame, n, nprev, ib, vb, h[14], pib, pvb, ph[14]; 
 static RtStabM *rtsm;
 
 static uint64_t rt_block_hash(uint64_t addr, uint64_t size, uint64_t frame) {
-    static struct { uint64_t frame, addr, size, h; } memo[4096];
-    uint32_t i = (uint32_t)((addr ^ size << 40) * 0x9E3779B97F4A7C15ull >> 52);
+    static struct { uint64_t frame, addr, size, h; } memo[16384];
+    uint32_t i = (uint32_t)((addr ^ size << 40) * 0x9E3779B97F4A7C15ull >> 50);
     if (memo[i].frame == frame && memo[i].addr == addr && memo[i].size == size) return memo[i].h;
     uint64_t n = size < LIM.ubo_max ? size : LIM.ubo_max, h = 0xcbf29ce484222325ull;
     const uint8_t *p = n ? vk_usnap_bytes(addr, n) : NULL;
     if (!p) h = 1;
-    else
-        for (uint64_t k = 0; k + 8 <= n; k += 8) {
+    else {
+        uint64_t h0 = 0xcbf29ce484222325ull, h1 = 0x9e3779b97f4a7c15ull, h2 = 0xc2b2ae3d27d4eb4full, h3 = 0x165667b19e3779f9ull;
+        uint64_t k = 0;
+        for (; k + 32 <= n; k += 32) {
+            uint64_t w0, w1, w2, w3;
+            memcpy(&w0, p + k, 8), memcpy(&w1, p + k + 8, 8), memcpy(&w2, p + k + 16, 8), memcpy(&w3, p + k + 24, 8);
+            h0 = (h0 ^ w0) * 0x100000001b3ull;
+            h1 = (h1 ^ w1) * 0x100000001b3ull;
+            h2 = (h2 ^ w2) * 0x100000001b3ull;
+            h3 = (h3 ^ w3) * 0x100000001b3ull;
+        }
+        h = (((h0 ^ (h1 * 0x9e3779b97f4a7c15ull)) ^ (h2 * 0xc2b2ae3d27d4eb4full)) ^ (h3 * 0x165667b19e3779f9ull));
+        for (; k + 8 <= n; k += 8) {
             uint64_t w;
             memcpy(&w, p + k, 8);
             h = (h ^ w) * 0x100000001b3ull;
         }
+    }
     memo[i].frame = frame, memo[i].addr = addr, memo[i].size = size, memo[i].h = h;
     return h;
 }
@@ -5060,7 +5077,7 @@ static void op_draw(VkExec *ex, const p_draw *d) {
         const void *sc = rt_xfb ? rt_scam(ex) : NULL;
         int cap = rt_xfb && rt_scam_ok && vk_rt_xfb_begin(ex->cb, rt_xfb_verts(d->prim, n, inst), rt_tag(ex), rt_face(ex),
                                                           rt_mesh_id(ex, d->prim, n, inst, first, 0, 0, rt_face(ex)), sc,
-                                                          rt_xfb == 1 ? rt_matw : NULL);
+                                                          rt_xfb == 1 ? rt_mat_cb : NULL, ex);
         vkCmdDraw(ex->cb, n, inst, first, (uint32_t)d->base_instance);
         if (cap) vk_rt_xfb_end(ex->cb), rt_stab(ex, d->prim, n, inst, first, 0, 0);
     }
@@ -5124,7 +5141,7 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
     int cap = rt_xfb && rt_scam_ok &&
               vk_rt_xfb_begin(ex->cb, rt_xfb_verts(d->prim, (uint32_t)d->count, ninst), rt_tag(ex), rt_face(ex),
                               rt_mesh_id(ex, d->prim, (uint32_t)d->count, ninst, 0, d->ibuf, d->base_vertex, rt_face(ex)), sc,
-                              rt_xfb == 1 ? rt_matw : NULL);
+                              rt_xfb == 1 ? rt_mat_cb : NULL, ex);
     vkCmdDrawIndexed(ex->cb, (uint32_t)d->count, d->instances > 0 ? (uint32_t)d->instances : 1, 0, d->base_vertex,
                      (uint32_t)d->base_instance);
     if (cap)

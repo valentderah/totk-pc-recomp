@@ -195,7 +195,7 @@ uint64_t vk_exec_geo_key(void);   // vk_exec_draw.c: the geometry key of the dra
 void vk_pipeline_xfb_regen(void);   // vk_pipeline.c: the draws look their transform feedback variants up again
 int vk_rt_capable(void);   // vk_rt.c: ray tracing can run on this device (it may be switched on in play)
 int vk_rt_xfb_begin(VkCommandBuffer cb, uint32_t verts, uint64_t tag, uint32_t flags, uint64_t id, const void *scam,
-                    const uint32_t *mat);   // 1: transform feedback begun for the draw; mat: its material words (3) or NULL
+                    void (*mat_fn)(void *, uint32_t[5]), void *mat_ctx);   // 1: transform feedback begun for the draw; mat_fn fills 5 material words lazily when needed
 uint32_t vk_rt_mat_tex(VkImage image, VkImageView view, int array, const void *fs);   // the material word of an albedo view
                                                  // drawn by fragment shader fs (texture lock held)
 uint32_t vk_rt_mat_flat(const void *fs);         // a draw without an albedo texture: a material of its shader alone, its
