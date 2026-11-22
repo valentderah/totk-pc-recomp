@@ -422,11 +422,12 @@ static void msg_parse(const uint32_t *m, int tipc, Reply *r) {
 }
 
 // One request on the TLR message buffer; the kernel result of SendSyncRequest, the service result in r->result.
+// A kernel failure has no reply: clear it before the probe reads fields in a failure diagnostic.
 static uint32_t call(Cpu *c, uint32_t h, const Msg *q, Reply *r) {
     uint32_t *m = (uint32_t *)(uintptr_t)c->tpidrro;
     msg_build(m, q);
     uint32_t k = sv(c, 0x21, h, 0, 0, 0);
-    if (k) return k;
+    if (k) { memset(r, 0, sizeof *r); return k; }
     msg_parse(m, q->type >= T_TIPC_BASE, r);
     return 0;
 }
