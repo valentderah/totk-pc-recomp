@@ -15,10 +15,14 @@ bytes sorted by (kind, name): name (the 32 bytes the file name's 64 hex digits s
 --keep leaves the loose files in place. Close the game first: a running totk.exe has read the old pack's index.
 """
 import argparse
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from itertools import islice
 import os
 import re
 import struct
 import sys
+import time
 from pathlib import Path
 
 MAGIC = b'TKSPACK1'
@@ -74,7 +78,37 @@ def valid(kind, data):
     return len(data) == USE_SIZE if kind == 3 else len(data) > 0
 
 
-def pack(cache, keep=False):
+def read_loose(path):
+    if path is not None:
+        try:
+            return path.read_bytes()
+        except OSError:
+            pass
+    return None
+
+
+def prefetched_files(keys, loose, workers):
+    """Read ahead a bounded number of files, yielding in index order for a byte-identical pack."""
+    if workers == 1:
+        for key in keys:
+            yield key, read_loose(loose.get(key))
+        return
+    iterator = iter(keys)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        def submit(key):
+            return pool.submit(read_loose, loose[key]) if key in loose else None
+        pending = deque((key, submit(key)) for key in islice(iterator, workers * 2))
+        while pending:
+            key, future = pending.popleft()
+            yield key, future.result() if future else None
+            following = next(iterator, None)
+            if following is not None:
+                pending.append((following, submit(following)))
+
+
+def pack(cache, keep=False, read_workers=8, progress=None):
+    if not 1 <= read_workers <= 16:
+        raise ValueError('read_workers must be 1..16')
     cache = Path(cache)
     out = cache / PACK
     packed = read_pack(out)
@@ -91,13 +125,10 @@ def pack(cache, keep=False):
     try:
         with open(tmp, 'wb') as f:
             f.write(bytes(offset))   # header and index, written once the offsets are known
-            for key in keys:
-                data = None
+            for done, (key, data) in enumerate(prefetched_files(keys, loose, read_workers), 1):
+                if progress and (done == len(keys) or done % 128 == 0):
+                    progress('read', done, len(keys))
                 if key in loose:   # a valid loose file, else the packed copy, else nothing
-                    try:
-                        data = loose[key].read_bytes()
-                    except OSError:
-                        pass
                     if data is not None and valid(key[0], data):
                         written.append(loose[key])
                     else:
@@ -120,8 +151,10 @@ def pack(cache, keep=False):
             old.close()
     os.replace(tmp, out)
     if not keep:
-        for p in written:
+        for done, p in enumerate(written, 1):
             p.unlink(missing_ok=True)
+            if progress and (done == len(written) or done % 128 == 0):
+                progress('cleanup', done, len(written))
         try:
             (cache / 'in').rmdir()   # only when empty
         except OSError:
@@ -133,10 +166,18 @@ def main():
     ap = argparse.ArgumentParser(description='Fold a shader cache into shader-cache.pack.')
     ap.add_argument('cache', type=Path, help='the shader-cache folder next to totk.exe')
     ap.add_argument('--keep', action='store_true', help='keep the loose files')
+    ap.add_argument('--read-workers', type=int, choices=range(1, 17), default=8,
+                    help='bounded concurrent file reads (default 8; 1 reads serially)')
     a = ap.parse_args()
     if not a.cache.is_dir():
         sys.exit(f'{a.cache} is not a folder')
-    n, new, skipped, size = pack(a.cache, a.keep)
+    last_progress = [0.0]
+    def progress(phase, done, total):
+        now = time.monotonic()
+        if done == total or now - last_progress[0] >= 5:
+            print(f'pack-cache: {phase}: {done} of {total} files', flush=True)
+            last_progress[0] = now
+    n, new, skipped, size = pack(a.cache, a.keep, a.read_workers, progress)
     print(f'{a.cache / PACK}: {n} files, {size / 2**20:.0f} MiB ({new} loose files folded in'
           f'{", " + str(skipped) + " unreadable or empty skipped" if skipped else ""})', flush=True)
 
