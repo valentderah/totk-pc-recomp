@@ -211,5 +211,6 @@
  "lang.ru": "Russisch",
  "lang.ko": "Koreanisch",
  "lang.zh-Hans": "Chinesisch (vereinfacht)",
- "lang.zh-Hant": "Chinesisch (traditionell)"
+ "lang.zh-Hant": "Chinesisch (traditionell)",
+ "check.gpu_requirements": "Keine Vulkan-1.3-Grafikkarte meldet alle erforderlichen Erweiterungen und Funktionen: {devices}. Aktualisiere den Grafiktreiber; möglicherweise unterstützt die Hardware diese Anforderungen nicht."
 }

@@ -211,5 +211,6 @@
  "lang.ru": "Russisch",
  "lang.ko": "Koreaans",
  "lang.zh-Hans": "Chinees (vereenvoudigd)",
- "lang.zh-Hant": "Chinees (traditioneel)"
+ "lang.zh-Hant": "Chinees (traditioneel)",
+ "check.gpu_requirements": "Geen Vulkan 1.3-videokaart meldt alle vereiste extensies en functies: {devices}. Werk het grafische stuurprogramma bij; de hardware ondersteunt deze vereisten mogelijk niet."
 }

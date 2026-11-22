@@ -461,6 +461,20 @@ class Check(Step):
         if not any(tuple(d['api'][:2]) >= (1, 3) for d in devices):
             raise InstallError('check.vulkan_too_old',
                                devices=', '.join(f'{d["name"]} ({d["api"][0]}.{d["api"][1]})' for d in devices))
+        # The version, extension and feature requirements must all be met by the same GPU.
+        if not any(tuple(d['api'][:2]) >= (1, 3) and d.get('extension_query_ok') is True and
+                   not d.get('missing_extensions') and d.get('feature_query_ok') is True and
+                   not d.get('missing_features') for d in devices):
+            details = []
+            for d in devices:
+                missing = list(d.get('missing_extensions', [])) + list(d.get('missing_features', []))
+                if d.get('extension_query_ok') is not True:
+                    missing.append('vkEnumerateDeviceExtensionProperties')
+                if d.get('feature_query_ok') is not True:
+                    missing.append('vkGetPhysicalDeviceFeatures2')
+                version = '.'.join(map(str, d['api'][:2]))
+                details.append(f'{d["name"]} (Vulkan {version}): {", ".join(missing)}')
+            raise InstallError('check.gpu_requirements', devices='; '.join(details))
         kernel = linux_kernel()
         if kernel and kernel < (6, 7):
             # Without userfaultfd's asynchronous write protection nothing tracks the CPU's writes: the game copies whole

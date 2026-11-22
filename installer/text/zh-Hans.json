@@ -219,5 +219,6 @@
  "lang.ru": "俄语",
  "lang.ko": "韩语",
  "lang.zh-Hans": "中文（简体）",
- "lang.zh-Hant": "中文（繁体）"
+ "lang.zh-Hant": "中文（繁体）",
+ "check.gpu_requirements": "没有 Vulkan 1.3 显卡报告支持所有必需的扩展和功能：{devices}。请更新显卡驱动；硬件可能不支持这些要求。"
 }

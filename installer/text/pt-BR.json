@@ -219,5 +219,6 @@
  "lang.ru": "Russo",
  "lang.ko": "Coreano",
  "lang.zh-Hans": "Chinês (Simplificado)",
- "lang.zh-Hant": "Chinês (Tradicional)"
+ "lang.zh-Hant": "Chinês (Tradicional)",
+ "check.gpu_requirements": "Nenhuma placa de vídeo Vulkan 1.3 informa todas as extensões e recursos necessários: {devices}. Atualize o driver gráfico; o hardware pode não atender a esses requisitos."
 }
