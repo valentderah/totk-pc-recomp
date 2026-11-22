@@ -186,6 +186,24 @@ void vk_hdr_support(float out[4]);
 // vk_contact.c: screen-space contact shadows on the game's composed scene colour (TOTK_CONTACT_SHADOWS)
 int vk_contact_strength(void);   // percent, 0 = off
 void vk_contact_release(void);   // before the device goes away
+// vk_rt.c: hardware ray tracing (docs/raytracing.md). Its passes run in place of the contact shadows (vk_contact.c hands
+// them the scene colour, the linear depth and the camera block).
+int vk_rt_wanted(void);                            // device extensions requested at start (TOTK_RT_DEVICE=1)
+void vk_rt_device_supported(int supported);        // vk_device.c: physical device reports ray query extensions
+int vk_rt_supported(void);                         // physical device supports ray queries
+void vk_rt_device_caps(int rq, int pos_fetch);     // vk_device.c: ray query and position fetch granted
+void vk_rt_device_null(int null_desc);             // vk_device.c: nullDescriptor granted
+int vk_rt_capable(void);                           // ray-query extensions active on this device
+int vk_rt_on(void);                                // capture & TLAS build active (TOTK_RT_DEVICE=1)
+int vk_rt_note_camera(const float *c4);            // copy of the planned camera block (rows 0-47); returns its slot (0-15)
+int vk_rt_capturing(void);                         // transform feedback captures G-buffer draws into the RT scene
+int vk_rt_shadow_capturing(void);                  // transform feedback captures shadow-cascade draws into the mesh cache
+uint64_t vk_exec_geo_key(void);                    // geometry key of the draw rt_mesh_id last named (this thread)
+void vk_pipeline_xfb_regen(void);                  // vk_pipeline.c: invalidate transform-feedback pipeline memo
+int vk_rt_xfb_begin(VkCommandBuffer cb, uint32_t verts, uint64_t tag, uint32_t flags, uint64_t id, const void *scam,
+                    void (*mat_fn)(void *, uint32_t[5]), void *mat_ctx);
+void vk_rt_xfb_end(VkCommandBuffer cb);
+void vk_rt_release(void);                          // before the device goes away
 void vk_present_flip(void);
 // Every submission to ctx->gfx_queue (and xfer_queue when shared) takes this lock; vk_present_image and the swapchain
 // rebuild do. Recursive.
@@ -708,6 +726,11 @@ VkPipeline vk_pipeline_graphics(const VkPipeState *s, const VkPipeInfo **info);
 // wait_ms > 0 waits up to that long for a pending pipeline first. Pipelines built in a run are recorded to
 // pipeline-keys.bin next to the pipeline cache and prebuilt at the next boot (TOTK_PIPE_PREBUILD=0: not).
 VkPipeline vk_pipeline_graphics_async(const VkPipeState *s, const VkPipeInfo **info, int *pending, uint32_t wait_ms);
+// vk_rt.c's geometry capture: s's pipeline with the vertex position written to transform feedback buffer 0 (vec4, stride
+// 16), built on a thread of its own; VK_NULL_HANDLE until it is ready or when it cannot be built.
+VkPipeline vk_pipeline_xfb(const VkPipeState *s, int *failed);   // failed: it never will be (NULL meanwhile: queued)
+uint32_t vk_pipeline_xfb_gen(void);   // changes when the variants are destroyed (vk_pipeline_shutdown)
+void vk_pipeline_xfb_stats(int *built, int *failed);
 // rt_boot calls it unless --shot is given; TOTK_PIPE_SYNC=1 makes it a no-op. Probes never call it.
 void vk_pipeline_async_enable(void);
 int vk_pipeline_async_on(void);   // 1 after vk_pipeline_async_enable: graphics shaders are translated in the background too

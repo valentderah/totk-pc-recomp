@@ -58,12 +58,18 @@ def stale(runtime):
     return out
 
 
+def target_of(src):
+    """Vulkan 1.1 SPIR-V, except for the ray tracing shaders: ray queries need SPIR-V 1.4, so Vulkan 1.2."""
+    return 'vulkan1.2' if 'GL_EXT_ray_query' in src.read_text(encoding='utf-8') else TARGET
+
+
 def compile_one(src):
+    target = target_of(src)
     with tempfile.TemporaryDirectory() as tmp:
         spv = Path(tmp) / 'out.spv'
-        subprocess.run([str(BIN / 'glslc.exe') if WIN else 'glslc', '-O', f'--target-env={TARGET}', f'-fshader-stage={STAGES[src.suffix]}',
+        subprocess.run([str(BIN / 'glslc.exe') if WIN else 'glslc', '-O', f'--target-env={target}', f'-fshader-stage={STAGES[src.suffix]}',
                         '-o', str(spv), str(src)], check=True)
-        subprocess.run([str(BIN / 'spirv-val.exe') if WIN else 'spirv-val', f'--target-env', TARGET, str(spv)], check=True)
+        subprocess.run([str(BIN / 'spirv-val.exe') if WIN else 'spirv-val', f'--target-env', target, str(spv)], check=True)
         data = spv.read_bytes()
     words = [int.from_bytes(data[i:i + 4], 'little') for i in range(0, len(data), 4)]
     header_path(src).write_text(header_of(src, words), encoding='utf-8', newline='\n')
