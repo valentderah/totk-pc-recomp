@@ -2,6 +2,7 @@
 import contextlib
 import io
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -66,6 +67,7 @@ class ProfileTest(unittest.TestCase):
         build = self.folder / 'build'
         proc = unittest.mock.Mock()
         proc.wait.return_value = 0
+        proc.poll.return_value = 0
         with patch.object(sys, 'argv', ['run_game.py', str(build), '--seconds', '1', '--tag', 'bench-1', '--show']), \
              patch.object(run, 'take_slot', return_value=None), patch.object(run, 'count', return_value=0), \
              patch.object(run.subprocess, 'Popen', return_value=proc) as launch, \
@@ -77,6 +79,51 @@ class ProfileTest(unittest.TestCase):
         self.assertFalse((build / 'prof-bench-1').exists())
         self.assertIn('rc=0', (build / 'logs' / 'bench-1.log').read_text())
         launch.assert_called_once()
+        proc.terminate.assert_not_called()
+
+    def test_interrupted_wait_stops_the_owned_child_before_cleanup(self):
+        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proxy = unittest.mock.Mock(wraps=child)
+        interrupted = False
+
+        def wait(*args, **kwargs):
+            nonlocal interrupted
+            if not interrupted:
+                interrupted = True
+                raise KeyboardInterrupt
+            return child.wait(*args, **kwargs)
+        proxy.wait.side_effect = wait
+        build = self.folder / 'build'
+        remove = run.shutil.rmtree
+
+        def remove_after_exit(path, *args, **kwargs):
+            if Path(path) == build / 'prof-run':
+                self.assertIsNotNone(child.poll(), 'profile cleanup ran while the child was alive')
+            return remove(path, *args, **kwargs)
+        try:
+            with patch.object(sys, 'argv', ['run_game.py', str(build), '--seconds', '1', '--show']), \
+                 patch.object(run, 'take_slot', return_value=None), patch.object(run, 'count', return_value=0), \
+                 patch.object(run.shutil, 'rmtree', side_effect=remove_after_exit), \
+                 patch.object(run.subprocess, 'Popen', return_value=proxy):
+                with self.assertRaises(KeyboardInterrupt):
+                    run.main()
+            self.assertIsNotNone(child.poll(), 'interrupted run left its child alive')
+            self.assertFalse((build / 'prof-run').exists())
+            self.assertEqual((self.profile / 'marker').read_text(), 'original profile')
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)
+
+    def test_unresponsive_child_is_killed_after_termination_timeout(self):
+        proc = unittest.mock.Mock()
+        proc.poll.return_value = None
+        proc.wait.side_effect = [subprocess.TimeoutExpired('owned child', 5), 0]
+        run.stop_process(proc)
+        proc.terminate.assert_called_once()
+        proc.kill.assert_called_once()
+        self.assertEqual(proc.wait.call_args_list, [unittest.mock.call(timeout=5), unittest.mock.call()])
 
 
 if __name__ == '__main__':

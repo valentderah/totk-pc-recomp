@@ -162,6 +162,18 @@ def profile_copy(dest, save):
         shutil.copytree(SAVES / save, users[0])
 
 
+def stop_process(proc):
+    """Stop this run's child before its disposable profile is removed, including an interrupted wait."""
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('exe_dir', type=Path, help='build directory holding totk.exe')
@@ -209,9 +221,12 @@ def main():
                 f.flush()
                 start = time.time()
                 proc = subprocess.Popen(args, cwd=exe_dir, env=env, stdout=f, stderr=subprocess.STDOUT)
-                if not a.show:
-                    threading.Thread(target=keep_in_background, args=(proc,), daemon=True).start()
-                rc = proc.wait()
+                try:
+                    if not a.show:
+                        threading.Thread(target=keep_in_background, args=(proc,), daemon=True).start()
+                    rc = proc.wait()
+                finally:
+                    stop_process(proc)
                 f.write(f'run_game: rc={rc} wall={time.time() - start:.0f}s; others running after: '
                         f'totk.exe {count("totk.exe")}, ninja.exe {count("ninja.exe")}\n')
         finally:
