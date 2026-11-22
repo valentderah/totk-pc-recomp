@@ -49,6 +49,7 @@ TESTS = {
     'flags_check':              ('.venv', None, [], ''),
     'excl_mt':                  ('.venv', None, [], ''),
     'check_isa_test':           ('.venv', None, [], ''),
+    'compile_budget_test':      ('.venv', None, [], ''),
     'pack_shader_cache_test':   ('.venv', None, [], ''),
     'spin_waits_test':          ('.venv', None, [], ''),
     'worktree_test':            ('.venv', None, [], ''),
