@@ -63,6 +63,7 @@ typedef struct {
     uint64_t fb_draws, fb_barriers, fb_restarts, fb_layouts;   // feedback loops: draws sampling a written target of
                                                                // their pass, in-pass barriers, pass restarts, layout
                                                                // transitions
+    uint64_t fb_splits;                       // draws recorded as runs of connected triangles (vk_exec_draw.c feedback_split)
 } VkExecFrame;
 
 // A record the scan of a chunked replay planned before an op: a contact shadow march (vk_contact.c: vk_contact_plan

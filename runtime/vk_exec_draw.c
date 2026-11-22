@@ -496,6 +496,8 @@ typedef struct VkExecDraw {
     const VkPipeInfo *rs_last;           // the last lookup
     const RsList *rs_last_l;
     uint32_t c0_dim[3], c0_binst;        // the dispatch size and base instance of the draw or dispatch being bound
+    uint32_t fb_self, fb_wr;             // the draw being prepared: colour attachments it samples in the feedback layout
+                                         // and also writes; colour attachments it writes (feedback_split)
     uint64_t bind_gen;                   // bumped by every bind op that writes ex->prog, ubo, ssbo, tex or img
     int twin_dispatch;                   // op_dispatch*: the resources being bound are a dispatch's
     uint64_t wait_frame, wait_left_ns;   // prepare_draw: full-screen pipeline waits left in this frame
@@ -1693,29 +1695,118 @@ static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
     return mode == VK_FEEDBACK_LAYOUT ? m & ex->fbl_mask : 0;
 }
 
-// By-region barrier inside the pass: earlier attachment writes become visible to this draw's fragment shader reads.
-static void feedback_barrier(VkExec *ex) {
+// By-region barrier inside the pass: earlier writes of the attachments m (bit 8 depth/stencil) become visible to this
+// draw's fragment shader reads. It waits only for the kind of attachment output m names: waiting for depth writes when
+// only colour targets are sampled cost a third of the barrier's GPU time on an RTX 5070 (feedback_split records
+// hundreds of these a frame in Hyrule Castle).
+static void feedback_barrier(VkExec *ex, uint32_t m) {
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                           .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
-                                           VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                           .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                            .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                            .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT};
+    uint32_t covered = 0;
+    if (m & 0xff) {
+        mb.srcStageMask |= VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        mb.srcAccessMask |= VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        covered |= 0xff;
+    }
+    if (m & 0x100) {
+        mb.srcStageMask |= VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        mb.srcAccessMask |= VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        covered |= 0x100;
+    }
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
                            .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
     vkCmdPipelineBarrier2(ex->cb, &di);
     ex->recorded++;
-    ex->fb_dirty = 0;
+    ex->fb_dirty &= ~covered;
     ex->fr.fb_barriers++;
 }
 
 // Marks the attachments the draw with state s writes: colour targets with a nonzero effective write mask, depth with
-// depth writes or the stencil test on.
-static void feedback_written(VkExec *ex, const VkPipeState *s) {
-    if (vk_ctx()->feedback == VK_FEEDBACK_OFF) return;
+// depth writes or the stencil test on. Returns the colour targets it writes.
+static uint32_t feedback_written(VkExec *ex, const VkPipeState *s) {
+    if (vk_ctx()->feedback == VK_FEEDBACK_OFF) return 0;
     if (ex->depth.image && !(ex->fb_dirty & 0x100) && ((s->ds.dt && s->ds.dw) || s->ds.st)) ex->fb_dirty |= 0x100;
+    uint32_t w = 0;
     for (uint32_t i = 0; i < ex->pass_ncolor; i++)
-        if (ex->color[i].image && !(ex->fb_dirty >> i & 1) && vk_pipeline_target_wmask(s, (int)i)) ex->fb_dirty |= 1u << i;
+        if (ex->color[i].image && vk_pipeline_target_wmask(s, (int)i)) w |= 1u << i;
+    ex->fb_dirty |= w;
+    return w;
+}
+
+// ---- feedback within one draw
+// TotK's G-buffer decals (Hyrule Castle's floors: fragment shaders eca3008f8dd6b919, 9227b162aca00d33,
+// adcdc043c21ff486) blend in the shader: each fragment samples the albedo and normal targets at its own pixel and
+// writes them back with blending off, depth test LEQUAL and no depth writes. A decal mesh is several pieces in one
+// indexed draw, and pieces overlap: where they do, the later piece has to read what the earlier one wrote, as with
+// blending. Vulkan orders such a read only behind a barrier, so on an RTX 5070 the later piece read the earlier one's
+// result in some 16x16 pixel tiles and the floor under it in others: tile and dirt swapping in screen-aligned squares
+// that changed from frame to frame. The draw is recorded as runs of triangles that share vertices with each other, a
+// feedback_barrier between runs: a piece connected through its vertices is one surface, which does not cover itself on
+// the screen, so a run needs no barrier inside. That is 290 barriers a frame in the dining hall instead of 3,900 for one
+// per triangle (GPU time 6.2 ms without any, 7.0 ms with these, 13.1 ms with one per triangle, at 3840x2160). A draw
+// cut into more than FB_SPLIT_MAX runs (separate quads, such as particles) is recorded whole, as before: a barrier per
+// piece would cost more than the frame.
+enum { FB_SPLIT_MAX = 64 };
+
+static uint32_t find_root(uint32_t *par, uint32_t a) {
+    while (par[a] != a) a = par[a] = par[par[a]];
+    return a;
+}
+
+// The runs of connected triangles of the triangle list whose 3 * ntri indices of type itype are at ib: the index of the
+// triangle after each run, in order, into end[]. Returns their number, 0 when there are more than FB_SPLIT_MAX.
+static int connected_runs(const void *ib, int itype, uint32_t ntri, uint32_t *end) {
+    uint32_t n = 3 * ntri, hn = 1;
+    while (hn < 2 * n) hn <<= 1;
+    uint32_t *key = malloc(sizeof *key * hn), *node = malloc(sizeof *node * hn), *par = malloc(sizeof *par * n),
+             *tri = malloc(sizeof *tri * n);
+    if (!key || !node || !par || !tri) rt_fatal("vk: out of memory");
+    memset(node, 0xff, sizeof *node * hn);
+    uint32_t nodes = 0;
+    for (uint32_t i = 0; i < n; i++) {   // vertex index -> union-find node, by open addressing
+        uint32_t v = itype == NVN_INDEX_TYPE_UNSIGNED_BYTE    ? ((const uint8_t *)ib)[i]
+                     : itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? ((const uint16_t *)ib)[i]
+                                                              : ((const uint32_t *)ib)[i];
+        uint32_t h = (v * 0x9E3779B1u) & (hn - 1);
+        while (node[h] != UINT32_MAX && key[h] != v) h = (h + 1) & (hn - 1);
+        if (node[h] == UINT32_MAX) key[h] = v, node[h] = nodes, par[nodes] = nodes, nodes++;
+        tri[i] = node[h];
+    }
+    for (uint32_t t = 0; t < ntri; t++)
+        for (int k = 1; k < 3; k++) {
+            uint32_t a = find_root(par, tri[3 * t]), b = find_root(par, tri[3 * t + k]);
+            if (a != b) par[b] = a;
+        }
+    int runs = 0;
+    for (uint32_t t = 1; t <= ntri && runs <= FB_SPLIT_MAX; t++)
+        if (t == ntri || find_root(par, tri[3 * t]) != find_root(par, tri[3 * t - 3])) {
+            if (runs < FB_SPLIT_MAX) end[runs] = t;
+            runs++;
+        }
+    free(key), free(node), free(par), free(tri);
+    return runs <= FB_SPLIT_MAX ? runs : 0;
+}
+
+// The indexed draw being recorded (op_draw_idx), its indices bound: when its fragment shader samples a colour target
+// it writes (D->fb_self) and it is a list of triangles whose indices the CPU can read, records it as runs of connected
+// triangles with a feedback_barrier between them. Returns 0 when it does not, and the caller records the draw whole.
+static int feedback_split(VkExec *ex, const p_draw_idx *d, int host_readable) {
+    VkExecDraw *D = ex->draw;
+    if (!D->fb_self || d->prim != NVN_DRAW_PRIMITIVE_TRIANGLES || d->instances > 1 || !host_readable || d->count < 6)
+        return 0;
+    uint32_t end[FB_SPLIT_MAX], ntri = (uint32_t)d->count / 3;
+    int runs = connected_runs((const void *)(uintptr_t)d->ibuf, d->itype, ntri, end);
+    if (runs < 2) return 0;
+    for (int r = 0, start = 0; r < runs; start = (int)end[r++]) {
+        if (r) feedback_barrier(ex, D->fb_self);
+        vkCmdDrawIndexed(ex->cb, 3 * (end[r] - (uint32_t)start), 1, 3 * (uint32_t)start, d->base_vertex,
+                         (uint32_t)d->base_instance);
+        ex->recorded++;
+    }
+    ex->fb_dirty |= D->fb_wr;   // the last run wrote them after the barrier before it
+    ex->fr.fb_splits++;
+    return 1;
 }
 
 static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate,
@@ -3584,10 +3675,11 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     if (bim) bi_gt(ex, bgt), bi_gb(ex, bgb);
     if (bim == 2) bi_census(ex, info, sp, bgt, bgb, bsg, sm_hit);   // on counts nothing: it is what gets timed
     bind_resources(ex, info, bim ? bgt : NULL, bgb);
-    if (fbl & ex->fb_dirty) feedback_barrier(ex);
+    if (fbl & ex->fb_dirty) feedback_barrier(ex, fbl & ex->fb_dirty);
     else if (ex->in_pass && anv_vs_barrier() && gfx_shader_resources(vs, GFX_RES_SSBO, &(const GfxShaderRes *){0}))
-        { uint32_t keep = ex->fb_dirty; feedback_barrier(ex); ex->fb_dirty = keep; }   // keep fb_dirty: feedback_prepare learns from it
-    feedback_written(ex, sp);
+        { uint32_t keep = ex->fb_dirty; feedback_barrier(ex, 0x1ff); ex->fb_dirty = keep; }   // keep fb_dirty: feedback_prepare learns from it
+    D->fb_wr = feedback_written(ex, sp);
+    D->fb_self = fbl & D->fb_wr;
     bind_vertex_buffers(ex);
     if (vk_dump_armed) vk_dump_draw(ex, sp, p, info);
     if (vk_hdr_track) vk_hdr_draw(ex, info);
@@ -4478,9 +4570,11 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
         vk_mem_count(sp.cls, VK_MUSE_IB, bytes);
         VK_MEM_BOUND(sp);
     }
-    vkCmdDrawIndexed(ex->cb, (uint32_t)d->count, d->instances > 0 ? (uint32_t)d->instances : 1, 0, d->base_vertex,
-                     (uint32_t)d->base_instance);
-    ex->recorded++;
+    if (!feedback_split(ex, d, !sp.alloc)) {
+        vkCmdDrawIndexed(ex->cb, (uint32_t)d->count, d->instances > 0 ? (uint32_t)d->instances : 1, 0, d->base_vertex,
+                         (uint32_t)d->base_instance);
+        ex->recorded++;
+    }
     if (d->itype != NVN_INDEX_TYPE_UNSIGNED_BYTE) mvobj_draw(ex, d, sp.buffer, sp.offset);
 }
 
