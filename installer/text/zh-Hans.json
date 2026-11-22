@@ -57,6 +57,8 @@
  "check.toolchain_broken": "自带的编译器无法工作：{detail}",
  "check.glibc_old": "此系统的 C 库为 glibc {version}；安装程序的编译器需要 {need} 或更新版本（Ubuntu 22.04、Debian 12、Fedora 35、SteamOS 3 及更新版本都满足）。更新系统即可解决。",
  "check.host_probe_failed": "电脑检查未能运行（退出代码 {code}）。",
+ "check.host_blocked": "Windows 阻止了安装程序在这台电脑上编译的程序（{path}）：{detail}。智能应用控制、App Control 策略或杀毒软件会阻止未签名的程序；游戏本身也以同样方式在这台电脑上编译，同样会被阻止。请在杀毒软件中允许安装程序所在的文件夹，或在 Windows 安全中心（应用和浏览器控制）中关闭智能应用控制，然后重新运行安装程序。",
+ "check.vulkan_crash": "安装程序向显卡驱动查询显卡时，驱动崩溃了（退出代码 {code}），关闭其他程序的 Vulkan 层后依然如此。请为你的显卡安装最新的驱动程序。",
  "check.cpu_too_old": "此处理器不支持 x86-64-v2（SSE4.2、POPCNT 和 CMPXCHG16B），这是游戏所需的最低指令集。Intel Nehalem（2008 年）或 AMD Bulldozer（2011 年）及更新的处理器都支持。",
  "check.vulkan_missing": "未安装 Vulkan 驱动。请为你的显卡安装最新的驱动程序。",
  "check.vulkan_no_device": "Vulkan 找不到显卡。请为你的显卡安装最新的驱动程序。",
@@ -116,6 +118,7 @@
  "warn.xbox_prompts_failed": "无法准备 Xbox、PlayStation 或 PC 按键提示（退出代码 {code}）；游戏将继续使用 Switch 按键提示。详情：{log}",
  "warn.shaders_skipped": "显卡驱动在编译部分着色器时崩溃，因此有 {count} 个着色器未被预先准备。游戏会在首次需要时编译它们，驱动在那时也可能崩溃；更新驱动可能会解决。详情：{log}",
  "warn.kernel_old": "Linux {version} 缺少游戏依赖的写入跟踪功能（需要 6.7 或更新版本）；游戏可能运行得很慢。更新系统即可解决。",
+ "warn.vulkan_layer_crash": "另一个程序的 Vulkan 层导致电脑检查崩溃（退出代码 {code}）；去掉它后检查通过。已安装的层：{layers}。游戏会加载同样的层，启动时可能崩溃：请更新或卸载安装了出错层的叠加层、录制或调校程序。",
  "warn.dlss_kept": "安装文件夹中已有 DLSS 库（{path}）；安装程序将保留它。",
  "warn.dlss_download_failed": "无法从 {url} 下载 NVIDIA DLSS：{detail}。游戏无需它也能运行；下次运行安装程序时会重试。",
 
