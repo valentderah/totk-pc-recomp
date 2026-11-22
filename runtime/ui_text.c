@@ -2,7 +2,7 @@
 // string gets an id in ui_text.h and an entry in every language that has one (a missing entry falls back to English).
 // The software keyboard has every language; the menu has every game language except Portugal's Portuguese and
 // Traditional Chinese (English, Russian, Brazilian Portuguese, Simplified Chinese, German, French, Spanish, Italian,
-// Dutch, Japanese, Korean).
+// Dutch, Japanese, Korean), and Vietnamese.
 #include <stdatomic.h>
 #include <string.h>
 
@@ -19,7 +19,7 @@ typedef struct { const char *lang; const char *const *text; } Row;
     [UI_MENU_LANGNAME_DE] = "Deutsch", [UI_MENU_LANGNAME_IT] = "Italiano", [UI_MENU_LANGNAME_ES] = "Español", \
     [UI_MENU_LANGNAME_NL] = "Nederlands", [UI_MENU_LANGNAME_RU] = "Русский", \
     [UI_MENU_LANGNAME_ZH_HANS] = "简体中文", [UI_MENU_LANGNAME_ZH_HANT] = "繁體中文", [UI_MENU_LANGNAME_KO] = "한국어", \
-    [UI_MENU_LANGNAME_PT_BR] = "Português (Brasil)", [UI_MENU_LANGNAME_EN_GB] = "English (UK)", \
+    [UI_MENU_LANGNAME_PT_BR] = "Português (Brasil)", [UI_MENU_LANGNAME_VI] = "Tiếng Việt", [UI_MENU_LANGNAME_EN_GB] = "English (UK)", \
     [UI_MENU_LANGNAME_FR_CA] = "Français (Canada)", [UI_MENU_LANGNAME_ES_419] = "Español (Latinoamérica)"
 
 // SWKBD: TITLE, PROMPT, DEFAULT_NAME (at most 9 UTF-16 units, no '@' '%' '\'), OK, CANCEL, PAD_HINT.
@@ -8755,6 +8755,626 @@ static const char *const text_ko[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_OVERRIDES_CODE] = "코드 패치 위치 %u곳에서 목록에서 더 아래에 있는 %s의 패치보다 우선합니다.",
 };
 
+// Vietnamese: the software keyboard and the whole menu, so the menu and the overlay read Vietnamese when the menu
+// language is vi (ui_text.h menu_text). An id without a Vietnamese entry falls back to English.
+static const char *const text_vi[UI_TEXT_COUNT] = {
+    SWKBD("Nhập văn bản", "Nhập một cái tên", "Ngựa", "OK", "Hủy", "Tay cầm: A = OK, B = Hủy"),
+
+    [UI_MENU_TITLE] = "Cài đặt",
+    [UI_MENU_TAB_SCREEN] = "Màn hình", [UI_MENU_TAB_GAME] = "Trò chơi", [UI_MENU_TAB_MODS] = "Mod", [UI_MENU_TAB_SOUND] = "Âm thanh",
+    [UI_MENU_TAB_CONTROLS] = "Điều khiển", [UI_MENU_TAB_AMIIBO] = "Amiibo", [UI_MENU_TAB_MENU] = "Menu", [UI_MENU_TAB_ADVANCED] = "Nâng cao",
+    [UI_MENU_CONTINUE] = "Tiếp tục", [UI_MENU_QUIT] = "Thoát game",
+    [UI_MENU_ON] = "Bật", [UI_MENU_OFF] = "Tắt", [UI_MENU_AUTO] = "Tự động", [UI_MENU_DEFAULT_MARK] = "mặc định",
+    [UI_MENU_AFTER_RESTART] = "sau khi khởi động lại", [UI_MENU_SET_BY_ENV] = "đặt bởi biến môi trường",
+    [UI_MENU_SAVE_FAILED] = "không lưu được cài đặt",
+    [UI_MENU_VERSION] = "TotK Recomp %s, game %s",
+
+    [UI_MENU_FULLSCREEN] = "Toàn màn hình", [UI_MENU_FULLSCREEN_DESC] = "Game chiếm toàn màn hình; F11 để bật hoặc tắt.",
+    [UI_MENU_WINDOW_SIZE] = "Kích thước cửa sổ", [UI_MENU_WINDOW_SIZE_DESC] = "Kích thước cửa sổ game khi không ở toàn màn hình.",
+    [UI_MENU_WINDOW_SIZE_CUSTOM] = "Tùy chỉnh",
+    [UI_MENU_PRESENT] = "Chế độ hiển thị", [UI_MENU_PRESENT_DESC] = "Cách các khung hình hoàn chỉnh được đưa lên màn hình.",
+    [UI_MENU_PRESENT_MAILBOX] = "Mailbox", [UI_MENU_PRESENT_VSYNC] = "VSync", [UI_MENU_PRESENT_IMMEDIATE] = "Tức thì",
+    [UI_MENU_PRESENT_IN_USE] = "đang dùng: %s",
+    [UI_MENU_GPU] = "Card đồ họa", [UI_MENU_GPU_DESC] = "Thiết bị Vulkan dùng để vẽ game.",
+    [UI_MENU_GPU_AUTO] = "Tự động",
+    [UI_MENU_PERF_OVERLAY] = "Giám sát hiệu năng",
+    [UI_MENU_PERF_OVERLAY_DESC] = "Hiện tốc độ khung hình ở góc trên bên phải. Chế độ Đầy đủ thêm thời gian mỗi khung hình kèm "
+                                  "biểu đồ, tải CPU, GPU và bộ nhớ, nhiệt độ và thời gian chờ của luồng kết xuất. F10 đổi "
+                                  "chế độ.",
+    [UI_MENU_PERF_OFF] = "Tắt", [UI_MENU_PERF_FPS] = "FPS", [UI_MENU_PERF_FULL] = "Đầy đủ",
+    [UI_PERF_LINE_FPS] = "%.0f fps",
+    [UI_PERF_LINE_FPS_GEN] = "%.0f fps drawn, %.0f shown",
+    [UI_MENU_GRAPHICS] = "Hình ảnh",
+    [UI_MENU_OUTPUT_RES] = "Độ phân giải game",
+    [UI_MENU_OUTPUT_RES_DESC] = "Kích thước game dùng để vẽ hình ảnh và giao diện. Trên 1920 x 1080 game cần nhiều bộ nhớ "
+                                "video và thời gian GPU hơn. Kích thước rộng hơn (21:9) mở rộng tầm nhìn của camera và đưa "
+                                "HUD ra các góc màn hình; kích thước cao hơn (16:10, 3:2) đưa HUD lên mép trên và mép dưới.",
+    [UI_MENU_HUD_WIDTH] = "Chiều rộng HUD",
+    [UI_MENU_HUD_WIDTH_DESC] = "Trên màn hình rộng hơn 16:9, khoảng cách giữa bên trái và bên phải của HUD. Toàn màn hình "
+                               "đặt chúng sát mép màn hình; 21:9 hoặc 16:9 giữ HUD trong phần giữa màn hình có tỷ lệ đó. "
+                               "Bố cục còn thiếu sẽ được tạo ở nền và dùng sau khi khởi động lại.",
+    [UI_MENU_HUD_WIDTH_FULL] = "Toàn màn hình",
+    [UI_MENU_RENDER_SCALE] = "Tỷ lệ kết xuất 3D",
+    [UI_MENU_RENDER_SCALE_DESC] = "Kích thước cảnh 3D so với độ phân giải game; FSR của game phóng nó lên kích thước đó. "
+                                  "Trên 100 % sẽ làm mịn răng cưa (supersampling) nhưng tốn nhiều GPU.",
+    [UI_MENU_RENDER_SCALE_GAME] = "Theo game (83 %)",
+    [UI_MENU_DYNAMIC_RES] = "Độ phân giải động",
+    [UI_MENU_DYNAMIC_RES_DESC] = "Cho phép game hạ cảnh 3D xuống 90 hoặc 80 %. Game đánh giá theo ước tính dành cho Switch và bỏ qua GPU của bạn, nên cảnh rộng vẫn bị hạ ngay cả trên PC mạnh. Tắt thì giữ nguyên tỷ lệ kết xuất.",
+    [UI_MENU_UPSCALER] = "Phóng to theo cửa sổ",
+    [UI_MENU_UPSCALER_DESC] = "Cách phóng hình ảnh khi cửa sổ lớn hơn độ phân giải game. FSR giữ cạnh và chi tiết sắc nét "
+                              "hơn bilinear.",
+    [UI_MENU_UPSCALER_FSR] = "AMD FSR 1", [UI_MENU_UPSCALER_BILINEAR] = "Bilinear",
+    [UI_MENU_ASPECT] = "Tỷ lệ hình ảnh",
+    [UI_MENU_ASPECT_DESC] = "Khi tỷ lệ cửa sổ khác tỷ lệ độ phân giải game (hình 16:9 trên màn 21:9): giữ nguyên tỷ lệ hình "
+                            "với các dải đen, hoặc kéo giãn ra cả cửa sổ.",
+    [UI_MENU_ASPECT_FIT] = "Dải đen", [UI_MENU_ASPECT_STRETCH] = "Kéo giãn",
+    [UI_MENU_MOVIE_ASPECT] = "Tỷ lệ video",
+    [UI_MENU_MOVIE_ASPECT_DESC] = "Khi độ phân giải game không phải 16:9: giữ tỷ lệ gốc của các video cắt cảnh với các dải "
+                                  "đen, hoặc kéo giãn ra toàn bộ hình ảnh. Áp dụng từ video kế tiếp.",
+    [UI_MENU_MOVIE_ASPECT_KEEP] = "Dải đen", [UI_MENU_MOVIE_ASPECT_STRETCH] = "Kéo giãn",
+    [UI_MENU_FOV] = "Góc nhìn",
+    [UI_MENU_FOV_DESC] = "Camera cho thấy bao nhiêu thế giới, tính theo phần trăm của game gốc. Game phiên bản 1.1.0, 1.2.1 và 1.4.3.",
+    [UI_MENU_SHADOW_RES] = "Kích thước bản đồ bóng",
+    [UI_MENU_SHADOW_RES_DESC] = "Kích thước bản đồ bóng của mặt trời. Kích thước của game đổi theo tầm nhìn, xuống còn khoảng "
+                                "400 khi gần mặt đất, nên bóng lá trông bị vỡ ô và nhảy; kích thước cố định giữ chúng đứng "
+                                "yên và sắc nét hơn. Trên 1024 bóng tốn thêm thời gian GPU và bộ nhớ video; 256 thô hơn của "
+                                "game và dành cho GPU tích hợp thiếu băng thông bộ nhớ.",
+    [UI_MENU_SHADOW_RES_GAME] = "Theo game (thay đổi)",
+    [UI_MENU_ANISO] = "Lọc họa tiết",
+    [UI_MENU_ANISO_DESC] = "Lọc dị hướng cho họa tiết bề mặt: nền đất, đường và tường nhìn ở góc thấp vẫn sắc nét ở xa thay vì bị nhòe. Theo game: mức game yêu cầu, như trên Switch.",
+    [UI_MENU_ANISO_GAME] = "Theo game",
+    [UI_MENU_LOD_STEADY] = "Giữ chi tiết ổn định khi tải nặng",
+    [UI_MENU_LOD_STEADY_DESC] = "Bỏ qua cơ chế của game hạ chi tiết mô hình và họa tiết khi tốc độ khung hình tụt, giống mod giả lập Disable LOD Quality Reduction. Game phiên bản 1.2.1 và 1.4.3. Nên tắt trên PC yếu: ở đó việc hạ này giữ tốc độ khung hình.",
+    [UI_MENU_SHARPNESS] = "Độ sắc nét FSR",
+    [UI_MENU_SHARPNESS_DESC] = "Làm nét sau khi FSR phóng to; 0 là tắt.",
+    [UI_MENU_COLOR] = "Màu sắc",
+    [UI_MENU_COLOR_PRESET] = "Hồ sơ màu",
+    [UI_MENU_COLOR_PRESET_DESC] = "Đặt bốn giá trị bên dưới. Sống động: tương phản và độ bão hòa cao hơn, vùng tối được mở "
+                                  "nhẹ (dành cho màn hình OLED). Rõ nét: tăng nhẹ tương phản, độ bão hòa và độ sáng. Kéo "
+                                  "một giá trị sẽ chuyển hồ sơ sang Tùy chỉnh. HUD đổi theo hình ảnh; menu này thì không.",
+    [UI_MENU_COLOR_DEFAULT] = "Của game", [UI_MENU_COLOR_VIVID] = "Sống động (OLED)", [UI_MENU_COLOR_CLARITY] = "Rõ nét",
+    [UI_MENU_COLOR_CUSTOM] = "Tùy chỉnh",
+    [UI_MENU_COLOR_BRIGHTNESS] = "Độ sáng", [UI_MENU_COLOR_BRIGHTNESS_DESC] = "Cộng vào mọi màu; 0 là giữ nguyên.",
+    [UI_MENU_COLOR_CONTRAST] = "Độ tương phản",
+    [UI_MENU_COLOR_CONTRAST_DESC] = "Đẩy màu ra xa xám trung bình (trên 100 %) hoặc kéo lại gần; 100 % là giữ nguyên.",
+    [UI_MENU_COLOR_SATURATION] = "Độ bão hòa",
+    [UI_MENU_COLOR_SATURATION_DESC] = "Độ đậm của màu so với xám; 100 % là giữ nguyên.",
+    [UI_MENU_COLOR_GAMMA] = "Gamma",
+    [UI_MENU_COLOR_GAMMA_DESC] = "Dưới 1 làm sáng vùng tối và vùng giữa, trên 1 làm tối chúng; 1 là giữ nguyên.",
+    [UI_MENU_HDR_GROUP] = "HDR",
+    [UI_MENU_HDR] = "Xuất HDR",
+    [UI_MENU_HDR_DESC] = "Vùng sáng chói trên màn hình HDR. Cần bật HDR trong Windows (\"Use HDR\") hoặc trong compositor "
+                         "Wayland có quản lý màu; nếu không hình ảnh vẫn là SDR. Áp dụng sau khi khởi động lại. Hồ sơ màu "
+                         "ở trên dành cho SDR và không được dùng trong HDR.",
+    [UI_MENU_HDR_PEAK] = "Độ sáng đỉnh",
+    [UI_MENU_HDR_PEAK_DESC] = "Độ sáng đỉnh của màn hình bạn tính bằng nit; các vùng sáng nhất dừng ở đó.",
+    [UI_MENU_HDR_GAME] = "Độ sáng game",
+    [UI_MENU_HDR_GAME_DESC] = "Nit của màu trắng trong hình (paper white). 203 là chuẩn tham chiếu HDR; hãy tăng lên trong "
+                              "phòng sáng.",
+    [UI_MENU_HDR_UI] = "Độ sáng HUD và menu",
+    [UI_MENU_HDR_UI_DESC] = "Nit của màu trắng trong HUD và menu này.",
+    [UI_MENU_HDR_HUE] = "Hiệu chỉnh sắc độ vùng sáng",
+    [UI_MENU_HDR_HUE_DESC] = "Màu sáng như lửa và tia lửa chuyển dần sang trắng như trong hình SDR của game, khớp với ánh sáng "
+                             "chúng phát ra; 0 giữ chúng bão hòa hoàn toàn.",
+    [UI_MENU_SHADOW_SCALE] = "Độ phân giải bóng",
+    [UI_MENU_SHADOW_SCALE_DESC] = "Vẽ bản đồ bóng mặt trời lớn hơn mức 960x960 của game theo số lần này ở mỗi cạnh: cạnh bóng "
+                                  "và bóng lá sắc nét hơn. Có hiệu lực từ lần khởi động kế tiếp.",
+    [UI_MENU_PCSS] = "Bóng mềm",
+    [UI_MENU_PCSS_DESC] = "Bóng mặt trời sắc nét ở chỗ vật thể chạm đất và mềm dần theo độ xa của bóng (PCSS). 0 giữ bộ lọc "
+                          "của game. Có hiệu lực từ lần khởi động kế tiếp.",
+    [UI_MENU_CONTACT_SHADOWS] = "Bóng tiếp xúc",
+    [UI_MENU_CONTACT_SHADOWS_DESC] = "Các bóng mặt trời nhỏ mà bản đồ bóng bỏ sót: ở chân, dưới đá, trong cỏ và các khe. "
+                                     "Được dò trên màn hình sau khi chiếu sáng. Có hiệu lực từ lần khởi động kế tiếp.",
+    [UI_MENU_SHADOW_RANGE] = "Tầm cascade bóng",
+    [UI_MENU_SHADOW_RANGE_DESC] = "Dời các bậc mà bóng chuyển sang mềm hơn (20, 40, 80 và 160 m của game) ra xa hơn. Bản đồ "
+                                  "bóng trải trên vùng đất rộng hơn: hãy tăng Độ phân giải bóng cùng lúc. Có hiệu lực từ "
+                                  "lần khởi động kế tiếp.",
+    [UI_MENU_GRASS_RANGE] = "Tầm cỏ",
+    [UI_MENU_GRASS_RANGE_DESC] = "Cỏ mọc xa đến đâu quanh camera (của game: 62,5 m). Cao hơn thì cỏ ở đồng cỏ xa vẫn còn thay "
+                                 "vì chỉ mọc ngay trước mặt bạn; thấp hơn thì vẽ ít cỏ hơn. Có hiệu lực từ lần khởi động kế "
+                                 "tiếp.",
+    [UI_MENU_DLSS_PRESET] = "DLSS model",
+    [UI_MENU_DLSS_PRESET_DESC] = "Model DLSS nào được chạy. Tự động theo khuyến nghị của NVIDIA cho từng chế độ: K cho DLAA, "
+                                 "Chất lượng và Cân bằng, M cho Hiệu năng, L cho Siêu hiệu năng. J: bớt bóng mờ phía sau "
+                                 "nhân vật di chuyển, nhấp nháy nhiều hơn một chút. K: model sắc nét nhất ở mọi chế độ. Áp "
+                                 "dụng ngay.",
+    [UI_MENU_DLSS_PRESET_DEFAULT] = "Automatic", [UI_MENU_DLSS_PRESET_K] = "K (sharpest)",
+    [UI_MENU_DLSS_PRESET_J] = "J (less ghosting)",
+    [UI_MENU_DLSS_CHARS] = "Vệt mờ nhân vật DLSS",
+    [UI_MENU_DLSS_CHARS_DESC] = "Giảm các vệt mờ nhạt phía sau nhân vật, động vật đang di chuyển và vật chúng cầm: DLSS lấy "
+                                "ít hơn từ các khung hình trước ở đó. Mạnh hơn xóa được nhiều vệt hơn nhưng làm các cạnh đó "
+                                "kém mịn hơn một chút. Áp dụng ngay.",
+    [UI_MENU_DLSS_CHARS_OFF] = "Tắt", [UI_MENU_DLSS_CHARS_LIGHT] = "Nhẹ", [UI_MENU_DLSS_CHARS_MEDIUM] = "Vừa",
+    [UI_MENU_DLSS_CHARS_FULL] = "Tối đa",
+    [UI_MENU_DLSS] = "Chế độ phóng to",
+    [UI_MENU_DLSS_DESC] = "Gốc: khử răng cưa cảnh 3D ở độ phân giải đầy đủ. Chất lượng, Cân bằng, Hiệu năng và Siêu hiệu năng "
+                          "vẽ cảnh ở 67, 58, 50 và 33 % rồi để bộ phóng to (DLSS hoặc FSR 3.1) phóng lên, giúp tiết kiệm "
+                          "thời gian GPU; chúng thay thế Tỷ lệ kết xuất 3D. Có hiệu lực ngay.",
+    [UI_MENU_DLSS_DLAA] = "Gốc", [UI_MENU_DLSS_QUALITY] = "Chất lượng", [UI_MENU_DLSS_BALANCED] = "Cân bằng",
+    [UI_MENU_DLSS_PERFORMANCE] = "Hiệu năng", [UI_MENU_DLSS_ULTRA] = "Siêu hiệu năng",
+    [UI_MENU_FXAA] = "Khử răng cưa của game (FXAA)",
+    [UI_MENU_FXAA_DESC] = "FXAA làm mịn cạnh của chính game. Nó làm nhòe chi tiết nhỏ một chút; khi bật DLAA thì không cần.",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex Low Latency",
+    [UI_MENU_REFLEX_DESC] = "Giảm độ trễ hệ thống trên GPU NVIDIA bằng VK_NV_low_latency2. Bật + Boost giữ xung GPU cao trong các cảnh bị CPU giới hạn.",
+    [UI_MENU_REFLEX_OFF] = "Tắt",
+    [UI_MENU_REFLEX_ON] = "Bật",
+    [UI_MENU_REFLEX_BOOST] = "Bật + Boost",
+    [UI_MENU_SCENE_UPSCALER] = "Bộ phóng to cảnh 3D",
+    [UI_MENU_SCENE_UPSCALER_DESC] = "Bộ phóng to theo thời gian cho cảnh 3D: cạnh mịn hơn và ít nhấp nháy hơn, và ở chế độ "
+                                    "thấp hơn Gốc nó vẽ cảnh nhỏ hơn rồi phóng lên, giúp tiết kiệm thời gian GPU. NVIDIA "
+                                    "DLSS cần GPU NVIDIA RTX và " DLSS_FILE " cạnh " EXE_FILE "; AMD FSR 3.1 chạy trên mọi "
+                                    "GPU. Tắt thì giữ cách phóng to và FXAA của chính game. HUD không bị ảnh hưởng; bộ phóng "
+                                    "to và độ sắc nét ở trên vẫn đưa hình game vừa với cửa sổ. Có hiệu lực sau khi khởi động "
+                                    "lại.",
+    [UI_MENU_SCENE_UPSCALER_OFF] = "Tắt", [UI_MENU_SCENE_UPSCALER_DLSS] = "NVIDIA DLSS",
+    [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU] = "DLSS: cần GPU NVIDIA RTX",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL] = "DLSS: thiếu " DLSS_FILE,
+    [UI_MENU_FSR3_SHARPNESS] = "Độ sắc nét FSR 3.1",
+    [UI_MENU_FSR3_SHARPNESS_DESC] = "Làm nét cảnh 3D sau FSR 3.1; 0 là tắt.",
+
+    [UI_MENU_FPS_LIMIT] = "Giới hạn tốc độ khung hình",
+    [UI_MENU_FPS_LIMIT_DESC] = "Số khung hình tối đa mỗi giây game vẽ. Trên 60 là thử nghiệm và cần bật Tốc độ game theo "
+                               "đồng hồ.",
+    [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_40] = "40 FPS", [UI_MENU_FPS_45] = "45 FPS",
+    [UI_MENU_FPS_60] = "60 FPS", [UI_MENU_FPS_90] = "90 FPS", [UI_MENU_FPS_120] = "120 FPS", [UI_MENU_FPS_144] = "144 FPS",
+    [UI_MENU_FPS_DISPLAY] = "Theo màn hình", [UI_MENU_FPS_DISPLAY_HZ] = "Theo màn hình (%.0f Hz)",
+    [UI_MENU_FRAME_QUEUE] = "Hàng đợi khung hình",
+    [UI_MENU_FRAME_QUEUE_DESC] = "Game bắt đầu một khung hình trong lúc khung trước đang chờ đến lượt lên màn hình: ít rớt "
+                                 "khung hơn hẳn ở mức giới hạn, đổi lại trễ điều khiển thêm tối đa một khung hình. Áp dụng ngay.",
+    [UI_MENU_FRAME_GEN] = "Tạo khung hình", [UI_MENU_FRAME_GEN_OFF] = "Tắt", [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
+    [UI_MENU_FRAME_GEN_DESC] = "Một hình được tạo ra giữa mỗi hai hình game vẽ: số hình trên màn hình gấp đôi, game chạy ở "
+                               "một nửa giới hạn khung hình và điều khiển trễ thêm khoảng nửa khung hình. Dành cho màn hình "
+                               "từ 120 Hz trở lên. Không dùng cùng DLSS hoặc HDR. Áp dụng ngay.",
+    [UI_MENU_REALTIME] = "Tốc độ game theo đồng hồ",
+    [UI_MENU_REALTIME_DESC] = "Chạy game theo thời gian thực, để một khung hình chậm không làm game chậm theo.",
+    [UI_MENU_CLOTH_REALTIME] = "Vải theo đồng hồ",
+    [UI_MENU_CLOTH_REALTIME_DESC] = "Chạy cả vải và tóc theo thời gian thực.",
+    [UI_MENU_HIGHFPS_FIX] = "Sửa lỗi tốc độ khung hình cao",
+    [UI_MENU_HIGHFPS_FIX_DESC] = "Sửa vật lý hoạt động sai trên 30 khung hình mỗi giây, và các vật thể vẫn trong suốt hoặc vô hình trên 60.",
+    [UI_MENU_CLIMB_FIX] = "Sửa tốc độ leo trèo",
+    [UI_MENU_CLIMB_FIX_DESC] = "Giữ tốc độ leo tường và thang đầy đủ trên 60 khung hình mỗi giây, để Link lên được tới đỉnh.",
+    [UI_MENU_GAME_LANG] = "Ngôn ngữ game", [UI_MENU_GAME_LANG_DESC] = "Ngôn ngữ của văn bản và giọng nói trong game.",
+    [UI_MENU_GAME_LANG_AUTO] = "Tự động",
+    [UI_MENU_OPERATION_MODE] = "Chế độ máy",
+    [UI_MENU_OPERATION_MODE_DESC] = "Game nghĩ nó đang chạy ở chế độ cắm đế hay cầm tay.",
+    [UI_MENU_MODE_DOCKED] = "Cắm đế", [UI_MENU_MODE_HANDHELD] = "Cầm tay",
+    [UI_MENU_ASSUME_FOCUS] = "Tiếp tục chạy khi mất focus",
+    [UI_MENU_ASSUME_FOCUS_DESC] = "Bật (mặc định): game vẫn chạy khi bạn ở cửa sổ khác, và bàn phím im lặng cho đến khi cửa "
+                                  "sổ game lên trước lại. Tắt: game tạm dừng khi cửa sổ mất focus, như trên Switch khi nhấn "
+                                  "Home; lần tải bị ngắt theo cách đó có thể dừng hẳn.",
+
+    [UI_MENU_PLAY_TIME] = "Thời gian chơi",
+    [UI_MENU_PLAY_TIME_DESC] = "Thời gian trong game qua mọi lần chạy, chỉ tính khi cửa sổ game có focus và game đang vẽ "
+                               "khung hình. Lưu trong playtime.txt ở thư mục hồ sơ, cạnh các tệp save.",
+    [UI_MENU_PLAY_TIME_HM] = "%llu giờ %02u phút", [UI_MENU_PLAY_TIME_SESSION] = "lần chạy này: %s",
+    [UI_MENU_MODS_BUILTIN] = "Tích hợp sẵn trong bản port", [UI_MENU_MODS_INSTALLED] = "Mod đã cài",
+    [UI_MENU_MODS_NONE] = "Chưa có mod nào. Giải nén mod vào thư mục mods, mỗi mod một thư mục chứa thư mục romfs bên trong, "
+                          "rồi khởi động lại game. TKMM cũng có thể xuất các mod đã gộp vào một thư mục ở đó.",
+    [UI_MENU_MODS_OPEN] = "Mở thư mục mod",
+    [UI_MENU_MODS_OPEN_DESC] = "Hiện thư mục game tải mod từ đó. Nếu chưa có, thư mục sẽ được tạo.",
+    [UI_MENU_MODS_ROW_DESC] = "Tệp game nó thay thế: %u. Tệp mới nó thêm vào: %u.",
+    [UI_MENU_MODS_OVERRIDDEN] = "%u tệp của nó lấy từ %s, mod cao hơn trong danh sách.",
+    [UI_MENU_MODS_MOVE_HINT] = "Nút mặt trên hoặc Ctrl+Lên đẩy nó lên, nút mặt trái hoặc Ctrl+Xuống đẩy nó xuống. Khi hai mod "
+                               "đổi cùng một tệp, dữ liệu game hay mã, mod cao hơn thắng. Thay đổi áp dụng sau khi khởi "
+                               "động lại.",
+    [UI_MENU_MODS_EMPTY] = "Thư mục này không có tệp romfs, exefs hoặc cheats.",
+    [UI_MENU_MODS_SUBSDK] = "Mod này mang theo mã game riêng (plugin subsdk hoặc main bị thay). Bản port không tải được "
+                            "module mã, nên cả mod vẫn tắt. Công tắc \"Dùng ... không kèm mã\" bên dưới sẽ dùng phần còn lại.",
+    [UI_MENU_MODS_EXEFS_LATER] = "Mod này vá mã game (exefs). Game sẽ tích hợp các bản vá khi khởi động lần sau (dựng lại vài "
+                                 "phút); đến lúc đó cả mod vẫn tắt.",
+    [UI_MENU_MODS_CHEATS] = "Cheat: %d. Bật chúng ở tab Cheat.",
+    [UI_MENU_MODS_CHEATS_FILE] = "Cheat cho phiên bản game này được đọc khi khởi động từ cheats\\%s trong mod này.",
+    [UI_MENU_MODS_BAD_NAME] = "Tên thư mục chứa ký tự |, mà danh sách mod dùng để ngăn cách các tên. Hãy đổi tên thư mục.",
+    [UI_MENU_MODS_OTHER_VERSION] = "%u tệp của nó mang phiên bản game khác trong tên. Game chỉ đọc chúng khi có gì đó yêu cầu "
+                                   "đúng các tên ấy. Nếu mod không có tác dụng, hãy tìm bản của nó dành cho phiên bản game "
+                                   "của bạn.",
+    [UI_MENU_MODS_UNUSED] = "không dùng",
+    [UI_MENU_MODS_FPS60] = "Bản vá 60 FPS",
+    [UI_MENU_MODS_FPS60_DESC] = "Bản vá riêng của bản port cho 60 khung hình mỗi giây. Đặt cùng Giới hạn tốc độ khung hình ở "
+                                "tab Trò chơi.",
+    [UI_MENU_MODS_RES] = "Bản vá độ phân giải",
+    [UI_MENU_MODS_RES_DESC] = "Bản vá riêng của bản port cho độ phân giải trên 1080p. Đặt cùng Độ phân giải game ở tab Màn hình.",
+    [UI_MENU_MODS_QUICKMENU] = "Sửa menu nhanh",
+    [UI_MENU_MODS_QUICKMENU_DESC] = "Bản sửa của bản port cho nền đen của các menu vũ khí, khiên và nguyên liệu ở 60 FPS.",
+
+    [UI_MENU_VOLUME] = "Âm lượng", [UI_MENU_VOLUME_DESC] = "Âm lượng tổng của game.",
+    [UI_MENU_VOLUME_MUSIC] = "Âm lượng nhạc", [UI_MENU_VOLUME_MUSIC_DESC] = "Âm lượng nhạc nền.",
+    [UI_MENU_VOLUME_SFX] = "Âm lượng hiệu ứng", [UI_MENU_VOLUME_SFX_DESC] = "Âm lượng hiệu ứng âm thanh.",
+    [UI_MENU_VOLUME_VOICE] = "Âm lượng giọng nói", [UI_MENU_VOLUME_VOICE_DESC] = "Âm lượng giọng nói nhân vật.",
+    [UI_MENU_AUDIO_CHANNELS] = "Loa",
+    [UI_MENU_AUDIO_CHANNELS_DESC] = "Đầu ra stereo hoặc surround 5.1. Tự động chọn 5.1 khi cấu hình loa của Windows có từ sáu "
+                                    "kênh trở lên. Áp dụng sau khi khởi động lại.",
+    [UI_MENU_CHANNELS_AUTO] = "Tự động", [UI_MENU_CHANNELS_STEREO] = "Stereo", [UI_MENU_CHANNELS_51] = "Surround 5.1",
+    [UI_MENU_AUDIO_DEVICE] = "Thiết bị đầu ra",
+    [UI_MENU_AUDIO_DEVICE_DESC] = "Nơi phát âm thanh. Mặc định hệ thống theo thiết bị mặc định của Windows. Thiết bị đã chọn "
+                                  "mà bị rút ra sẽ quay về mặc định hệ thống cho đến khi nó trở lại. Áp dụng ngay.",
+    [UI_MENU_AUDIO_DEVICE_DEFAULT] = "Mặc định hệ thống",
+
+    [UI_MENU_MOTION] = "Điều khiển chuyển động", [UI_MENU_MOTION_DESC] = "Ngắm bằng con quay hồi chuyển của tay cầm.",
+    [UI_MENU_GYRO_CALIBRATION] = "Hiệu chỉnh độ lệch con quay",
+    [UI_MENU_GYRO_CALIBRATION_DESC] = "Trừ độ trôi lúc nghỉ của tay cầm, đo bằng dòng hiệu chỉnh bên dưới. Các giá trị đã đo "
+                                      "vẫn được lưu khi tắt mục này.",
+    [UI_MENU_GYRO_CALIBRATE] = "Hiệu chỉnh con quay",
+    [UI_MENU_GYRO_CALIBRATE_DESC] = "Đo độ trôi lúc nghỉ của con quay và loại bỏ nó. Đặt tay cầm xuống hoặc giữ yên trong hai "
+                                    "giây.",
+    [UI_MENU_GYRO_CALIBRATE_WAIT] = "Đang hiệu chỉnh...",
+    [UI_MENU_GYRO_CALIBRATED] = "%s, đã hiệu chỉnh",
+    [UI_MENU_GYRO_CALIBRATE_FAILED] = "Hiệu chỉnh thất bại",
+    [UI_MENU_GYRO_CALIBRATE_MOVED] = "Tay cầm đã di chuyển: hãy giữ yên và thử lại",
+    [UI_MENU_GYRO_AUTO_BIAS] = "Tự học độ trôi con quay khi nghỉ",
+    [UI_MENU_GYRO_AUTO_BIAS_DESC] = "Học độ trôi còn lại trong con quay mỗi khi tay cầm nằm yên trên bàn, rồi trừ nó đi. Dành "
+                                    "cho cú ngắm cung từ từ trượt dù đã hiệu chỉnh. Tay cầm đang cầm trên tay thì không được "
+                                    "học. Thử nghiệm.",
+    [UI_MENU_RUMBLE_STRENGTH] = "Cường độ rung",
+    [UI_MENU_RUMBLE_STRENGTH_DESC] = "Tay cầm rung mạnh đến mức nào.",
+    [UI_MENU_RUMBLE_CURVE] = "Đường cong rung",
+    [UI_MENU_RUMBLE_CURVE_DESC] = "Giá trị thấp hơn làm rung yếu mạnh lên.",
+    [UI_MENU_RUMBLE_TRIGGERS] = "Rung cò (Xbox)",
+    [UI_MENU_RUMBLE_TRIGGERS_DESC] = "Rung cả các cò của tay cầm Xbox.",
+    [UI_MENU_PAD_LAYOUT] = "Bố cục nút",
+    [UI_MENU_PAD_LAYOUT_DESC] = "Nút nào là A. Nintendo: nút bên phải, như trên Switch. Xbox: nút phía dưới, như ghi trên tay "
+                                "cầm Xbox (dấu X trên tay cầm PlayStation). Tự động chọn Nintendo cho tay cầm có nhãn "
+                                "Nintendo và Xbox cho các tay cầm khác. Biểu tượng tay cầm nào hiện trong game được đặt ở "
+                                "Biểu tượng nút.",
+    [UI_MENU_PAD_LAYOUT_AUTO] = "Tự động", [UI_MENU_PAD_LAYOUT_NINTENDO] = "Nintendo (A bên phải)",
+    [UI_MENU_PAD_LAYOUT_XBOX] = "Xbox (A phía dưới)",
+    [UI_MENU_PAD_LAYOUT_IN_USE] = "đang dùng: %s",
+    [UI_MENU_PROMPTS] = "Biểu tượng nút",
+    [UI_MENU_PROMPTS_DESC] = "Biểu tượng nút của tay cầm nào hiện trong game. Nintendo: của chính game. Xbox: LB, RB, LT, RT, "
+                             "Menu, View và chữ thập, cùng A, B, X, Y như ghi trên nút mà bố cục ở trên nhấn (với Nintendo "
+                             "(A bên phải), nút bên phải mang nhãn B, nên biểu tượng cho A hiện B). PlayStation: các hình "
+                             "trên tay cầm PlayStation (○ × △ □, L1, R1, L2, R2, Options và Share), trên nút mà bố cục ở "
+                             "trên nhấn. PC: các phím và nút chuột của bố cục bàn phím mặc định (E, Shift, Space, nhấp "
+                             "trái...) và chuột cho camera. Game đọc biểu tượng khi khởi động, nên chúng đổi sau khi khởi "
+                             "động lại. Chúng nằm trong tệp của game, nên nút bạn gán lại trong Điều khiển vẫn giữ biểu "
+                             "tượng cũ trên màn hình.",
+    [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_PLAYSTATION] = "PlayStation", [UI_MENU_PROMPTS_PC] = "PC",
+    [UI_MENU_PROMPTS_MISSING] = "thiếu tệp biểu tượng: hãy chạy lại trình cài đặt",
+    [UI_MENU_PROMPTS_FAILED] = "tệp biểu tượng bị hỏng: hãy chạy lại trình cài đặt",
+    [UI_MENU_PROMPTS_RESTART] = "biểu tượng đổi sau khi khởi động lại",
+    [UI_MENU_PROMPTS_OFF_SHAPE] = "tắt ở độ phân giải game này (chưa có bố cục cho nó)",
+    [UI_MENU_OUTPUT_RES_NO_LAYOUT] = "chưa có bố cục cho tỷ lệ này: hãy chạy lại trình cài đặt",
+    [UI_MENU_OUTPUT_RES_PREPARING] = "bố cục đang được tạo ở nền; dùng từ lần khởi động kế tiếp",
+    [UI_MENU_PROMPTS_PREPARING] = "tệp biểu tượng đang được tạo ở nền; dùng từ lần khởi động kế tiếp",
+    [UI_MENU_PREPARE_RETRY] = "Thử lại",
+    [UI_MENU_PREPARE_RETRY_DESC] = "Chạy lại các công cụ của trình cài đặt để tạo ở nền các tệp bố cục giao diện hoặc biểu tượng nút còn thiếu. Game vẫn chạy; nó dùng chúng từ lần khởi động kế tiếp.",
+    [UI_MENU_SHAPE_PREPARE_FAILED] = "các công cụ của trình cài đặt không khởi chạy: hãy chạy lại trình cài đặt",
+    [UI_MENU_PROMPTS_OFF_MODS] = "tắt: một mod RomFS thay các tệp của chúng",
+    [UI_MENU_PROMPTS_OFF_PATCHES] = "tắt khi TOTK_ROMFS_PATCHES được đặt",
+    [UI_MENU_RESTART] = "Khởi động lại ngay",
+    [UI_MENU_RESTART_DESC] = "Đóng game và chạy lại với biểu tượng mới. Tiến trình từ lần lưu gần nhất sẽ mất.",
+    [UI_MENU_RESTART_CONFIRM] = "Khởi động lại game ngay? Tiến trình từ lần lưu gần nhất sẽ mất.",
+    [UI_MENU_RESTART_YES] = "Khởi động lại",
+    [UI_MENU_RESTART_SAVING] = "Game đang lưu: sẽ khởi động lại được sau giây lát.",
+    [UI_MENU_GROUP_STICKS] = "Cần analog",
+    [UI_MENU_LSTICK_DEADZONE] = "Vùng chết cần trái", [UI_MENU_RSTICK_DEADZONE] = "Vùng chết cần phải",
+    [UI_MENU_STICK_DEADZONE_DESC] = "Cần của tay cầm phải nghiêng bao xa thì game mới nhận. Hãy tăng nếu nhân vật hoặc camera tự di chuyển: thả cần ra, đọc \"cần lúc này\" và đặt vùng chết cao hơn vài phần trăm.",
+    [UI_MENU_STICK_DEADZONE_NOW] = "cần lúc này: %.0f %%",
+    [UI_MENU_MOUSE_MODE] = "Camera chuột",
+    [UI_MENU_MOUSE_MODE_DESC] = "Trực tiếp: camera xoay theo quãng chuột di chuyển, như game PC, không có vùng chết hay đường cong của cần (game 1.4.3 và 1.2.1; 1.1.0 dùng giả lập cần). Giả lập cần: chuột đóng vai cần phải.",
+    [UI_MENU_MOUSE_STICK] = "Giả lập cần",
+    [UI_MENU_MOUSE_DIRECT] = "Trực tiếp",
+    [UI_MENU_MENU_CURSOR] = "Chuột trong menu của game",
+    [UI_MENU_MENU_CURSOR_DESC] = "Trong menu riêng của game (tiêu đề, túi đồ, cửa hàng, lựa chọn hội thoại) con trỏ hiện ra: mục dưới nó được chọn, nhấp trái để xác nhận, nhấp phải để quay lại. Chỉ khi chuột hoặc phím được dùng gần nhất, nên tay cầm thấy menu không đổi (game 1.4.3).",
+    [UI_MENU_MAP_CLICK] = "Nhấp trái trên bản đồ",
+    [UI_MENU_MAP_CLICK_DESC] = "Trên bản đồ của Purah Pad, nút chuột trái nhấn A tại con trỏ bản đồ thay cho nút nó được gán (mặc định là Y). Cần bật Chuột trong menu của game (game 1.4.3).",
+    [UI_MENU_DIALOGUE_CLICK] = "Nhấp chuột trong hội thoại",
+    [UI_MENU_DIALOGUE_CLICK_DESC] = "Khi hộp hội thoại đang mở, nhấp trái nhấn B (tiếp tục văn bản và bỏ qua cuộn chữ) và nhấp phải nhấn A, thay cho các nút chúng được gán (mặc định là Y, mở nhật ký hội thoại, và ZL). Lựa chọn hội thoại giữ con trỏ: nhấp trái để chọn (game 1.4.3).",
+    [UI_MENU_POINTER_IMAGE] = "Con trỏ game",
+    [UI_MENU_POINTER_IMAGE_DESC] = "Khi con trỏ không bị bắt (menu của game, menu này, sau khi nhấn Esc), cửa sổ hiện một mũi tên vàng riêng thay cho mũi tên hệ thống, cỡ theo tỷ lệ màn hình.",
+    [UI_MENU_QUICKSAVE] = "Lưu nhanh và tải nhanh",
+    [UI_MENU_QUICKSAVE_DESC] = "Một phím lưu game ngay và một phím khác tải bản lưu đó (hai dòng bên dưới: mặc định F6 và F7, như Half-Life), không hiện menu trên màn hình. Chỉ phím bàn phím và nút chuột, chỉ game 1.4.3. Lưu nhanh nhờ game tạo một bản lưu tự động của chính nó, nên nó thay bản lưu tự động cũ nhất (bản lưu thủ công vẫn giữ), giữ một bản sao làm bản lưu nhanh (thư mục quicksave của hồ sơ) và hiện \"Đã lưu game\" ở đầu hình. Tải nhanh giữ hình ở dòng \"Đang tải bản lưu nhanh\" trong lúc nó đi qua danh sách tải của game khuất tầm nhìn, rồi game tải bản lưu nhanh (khoảng 5 giây). Ở chỗ game không tự tạo bản lưu tự động (cảnh cắt, hội thoại), sẽ không lưu gì và dòng chữ cho biết điều đó.",
+    [UI_MENU_QUICKSAVE_KEY] = "Phím lưu nhanh",
+    [UI_MENU_QUICKLOAD_KEY] = "Phím tải nhanh",
+    [UI_MENU_QUICKSAVE_KEY_DESC] = "Phím bắt đầu lưu nhanh hoặc tải nhanh; mặc định F6 và F7, như Half-Life. Chọn ô rồi nhấn phím hoặc nút chuột bất kỳ; Delete để ô đó không có phím. Khi lưu nhanh đang bật, hai phím này không làm gì khác (có ghi chú khi một phím gán cũng dùng phím đó). totk.ini nhận mọi tên phím của phần gán phím (quicksave_key, quickload_key).",
+    [UI_QS_SAVED] = "Đã lưu game",
+    [UI_QS_LOADING] = "Đang tải bản lưu nhanh",
+    [UI_QS_NOT_NOW] = "Hiện chưa thể lưu nhanh",
+    [UI_QS_NONE] = "Chưa có bản lưu nhanh (phím lưu nhanh sẽ tạo một bản)",
+    [UI_QS_FAILED] = "Lưu nhanh thất bại: xem totk.log",
+    [UI_QS_LOAD_FAILED] = "Tải nhanh thất bại: xem totk.log",
+    [UI_MENU_MOUSE_SENS] = "Độ nhạy camera chuột",
+    [UI_MENU_MOUSE_SENS_DESC] = "Chuột xoay camera nhanh đến đâu.",
+    [UI_MENU_WALK_KEY] = "Phím đi bộ",
+    [UI_MENU_WALK_KEY_DESC] = "Giữ nó để nghiêng các cần của bàn phím một phần, để bàn phím đi bộ thay vì chạy. Tỷ lệ đi bộ "
+                              "đặt độ nghiêng. Tay cầm và chuột không bị ảnh hưởng.",
+    [UI_MENU_WALK_KEY_TAKEN] = "cũng là %s",
+    [UI_MENU_WALK_SCALE] = "Tỷ lệ đi bộ",
+    [UI_MENU_WALK_SCALE_DESC] = "Độ nghiêng của các cần bàn phím khi giữ phím đi bộ. Một nửa là đi bộ, nghiêng hết là chạy.",
+    [UI_MENU_FREECAM] = "Camera tự do",
+    [UI_MENU_FREECAM_DESC] = "Cho phép một tổ hợp hoặc một phím bên dưới tách góc nhìn khỏi Link và bay đi. Mặc định tắt: khi "
+        "tắt, mã camera của game chạy nguyên bản. Có hiệu lực sau khi khởi động lại. Game phiên bản 1.4.3.",
+    [UI_MENU_FREECAM_OFF_NOTE] = "Hãy bật Camera tự do ở trên rồi khởi động lại",
+    [UI_MENU_FREECAM_PAD] = "Tổ hợp camera tự do",
+    [UI_MENU_FREECAM_PAD_DESC] = "Các nút tay cầm nhấn cùng lúc để chuyển góc nhìn qua ba giai đoạn: rời Link và bay, đứng yên "
+        "tại chỗ vừa để trong khi Link chơi tiếp, và quay lại. Khi đang bay game không nhận điều khiển: cần trái bay theo "
+        "hướng nhìn và sang ngang, các cò lên và xuống, cần phải xoay, và mỗi lần nhấn L hoặc R giảm một nửa hoặc tăng gấp "
+        "đôi tốc độ. Khi khóa, Link đi theo hướng cần trái chỉ trên màn hình. Game phiên bản 1.4.3.",
+    [UI_MENU_FREECAM_PAD_V143] = "Chỉ game phiên bản 1.4.3",
+    [UI_MENU_FREECAM_KEY] = "Phím camera tự do",
+    [UI_MENU_FREECAM_KEY_DESC] = "Một phím chuyển góc nhìn qua cùng các giai đoạn: rời Link và bay, đứng yên trong khi Link "
+        "chơi tiếp, và quay lại. Khi đang bay: W A S D bay theo hướng nhìn và sang ngang, các phím gán cho ZR và ZL (mặc định "
+        "X và Z) lên và xuống, chuột và phím mũi tên xoay, và các phím gán cho L và R (Q và R) giảm một nửa hoặc tăng gấp đôi "
+        "tốc độ. Game phiên bản 1.4.3.",
+    [UI_MENU_GROUP_GAMEPLAY_TWEAKS] = "Tinh chỉnh lối chơi",
+    [UI_MENU_GAMEPLAY_TWEAKS_ENABLED] = "Tinh chỉnh lối chơi",
+    [UI_MENU_GAMEPLAY_TWEAKS_ENABLED_DESC] = "Điều khiển bằng con lăn chuột cho xoay và khoảng cách của Ultrahand, đổi vật phẩm và vũ khí, và thu phóng bản đồ mượt.",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_ROTATE] = "Xoay Ultrahand bằng con lăn",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_ROTATE_DESC] = "Xoay vật đang giữ bằng Ultrahand trực tiếp bằng con lăn chuột.",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_C_AXIS] = "Trục xoay C của Ultrahand",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_C_AXIS_DESC] = "Giữ C khi cuộn để xoay vật đang giữ quanh trục còn lại.",
+    [UI_MENU_GAMEPLAY_ROTATION_SENSITIVITY] = "Độ nhạy xoay Ultrahand",
+    [UI_MENU_GAMEPLAY_ROTATION_SENSITIVITY_DESC] = "Con lăn chuột xoay vật đang giữ nhanh đến đâu.",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_DISTANCE] = "Khoảng cách Ultrahand bằng con lăn",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_DISTANCE_DESC] = "Nhấp phải + con lăn chuột đẩy ra hoặc kéo vào vật đang giữ.",
+    [UI_MENU_GAMEPLAY_DISTANCE_SENSITIVITY] = "Độ nhạy khoảng cách Ultrahand",
+    [UI_MENU_GAMEPLAY_DISTANCE_SENSITIVITY_DESC] = "Con lăn chuột đổi khoảng cách vật nhanh đến đâu.",
+    [UI_MENU_GAMEPLAY_WEAPON_WHEEL] = "Chọn vũ khí bằng con lăn",
+    [UI_MENU_GAMEPLAY_WEAPON_WHEEL_DESC] = "Cuộn con lăn chuột khi di chuyển tự do để đổi vũ khí. Xác nhận bằng E.",
+    [UI_MENU_GAMEPLAY_WEAPON_SENSITIVITY] = "Độ nhạy con lăn vũ khí",
+    [UI_MENU_GAMEPLAY_WEAPON_SENSITIVITY_DESC] = "Số nấc cuộn cần để chuyển sang vũ khí kế tiếp.",
+    [UI_MENU_GAMEPLAY_ITEM_WHEEL] = "Chọn menu nhanh bằng con lăn",
+    [UI_MENU_GAMEPLAY_ITEM_WHEEL_DESC] = "Cuộn con lăn chuột để duyệt vật phẩm khi menu chọn nhanh đang mở.",
+    [UI_MENU_GAMEPLAY_ITEM_SENSITIVITY] = "Độ nhạy con lăn menu nhanh",
+    [UI_MENU_GAMEPLAY_ITEM_SENSITIVITY_DESC] = "Số nấc cuộn cần để chuyển qua các vật phẩm trong menu chọn nhanh.",
+    [UI_MENU_GAMEPLAY_ITEM_AD] = "Điều hướng menu nhanh bằng A / D",
+    [UI_MENU_GAMEPLAY_ITEM_AD_DESC] = "Nhấn A / D để di chuyển trái và phải trong menu chọn nhanh.",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM] = "Thu phóng bản đồ mượt",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM_DESC] = "Thu phóng có quán tính mượt trên bản đồ Purah Pad bằng con lăn chuột.",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM_SENSITIVITY] = "Độ nhạy thu phóng bản đồ",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM_SENSITIVITY_DESC] = "Con lăn chuột thu phóng bản đồ nhanh đến đâu.",
+    [UI_MENU_STICK_SENS] = "Tốc độ camera bằng cần",
+    [UI_MENU_STICK_SENS_DESC] = "Nhân tốc độ camera của cần phải trong game, kể cả tốc độ tối đa, ở mỗi mức trong năm mức độ "
+                                "nhạy camera của game. Chuột giữ cài đặt riêng của nó.",
+
+    [UI_BINDS_HELP] = "Chọn một ô và nhấn A hoặc Enter, rồi nhấn phím, nút chuột hoặc nút tay cầm. Delete hoặc X xóa một ô. "
+                      "Phím đang được dùng sẽ chuyển sang đây; nút tay cầm đổi chỗ với nút mà nó thay.",
+    [UI_BINDS_COL_KEY1] = "Phím 1", [UI_BINDS_COL_KEY2] = "Phím 2", [UI_BINDS_COL_PAD] = "Tay cầm",
+    [UI_BINDS_GROUP_BUTTONS] = "Nút", [UI_BINDS_GROUP_MOVE] = "Di chuyển", [UI_BINDS_GROUP_CAMERA] = "Camera",
+    [UI_BINDS_PRESS_KEY] = "Nhấn một phím hoặc nút chuột cho %s",
+    [UI_BINDS_PRESS_PAD] = "Nhấn một nút tay cầm cho %s",
+    [UI_BINDS_CANCEL_HINT] = "Esc để hủy, hoặc chờ %d giây",
+    [UI_BINDS_TAKEN] = "%s đã bị lấy từ %s", [UI_BINDS_SWAPPED] = "%s đã đổi chỗ với %s",
+    [UI_BINDS_RESET] = "Đặt lại mọi nút",
+    [UI_BINDS_RESET_DESC] = "Về phím và nút tay cầm mặc định. Bố cục nút ở trên áp dụng lại: các nút tay cầm đã gán lại vẫn ở nơi bạn đặt cho đến lần đặt lại này.",
+    [UI_BIND_A] = "A", [UI_BIND_B] = "B", [UI_BIND_X] = "X", [UI_BIND_Y] = "Y",
+    [UI_BIND_LCLICK] = "Nhấn cần trái", [UI_BIND_RCLICK] = "Nhấn cần phải", [UI_BIND_L] = "L",
+    [UI_BIND_R] = "R", [UI_BIND_ZL] = "ZL", [UI_BIND_ZR] = "ZR", [UI_BIND_PLUS] = "Cộng", [UI_BIND_MINUS] = "Trừ",
+    [UI_BIND_LEFT] = "D-pad trái", [UI_BIND_UP] = "D-pad lên", [UI_BIND_RIGHT] = "D-pad phải",
+    [UI_BIND_DOWN] = "D-pad xuống",
+    [UI_BIND_LSTICK_LEFT] = "Đi sang trái", [UI_BIND_LSTICK_UP] = "Đi tới", [UI_BIND_LSTICK_RIGHT] = "Đi sang phải",
+    [UI_BIND_LSTICK_DOWN] = "Đi lùi",
+    [UI_BIND_RSTICK_LEFT] = "Camera trái", [UI_BIND_RSTICK_UP] = "Camera lên", [UI_BIND_RSTICK_RIGHT] = "Camera phải",
+    [UI_BIND_RSTICK_DOWN] = "Camera xuống",
+    [UI_BIND_DESC_A] = "Tương tác, nhặt, nói chuyện.", [UI_BIND_DESC_B] = "Chạy, hủy, quay lại.",
+    [UI_BIND_DESC_X] = "Nhảy.", [UI_BIND_DESC_Y] = "Tấn công.", [UI_BIND_DESC_LCLICK] = "Cúi người.",
+    [UI_BIND_DESC_RCLICK] = "Góc nhìn thứ nhất.", [UI_BIND_DESC_L] = "Khả năng.",
+    [UI_BIND_DESC_R] = "Ném vũ khí.", [UI_BIND_DESC_ZL] = "Khiên, khóa mục tiêu.", [UI_BIND_DESC_ZR] = "Cung.",
+    [UI_BIND_DESC_PLUS] = "Menu, túi đồ.", [UI_BIND_DESC_MINUS] = "Bản đồ.",
+    [UI_BIND_DESC_DPAD] = "Chọn nhanh.",
+    [UI_BIND_DESC_MOVE] = "Di chuyển Link như cần trái. Cần trái của tay cầm luôn hoạt động.",
+    [UI_BIND_DESC_CAMERA] = "Xoay camera như cần phải. Chuột và cần phải của tay cầm luôn hoạt động.",
+    [UI_BIND_SHAKE] = "Lắc cần camera",
+    [UI_BIND_DESC_SHAKE] = "Gạt cần phải qua trái và phải thay cho game: tách bộ phận đã dính ra khỏi vật Ultrahand đang giữ. "
+                           "Giữ phím thì tiếp tục lắc.",
+    [UI_KEY_SPACE] = "Space", [UI_KEY_TAB] = "Tab", [UI_KEY_LSHIFT] = "Shift trái", [UI_KEY_LCTRL] = "Ctrl trái",
+    [UI_KEY_UP] = "Mũi tên lên", [UI_KEY_DOWN] = "Mũi tên xuống", [UI_KEY_LEFT] = "Mũi tên trái",
+    [UI_KEY_RIGHT] = "Mũi tên phải",
+    [UI_KEY_MOUSE_L] = "Chuột trái", [UI_KEY_MOUSE_R] = "Chuột phải", [UI_KEY_MOUSE_M] = "Chuột giữa",
+    [UI_KEY_MOUSE_X1] = "Chuột 4", [UI_KEY_MOUSE_X2] = "Chuột 5",
+    [UI_KEY_ENTER] = "Enter", [UI_KEY_BACKSPACE] = "Backspace", [UI_KEY_RSHIFT] = "Shift phải",
+    [UI_KEY_RCTRL] = "Ctrl phải", [UI_KEY_LALT] = "Alt", [UI_KEY_CAPSLOCK] = "Caps Lock", [UI_KEY_INSERT] = "Insert",
+    [UI_KEY_DELETE] = "Delete", [UI_KEY_HOME] = "Home", [UI_KEY_END] = "End", [UI_KEY_PAGEUP] = "Page Up",
+    [UI_KEY_PAGEDOWN] = "Page Down", [UI_KEY_NUM_FMT] = "Num %s",
+    [UI_PAD_SOUTH] = "Nút dưới", [UI_PAD_EAST] = "Nút phải", [UI_PAD_WEST] = "Nút trái",
+    [UI_PAD_NORTH] = "Nút trên", [UI_PAD_LSTICK] = "Cần trái", [UI_PAD_RSTICK] = "Cần phải",
+    [UI_PAD_L] = "Nút vai trái", [UI_PAD_R] = "Nút vai phải", [UI_PAD_START] = "Start", [UI_PAD_BACK] = "Back",
+    [UI_PAD_DPAD_LEFT] = "D-pad trái", [UI_PAD_DPAD_UP] = "D-pad lên", [UI_PAD_DPAD_RIGHT] = "D-pad phải",
+    [UI_PAD_DPAD_DOWN] = "D-pad xuống", [UI_PAD_ZL] = "Cò trái", [UI_PAD_ZR] = "Cò phải",
+    [UI_PAD_LPADDLE1] = "Nút lưng trái", [UI_PAD_RPADDLE1] = "Nút lưng phải",
+    [UI_PAD_LPADDLE2] = "Nút lưng trái 2", [UI_PAD_RPADDLE2] = "Nút lưng phải 2",
+    [UI_PAD_TOUCHPAD] = "Nhấn touchpad",
+    [UI_PAD_CROSS] = "Chữ X", [UI_PAD_CIRCLE] = "Tròn", [UI_PAD_SQUARE] = "Vuông", [UI_PAD_TRIANGLE] = "Tam giác",
+
+    [UI_MENU_AMIIBO_DIR] = "Thư mục amiibo",
+    [UI_MENU_AMIIBO_OPEN] = "Mở",
+    [UI_MENU_AMIIBO_DEFAULT_DIR] = "Thư mục mặc định",
+    [UI_MENU_AMIIBO_REFRESH] = "Làm mới",
+    [UI_MENU_AMIIBO_PICK] = "Tệp dump amiibo (.bin hoặc .nfc 540 byte):",
+    [UI_MENU_AMIIBO_NO_DIR] = "Không mở được thư mục %s",
+    [UI_MENU_AMIIBO_READER] = "Đầu đọc NFC",
+    [UI_MENU_AMIIBO_STATE] = "Đầu đọc:",
+    [UI_MENU_AMIIBO_STATE_IDLE] = "sẵn sàng",
+    [UI_MENU_AMIIBO_STATE_SEARCHING] = "game đang chờ một amiibo",
+    [UI_MENU_AMIIBO_STATE_FOUND] = "amiibo trên đầu đọc",
+    [UI_MENU_AMIIBO_STATE_MOUNTED] = "game đang đọc amiibo",
+    [UI_MENU_AMIIBO_STATE_OFF] = "tắt",
+    [UI_MENU_AMIIBO_FILE] = "Tệp đã chọn:",
+    [UI_MENU_AMIIBO_NO_FILE] = "(chưa chọn tệp)",
+    [UI_MENU_AMIIBO_TAP] = "Chạm amiibo",
+    [UI_MENU_AMIIBO_REMOVE] = "Nhấc amiibo ra",
+    [UI_MENU_AMIIBO_AUTO_REMOVE] = "Tự nhấc amiibo ra sau khi chạm",
+    [UI_MENU_AMIIBO_HOLD] = "Thời gian trên đầu đọc",
+    [UI_MENU_AMIIBO_SECONDS] = "%.1f giây",
+    [UI_MENU_AMIIBO_TAG] = "Amiibo trên đầu đọc:",
+    [UI_MENU_AMIIBO_NO_TAG] = "Không có amiibo trên đầu đọc.",
+    [UI_MENU_AMIIBO_TAG_FILE] = "Tệp: %s",
+    [UI_MENU_AMIIBO_TAG_ID] = "Nhân vật %s, series %02x, số %04x, loại %02x",
+    [UI_MENU_AMIIBO_TAG_UID] = "UID: %s",
+    [UI_MENU_AMIIBO_READY] = "Sẵn sàng",
+    [UI_MENU_AMIIBO_TAPPED] = "Đã chạm: %s",
+    [UI_MENU_AMIIBO_LOAD_FAILED] = "Không phải tệp dump amiibo (NTAG215 540 byte): %s",
+    [UI_MENU_AMIIBO_REMOVED] = "Đã nhấc amiibo ra",
+    [UI_MENU_AMIIBO_STATUS] = "Trạng thái: %s",
+    [UI_MENU_MENU_LANG] = "Ngôn ngữ menu", [UI_MENU_MENU_LANG_DESC] = "Ngôn ngữ của menu này và lớp phủ hiệu năng.",
+    [UI_MENU_MENU_LANG_AUTO] = "Tự động (theo Windows)",
+    [UI_MENU_DISCORD_RPC] = "Trạng thái Discord (Rich Presence)",
+    [UI_MENU_DISCORD_RPC_DESC] = "Hiện \"Playing TotK Recomp\" cùng thời gian chơi trong trạng thái Discord của bạn khi game "
+                                 "chạy. discord_app_id và discord_image trong totk.ini chọn ứng dụng.",
+
+    [UI_MENU_ADV_WARNING] = "Các cài đặt này dành cho kiểm thử và khắc phục sự cố. Chỉ đổi khi bạn biết lý do.",
+    [UI_MENU_GROUP_SCHED] = "Lập lịch", [UI_MENU_GROUP_SHADERS] = "Bộ đổ bóng và đường ống đồ họa",
+    [UI_MENU_GROUP_TEXMEM] = "Họa tiết và bộ nhớ", [UI_MENU_GROUP_FIXES] = "Sửa lỗi kết xuất",
+    [UI_MENU_GROUP_VULKAN] = "Vulkan", [UI_MENU_GROUP_DIAG] = "Chẩn đoán",
+    [UI_MENU_ASYNC_PREEMPT] = "Chiếm quyền trên lõi ảo",
+    [UI_MENU_ASYNC_PREEMPT_DESC] = "Cho phép một luồng game chiếm quyền của luồng khác trên cùng lõi ảo.",
+    [UI_MENU_PREEMPT_OFF] = "Tắt", [UI_MENU_PREEMPT_ON] = "Bật", [UI_MENU_PREEMPT_INHERIT] = "Chỉ kế thừa",
+    [UI_MENU_REPLAY_ASYNC] = "Chuẩn bị khung GPU ở luồng riêng",
+    [UI_MENU_REPLAY_ASYNC_DESC] = "Chuẩn bị khung hình cho GPU ở một luồng riêng thay vì luồng game. Thêm tối đa một khung hình độ trễ.",
+    [UI_MENU_REPLAY_WORKERS] = "Số luồng chuẩn bị khung GPU",
+    [UI_MENU_REPLAY_WORKERS_DESC] = "Ghi các khung hình lớn cho GPU trên nhiều luồng cùng lúc. Hữu ích khi CPU giới hạn tốc độ khung hình; cần từ 8 bộ xử lý logic trở lên. Tắt thì ghi trên một luồng.",
+    [UI_MENU_REPLAY_WORKERS_NOW] = "hiện tại: %s",
+    [UI_MENU_TIMER_1MS] = "Bộ hẹn giờ Windows 1 ms",
+    [UI_MENU_TIMER_1MS_DESC] = "Nâng độ phân giải bộ hẹn giờ hệ thống lên 1 ms để nhịp khung hình đều hơn.",
+    [UI_MENU_PIPE_WAIT] = "Xử lý lệnh vẽ đang chờ",
+    [UI_MENU_PIPE_WAIT_DESC] = "Mặc định giữ cách lập lịch hiện tại, có một luồng xử lý dành riêng cho các lệnh vẽ đang chờ; Cũ (lệnh vẽ) dùng cách lập lịch trước đó.",
+    [UI_MENU_PIPE_WAIT_DEFAULT] = "Mặc định", [UI_MENU_PIPE_WAIT_DRAW] = "Cũ (lệnh vẽ)",
+    [UI_MENU_PIPE_SKIP] = "Lệnh vẽ bị bỏ qua khi đường ống đang dựng",
+    [UI_MENU_PIPE_SKIP_DESC] = "Những lệnh vẽ nào bị bỏ thay vì chờ đường ống của chúng.",
+    [UI_MENU_PIPE_SKIP_STRICT] = "Nghiêm ngặt", [UI_MENU_PIPE_SKIP_ANY] = "Bất kỳ",
+    [UI_MENU_PIPE_SKIP_FULLSCREEN] = "Lượt vẽ toàn màn hình",
+    [UI_MENU_LIB_PREBUILD] = "Dựng trước thư viện công đoạn",
+    [UI_MENU_LIB_PREBUILD_DESC] = "Dựng trước các thư viện công đoạn của bộ đổ bóng ở nền.",
+    [UI_MENU_LIB_PREBUILD_THREADS] = "Số luồng dựng trước thư viện công đoạn",
+    [UI_MENU_LIB_PREBUILD_THREADS_DESC] = "Số luồng dùng để dựng trước; Tự động chọn con số theo CPU của bạn.",
+    [UI_MENU_PIPE_PREBUILD] = "Dựng trước đường ống",
+    [UI_MENU_PIPE_PREBUILD_DESC] = "Dựng trước các đường ống đã biết.",
+    [UI_MENU_PREWARM_XLATE] = "Làm nóng bộ dịch",
+    [UI_MENU_PREWARM_XLATE_DESC] = "Số luồng dịch các bộ đổ bóng đã biết khi khởi động; Tự động lấy một nửa số luồng CPU, tối đa 16.",
+    [UI_MENU_GPL] = "Thư viện đường ống đồ họa",
+    [UI_MENU_GPL_DESC] = "Dùng phần mở rộng thư viện đường ống của Vulkan; hãy tắt nếu trình điều khiển của bạn hoạt động sai với nó.",
+    [UI_MENU_ASTC] = "Giải mã họa tiết ASTC", [UI_MENU_ASTC_DESC] = "Nơi giải mã họa tiết ASTC đã nén.",
+    [UI_MENU_ASTC_AUTO] = "Tự động", [UI_MENU_ASTC_GPU] = "Bộ đổ bóng GPU", [UI_MENU_ASTC_NATIVE] = "Gốc",
+    [UI_MENU_ASTC_CPU] = "CPU",
+    [UI_MENU_MEMORY] = "Chế độ bộ nhớ GPU", [UI_MENU_MEMORY_DESC] = "Cách bộ nhớ game được chia sẻ với GPU.",
+    [UI_MENU_MEMORY_AUTO] = "Tự động", [UI_MENU_MEMORY_IMPORT] = "Nhập", [UI_MENU_MEMORY_MIRROR] = "Phản chiếu",
+    [UI_MENU_MEMORY_VERIFY] = "Kiểm tra",
+    [UI_MENU_TEX_ALIAS] = "Chồng họa tiết", [UI_MENU_TEX_ALIAS_DESC] = "Một họa tiết mới tạo đè lên bộ nhớ của họa tiết đang dùng sẽ bắt đầu với nội dung đó thay vì trống.",
+    [UI_MENU_TEX_VRAM_PRESSURE] = "Giới hạn bộ nhớ họa tiết", [UI_MENU_TEX_VRAM_PRESSURE_DESC] = "Phần trăm bộ nhớ video mà trên mức đó các họa tiết game đã giải phóng bị bỏ (chúng được nạp lại từ ổ lưu trữ khi dùng lần nữa). 0 là giữ lại.",
+    [UI_MENU_ASTC_BC] = "Nén ASTC sang BC3", [UI_MENU_ASTC_BC_DESC] = "Với bộ giải mã GPU: mã hóa lại họa tiết ASTC đã giải mã sang BC3, chỉ tốn một phần tư bộ nhớ video. Họa tiết trông hơi vỡ khối hơn. Tự động: bật cho GPU có 4 GB bộ nhớ video trở xuống.",
+    [UI_MENU_LOD_GUARD] = "Bảo vệ LOD", [UI_MENU_LOD_GUARD_DESC] = "Ngăn vật thể nhấp nháy sai chỗ hoặc vùng xa bị phẳng trong một khung hình, bằng cách chờ game ghi xong dữ liệu mức chi tiết trước khi GPU đọc.",
+    [UI_MENU_FIX_C0] = "Sửa bộ đệm hằng số",
+    [UI_MENU_FIX_C0_DESC] = "Điền bảng hằng số c0 mà trình điều khiển dành riêng (kích thước vùng lưu trữ, kích thước điều phối, kích thước điểm, thực thể gốc) thay vì đọc ra số không.",
+    [UI_MENU_FIX_ZERO] = "Xóa sạch bộ nhớ GPU mới",
+    [UI_MENU_FIX_ZERO_DESC] = "Các vùng nhớ GPU mới bắt đầu với toàn số không, như bộ nhớ Switch.",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "Sương mù và hạt sau DLAA",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Với DLAA, sương mù, bụi và các hạt khác được vẽ đè lên hình DLSS đã làm mịn, như game "
+                                        "vẽ chúng khi không có DLSS: các hạt nhỏ trong sương mù (đền thờ) không còn biến mất "
+                                        "hay để lại vệt. Tắt: DLSS cũng xử lý các hiệu ứng này, như trước. Chỉ ở chế độ "
+                                        "DLAA; các chế độ phóng to DLSS luôn xử lý chúng. Áp dụng ngay.",
+    [UI_MENU_DLSS_FIXED_EXPOSURE] = "Phơi sáng DLSS cố định",
+    [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS lấy độ sáng của hình game như nó vốn có thay vì ước lượng phơi sáng từ từng "
+                                         "khung hình: trong cảnh tối (Depths) các vùng sương lớn không còn tối hoặc sáng đi "
+                                         "một khung hình khi camera di chuyển. Tắt: DLSS tự ước lượng phơi sáng, như trước. "
+                                         "Áp dụng ngay.",
+    [UI_MENU_BIND_SKIP] = "Bỏ qua liên kết lặp lại",
+    [UI_MENU_BIND_SKIP_DESC] = "Tối ưu hóa: bỏ qua các liên kết không đổi.",
+    [UI_MENU_SHADER_MEMO] = "Ghi nhớ bộ đổ bóng", [UI_MENU_SHADER_MEMO_DESC] = "Tối ưu hóa: ghi nhớ các lần tra cứu bộ đổ bóng.",
+    [UI_MENU_PIPE_MEMO] = "Ghi nhớ đường ống", [UI_MENU_PIPE_MEMO_DESC] = "Tối ưu hóa: dùng lại đường ống của lệnh vẽ trước khi trạng thái lặp lại.",
+    [UI_MENU_TEX_MEMO] = "Ghi nhớ liên kết họa tiết", [UI_MENU_TEX_MEMO_DESC] = "Tối ưu hóa: ghi nhớ bộ mô tả họa tiết giữa các lệnh vẽ.",
+    [UI_MENU_DESC_TEMPLATE] = "Mẫu bộ mô tả",
+    [UI_MENU_DESC_TEMPLATE_DESC] = "Tối ưu hóa: cập nhật bộ mô tả hàng loạt.",
+    [UI_MENU_PUSH_SKIP] = "Bỏ qua hằng số đẩy lặp lại",
+    [UI_MENU_PUSH_SKIP_DESC] = "Tối ưu hóa: bỏ qua các hằng số đẩy không đổi.",
+    [UI_MENU_SPLIT_DRAWS] = "Gửi GPU sớm",
+    [UI_MENU_SPLIT_DRAWS_DESC] = "Gửi công việc GPU theo từng phần sau mỗi N lệnh vẽ giữa các lượt vẽ để GPU bắt đầu sớm hơn; 0 là tắt.",
+    [UI_MENU_VK_VALIDATION] = "Lớp kiểm tra",
+    [UI_MENU_VK_VALIDATION_DESC] = "Kiểm tra mọi lệnh gọi Vulkan và làm game chậm đi rất nhiều.",
+    [UI_MENU_VK_VALIDATION_MISSING] = "Lớp kiểm tra chưa được cài.",
+    [UI_MENU_VK_DYN_VERTEX] = "Trạng thái đỉnh động",
+    [UI_MENU_VK_DYN_VERTEX_DESC] = "Buộc bật hoặc tắt đầu vào đỉnh động; mặc định phụ thuộc GPU.",
+    [UI_MENU_VK_DYN_A2C] = "Alpha sang độ phủ động",
+    [UI_MENU_VK_DYN_A2C_DESC] = "Buộc bật hoặc tắt alpha sang độ phủ động. Mặc định: tắt trên trình điều khiển của AMD cho RDNA 2 trở xuống, nơi nhân vật bị vẽ đen khi bật, và trên trình điều khiển Windows của Intel cho GPU tích hợp, nơi tán lá bị nhiễu màu; bật ở các nơi khác.",
+    [UI_MENU_VK_SUBGROUP_PIN] = "Ghim kích thước nhóm con", [UI_MENU_VK_SUBGROUP_PIN_DESC] = "Cố định kích thước nhóm con của bộ đổ bóng.",
+    [UI_MENU_TRACE] = "Nhật ký hiệu năng", [UI_MENU_TRACE_DESC] = "Ghi thời gian khung hình ra tệp.",
+    [UI_MENU_FLIGHT] = "Hộp đen",
+    [UI_MENU_FLIGHT_DESC] = "Giữ một lịch sử ngắn và lưu lại khi một khung hình bị đứng.",
+    [UI_MENU_FLIGHT_SPIKE_MS] = "Ngưỡng đứng hình (ms)",
+    [UI_MENU_FLIGHT_SPIKE_MS_DESC] = "Thời gian khung hình được tính là đứng hình.",
+    [UI_MENU_PASS_CRUMBS] = "Dấu lượt vẽ GPU",
+    [UI_MENU_PASS_CRUMBS_DESC] = "Sau khi GPU gặp sự cố, nhật ký ghi tên lượt kết xuất đang chạy. Tự động: chỉ AMD. Bật: cả NVIDIA, tốn thêm một chút.",
+    [UI_MENU_INPUT_RECORD] = "Ghi đầu vào",
+    [UI_MENU_INPUT_RECORD_DESC] = "Ghi các thao tác nhập của bạn ra tệp để báo lỗi.",
+    [UI_MENU_OPEN_LOG] = "Mở thư mục nhật ký", [UI_MENU_OPEN_LOG_DESC] = "Hiện thư mục chứa các tệp nhật ký.",
+    [UI_MENU_COPY_INFO] = "Sao chép thông tin hệ thống",
+    [UI_MENU_COPY_INFO_DESC] = "Sao chép GPU, trình điều khiển, CPU, RAM và các cài đặt đã đổi vào bộ nhớ tạm.",
+    [UI_MENU_COPY_INFO_DONE] = "Đã sao chép", [UI_MENU_ACTION_FAILED] = "không thành công",
+    [UI_MENU_RESET] = "Đặt lại mọi cài đặt về mặc định", [UI_MENU_RESET_DESC] = "Áp dụng cho mọi tab.",
+    [UI_MENU_RESET_CONFIRM] = "Đặt lại mọi cài đặt về mặc định?", [UI_MENU_RESET_YES] = "Đặt lại",
+    [UI_MENU_RESET_NO] = "Hủy",
+
+    [UI_MENU_OV_FPS] = "%.0f FPS", [UI_MENU_OV_FRAME_MS] = "%.1f ms", [UI_MENU_OV_GAME_PCT] = "game %.0f%%",
+    [UI_MENU_OV_MAX_MS] = "max %.1f ms",
+    [UI_MENU_OV_FPS_LABEL] = "FPS", [UI_MENU_OV_FRAME_LABEL] = "Frame", [UI_MENU_OV_FMT_FPS] = "%.0f",
+    [UI_MENU_OV_LOW1] = "1%% low %.0f", [UI_MENU_OV_LOW01] = "0.1%% low %.0f",
+    [UI_MENU_OV_GPU] = "GPU", [UI_MENU_OV_CPU] = "CPU", [UI_MENU_OV_RAM] = "RAM", [UI_MENU_OV_VRAM] = "VRAM",
+    [UI_MENU_OV_TEMP] = "Temperature", [UI_MENU_OV_POWER] = "Power", [UI_MENU_OV_CLOCK] = "Clock",
+    [UI_MENU_OV_NONE] = "-",
+    [UI_MENU_OV_REPLAY] = "GPU frame prep", [UI_MENU_OV_GPU_TIME] = "GPU busy per frame",
+    [UI_MENU_OV_PIPE_WAIT] = "Pipeline waits",
+    [UI_MENU_OV_SHADER_WAIT] = "Shader waits", [UI_MENU_OV_TEX_UPLOADS] = "Texture uploads",
+    [UI_MENU_OV_FMT_PCT] = "%.0f%%", [UI_MENU_OV_FMT_TEMP] = "%.0f °C", [UI_MENU_OV_FMT_POWER] = "%.0f W",
+    [UI_MENU_OV_FMT_MHZ] = "%.0f MHz", [UI_MENU_OV_FMT_GB] = "%.1f GB", [UI_MENU_OV_FMT_GB_OF] = "/ %.1f GB",
+    [UI_MENU_OV_GAME_GB] = "game %.1f GB", [UI_MENU_OV_FMT_MS] = "%.2f ms", [UI_MENU_OV_PER_FRAME] = "%.1f per frame",
+    [UI_MENU_OV_WINDOW] = "Window", [UI_MENU_OV_OUTPUT] = "Game image", [UI_MENU_OV_SCENE] = "3D scene",
+    [UI_MENU_OV_UPSCALER] = "3D upscaler",
+    [UI_MENU_OV_SCALING] = "Scaling", [UI_MENU_OV_LIMIT] = "Frame limit", [UI_MENU_OV_PRESENT] = "Presentation", [UI_MENU_OV_SHOWN] = "Shown",
+    [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
+    [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, sharpness %d%%", [UI_MENU_OV_SCALE_NONE] = "none (1:1)",
+    [UI_MENU_OV_SCALE_BILINEAR] = "bilinear",
+    [UI_MENU_OV_SCALE_DOWN] = "bilinear (FSR only enlarges)",
+    [UI_MENU_TAB_CHEATS] = "Cheat",
+    [UI_MENU_CHEATS_NONE] = "Không có cheat cho phiên bản game này. Cheat của mod là tệp cheat Atmosphere trong thư mục "
+                            "cheats của nó, đặt theo bản dựng của game: mods\\<mod>\\cheats\\%s. Hãy khởi động lại game để "
+                            "đọc chúng. Với cheat thay đổi mã game, game tự dựng lại khi khởi động (vài phút).",
+    [UI_MENU_CHEATS_MOD] = "%s: %d cheat",
+    [UI_MENU_CHEAT_CODE_DESC] = "Thay đổi mã của game. Bật tắt ngay.",
+    [UI_MENU_CHEAT_KEY_DESC] = "Thay đổi mã của game trong lúc bạn giữ %s. Bật tắt ngay.",
+    [UI_MENU_CHEAT_DATA_DESC] = "Ghi vào bộ nhớ game mỗi khung hình khi đang bật.",
+    [UI_MENU_CHEAT_MASTER] = "luôn bật",
+    [UI_MENU_CHEAT_MASTER_DESC] = "Mã chủ của tệp: luôn bật.",
+    [UI_MENU_CHEAT_RESTORE] = "không cần",
+    [UI_MENU_CHEAT_RESTORE_DESC] = "Nó chỉ ghi lại mã gốc của game. Tắt một cheat đã làm việc đó rồi.",
+    [UI_MENU_CHEAT_REBUILD] = "sau khi dựng lại",
+    [UI_MENU_CHEAT_REBUILD_DESC] = "Cheat này thay đổi mã game và là mới hoặc đã sửa kể từ khi game được dựng. Game tích hợp "
+                                   "nó khi khởi động lần sau (vài phút), hoặc dùng Dựng lại game ngay.",
+    [UI_MENU_CHEAT_UNSUPPORTED] = "không hỗ trợ",
+    [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "Cheat này không dùng được với phiên bản game này:",
+    [UI_MENU_CHEATS_REBUILD] = "Dựng lại game ngay",
+    [UI_MENU_CHEATS_REBUILD_DESC] = "Một số cheat thay đổi mã game và chưa được tích hợp vào nó: chúng mới hoặc đã sửa, hoặc "
+                                    "lần dựng lại gần nhất thất bại hay bị hủy. Đóng game; trình cài đặt tích hợp chúng (vài "
+                                    "phút) rồi chạy lại game. Tiến trình từ lần lưu gần nhất sẽ mất.",
+    [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "Mod này vá mã game (exefs) theo cách bản port không áp dụng được, nên cả mod vẫn "
+                                       "tắt. Công tắc \"Dùng ... không kèm mã\" bên dưới sẽ dùng phần còn lại. %s",
+    [UI_MENU_MODS_EXEFS_OTHER] = "Các bản vá mã (exefs) của nó được làm cho phiên bản game khác.",
+    [UI_MENU_MODS_EXEFS_ON] = "Bản vá mã đang dùng: %d tệp.",
+    [UI_MENU_MODS_REPLACES_BUILTIN] = "Bản vá mã đang dùng: %d tệp. Chúng thay bản vá riêng %s của bản port, bản vá đó vẫn "
+                                      "tắt khi mod này bật.",
+    [UI_MENU_MODS_CODE_SKIPPED] = "Mã game riêng của nó (%s) không được tải: phần còn lại của mod vẫn dùng. Hãy tắt mod nếu "
+                                  "game hoạt động sai với nó.",
+    [UI_MENU_MODS_PLUGIN_ON] = "Plugin của nó đang chạy: %d hook vào mã game.",
+    [UI_MENU_MODS_PLUGIN_REFUSED] = "Plugin %s của nó không chạy được trong bản port: %s.",
+    [UI_MENU_MODS_PLUGIN_STAYS_OFF] = "Cả mod vẫn tắt. Công tắc \"Dùng ... không kèm mã\" bên dưới sẽ dùng phần còn lại.",
+    [UI_MENU_MODS_PLUGIN_OFF] = "Plugin của nó lần này vẫn tắt: nó khởi động khác với bản dựng (%s). Game sẽ dựng lại ở lần "
+                                "khởi động kế tiếp.",
+    [UI_MENU_MODS_WITHOUT_CODE] = "Dùng %s không kèm mã",
+    [UI_MENU_MODS_WITHOUT_CODE_DESC] = "Mod ở trên mang theo mã mà bản port không chạy được: mã game riêng (plugin subsdk hoặc "
+                                       "main bị thay) hoặc bản vá mã (exefs) bản port không áp dụng được. Tắt: cả mod vẫn "
+                                       "tắt. Bật: phần mã đó bị bỏ và dùng phần còn lại của mod: tệp RomFS, cheat và các "
+                                       "bản vá mã chạy được. Tệp của nó có thể cần phần mã bị thiếu; hãy tắt lại nếu game "
+                                       "hoạt động sai. Áp dụng từ lần khởi động kế tiếp.",
+    [UI_MENU_MODS_WITHOUT_CODE_ALL] = "Bật cho mọi mod: mods_without_code = 1 trong totk.ini.",
+    [UI_MENU_MODS_EXEFS_SKIPPED] = "%u tệp bản vá mã (exefs) của nó không áp dụng được và bị bỏ: phần còn lại của mod vẫn "
+                                   "dùng. %s",
+    [UI_MENU_MODS_OVERRIDES_FILES] = "%u tệp của nó thay tệp của %s, mod thấp hơn trong danh sách.",
+    [UI_MENU_MODS_DATA_OVERRIDDEN] = "%u byte thay đổi dữ liệu game của nó lấy từ %s, mod cao hơn trong danh sách.",
+    [UI_MENU_MODS_OVERRIDES_DATA] = "%u byte thay đổi dữ liệu game của nó thay của %s, mod thấp hơn trong danh sách.",
+    [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u vị trí vá mã của nó bị %s ghi đè, mod cao hơn trong danh sách.",
+    [UI_MENU_MODS_OVERRIDES_CODE] = "Nó ghi đè %u vị trí vá mã của %s, mod thấp hơn trong danh sách.",
+};
+
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}
 SWKBD_ONLY(text_pt, "Inserir texto", "Introduz um nome", "Cavalo", "OK", "Cancelar", "Comando: A = OK, B = Cancelar");
 SWKBD_ONLY(text_zh_hant, "文字輸入", "請輸入名字", "馬兒", "確定", "取消", "手把：A 確定，B 取消");
@@ -8762,7 +9382,7 @@ SWKBD_ONLY(text_zh_hant, "文字輸入", "請輸入名字", "馬兒", "確定", 
 static const Row rows[] = {
     {"en", text_en}, {"ja", text_ja}, {"fr", text_fr}, {"de", text_de}, {"it", text_it}, {"es", text_es},
     {"nl", text_nl}, {"pt", text_pt}, {"ru", text_ru}, {"zh-Hans", text_zh_hans}, {"zh-Hant", text_zh_hant},
-    {"ko", text_ko}, {"pt-BR", text_pt_br},
+    {"ko", text_ko}, {"pt-BR", text_pt_br}, {"vi", text_vi},
 };
 
 const char *ui_text_lang(const char *code) {

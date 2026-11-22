@@ -1012,23 +1012,25 @@ static void probe_fonts(void) {
            (unsigned long long)addr, (unsigned long long)size, path);
 }
 
-// The host catalog (ui_text.c): every menu id has its own English, Russian, Brazilian Portuguese and Simplified
-// Chinese text, every menu language's text fits the description pane and keeps the English conversions of the overlay
-// formats, the software keyboard keeps its game-language rows, and menu_text follows TOTK_MENU_LANG.
+// The host catalog (ui_text.c): every menu id has its own English, Russian, Brazilian Portuguese, Simplified Chinese
+// and Vietnamese text, every menu language's text fits the description pane and keeps the English conversions of the
+// overlay formats, the software keyboard keeps its game-language rows, and menu_text follows TOTK_MENU_LANG.
 static void probe_menu_text(void) {
     static const char *const langs[] = {"en", "ja", "fr", "de", "it", "es", "nl", "pt", "ru", "zh-Hans", "zh-Hant", "ko",
-                                        "pt-BR"};
-    static const char *const menu_langs[] = {"de", "fr", "es", "it", "nl", "ja", "ko"};
+                                        "pt-BR", "vi"};
+    static const char *const menu_langs[] = {"de", "fr", "es", "it", "nl", "ja", "ko", "vi"};
     for (int id = UI_MENU_FIRST; id <= UI_MENU_LAST_ID; id++) {
         CHECK(ui_text_defined("en", (UiTextId)id) && ui_text_defined("ru", (UiTextId)id) &&
-              ui_text_defined("pt-BR", (UiTextId)id), "menu text id %d lacks en, ru or pt-BR", id);
+              ui_text_defined("pt-BR", (UiTextId)id) && ui_text_defined("vi", (UiTextId)id),
+              "menu text id %d lacks en, ru, pt-BR or vi", id);
         CHECK(*ui_text_in("en", (UiTextId)id) && *ui_text_in("ru", (UiTextId)id) && *ui_text_in("pt-BR", (UiTextId)id),
               "menu text id %d is empty", id);
         // the description pane keeps the whole text and a note after it (option_rows.cpp desc_set)
         CHECK(strlen(ui_text_in("en", (UiTextId)id)) + 256 < UI_DESC_BYTES &&
               strlen(ui_text_in("ru", (UiTextId)id)) + 256 < UI_DESC_BYTES &&
               strlen(ui_text_in("pt-BR", (UiTextId)id)) + 256 < UI_DESC_BYTES &&
-              strlen(ui_text_in("zh-Hans", (UiTextId)id)) + 256 < UI_DESC_BYTES,
+              strlen(ui_text_in("zh-Hans", (UiTextId)id)) + 256 < UI_DESC_BYTES &&
+              strlen(ui_text_in("vi", (UiTextId)id)) + 256 < UI_DESC_BYTES,
               "menu text id %d is too long for the description pane", id);
         for (size_t i = 0; i < sizeof menu_langs / sizeof *menu_langs; i++)
             CHECK(strlen(ui_text_in(menu_langs[i], (UiTextId)id)) + 256 < UI_DESC_BYTES,
@@ -1048,7 +1050,7 @@ static void probe_menu_text(void) {
     CHECK(!strcmp(ui_text_in("ru", UI_SWKBD_OK), "ОК") && !strcmp(ui_text_in("de", UI_SWKBD_CANCEL), "Abbrechen") &&
           !strcmp(ui_text_in("en", UI_SWKBD_OK), "OK"), "keyboard texts changed");
     // language names: the same string in every row
-    for (int id = UI_MENU_LANGNAME_EN; id <= UI_MENU_LANGNAME_ES_419; id++)
+    for (int id = UI_MENU_LANGNAME_EN; id <= UI_MENU_LANGNAME_VI; id++)
         for (size_t i = 1; i < sizeof langs / sizeof *langs; i++)
             CHECK(!strcmp(ui_text_in(langs[i], (UiTextId)id), ui_text_in("en", (UiTextId)id)), "language name %d differs in %s", id, langs[i]);
     CHECK(!strcmp(ui_text_in("en", UI_MENU_LANGNAME_RU), "Русский"), "Russian is not shown as Russian");

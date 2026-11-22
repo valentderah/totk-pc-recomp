@@ -12,7 +12,7 @@ typedef enum {
     UI_SWKBD_PAD_HINT,       // how a controller answers
 
     // Menu: window, tabs, bottom row. UI_MENU_FIRST..UI_MENU_LAST_ID carry English, Russian, Brazilian Portuguese,
-    // Simplified Chinese, German, French, Spanish, Italian, Dutch, Japanese and Korean texts.
+    // Simplified Chinese, German, French, Spanish, Italian, Dutch, Japanese, Korean and Vietnamese texts.
     UI_MENU_FIRST,
     UI_MENU_TITLE = UI_MENU_FIRST,
     UI_MENU_TAB_SCREEN, UI_MENU_TAB_GAME, UI_MENU_TAB_MODS, UI_MENU_TAB_SOUND, UI_MENU_TAB_CONTROLS, UI_MENU_TAB_AMIIBO,
@@ -228,7 +228,7 @@ typedef enum {
     UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_JA, UI_MENU_LANGNAME_FR, UI_MENU_LANGNAME_DE, UI_MENU_LANGNAME_IT,
     UI_MENU_LANGNAME_ES, UI_MENU_LANGNAME_NL, UI_MENU_LANGNAME_RU, UI_MENU_LANGNAME_ZH_HANS,
     UI_MENU_LANGNAME_ZH_HANT, UI_MENU_LANGNAME_KO, UI_MENU_LANGNAME_PT_BR, UI_MENU_LANGNAME_EN_GB,
-    UI_MENU_LANGNAME_FR_CA, UI_MENU_LANGNAME_ES_419,
+    UI_MENU_LANGNAME_FR_CA, UI_MENU_LANGNAME_ES_419, UI_MENU_LANGNAME_VI,
 
     // Advanced
     UI_MENU_ADV_WARNING,
