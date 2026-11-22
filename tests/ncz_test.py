@@ -88,6 +88,25 @@ class UnpackTest(unittest.TestCase):
     def expected(self):
         return pfs0([(self.name + '.nca', self.nca), ('a.tik', self.tik)])
 
+    def padded_nsz(self, indices, truncate=False):
+        """Store selected blocks raw, followed by padding included in the stored length, not the NCA body."""
+        def pad(data):
+            head = ncz.HEADER + 16 + 0x40 * len(SECTIONS)
+            exponent = data[head + 11]
+            count = struct.unpack_from('<I', data, head + 12)[0]
+            for index in indices:
+                index %= count
+                lengths = struct.unpack_from(f'<{count}I', data, head + 24)
+                start = head + 24 + 4 * count + sum(lengths[:index])
+                plain = self.body[index << exponent:(index + 1) << exponent]
+                padding = bytes(max(16, (1 << exponent) - len(plain)))
+                stored = plain + padding
+                data[start:start + lengths[index]] = stored
+                struct.pack_into('<I', data, head + 24 + 4 * index, len(stored))
+            return data[:-1] if truncate else data
+
+        return self.nsz(blocks=True, damage=pad)
+
     def test_stream_comes_back_byte_for_byte(self):
         src = self.nsz()
         self.assertEqual(ncz.compressed(src)[0], 'nsz')
@@ -101,6 +120,19 @@ class UnpackTest(unittest.TestCase):
     def test_blocks_come_back_byte_for_byte(self):
         ncz.unpack(self.nsz(blocks=True), self.dir / 'out.nsp')
         self.assertEqual((self.dir / 'out.nsp').read_bytes(), self.expected())
+
+    def test_raw_block_padding_is_not_written_into_the_nca(self):
+        for indices in ((0,), (-1,), (0, -1)):
+            with self.subTest(indices=indices):
+                seen = []
+                ncz.unpack(self.padded_nsz(indices), self.dir / 'out.nsp', lambda d, t: seen.append((d, t)))
+                self.assertEqual((self.dir / 'out.nsp').read_bytes(), self.expected())
+                self.assertEqual(seen[-1], (len(self.expected()), len(self.expected())))
+
+    def test_a_raw_block_cannot_claim_padding_outside_its_entry(self):
+        with self.assertRaisesRegex(ValueError, 'Truncated NCZ block'):
+            ncz.unpack(self.padded_nsz((-1,), truncate=True), self.dir / 'out.nsp')
+        self.assertFalse((self.dir / 'out.nsp').exists())
 
     def test_plain_nsp_is_not_compressed(self):
         path = self.dir / 'plain.nsp'

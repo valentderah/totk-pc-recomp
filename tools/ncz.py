@@ -126,7 +126,9 @@ def blocks(f, pos, end, total):
     for i, length in enumerate(stored):
         plain = min(1 << exponent, size - (i << exponent))
         require(pos + length <= end, 'Truncated NCZ block')
-        data = read_at(f, pos, length)
+        # nsz's BlockDecompressorReader.py __decompressBlock skips padding in a raw block: only plain bytes belong
+        # to the NCA, while the full stored length locates the next block.
+        data = read_at(f, pos, min(length, plain))
         pos += length
         yield zstd.decompress(data) if length < plain else data
 
