@@ -49,6 +49,7 @@ TESTS = {
     'flags_check':              ('.venv', None, [], ''),
     'excl_mt':                  ('.venv', None, [], ''),
     'pack_shader_cache_test':   ('.venv', None, [], ''),
+    'package_build_test':       ('.venv', None, [], ''),
     'spin_waits_test':          ('.venv', None, [], ''),
     'worktree_test':            ('.venv', None, [], ''),
     'installer_test':           ('.venv-py314', None, [], ''),
