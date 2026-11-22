@@ -539,6 +539,96 @@ class RecentTest(unittest.TestCase):
             self.assertEqual(gui.load_recent(), {'dest': 'x'})
 
 
+@unittest.skipIf(gui is None, 'no tkinter')
+class SmallScreenTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        env = unittest.mock.patch.dict(os.environ, {recent.ENV: str(Path(self.tmp.name) / 'recent.json')})
+        env.start()
+        self.addCleanup(env.stop)
+        gui.fix_tcl_paths()
+        self.root = gui.tk.Tk()
+        self.addCleanup(self.root.destroy)
+        self.root.tk.call('tk', 'scaling', 2.0)
+        for name, value in (('winfo_screenheight', 700), ('winfo_screenwidth', 1200)):
+            mock = unittest.mock.patch.object(self.root, name, return_value=value)
+            mock.start()
+            self.addCleanup(mock.stop)
+        self.app = gui.App(self.root, 'en', layouts.dev_layout(ROOT))
+        self.root.update()
+
+    def assert_start_visible(self):
+        self.assertLessEqual(self.root.winfo_height(), 700)
+        bottom = self.app.start_button.winfo_rooty() + self.app.start_button.winfo_height()
+        self.assertLessEqual(bottom, self.root.winfo_rooty() + self.root.winfo_height())
+
+    def test_form_fits_a_small_screen_with_large_fonts(self):
+        self.assert_start_visible()
+        self.app.toggle_details()
+        self.root.update()
+        self.assert_start_visible()
+
+    def test_expanded_details_are_reachable_without_moving_start(self):
+        self.app.toggle_details()
+        self.root.update()
+        self.assert_start_visible()
+        start_y = self.app.start_button.winfo_rooty()
+        canvas = self.app.scroll_areas['form'].canvas
+        canvas.yview_moveto(1)
+        self.root.update()
+        bottom = self.app.details.winfo_rooty() + self.app.details.winfo_height()
+        self.assertLessEqual(bottom, canvas.winfo_rooty() + canvas.winfo_height() + 1)
+        self.assertEqual(self.app.start_button.winfo_rooty(), start_y)
+        view = canvas.yview()
+        self.app.fit()   # progress polling must not reset the user's scroll position
+        self.root.update()
+        self.assertEqual(canvas.yview(), view)
+        self.app.lang_box.focus_force()
+        self.root.update()
+        self.assertGreaterEqual(self.app.lang_box.winfo_rooty(), canvas.winfo_rooty())
+        self.assertLessEqual(self.app.lang_box.winfo_rooty() + self.app.lang_box.winfo_height(),
+                             canvas.winfo_rooty() + canvas.winfo_height())
+
+    def test_mouse_wheel_and_linux_buttons_scroll_the_content(self):
+        self.app.toggle_details()
+        self.root.update()
+        canvas = self.app.scroll_areas['form'].canvas
+        for event, params in (('<MouseWheel>', {'delta': -120}), ('<Button-5>', {})):
+            with self.subTest(event=event):
+                canvas.yview_moveto(0)
+                if event == '<Button-5>' and not sys.platform.startswith('linux'):
+                    self.app.scroll_areas['form'].wheel(SimpleNamespace(widget=canvas, num=5, delta=0))
+                else:
+                    canvas.event_generate(event, **params)
+                self.root.update()
+                self.assertGreater(canvas.yview()[0], 0)
+                self.assert_start_visible()
+
+    def test_content_that_fits_needs_no_scrollbar(self):
+        with unittest.mock.patch.object(self.root, 'winfo_screenheight', return_value=2000):
+            self.app.fit(shrink=True)
+            self.root.update()
+        area = self.app.scroll_areas['form']
+        self.assertFalse(area.scrollbar.winfo_manager())
+        self.assertEqual(area.canvas.yview(), (0.0, 1.0))
+
+    def test_progress_and_finish_actions_stay_visible_with_long_content(self):
+        self.app.phase_label.configure(text='Long progress detail\n' * 40)
+        self.app.show('run')
+        self.root.update()
+        self.assertLessEqual(self.root.winfo_height(), 700)
+        self.assertLessEqual(self.app.cancel_button.winfo_rooty() + self.app.cancel_button.winfo_height(),
+                             self.root.winfo_rooty() + self.root.winfo_height())
+        self.app.finish_text.configure(text='Long finish detail\n' * 40)
+        self.app.show('finish')
+        self.root.update()
+        close = next(w for w, _, id, _ in self.app.bound if id == 'ui.close')
+        self.assertLessEqual(self.root.winfo_height(), 700)
+        self.assertLessEqual(close.winfo_rooty() + close.winfo_height(),
+                             self.root.winfo_rooty() + self.root.winfo_height())
+
+
 class FakeVar:
     def __init__(self, value=''):
         self.value = value
