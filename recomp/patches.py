@@ -196,6 +196,8 @@ def load(path, mods):
                 image, end = json.JSONDecoder().raw_decode(prefix[4])
             except json.JSONDecodeError as e:
                 raise PatchError(f'{where}: invalid quoted plugin image: {e.msg}') from None
+            if not image:
+                raise PatchError(f'{where}: empty quoted plugin image')
             tail = prefix[4][end:].strip()
             if tail and not tail.startswith('#'):
                 raise PatchError(f'{where}: unexpected text after quoted plugin image')

@@ -390,7 +390,7 @@ class Lines(unittest.TestCase):
         mods = [('main', MAIN, 0x200000), ('plugin0', PLUGIN, 0x14000)]
         with tempfile.TemporaryDirectory() as d:
             patch = Path(d) / 'patches.txt'
-            for field in ('"unfinished', '"image.img" extra', '"image.img" "#not a comment"'):
+            for field in ('"unfinished', '""', '"image.img" extra', '"image.img" "#not a comment"'):
                 with self.subTest(field=field):
                     patch.write_text(f'set x ENV 0\nplugin x plugin0 {"0" * 64} {field}\n')
                     with self.assertRaises(patches.PatchError) as error:
