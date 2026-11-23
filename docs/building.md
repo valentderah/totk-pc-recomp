@@ -1,6 +1,7 @@
 # Building from source
 
-Windows 10 or later, an x86-64 CPU with SSE4.2, and a GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`. The
+Windows 10 or later, an x86-64 CPU with SSE4.2, and a GPU with Vulkan 1.3; `VK_EXT_external_memory_host` is recommended (without it CPU-visible pools get shadow storage,
+slower and larger, see `vk_no_host_import` in [settings.md](settings.md)). The
 default build targets x86-64-v3 (AVX2/FMA); a CPU without them builds with `--cpu v2` instead and runs slower (see
 "Build"). Allow about 60 GB for the work folder. Extraction wants about 55 GB free while it runs and keeps about 35 GB
 afterwards.
@@ -196,7 +197,7 @@ Vega 7 of a Ryzen 5 4600G at about 34 fps). Long play sessions and the Steam Dec
 Requirements:
 
 - Linux 6.7 or later: the write watch uses userfaultfd write protection with `PAGEMAP_SCAN`. SteamOS 3.8 qualifies.
-- A Vulkan 1.3 driver with `VK_EXT_external_memory_host` (RADV, NVIDIA).
+- A Vulkan 1.3 driver (RADV, NVIDIA). Linux uses shadow storage by default, so `VK_EXT_external_memory_host` is not needed.
 - Packages on Arch:
 
   ```sh

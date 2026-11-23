@@ -11,7 +11,7 @@
 #include "vk_ahead.h"  // TOTK_SYNC_AHEAD=check hooks (vk_ahead_on)
 
 // Required (device choice fails without them): Vulkan 1.3; VK_KHR_swapchain, VK_KHR_push_descriptor,
-// VK_EXT_depth_clip_control, VK_EXT_external_memory_host; features timelineSemaphore, dynamicRendering,
+// VK_EXT_depth_clip_control; features timelineSemaphore, dynamicRendering,
 // synchronization2, shaderStorageImageWriteWithoutFormat, depthClipControl, shaderInt64, samplerAnisotropy,
 // independentBlend, geometryShader, textureCompressionBC.
 // Optional (flag set in VkCtx when enabled): the has_* members.
@@ -45,6 +45,8 @@ typedef struct VkCtx {
     // (attachable images get feedback usage, a by-region barrier inside the pass); else (or TOTK_FEEDBACK=restart)
     // VK_FEEDBACK_RESTART (the pass ends and restarts behind the full barrier).
     int feedback;                           // VK_FEEDBACK_*
+    int has_external_memory_host;           // VK_EXT_external_memory_host; without it CPU-visible pools get shadow
+                                            // storage (vk_memory.c mirror_mode), as under Wine
     uint32_t min_imported_host_alignment;   // VK_EXT_external_memory_host
     VkDeviceSize vma_block;                 // VMA's block size for heaps over 1 GiB (TOTK_VMA_BLOCK_MIB, vk_device.c)
     int device_index;                       // index in vkEnumeratePhysicalDevices
@@ -209,7 +211,8 @@ long vk_validation_errors_total(void);             // validation errors since th
 // Guest or host threads; every call needs vk_init(). The first nine have the GfxBackend signatures of gfx.h; vk_backend.c builds
 // gfx_vulkan_backend from them.
 int  vk_pool_init(pool_t *p);              // CPU-visible: guest storage imported (VK_EXT_external_memory_host) as one
-                                           // VkBuffer; physical: device-local memory; virtual: a 64 KiB page table
+                                           // VkBuffer, or its shadow copy (vk_memory.c mirror_mode); physical:
+                                           // device-local memory; virtual: a 64 KiB page table
 void vk_pool_fini(pool_t *p);              // drops images cut from the pool; waits for the GPU if it used the pool
 int  vk_pool_map_virtual(pool_t *v, int n, const void *requests);   // nvn_mapping_t[n], checked by the front end
 void vk_texture_register(int id, const tex_t *t, const view_t *v);  // texture descriptor slot (copied)
@@ -343,7 +346,8 @@ int vk_mem_flush_add_probe(void);        // --probe-vkexec: the flush range list
 uint64_t vk_mem_mirror_uploaded(void);   // --probe-vkexec: bytes copied into mirrors since the last summary line
 int vk_mem_mirror_probe(uint64_t addr);   // --probe-vkexec: the pool at addr gets its mirror as on a first buffer use;
                                           // 1 when it has one
-void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m);   // once
+void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m,
+                      int host_import);   // once; host_import: VK_EXT_external_memory_host is enabled
 int vk_mem_class_of(uint64_t addr);               // VK_MCLS_* of the pool at addr (NONE when unbacked)
 void vk_mem_census(uint64_t frame);               // at each present: pool census and traffic, logged at frame 1800 and,
                                                   // with TOTK_TRACE=perf, every 1800 frames
