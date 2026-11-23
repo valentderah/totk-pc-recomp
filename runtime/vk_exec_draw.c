@@ -3332,12 +3332,13 @@ static void bi_done(VkExec *ex, const VkPipeInfo *info, const VkPipeState *s, co
 // the sampler cache is invalidated first: the half-resolution particle pass drew campfire smoke and clouds as white or
 // dark blobs and turned the sky white for single frames (#927). A by-region barrier before such a draw removes it
 // (0 of 1460 frames broken against 57 of 779, about 2 fps of 40 on an Iris Xe); a stall alone or the attachment flush
-// alone does not. TOTK_ANV_VS_BARRIER=0/1 forces it off or on.
+// alone does not. The barrier costs about 5% of the frame rate on an Iris Xe and was only tested there, so it is off
+// on every GPU by default; TOTK_ANV_VS_BARRIER=1 (ini: anv_vs_barrier = 1) turns it on, 0 keeps it off.
 static int anv_vs_barrier(void) {
     static int on = -1;
     if (on < 0) {
         const char *e = cfg_get("TOTK_ANV_VS_BARRIER");
-        on = e && *e ? strcmp(e, "0") != 0 : vk_caps.mesa && vk_ctx()->props.vendorID == 0x8086;
+        on = e && *e && strcmp(e, "0") != 0;
         rt_log("vk_exec: barrier before vertex-stage storage reads in a pass %s", on ? "on" : "off");
     }
     return on;
