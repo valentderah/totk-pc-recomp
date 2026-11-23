@@ -16,6 +16,7 @@ path may be a JSON double-quoted string to preserve spaces, `#` and escaped char
   stub <module> <offset>
   seed <module> <offset> [<offset> ...]
   orig <set> <module> <offset> <function module> <function offset>
+  entry <module> <offset> [<offset> ...]
 
 <address> is a module offset (hex), <original> the instruction word the module has there (checked; a mismatch stops
 the generator), each <replacement> an instruction word (hex) or `@page:x<n>`, which is `adrp x<n>, <patch page>`
@@ -41,7 +42,7 @@ wins, a tie goes to the set later in the file). The other alternatives of a cont
 their rt_patch_on test, so a cheat before the mods' sets still wins while it is on. A site with at most one ordered
 set, and a table without contested sites, is emitted exactly as without the keyword.
 
-The original may be any instruction but br, blr and ret; a replacement's last word may be
+The original may be any instruction but br and ret; a replacement's last word may be
 a bl (lifted with the site's return address), a b or b.cond / cbz / tbz (its target joins the function's labels when
 inside it) or a ret; earlier words must not branch. Every alternative of a site writes the same flags. The generator
 writes patches.h (set names, switches, the page address, the contested sites) next to layout.h for the runtime.
@@ -68,6 +69,12 @@ run's record; the design follows #845 by itaskaev2):
     lifts the function at <function module>+<function offset> a second time without its patched sites
     (fo_<address>) and lists that copy at the trampoline's address in <module>'s function table, so the call reaches
     the original code and not the hook again.
+An `entry` line names addresses of a game module that a plugin calls by pointer although they are no function start
+of the game's code (Zonai Fieldworks calls main+0x481918 of 1.4.3, the second word of a function, skipping its first
+test). gen.py makes each one a function start of the module's lift: the function that held it ends there and runs on
+into it by a tail jump, as at any function boundary, so the game's own path through the code does not change.
+tools/exefs_plugins.py writes them when a service run calls such an address (installer/steps.py lifts again).
+
 A replacement word `@call:<module>+<offset>` is a call of the function there that writes no x30: every register in
 the Cpu at the call and all read back after it (the callback may change any of them, as exlaunch's hook context
 allows); the flags are published before it and taken back after it, since exlaunch's hook impl saves no NZCV and the
@@ -104,8 +111,9 @@ class Table:
     from here (for_module, picks_for, spins_for, hooks_for) is in the lift cache's key (recomp/gen.py chunk_key); a new
     kind of line the Emitter reads must go there too."""
 
-    def __init__(self, sets=(), sites=None, page=0, spins=None, hooks=None, ordered=(), plugins=None):
+    def __init__(self, sets=(), sites=None, page=0, spins=None, hooks=None, ordered=(), plugins=None, entries=None):
         self.sets = list(sets)
+        self.entries = entries or {}   # {module: {offset}}: `entry` lines
         self.sites = sites or {}
         self.page = page
         self.spins = spins or {}   # {module: {back-edge offset: head offset}}
@@ -187,7 +195,7 @@ class Table:
 
 def load(path, mods):
     """Table from a patch file; mods is layout() output [(name, base, size)]."""
-    sets, index, sites, spins, hooks, ordered, plugins = [], {}, {}, {}, {}, set(), {}
+    sets, index, sites, spins, hooks, ordered, plugins, entries = [], {}, {}, {}, {}, set(), {}, {}
     bases = {n: (b, s) for n, b, s in mods}
     for no, raw in enumerate(Path(path).read_text(encoding='utf-8').splitlines(), 1):
         where = f'{path}:{no}'
@@ -255,6 +263,10 @@ def load(path, mods):
                              'seeds': set(), 'origs': {}}
         elif f[0] in ('expect', 'stub', 'seed', 'orig'):
             plugin_line(f, where, index, bases, plugins)
+        elif f[0] == 'entry' and len(f) >= 3:
+            if f[1] not in bases:
+                raise PatchError(f'{where}: module {f[1]} not in the layout')
+            entries.setdefault(f[1], set()).update(int(o, 16) for o in f[2:])
         elif f[0] == 'hook' and len(f) >= 3:
             if f[1] not in bases:
                 raise PatchError(f'{where}: module {f[1]} not in the layout')
@@ -266,7 +278,7 @@ def load(path, mods):
     nxt = min((b for _, b, _ in mods if b > base), default=None)
     if nxt is not None and page + PAGE > nxt:
         raise PatchError(f'no room for the patch page after main ({page:#x})')
-    table = Table(sets, sites, page, spins, hooks, ordered, plugins)
+    table = Table(sets, sites, page, spins, hooks, ordered, plugins, entries)
     table.bases = {n: b for n, (b, _) in bases.items()}
     return table
 

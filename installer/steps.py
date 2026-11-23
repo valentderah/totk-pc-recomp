@@ -64,6 +64,7 @@ TEMP_NEED = 3 * GiB       # generated C (about 0.9 GB) and objects
 KIT_NEED = 1 * GiB        # the build kit (Kit), about 0.65 GB
 HOSTCHECK = Path(__file__).resolve().parent / 'hostcheck.c'
 STAMP = '.install-key'
+PLUGIN_ENTRY_ROUNDS = 4   # plugin lifts at most: each finds where an init called into main past a function start
 
 
 # ---- helpers
@@ -1246,20 +1247,39 @@ class Lift(Step):
         lift_plugins = []
         if plugins:
             listed = ['--plugins', ','.join(str(f) for f in plugins)]
-            code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py', args + ['--patches', patches] + listed, parse)
-            if not code:
-                code, log = run_tool(ctx, 'lift', layout.tools / 'build_game.py', build_args(ctx, gen))
-            if not code:
-                # the service run's totk.exe loads its DLLs from its own folder, as the installed one does
-                for dll in layout.dlls:
-                    replace_file(dll, ctx.temp / 'build' / dll.name)
-                code, log = run_tool(ctx, 'lift', layout.tools / 'exefs_plugins.py', [
-                    '--exe', ctx.temp / 'build' / ('totk' + EXE), '--out', ctx.temp / 'plugins', '--mods',
-                    ctx.dest / 'mods', '--patches', patches, '--patches-out', ctx.temp / 'patches-plugins.txt',
-                    '--status', plugins_status(ctx)])
-                # exit 1 with a status file: refused plugins, their reasons in it; the rest goes on
-                if plugins_status(ctx).is_file() and (ctx.temp / 'patches-plugins.txt').is_file():
-                    code = 0
+            # An init that calls into main where the lift has no function start crashes its service run; the tool
+            # names those addresses (--entries-out), and one more lift with them as `entry` lines lets the init go on
+            # (Zonai Fieldworks calls the second word of a 1.4.3 function). Each round adds what the last one found.
+            lift_patches, found = patches, []
+            for _ in range(PLUGIN_ENTRY_ROUNDS):
+                code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py', args + ['--patches', lift_patches] + listed,
+                                     parse)
+                if not code:
+                    code, log = run_tool(ctx, 'lift', layout.tools / 'build_game.py', build_args(ctx, gen))
+                if not code:
+                    # the service run's totk.exe loads its DLLs from its own folder, as the installed one does
+                    for dll in layout.dlls:
+                        replace_file(dll, ctx.temp / 'build' / dll.name)
+                    entries_file = ctx.temp / 'plugin-entries.txt'
+                    entries_file.unlink(missing_ok=True)
+                    code, log = run_tool(ctx, 'lift', layout.tools / 'exefs_plugins.py', [
+                        '--exe', ctx.temp / 'build' / ('totk' + EXE), '--out', ctx.temp / 'plugins', '--mods',
+                        ctx.dest / 'mods', '--exefs', ctx.dest / 'exefs', '--patches', lift_patches,
+                        '--patches-out', ctx.temp / 'patches-plugins.txt', '--status', plugins_status(ctx),
+                        '--entries-out', entries_file])
+                    # exit 1 with a status file: refused plugins, their reasons in it; the rest goes on
+                    if plugins_status(ctx).is_file() and (ctx.temp / 'patches-plugins.txt').is_file():
+                        code = 0
+                if code:
+                    break
+                new = [line for line in (entries_file.read_text(encoding='utf-8').splitlines()
+                                         if entries_file.is_file() else []) if line and line not in found]
+                if not new:
+                    break
+                found += new
+                lift_patches = ctx.temp / 'patches-entries.txt'
+                lift_patches.write_text(Path(patches).read_text(encoding='utf-8') + '\n' + '\n'.join(found) + '\n',
+                                        encoding='utf-8')
             if code:
                 drop([plugins_status(ctx)])
                 skipped['warn.plugins_skipped'] = log

@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -208,18 +209,22 @@ class Check(unittest.TestCase):
         self.assertEqual(hooks[0]['kind'], 'replace')
         self.assertEqual(hooks[0]['trampoline'], f'plugin0+{TRAMP_OFF:#x}')
 
-    def test_replace_inside_function(self):
+    def test_branch_inside_function(self):   # a far hook: the plugin's code comes back through an entry
         w = [{'module': 'main', 'offset': SITE_OFF, 'old': 0x94000010, 'new': b(MAIN + SITE_OFF, PLUGIN + THUNK_OFF),
               'fn_start': False}]
-        self.refused(record(writes=w), 'from inside a main function')
+        hooks, reasons = xp.check_record(record(writes=w), IMPLS)
+        self.assertEqual(reasons, [])
+        self.assertEqual(hooks[0]['kind'], 'branch')
 
-    def test_call_into_function_middle(self):
+    def test_call_into_function_middle(self):   # the target becomes a seed of the plugin's lift
         w = [{'module': 'main', 'offset': SITE_OFF, 'old': 0x94000010, 'new': b(MAIN + SITE_OFF, PLUGIN + 0xf08, True)}]
-        self.refused(record(writes=w), 'neither an inline-hook stub nor a function start')
+        hooks, reasons = xp.check_record(record(writes=w), IMPLS)
+        self.assertEqual(reasons, [])
+        self.assertEqual((hooks[0]['kind'], hooks[0]['target']), ('call', 'plugin0+0xf08'))
 
     def test_bl_to_stub(self):   # an inline stub is entered by b; a bl there would skip the saved x30
         w = [{'module': 'main', 'offset': SITE_OFF, 'old': 0x94000010, 'new': b(MAIN + SITE_OFF, PLUGIN + STUB_OFF, True)}]
-        self.refused(record(writes=w), 'neither an inline-hook stub nor a function start')
+        self.refused(record(writes=w), 'into an inline-hook stub')
 
     def test_refused_run(self):
         self.refused(record(refused='svc 0x40 at plugin0+0x76a0'), 'the run was refused')
@@ -233,13 +238,43 @@ class Check(unittest.TestCase):
     def test_import(self):
         self.refused(record(imports={'_ZN2nn2fs8MountRomEPKcPvm': 1}), 'the import _ZN2nn2fs8MountRom')
 
-    def test_write_main_data(self):
+    def test_import_the_game_imports_is_allowed(self):
+        rec = record(imports={'_ZN2nn3hid13GetNpadStatesEPNS0_16NpadFullKeyStateEiRKj': 1})
+        self.assertTrue(xp.check_record(rec, IMPLS)[1])
+        self.assertEqual(xp.check_record(rec, IMPLS, frozenset(rec['imports']))[1], [])
+
+    def test_game_imports_leave_out_the_loader_and_the_boot_hooks(self):
+        names = ['_ZN2nn2ro10LoadModuleEPNS0_6ModuleEPKvPvmi', '__nnmusl_init_dso', 'glslcCompile',
+                 '_ZN2nn2os32SetMemoryAllocatorForThreadLocalEPFPvmmEPFvS1_mE']
+        self.assertEqual([n for n in names if not xp.GAME_IMPORTS_LEFT_OUT.search(n)], [])
+        kept = ['abort', '_ZN2nn2os12CreateThreadEPNS0_10ThreadTypeEPFvPvES3_S3_mi', '_ZN2nn2fs6CommitEPKc']
+        self.assertEqual([n for n in kept if xp.GAME_IMPORTS_LEFT_OUT.search(n)], [])
+
+    def test_game_imports_of_a_missing_exefs_are_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(xp.game_imports(Path(d)), frozenset())
+        self.assertEqual(xp.game_imports(None), frozenset())
+
+    def test_write_main_data(self):   # kept as written, compared at every start
         w = [{'module': 'main', 'offset': 0x180008, 'old': 0, 'new': 1}]
-        self.refused(record(writes=w), "outside main's .text: main+0x180008")
+        hooks, reasons = xp.check_record(record(writes=w), IMPLS)
+        self.assertEqual(reasons, [])
+        self.assertEqual(hooks[0]['kind'], 'data')
+        self.assertNotIn('target', hooks[0])
+
+    def test_pointer_swap(self):   # a table entry of main's .data now points at a plugin function
+        w = [{'module': 'main', 'offset': 0x180010, 'old': 0x00001000, 'new': (PLUGIN + THUNK_OFF) & 0xFFFFFFFF}]
+        hooks, reasons = xp.check_record(record(writes=w), IMPLS)
+        self.assertEqual(reasons, [])
+        self.assertEqual(hooks[0]['target'], f'plugin0+{THUNK_OFF:#x}')
+
+    def test_write_main_rodata(self):   # the lift read .rodata as constants
+        w = [{'module': 'main', 'offset': 0x120000, 'old': 0, 'new': 1}]
+        self.refused(record(writes=w), "a write into main's .rodata: main+0x120000")
 
     def test_write_other_module(self):
         w = [{'module': 'sdk', 'offset': 0x100, 'old': 0, 'new': 1}]
-        self.refused(record(writes=w), "outside main's .text: sdk+0x100")
+        self.refused(record(writes=w), 'a write outside main: sdk+0x100')
 
     def test_not_a_branch(self):
         w = [{'module': 'main', 'offset': SITE_OFF, 'old': 0x94000010, 'new': 0xD503201F}]
@@ -249,10 +284,12 @@ class Check(unittest.TestCase):
         w = [{'module': 'main', 'offset': SITE_OFF, 'old': 0x94000010, 'new': b(MAIN + SITE_OFF, MAIN + 0x8000)}]
         self.refused(record(writes=w), "does not reach into a plugin's .text")
 
-    def test_stub_shape(self):
+    def test_stub_shape(self):   # not exlaunch's stub: plugin code the site branches to, a far hook
         stub_at = PLUGIN + STUB_OFF
         words = [0xD503201F, b(stub_at + 4, PLUGIN + IMPL_OFF, True), xp.LDUR_X30, b(stub_at + 12, PLUGIN + TRAMP_OFF)]
-        self.refused(record(stub=words), 'neither an inline-hook stub nor a function start')
+        hooks, reasons = xp.check_record(record(stub=words), IMPLS)
+        self.assertEqual(reasons, [])
+        self.assertEqual(hooks[0]['kind'], 'branch')
 
     def test_stub_impl(self):
         stub_at = PLUGIN + STUB_OFF
@@ -281,7 +318,28 @@ class Check(unittest.TestCase):
         self.refused(rec, 'no b to the site + 4')
 
     def test_indirect_original(self):
-        self.refused(record(original=0xD65F03C0), 'is a br, blr or ret')
+        self.refused(record(original=0xD65F03C0), 'is a br or ret')
+        self.refused(record(original=0xD61F0100), 'is a br or ret')
+
+    def test_blr_original(self):   # Zonai Fieldworks hooks blr x8 sites: the call returns, the site goes on
+        self.assertEqual(self.reasons(record(original=0xD63F0100)), [])
+
+    def test_veneer_entries(self):   # Zonai Fieldworks: site -> veneer -> slot -> trampoline -> b site + 4
+        site, ven, slot, tramp = MAIN + SITE_OFF, PLUGIN + 0x5000, PLUGIN + 0xd000, PLUGIN + 0x5100
+        w = [{'module': 'main', 'offset': SITE_OFF, 'old': 0xD5033BBF, 'new': b(site, ven), 'fn_start': False}]
+        rec = record(writes=w)
+        img = bytearray(rec['images']['plugin0'])
+        imm = ((slot & ~0xFFF) - (ven & ~0xFFF)) >> 12
+        adrp = 0x90000011 | (imm & 3) << 29 | (imm >> 2 & 0x7FFFF) << 5
+        struct.pack_into('<3I', img, 0x5000, adrp, 0xF9400231 | ((slot & 0xFFF) // 8) << 10, 0xD61F0220)
+        struct.pack_into('<Q', img, 0xd000, tramp)
+        struct.pack_into('<2I', img, 0x5100, 0xD5033BBF, b(tramp + 4, site + 4))
+        rec['images']['plugin0'] = bytes(img)
+        hooks, reasons = xp.check_record(rec, IMPLS)
+        self.assertEqual(reasons, [])
+        back, ahead = xp.entries(rec, hooks, 'plugin0')
+        self.assertEqual(back, [SITE_OFF + 4])
+        self.assertEqual(ahead, [0x5100])
 
     # exlaunch's long forms (tools/exefs_plugins.py relocation_end, returns_to): the trampoline at plugin0+off
     def long_form(self, original, off, words):
@@ -384,12 +442,12 @@ class Reach(unittest.TestCase):
         # root: bl +0x40; ret.  callee at 0x40: svc 0x40; ret
         img = bytearray(code([b(self.BASE, self.BASE + 0x40, True), RET_W]))
         struct.pack_into('<II', img, 0x40, SVC_40, RET_W)
-        svcs, imports, indirect, outside = xp.reach(bytes(img), self.BASE, 0x200, [self.BASE], {})
+        svcs, imports, indirect, outside, _ = xp.reach(bytes(img), self.BASE, 0x200, [self.BASE], {})
         self.assertEqual(svcs, {0x40})
 
     def test_imports_through_plt(self):
         img = code([b(self.BASE, self.BASE + 0x80, True), RET_W])
-        svcs, imports, _, _ = xp.reach(img, self.BASE, 0x200, [self.BASE], {self.BASE + 0x80: 'malloc'})
+        svcs, imports, _, _, _ = xp.reach(img, self.BASE, 0x200, [self.BASE], {self.BASE + 0x80: 'malloc'})
         self.assertEqual((svcs, imports), (set(), {'malloc': 1}))
 
     def test_stub_returns_at_its_trampoline_branch(self):
@@ -414,6 +472,36 @@ class Reach(unittest.TestCase):
         hooks, _ = xp.check_record(rec, IMPLS)
         reasons, _ = xp.reach_check(rec, hooks, IMPLS)
         self.assertTrue(any('svc 0x40' in r for r in reasons), reasons)
+
+    def test_check_allows_the_game_imports_in_callbacks(self):
+        # callback: bl <PLT stub of a hid import>; ret
+        rec = record()
+        img = bytearray(rec['images']['plugin0'])
+        plt_at = PLUGIN + 0x7000
+        struct.pack_into('<II', img, CB_OFF, b(PLUGIN + CB_OFF, plt_at, True), RET_W)
+        struct.pack_into('<I', img, IMPL_OFF, RET_W)
+        rec['images']['plugin0'] = bytes(img)
+        hid = '_ZN2nn3hid13GetNpadStatesEPNS0_16NpadFullKeyStateEiRKj'
+        hooks, _ = xp.check_record(rec, IMPLS)
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            rec['modules'][2]['file'] = f.name
+        try:
+            with mock.patch.object(xp, 'Nso'), mock.patch.object(xp, 'plt_imports', return_value={plt_at: hid}):
+                refused, _ = xp.reach_check(rec, hooks, IMPLS)
+                allowed, _ = xp.reach_check(rec, hooks, IMPLS, frozenset({hid}))
+        finally:
+            Path(f.name).unlink()
+        self.assertEqual(refused, [f'the code its hooks reach calls the import {hid}'])
+        self.assertEqual(allowed, [])
+
+    def test_check_allows_break(self):   # an abort or a failed assert ends the game, as on the Switch
+        rec = record()
+        img = bytearray(rec['images']['plugin0'])
+        struct.pack_into('<II', img, CB_OFF, 0xD40004C1, RET_W)   # svc 0x26
+        struct.pack_into('<I', img, IMPL_OFF, RET_W)
+        rec['images']['plugin0'] = bytes(img)
+        hooks, _ = xp.check_record(rec, IMPLS)
+        self.assertEqual(xp.reach_check(rec, hooks, IMPLS)[0], [])
 
     def test_check_allows_output_debug_string(self):
         rec = record()
@@ -754,6 +842,45 @@ class Generator(unittest.TestCase):
         tab = gen.table_text('plugin0', [pb + 0x4200, pb + 0x2000], {pb + 0x2000: gen.orig_name(m)})
         self.assertIn(f'void fo_{m:x}(Cpu *c);', tab)
         self.assertIn(f'fo_{m:x}', tab[tab.index('_fn_ptrs'):])
+
+    def test_branch_hook_on_a_flag_write_leaves_with_the_flags_before_it(self):
+        # cmp x0, x1; cmp x2, x3 (b to the plugin's trampoline, which runs the cmp); b.eq +8; ret; ret
+        pb = self.bases['plugin0']
+        m = self.bases['main'] + FN
+        self.code({FN: 0xEB01001F, FN + 4: 0xEB03005F, FN + 8: 0x54000040, FN + 12: RET_W, FN + 16: RET_W})
+        t = self.table(f'site mod_x main {FN + 4:x} eb03005f {b(m + 4, pb + 0x4200):08x}', ['seed plugin0 4200'])
+        c = self.emit(t, 'main', m, m + 20)
+        on = c[c.index('if (rt_patch_on[0])'):]
+        on = on[:on.index('} else {')]
+        self.assertIn('c->nzcv = fnz_sub64(&F);', on)      # the first cmp's flags go to the trampoline
+        self.assertIn(f'{pb + 0x4200:#x}', on)
+
+    def test_inline_hook_on_a_register_call(self):
+        # blr x8 (inline-hooked); ret
+        self.code({FN: 0xD63F0100, FN + 4: RET_W})
+        t = self.table(f'site mod_x main {FN:x} d63f0100 @call:plugin0+4000 d63f0100', ['stub plugin0 4000'])
+        m = self.bases['main'] + FN
+        c = self.emit(t, 'main', m, m + 8)
+        stub = self.bases['plugin0'] + 0x4000
+        on = c[c.index('if (rt_patch_on[0])'):]
+        on = on[:on.index('} else {')]
+        self.assertLess(on.index(f'f_{stub:x}(c);'), on.index('rt_dispatch(c);'))   # the hook, then the blr
+        self.assertIn(f'x30 = {m + 4:#x}ull; c->x[30] = x30; rt_dispatch(c);', on)
+
+    def test_orig_trampoline_counts_as_a_seed(self):
+        # a veneer slot names a replace hook's trampoline: dispatch serves it with the function's unpatched copy
+        main = self.d / 'exefs' / 'main'
+        raw = bytearray(main.read_bytes())
+        struct.pack_into('<II', raw, 0x108, b(8, FN, True), RET_W)
+        main.write_bytes(raw)
+        m = self.bases['main'] + FN
+        self.table(f'site mod_x main {FN:x} aa0003f3 {b(m, self.bases["plugin0"] + 0x4200):08x}',
+                   [f'orig mod_x plugin0 2000 main {FN:x}', 'seed plugin0 4200 2000'])
+        run = subprocess.run([sys.executable, str(ROOT / 'recomp/gen.py'), '--exefs', str(self.d / 'exefs'),
+                              '--out', str(self.d / 'generated'), '--modules', 'main,plugin0', '--plugins',
+                              str(self.plugin_file), '--patches', str(self.d / 'p.txt'), '--jobs', '1'],
+                             capture_output=True, text=True, timeout=30)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
     def test_image_must_match_its_hash(self):
         t = self.table(f'site mod_x main {FN:x} aa0003f3 @call:plugin0+4000 aa0003f3', ['stub plugin0 4000'])

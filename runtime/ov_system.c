@@ -119,6 +119,18 @@ static void ov_desired_language(Cpu *c) {
     ret_x(c, v);
 }
 
+// nn::settings::detail::GetLanguageCode(LanguageCode *out): the system language, the one GetDesiredLanguage gives.
+// The game never calls it; Material Columns picks its text by it. x0 = 0 for the callers that read a Result.
+static void ov_settings_language(Cpu *c) {
+    const char *code = ov_language();
+    uint8_t *out = arg_p(c, 0);
+    if (out) {
+        memset(out, 0, 8);
+        memcpy(out, code, strlen(code));
+    }
+    ret_x(c, 0);
+}
+
 static void ov_oe_initialize(Cpu *c) { (void)c; rt_log("oe: application environment: a local host process"); }
 
 // void SetPerformanceConfiguration(PerformanceMode mode, int config)
@@ -872,6 +884,7 @@ static void ov_font_size(Cpu *c) {
 // ==== registration
 HOST_OVERRIDE("_ZN2nn2oe10InitializeEv", ov_oe_initialize);
 HOST_OVERRIDE("_ZN2nn2oe18GetDesiredLanguageEv", ov_desired_language);
+HOST_OVERRIDE("_ZN2nn8settings6detail15GetLanguageCodeEPNS0_12LanguageCodeE", ov_settings_language);
 HOST_OVERRIDE("_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi", ov_performance_config);
 HOST_OVERRIDE("_ZN2nn2oe15SetCpuBoostModeENS0_12CpuBoostModeE", ov_cpu_boost);
 HOST_OVERRIDE("_ZN2nn2oe16GetOperationModeEv", ov_operation_mode);
