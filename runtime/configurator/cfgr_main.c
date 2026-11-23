@@ -69,6 +69,7 @@ static int update_command(int download) {
     upd_installed(model_dir(), &in);
     printf("installed: %s%s\n", in.run[0] ? in.run : in.setup[0] ? in.setup : "unknown", in.custom ? " (own build)" : "");
     if (in.setup[0]) printf("set up with: %s\n", in.setup);
+    printf("check when the window opens: %s\n", upd_pref_check_at_start() ? "on" : "off");
     CrRelease r;
     char err[512] = "";
     if (!upd_check(&r, err, sizeof err)) {

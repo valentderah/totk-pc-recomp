@@ -205,7 +205,32 @@ def updates(exe):
         code, out = upd('--check-update')
         check(code == 0 and '9.8.6+dead (own build)' in out and ', newer' in out,
               'installed: a build of its own, and the release is newer')
-        # the page with the fake release, drawn
+        # the check when the window opens: on without a settings file or without the key, off when turned off
+        state = tmp / 'state'
+        (state / 'TotK Recomp').mkdir(parents=True)
+        prefs = state / 'TotK Recomp' / 'configurator.json'
+        for text, want in ((None, 'on'), ('{}', 'on'), ('{"check_updates": false}', 'off'),
+                           ('{"check_updates": true}', 'on')):
+            if text is None:
+                prefs.unlink(missing_ok=True)
+            else:
+                prefs.write_text(text)
+            env = {**os.environ, 'TOTK_CONFIG_UPDATE_API': base, 'LOCALAPPDATA': str(state)}
+            r = subprocess.run([str(exe), '--dir', str(game), '--check-update'], capture_output=True, text=True,
+                               timeout=120, env=env)
+            check(f'check when the window opens: {want}\n' in r.stdout,
+                  f'the check when the window opens with {text or "no settings file"}: {want}')
+        # the page with the fake release, drawn, and the banner over another page
+        pics = []
+        for asks in (False, True):
+            shot = tmp / f'banner-{asks}.bmp'
+            env = {**os.environ, 'TOTK_MENU_LANG': 'en', 'TOTK_CONFIG_UPDATE_API': base}
+            if asks:
+                env['TOTK_CONFIG_SHOT_CHECK'] = '1'
+            r = subprocess.run([str(exe), '--dir', str(game), '--screenshot', str(shot), '--tab', '0'],
+                               capture_output=True, text=True, timeout=120, env=env)
+            pics.append(shot.read_bytes() if r.returncode == 0 and shot.is_file() else b'')
+        check(all(pics) and pics[0] != pics[1], 'a newer release puts a banner over the Screen tab')
         shot = tmp / 'updates.bmp'
         env = {**os.environ, 'TOTK_MENU_LANG': 'en', 'TOTK_CONFIG_UPDATE_API': base, 'TOTK_CONFIG_SHOT_CHECK': '1'}
         r = subprocess.run([str(exe), '--dir', str(game), '--screenshot', str(shot), '--tab', '10'],

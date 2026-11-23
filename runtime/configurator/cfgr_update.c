@@ -333,16 +333,21 @@ static void state_dir(char *out, size_t cap) {
 #endif
 }
 
+// On unless the player turned it off: no file, or a file without the key, means on.
 int upd_pref_check_at_start(void) {
     char d[CR_PATH], p[CR_PATH];
     state_dir(d, sizeof d);
     join(p, sizeof p, d, "configurator.json");
     uint64_t n = 0;
     char *t = (char *)plat_file_read(p, &n);
-    if (!t) return 0;
+    if (!t) return 1;
     char *z = realloc(t, n + 1);
-    int on = 0;
-    if (z) t = z, t[n] = 0, on = bool_get(obj_get(t, "check_updates"));
+    int on = 1;
+    if (z) {
+        t = z, t[n] = 0;
+        const char *v = obj_get(t, "check_updates");
+        if (v) on = bool_get(v);
+    }
     free(t);
     return on;
 }

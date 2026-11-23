@@ -73,9 +73,12 @@ The **Updates** tab, last in the left panel, shows the version in the folder and
   the game runs after a setup, the release whose setup made the folder (`totk-install.json`). When the two differ, or
   `totk.exe` is newer than the setup's record, the folder holds a build of its own (*own build*), which an update
   replaces with the release's.
-- **Latest release** asks GitHub only on **Check now**, or when the window opens if *Check for updates when the window
-  opens* is on (kept in `%LOCALAPPDATA%\TotK Recomp\configurator.json`, not in `totk.ini`; a newer release marks the
-  tab *new*). It shows the release's notes and a link to its page.
+- **Latest release** asks GitHub when the window opens, unless *Check for updates when the window opens* is off
+  (kept in `%LOCALAPPDATA%\TotK Recomp\configurator.json`, not in `totk.ini`; on until the player turns it off), and
+  on **Check now**. It shows the release's notes and a link to its page.
+- **A newer release** marks the tab *new* and puts a banner over every other page: the release, the folder's version,
+  and **Open Updates**, **Hide** (until the window opens again) and **Don't check at start** (turns the check off;
+  the switch on Updates turns it back on). A failed check says so only on Updates.
 - **Update to vX.Y.Z** asks first, saves the window's changes, then downloads the release's
   `TotK-Setup-<version>-windows.zip` into `%LOCALAPPDATA%\TotK Recomp\updates\`, checks its size and SHA-256 against
   what GitHub lists for it (a mismatch deletes it), unpacks it with Windows' own `tar.exe` after refusing any entry
@@ -103,7 +106,7 @@ library of its own for it. The releases' setups are Windows programs, so the tab
 `TOTK_MENU_LANG` picks the language as in the game, and `TOTK_CONFIG_LOG=1` prints what `cfg.c` logs (unknown keys,
 lines without `=`). For tests, `TOTK_CONFIG_UPDATE_API` names another GitHub API address (only `http://127.0.0.1:` or
 `http://localhost:`), `TOTK_CONFIG_UPDATES_DIR` another download folder, and `TOTK_CONFIG_SHOT_CHECK=1` lets a
-screenshot of the Updates tab check first.
+screenshot check first (the Updates page with its release, or the banner over another page).
 
 ## Building
 

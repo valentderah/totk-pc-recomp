@@ -1446,7 +1446,40 @@ static void sidebar(void) {
 }
 
 // ---- the page: banners, search, rows
+// A release newer than the folder's version: a banner over every page but Updates, which opens that page, hides
+// the banner until the window opens again, or turns the check when the window opens off.
+static void update_banner(void) {
+#ifdef _WIN32
+    static int g_upd_hidden;   // closed until the window opens again
+    CrRelease r;
+    if (g_upd_hidden || (g_tab == CR_TAB_UPDATES && !g_search[0]) || !update_available() || !upd_latest(&r)) return;
+    char text[512];
+    int n = snprintf(text, sizeof text, cr_text(UI_CFG_UPD_BANNER), r.tag);
+    const char *have = g_inst.run[0] ? g_inst.run : g_inst.setup;
+    if (have[0] && n > 0 && (size_t)n < sizeof text)
+        snprintf(text + n, sizeof text - (size_t)n, cr_text(UI_CFG_UPD_BANNER_HAVE), have);
+    note(text, C_GOLD, ICON_UPDATES);
+    if (g_check_at_start < 0) g_check_at_start = upd_pref_check_at_start();
+    const char *open = cr_text(UI_CFG_UPD_OPEN), *hide = cr_text(UI_CFG_UPD_HIDE), *stop = cr_text(UI_CFG_UPD_STOP);
+    nk_layout_row_begin(g_ctx, NK_STATIC, S(32), g_check_at_start > 0 ? 3 : 2);
+    nk_layout_row_push(g_ctx, btn_w(open, ICON_UPDATES));
+    if (btn(open, ICON_UPDATES, BTN_PRIMARY)) g_tab = CR_TAB_UPDATES, g_search[0] = 0, g_scroll_reset = 1, g_inst_at = 0;
+    nk_layout_row_push(g_ctx, btn_w(hide, ICON_CLOSE));
+    if (btn(hide, ICON_CLOSE, BTN_GHOST)) g_upd_hidden = 1;
+    if (g_check_at_start > 0) {
+        nk_layout_row_push(g_ctx, btn_w(stop, ICON_NONE));
+        if (btn(stop, ICON_NONE, BTN_GHOST)) {
+            g_check_at_start = 0, g_upd_hidden = 1;
+            if (!upd_pref_set_check_at_start(0)) status(1, "%s", cr_text(UI_MENU_SAVE_FAILED));
+            else status(0, "%s", cr_text(UI_CFG_UPD_STOPPED));
+        }
+    }
+    nk_layout_row_end(g_ctx);
+#endif
+}
+
 static void banners(void) {
+    update_banner();
     if (!model_has_game()) {
         char warn[512];
         snprintf(warn, sizeof warn, cr_text(UI_CFG_NO_GAME), cr_game_exe);
@@ -1902,8 +1935,8 @@ int window_run(const char *shot, int tab, const char *search) {
         input_map_line(&input_map, a, g_default_binds[a], sizeof g_default_binds[a]);
     if (tab >= 0 && tab <= CR_TAB_UPDATES) g_tab = tab;
 #ifdef _WIN32
-    // the check when the window opens, if the player asked for it; a screenshot of the page asks only when told to
-    if (shot ? tab == CR_TAB_UPDATES && getenv("TOTK_CONFIG_SHOT_CHECK") : upd_pref_check_at_start()) {
+    // the check when the window opens, unless the player turned it off; a screenshot asks only when told to
+    if (shot ? getenv("TOTK_CONFIG_SHOT_CHECK") != NULL : upd_pref_check_at_start()) {
         upd_check_async();
         for (int i = 0; shot && upd_busy() && i < 300; i++) SDL_Delay(100);
     }
