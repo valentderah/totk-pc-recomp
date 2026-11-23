@@ -10,6 +10,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
@@ -105,6 +107,65 @@ class PackTest(unittest.TestCase):
         (self.cache / psc.PACK).write_bytes(b'garbage')
         n, _, _, _ = psc.pack(self.cache)
         self.assertEqual(n, 4)
+
+    def bounded_read_pack(self, path):
+        """Record real file reads; fail before a corrupt count can request a large allocation, even before the fix."""
+        requests = []
+        with path.open('rb') as f:
+            read = f.read
+
+            def bounded(n):
+                requests.append(n)
+                self.assertLessEqual(n, 1024, 'corrupt index count reached the allocating read')
+                return read(n)
+
+            with mock.patch.object(psc, 'open', return_value=f, create=True), \
+                    mock.patch.object(f, 'read', side_effect=bounded):
+                result = psc.read_pack(path)
+        return result, requests
+
+    def test_truncated_index_is_rejected_before_reading_it(self):
+        path = self.cache / psc.PACK
+        for count in (1, 0xffffffff):
+            with self.subTest(count=count):
+                path.write_bytes(psc.MAGIC + struct.pack('<II', count, 0))
+                result, requests = self.bounded_read_pack(path)
+                self.assertEqual(result, {})
+                self.assertEqual(requests, [16])
+
+    def test_runtime_index_limit_is_checked_before_reading_it(self):
+        path = self.cache / psc.PACK
+        count = (1 << 24) + 1   # gfx_shader.c pack_open rejects more than 2**24 entries
+        path.write_bytes(psc.MAGIC + struct.pack('<II', count, 0))
+        with mock.patch.object(psc.os, 'fstat', return_value=SimpleNamespace(st_size=16 + 48 * count)):
+            result, requests = self.bounded_read_pack(path)
+        self.assertEqual(result, {})
+        self.assertEqual(requests, [16])
+
+    def test_short_read_after_the_size_check_is_still_rejected(self):
+        path = self.cache / psc.PACK
+        path.write_bytes(psc.MAGIC + struct.pack('<II', 1, 0) + bytes(24))
+        with mock.patch.object(psc.os, 'fstat', return_value=SimpleNamespace(st_size=64)):
+            result, requests = self.bounded_read_pack(path)
+        self.assertEqual(result, {})
+        self.assertEqual(requests, [16, 48])
+
+    def test_a_truncated_pack_is_rebuilt_from_the_loose_files(self):
+        key = self.shader('a')
+        (self.cache / psc.PACK).write_bytes(psc.MAGIC + struct.pack('<II', 4096, 0))
+        n, new, skipped, size = psc.pack(self.cache)
+        self.assertEqual((n, new, skipped), (4, 4, 0))
+        self.assertEqual(size, (self.cache / psc.PACK).stat().st_size)
+        self.assertEqual(read_pack(self.cache / psc.PACK)[(1, key)], b'\x03\x02\x23\x07spirva')
+
+    def test_a_valid_empty_pack_is_not_rewritten(self):
+        path = self.cache / psc.PACK
+        data = psc.MAGIC + struct.pack('<II', 0, 0)
+        path.write_bytes(data)
+        before = path.stat().st_mtime_ns
+        self.assertEqual(psc.pack(self.cache), (0, 0, 0, len(data)))
+        self.assertEqual(path.read_bytes(), data)
+        self.assertEqual(path.stat().st_mtime_ns, before)
 
 
 if __name__ == '__main__':

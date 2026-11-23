@@ -363,7 +363,7 @@ class Emitter:
     def flag_plan(self, insns, entry, end, tables, succ):
         """recomp/flags.py plan for the function: each instruction's flag use over the flow succ (flow())."""
         n = len(insns)
-        calls, effects, exits = set(), [], {n}
+        calls, effects, exits, hooks = set(), [], {n}, set()
         for i, ins in enumerate(insns):
             k, a = ins.kind, entry + 4 * i
             if k in ('bl', 'blr'):
@@ -372,6 +372,8 @@ class Emitter:
                 exits.add(i)
             elif k == 'br':
                 exits.add(i)   # through rt_dispatch, also a table's default
+            elif k == 'ret' and self.mod.plugin:
+                exits.add(i)   # a plugin's caller sees the flags it leaves (recomp/flags.py)
             if a in self.patched:
                 effects.append(self.patched_effect(ins, a))
                 for words in self.replacements(a):
@@ -380,10 +382,12 @@ class Emitter:
                         calls.add(i)
                     elif r.kind in ('b', 'bcond') and not entry <= r.target < end:
                         exits.add(i)
+                    if any(w.kind == 'hook' for w in words):
+                        hooks.add(i)
             else:
                 effects.append(flags.effect(ins.cond if k == 'bcond' else ins.code or ''))
         effects.append((False, None))
-        return flags.plan(effects, succ, calls, exits)
+        return flags.plan(effects, succ, calls, exits, through=calls if self.mod.plugin else (), hooks=hooks)
 
     def patched_effect(self, ins, a):
         """Flag effect of a patched site: every alternative (the original and each replacement) must write the same
@@ -450,6 +454,12 @@ class Emitter:
         def publish(i):
             return fp.publish(i) if fp and fp.used else ''
 
+        def give(i):   # flags a plugin's callee or a hook's callback sees (recomp/flags.py plan's through, hooks)
+            return fp.give(i) if fp and fp.used else ''
+
+        def take(i):   # flags that callee or callback left
+            return fp.take(i) if fp and fp.used else ''
+
         def jump(t, i):
             if entry <= t < end:
                 return f'goto L_{t:x};'
@@ -478,12 +488,12 @@ class Emitter:
             if fp.used:
                 out.append('    ' + fp.decl())
 
-        def call(t, a):
+        def call(t, a, i):
             if t in starts:
                 refs.add(t)
-                return f'c->x[30] = {hx(a + 4)}; {spill}{fname(t)}(c);{reload_call}'
+                return f'{give(i)}c->x[30] = {hx(a + 4)}; {spill}{fname(t)}(c);{reload_call}{take(i)}'
             self.stats['external_calls'] += 1
-            return f'c->x[30] = {hx(a + 4)}; {spill}c->pc = {hx(t)}; rt_dispatch(c);{reload_call}'
+            return f'{give(i)}c->x[30] = {hx(a + 4)}; {spill}c->pc = {hx(t)}; rt_dispatch(c);{reload_call}{take(i)}'
 
         def op(i, code):
             code = fx(i, code)
@@ -494,7 +504,7 @@ class Emitter:
             if r.kind == 'op':
                 return op(i, r.code)
             if r.kind == 'bl':
-                return call(r.target, a)
+                return call(r.target, a, i)
             if r.kind == 'b':
                 return jump(r.target, i)
             if r.kind == 'bcond':
@@ -504,9 +514,10 @@ class Emitter:
             if r.kind == 'hook':
                 # a call that writes no x30, the whole Cpu current before it and read back after it: the stub saves and
                 # restores x30 itself, and the callback may change any register through exlaunch's hook context
+                # exlaunch's hook impl saves no NZCV: the callback sees the flags and the site goes on with its own
                 refs.add(r.target)
                 self.stats['plugin_hook_calls'] += 1
-                return f'{spill}{fname(r.target)}(c);{reload}'
+                return f'{give(i)}{spill}{fname(r.target)}(c);{reload}{take(i)}'
             raise patches.PatchError(f'{a:#x}: patched instruction is a {r.kind}')
 
         def patch(i, ins, a):
@@ -548,9 +559,10 @@ class Emitter:
                     self.stats['spin_gates'] += 1
                 emit(i, '    ' + j if k == 'b' else f'    if ({fx(i, ins.cond)}) {{ {j} }}')
             elif k == 'bl':
-                emit(i, '    ' + call(ins.target, a))
+                emit(i, '    ' + call(ins.target, a, i))
             elif k == 'blr':
-                emit(i, f'    c->pc = {ins.target}; c->x[30] = {hx(a + 4)}; {spill}rt_dispatch(c);{reload_call}')
+                emit(i, f'    {give(i)}c->pc = {ins.target}; c->x[30] = {hx(a + 4)}; {spill}rt_dispatch(c);{reload_call}'
+                        f'{take(i)}')
             elif k == 'br':
                 jt = tables.get(a)
                 if jt == 'all':
@@ -562,7 +574,7 @@ class Emitter:
                 else:
                     emit(i, f'    {publish(i)}{spill}c->pc = {ins.target}; {MUSTTAIL} rt_dispatch(c);')
             elif k == 'ret':
-                emit(i, f'    {spill}return;')
+                emit(i, f'    {publish(i)}{spill}return;')
             else:
                 raise ValueError(f'{a:#x}: unknown instruction kind {k!r}')
         n = len(insns)

@@ -15,6 +15,11 @@ definitions then also write it.
 A read that can see flags a callee left reads the caller's flags from before the call instead. AAPCS64 code never
 reads a callee's flags, so such a read only sits on a path that does not run: in TotK it follows calls to noreturn
 functions (asserts) that the compiler placed before another branch's target. Plan.after_call counts them.
+
+A mod plugin's inline hook breaks that rule. exlaunch's exl_inline_hook_impl saves and restores x0..x29 around the
+callback but not NZCV, so the hooked game code goes on with the flags the callback left (Challenge Mode's callbacks end
+in a cmp, and the b.eq at their sites follows it). So in a plugin module flags pass through calls and returns (plan's
+`through`), and a hook site takes the flags the stub's call left (plan's `hooks`).
 """
 import re
 
@@ -26,7 +31,7 @@ NZ_DEF = 'c->nzcv = '
 NZ_USE = '(c->nzcv)'
 KIND_NAME = {'subs': 'sub', 'adds': 'add', 'logic': 'logic'}
 
-ENTRY, CALL = 'entry', 'call'
+ENTRY, CALL, HOOK = 'entry', 'call', 'hook'   # HOOK: (HOOK, i), the callback's flags at hook site i
 
 
 class FlagError(Exception):
@@ -55,6 +60,8 @@ class Plan:
         self.reader = [None] * n
         self.pack = [False] * n
         self.exit = [None] * n      # kind of the flags to publish in c->nzcv at a tail exit, or None
+        self.pre = [None] * n       # kind of the flags to publish before a call whose callee sees them, or None
+        self.takes = [False] * n    # the call leaves its callee's flags (F.nz from c->nzcv after it)
         self.entry = False          # F.nz starts as c->nzcv: flags from the entry reach a read or an exit
         self.entry_read = False     # they reach a read, not only an exit
         self.after_call = 0         # reads that can see flags a callee left (see the module docstring)
@@ -68,6 +75,16 @@ class Plan:
         """Statement writing the flags to c->nzcv at instruction i's tail exit ('' when it need not)."""
         k = self.exit[i]
         return f'c->nzcv = fnz_{k}(&F); ' if k else ''
+
+    def give(self, i):
+        """Statement writing the flags to c->nzcv before instruction i's call, whose callee sees them (plan's through
+        and hooks; '' when it need not)."""
+        k = self.pre[i]
+        return f'c->nzcv = fnz_{k}(&F); ' if k else ''
+
+    def take(self, i):
+        """Statement taking the flags the callee of instruction i's call left (plan's through and hooks)."""
+        return ' F.nz = c->nzcv;' if self.used and self.takes[i] else ''
 
     def rewrite(self, i, code):
         """code of instruction i with its flag reads and writes on F."""
@@ -91,7 +108,7 @@ class Plan:
         return code
 
 
-def plan(effects, succ, calls, exits):
+def plan(effects, succ, calls, exits, through=(), hooks=()):
     """effects[i]: (reads, kind or None); succ[i]: successor indices inside the function; calls: indices of calls,
     whose callee may leave any flags; exits: indices that can leave for another function other than by a call or a
     return (a tail branch, falling into the next function, a br through rt_dispatch).
@@ -99,25 +116,41 @@ def plan(effects, succ, calls, exits):
     Discovery can start a function inside another one (a branch target, a materialised address), and the code
     before it then falls or branches into it with live flags. So a tail exit publishes the flags in c->nzcv, and a
     function whose reads can see its entry flags starts F.nz from c->nzcv. Calls and returns publish nothing: AAPCS64
-    code neither passes flags to a callee nor reads a callee's, so a call's flags count as no definition."""
+    code neither passes flags to a callee nor reads a callee's, so a call's flags count as no definition.
+
+    through: calls whose flags pass both ways (a plugin module, see the module docstring; its returns are in exits):
+    each publishes the flags before the call (Plan.give) and defines F.nz from c->nzcv after it (Plan.take).
+    hooks: patched sites with a plugin inline hook before the site's own word, when the hook's set is on: the hook
+    publishes the flags before its call and leaves the callback's after it, which the site's own word reads unless it
+    writes flags itself. With the set off the flags are the ones before the site, so what follows can see both."""
     n = len(effects)
     p = Plan(n)
     if not any(r or k for r, k in effects):
         return p
     p.used = True
+    hooks = set(hooks) - set(calls)   # a hook before a bl: the bl's callee leaves the flags
     reach = [set() for _ in range(n)]
     reach[0].add(ENTRY)
     work = [0]
     while work:
         i = work.pop()
-        out = {i} if effects[i][1] else ({CALL} if i in calls else reach[i])
+        if effects[i][1] or i in through:
+            out = {i}
+        elif i in calls:
+            out = {CALL}
+        elif i in hooks:
+            out = reach[i] | {(HOOK, i)}
+        else:
+            out = reach[i]
         for s in succ[i]:
             if not out <= reach[s]:
                 reach[s] |= out
                 work.append(s)
 
     def kind(d):
-        return 'nz' if d == ENTRY else effects[d][1]
+        if d == ENTRY or isinstance(d, tuple):
+            return 'nz'
+        return effects[d][1] or 'nz'   # a through call leaves its callee's flags packed
 
     def use(r):
         """Kind a use of the definitions r reads; several kinds read the packed form, which they then all write."""
@@ -127,18 +160,27 @@ def plan(effects, succ, calls, exits):
         if len(kinds) == 1:
             return kinds.pop()
         for d in r:
-            if d != ENTRY:
+            if isinstance(d, int) and effects[d][1]:
                 p.pack[d] = True
         return 'nz'   # several kinds, or none (unreachable)
+
+    def seen(i):
+        """What a read or an exit at instruction i sees: at a hook site also the callback's flags."""
+        return reach[i] | {(HOOK, i)} if i in hooks else reach[i]
 
     for i, (reads, _) in enumerate(effects):
         if reads:
             p.after_call += CALL in reach[i]
-            p.reader[i] = use(reach[i] - {CALL})
+            p.reader[i] = use(seen(i) - {CALL})
             p.entry_read |= ENTRY in reach[i]
     for i in exits:
         # Entry flags alone are still in c->nzcv.
-        r = reach[i] - {CALL}
+        r = seen(i) - {CALL}
         if r and r != {ENTRY}:
             p.exit[i] = use(r)
+    for i in set(through) | hooks:
+        p.takes[i] = True
+        r = reach[i] - {CALL}
+        if r and r != {ENTRY}:
+            p.pre[i] = use(r)
     return p
