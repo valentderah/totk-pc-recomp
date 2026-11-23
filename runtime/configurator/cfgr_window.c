@@ -372,8 +372,19 @@ static int hovering(struct nk_rect r) {
            nk_input_is_mouse_hovering_rect(&g_ctx->input, r);
 }
 
+// Nuklear puts a tooltip right and below the mouse; near the window's right or bottom edge it would be cut, so the
+// mouse is moved for the call to where the tooltip fits, and back.
 static void tip(struct nk_rect r, const char *text) {
-    if (text && *text && hovering(r)) nk_tooltip(g_ctx, text);
+    if (!text || !*text || !hovering(r)) return;
+    struct nk_vec2 m = g_ctx->input.mouse.pos, pad = g_ctx->style.window.tooltip_padding;
+    const struct nk_user_font *f = g_ctx->style.font;
+    float tw = f->width(f->userdata, f->height, text, (int)strlen(text)) + pad.x * 2 + S(8);
+    float th = f->height + pad.y * 2 + S(8);
+    struct nk_rect win = nk_window_get_bounds(g_ctx);
+    if (m.y + th > win.y + win.h) g_ctx->input.mouse.pos.y = m.y - th - S(2);
+    if (m.x + tw > win.x + win.w) g_ctx->input.mouse.pos.x = fmaxf(win.x, win.x + win.w - tw);
+    nk_tooltip(g_ctx, text);
+    g_ctx->input.mouse.pos = m;
 }
 
 // Takes the next widget slot as an invisible button; returns its click. Its bounds go to *b.
@@ -1626,9 +1637,32 @@ static void preset_list(Preset p, float height) {
         nk_style_pop_vec2(g_ctx), nk_style_pop_style_item(g_ctx);
 }
 
+// The update dialog's paragraphs: what stays, a warning about the folder's own build or the same version, and that
+// the window closes. An empty text is skipped by the caller.
+static void update_texts(const CrRelease *rel, char *custom, size_t cap, const char *texts[3]) {
+    installed_refresh();
+    custom[0] = 0;
+    if (g_inst.custom) snprintf(custom, cap, cr_text(UI_CFG_UPD_CONFIRM_CUSTOM), g_inst.run[0] ? g_inst.run : "?", rel->tag);
+    else if (!update_available()) snprintf(custom, cap, "%s", cr_text(UI_CFG_UPD_CONFIRM_SAME));
+    texts[0] = cr_text(UI_CFG_UPD_CONFIRM), texts[1] = custom, texts[2] = cr_text(UI_CFG_UPD_CONFIRM_CLOSE);
+}
+
+static const struct nk_font *update_font(int i) { return i == 2 ? g_small : g_body; }
+
 static void popups(float w, float h) {
     if (g_pop == POP_NONE) return;
-    float pw = fminf(S(620), w - S(40)), ph = g_pop == POP_NEW ? S(640) : g_pop == POP_UPDATE ? S(380) : S(250);
+    float pw = fminf(S(620), w - S(40)), ph = g_pop == POP_NEW ? S(640) : S(250);
+    if (g_pop == POP_UPDATE) {   // as tall as its rows: padding, title, the paragraphs, the buttons, the spacing
+        CrRelease rel;
+        char custom[400];
+        const char *texts[3];
+        ph = S(36) + S(40) + S(36) + S(10) + S(8);
+        if (upd_latest(&rel)) {
+            update_texts(&rel, custom, sizeof custom, texts);
+            for (int i = 0; i < 3; i++)
+                if (texts[i][0]) ph += para_h(update_font(i), texts[i], pw - S(48)) + S(10);
+        }
+    }
     ph = fminf(ph, h - S(24));
     struct nk_rect r = nk_rect((w - pw) / 2, (h - ph) / 2, pw, ph);
     // the page behind dims
@@ -1706,28 +1740,25 @@ static void popups(float w, float h) {
             snprintf(title, sizeof title, cr_text(UI_CFG_UPD_INSTALL), rel.tag);
             popup_title(title, ICON_UPDATES, C_GOLD);
             float tw = pw - S(48);
-            const char *t1 = cr_text(UI_CFG_UPD_CONFIRM), *t3 = cr_text(UI_CFG_UPD_CONFIRM_CLOSE);
-            installed_refresh();
-            custom[0] = 0;
-            if (g_inst.custom) snprintf(custom, sizeof custom, cr_text(UI_CFG_UPD_CONFIRM_CUSTOM), g_inst.run[0] ? g_inst.run : "?", rel.tag);
-            else if (!update_available()) snprintf(custom, sizeof custom, "%s", cr_text(UI_CFG_UPD_CONFIRM_SAME));
-            const char *texts[3] = {t1, custom, t3};
-            const struct nk_font *fonts[3] = {g_body, g_body, g_small};
+            const char *texts[3];
+            update_texts(&rel, custom, sizeof custom, texts);
             struct nk_color cols[3] = {C_DESC, C_WARN, C_DIM};
             for (int i = 0; i < 3; i++) {
                 if (!texts[i][0]) continue;
-                nk_layout_row_dynamic(g_ctx, para_h(fonts[i], texts[i], tw), 1);
+                nk_layout_row_dynamic(g_ctx, para_h(update_font(i), texts[i], tw), 1);
                 struct nk_rect b = nk_widget_bounds(g_ctx);
                 blank();
-                para(fonts[i], texts[i], b.x, b.y, tw, cols[i]);
+                para(update_font(i), texts[i], b.x, b.y, tw, cols[i]);
             }
+            // Cancel and the dialog's own title on the button: "Update to vX.Y.Z"
+            float gw = btn_w(title, ICON_UPDATES) + S(8);
             nk_layout_row_begin(g_ctx, NK_STATIC, S(36), 3);
-            nk_layout_row_push(g_ctx, fmaxf(S(1), pw - S(48) - bw * 2 - S(24)));
+            nk_layout_row_push(g_ctx, fmaxf(S(1), pw - S(48) - bw - gw - S(24)));
             blank();
             nk_layout_row_push(g_ctx, bw);
             if (btn(cr_text(UI_MENU_RESET_NO), ICON_NONE, BTN_GHOST)) close = 1;
-            nk_layout_row_push(g_ctx, bw);
-            if (btn(cr_text(UI_CFG_TAB_UPDATES), ICON_UPDATES, BTN_PRIMARY)) {
+            nk_layout_row_push(g_ctx, gw);
+            if (btn(title, ICON_UPDATES, BTN_PRIMARY)) {
                 close = 1;
                 if (upd_game_running(model_dir())) status(1, cr_text(UI_CFG_UPD_GAME_RUNNING), cr_game_exe);
                 else if (model_unsaved() && !model_save()) status(1, "%s", cr_text(UI_MENU_SAVE_FAILED));
