@@ -11,6 +11,8 @@
 //   <profile>/save-backup/<time>/      the three committed saves before the current one
 //   <profile>/temp/                    emptied at start
 //   <profile>/cache/<index>/           cache storage
+//   <profile>/sdcard/                  the SD card a mod plugin mounts (MountSdCard, under any mount name: Zonai
+//                                      Fieldworks keeps its settings and logs there); the game never mounts it
 //
 // The save mount is journaled as on Horizon: changes go to a working copy and become the committed save atomically at
 // Commit; a crash or an Unmount before Commit leaves the previous committed save. Commit returns at once and the copy
@@ -33,7 +35,8 @@
 #define NMOUNTS 16
 #define PATH_CAP 1100
 
-enum { M_FREE, M_SAVE, M_TEMP, M_CACHE, M_SAVE_RO };   // M_SAVE: the working copy; M_SAVE_RO: the committed save
+// M_SAVE: the working copy; M_SAVE_RO: the committed save; M_SDCARD: <profile>/sdcard
+enum { M_FREE, M_SAVE, M_TEMP, M_CACHE, M_SAVE_RO, M_SDCARD };
 
 typedef struct { int kind; char name[32]; char root[1024]; } Mount;
 typedef struct { PlatFile *h; int mode, save; } File;   // h NULL = free; save: on a save-data mount
@@ -800,6 +803,14 @@ static uint32_t mount_temp(const char *name) {
     return mount_add(name, M_TEMP, p);
 }
 
+static uint32_t mount_sdcard(const char *name) {
+    ready();
+    char p[PATH_CAP];
+    snprintf(p, sizeof p, "%s/sdcard", profile);
+    make_dirs(p);
+    return mount_add(name, M_SDCARD, p);
+}
+
 static void cache_dir(int index, char *out, size_t cap) { snprintf(out, cap, "%s/cache/%d", profile, index); }
 
 static uint32_t create_cache(int index, int64_t size, int64_t journal) {
@@ -1211,6 +1222,7 @@ static void ov_mount_save(Cpu *c) { ret_x(c, mount_save(arg_p(c, 0), arg_p(c, 1)
 static void ov_mount_save_ro(Cpu *c) { ret_x(c, mount_save_ro(arg_p(c, 0), arg_x(c, 1), arg_p(c, 2))); }
 static void ov_save_exists(Cpu *c) { ret_x(c, save_exists(arg_x(c, 0), arg_p(c, 1))); }
 static void ov_mount_temp(Cpu *c) { ret_x(c, mount_temp(arg_p(c, 0))); }
+static void ov_mount_sdcard(Cpu *c) { ret_x(c, mount_sdcard(arg_p(c, 0))); }
 static void ov_unmount(Cpu *c) { unmount(arg_p(c, 0)); }
 static void ov_commit(Cpu *c) { ret_x(c, commit(arg_p(c, 0))); }
 static void ov_create_cache(Cpu *c) { ret_x(c, create_cache(I32(0), I64(1), I64(2))); }
@@ -1246,6 +1258,7 @@ static void ov_set_priority(Cpu *c) { (void)c; }
 #define S_MOUNT_SAVE_RO "_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE"
 #define S_SAVE_EXISTS "_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE"
 #define S_MOUNT_TEMP "_ZN2nn2fs21MountTemporaryStorageEPKc"
+#define S_MOUNT_SDCARD "_ZN2nn2fs11MountSdCardEPKc"
 #define S_UNMOUNT "_ZN2nn2fs7UnmountEPKc"
 #define S_COMMIT "_ZN2nn2fs6CommitEPKc"
 #define S_CREATE_CACHE "_ZN2nn2fs18CreateCacheStorageEill"
@@ -1282,6 +1295,7 @@ HOST_OVERRIDE(S_MOUNT_SAVE, ov_mount_save);
 HOST_OVERRIDE(S_MOUNT_SAVE_RO, ov_mount_save_ro);
 HOST_OVERRIDE(S_SAVE_EXISTS, ov_save_exists);
 HOST_OVERRIDE(S_MOUNT_TEMP, ov_mount_temp);
+HOST_OVERRIDE(S_MOUNT_SDCARD, ov_mount_sdcard);
 HOST_OVERRIDE(S_UNMOUNT, ov_unmount);
 HOST_OVERRIDE(S_COMMIT, ov_commit);
 HOST_OVERRIDE(S_CREATE_CACHE, ov_create_cache);

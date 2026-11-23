@@ -688,7 +688,9 @@ NVN_API(nvnWindowAcquireTexture) {
         perf_end(PERF_PACE, p0);
     }
     vk_reflex_sleep();
-    vk_reflex_marker(0, vk_reflex_frame_begin());   // VK_LATENCY_MARKER_SIMULATION_START_NV: a new frame and its ID
+    uint64_t fid = vk_reflex_frame_begin();
+    vk_reflex_marker(0, fid);   // VK_LATENCY_MARKER_SIMULATION_START_NV: a new frame and its ID
+    vk_antilag_input(fid);
     // The sync means "the display no longer reads this image". Presents are copies queued in submit order, so it is
     // already satisfied: fenced = 3 with fence 0.
     if (s) {

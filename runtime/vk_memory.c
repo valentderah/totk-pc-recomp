@@ -1871,7 +1871,7 @@ static PlatMutex mirror_stat_lock = PLAT_MUTEX_INIT;
 static volatile int64_t m_live_n, m_live_bytes, m_refused_n[MR_N], m_refused_bytes[MR_N];
 static volatile int64_t m_flush_calls, m_flush_bytes, v_pages, v_skipped, v_mismatch;
 
-static void mirror_mode(int discrete) {
+static void mirror_mode(int discrete, int host_import) {
     const char *e = cfg_value("TOTK_MEMORY");
     int mode = discrete ? 1 : 0;   // 0 import, 1 mirror, 2 verify
     const char *why = discrete ? "auto, discrete gpu" : "auto, uma";
@@ -1906,6 +1906,14 @@ static void mirror_mode(int discrete) {
 #else
     shadow_on = !sh || !*sh || strcmp(sh, "0");
 #endif
+    // Without VK_EXT_external_memory_host (Qualcomm Adreno's Windows driver, some mobile and older drivers, or
+    // TOTK_VK_NO_HOST_IMPORT=1) guest memory cannot be imported: every CPU-visible pool gets shadow storage, the path
+    // Wine already takes (import_pool -> shadow_pool), whatever TOTK_SHADOW says.
+    if (!host_import) {
+        if (!shadow_on) rt_log("mem: no host import (VK_EXT_external_memory_host): shadow storage%s",
+                               sh && *sh ? ", TOTK_SHADOW=0 overridden" : "");
+        shadow_on = 1;
+    }
     defer_on = shadow_on && cfg_bool("TOTK_SYNC_AHEAD") && strcmp(cfg_value("TOTK_SYNC_AHEAD"), "check") &&
                cfg_bool("TOTK_SHADOW_DEFER");   // check: the wait stays exact, nothing is deferred
     if (defer_on) rt_log("mem: TOTK_SHADOW_DEFER: shadow updates that wait for a reader are queued for the GPU instead");
@@ -2935,7 +2943,7 @@ static void vram_log(uint64_t frame) {
 
 // Device class: INTEGRATED -> uma; a discrete GPU with a DEVICE_LOCAL heap of 1 GiB or more beside a
 // heap that is not device-local (host memory) -> discrete; otherwise uma (import everywhere). Sets the mirror mode.
-void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m) {
+void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m, int host_import) {
     int big_local = -1, host_heap = -1;
     for (uint32_t h = 0; h < m->memoryHeapCount; h++) {
         if (m->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
@@ -2977,7 +2985,7 @@ void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDevic
     if (host_backed == HB_UMA)
         rt_log("mem: device memory against system memory: commit and physical memory (uma), reserve %llu MiB "
                "(TOTK_MEM_RESERVE_MIB)", (unsigned long long)(room_reserve >> 20));
-    mirror_mode(discrete);
+    mirror_mode(discrete, host_import);
 }
 
 // ---------------------------------------------------------------- upload batches and deferred destruction

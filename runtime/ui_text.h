@@ -11,8 +11,8 @@ typedef enum {
     UI_SWKBD_CANCEL,
     UI_SWKBD_PAD_HINT,       // how a controller answers
 
-    // Menu: window, tabs, bottom row. UI_MENU_FIRST..UI_MENU_LAST_ID carry English, Russian, Brazilian Portuguese and
-    // Simplified Chinese texts.
+    // Menu: window, tabs, bottom row. UI_MENU_FIRST..UI_MENU_LAST_ID carry English, Russian, Brazilian Portuguese,
+    // Simplified Chinese, German, French, Spanish, Italian, Dutch, Japanese, Korean and Vietnamese texts.
     UI_MENU_FIRST,
     UI_MENU_TITLE = UI_MENU_FIRST,
     UI_MENU_TAB_SCREEN, UI_MENU_TAB_GAME, UI_MENU_TAB_MODS, UI_MENU_TAB_SOUND, UI_MENU_TAB_CONTROLS, UI_MENU_TAB_AMIIBO,
@@ -63,10 +63,11 @@ typedef enum {
     UI_MENU_DLSS_BALANCED, UI_MENU_DLSS_PERFORMANCE, UI_MENU_DLSS_ULTRA, UI_MENU_DLSS_PRESET, UI_MENU_DLSS_PRESET_DESC,
     UI_MENU_DLSS_PRESET_DEFAULT, UI_MENU_DLSS_PRESET_K, UI_MENU_DLSS_PRESET_J, UI_MENU_DLSS_CHARS, UI_MENU_DLSS_CHARS_DESC,
     UI_MENU_DLSS_CHARS_OFF, UI_MENU_DLSS_CHARS_LIGHT, UI_MENU_DLSS_CHARS_MEDIUM, UI_MENU_DLSS_CHARS_FULL, UI_MENU_FXAA, UI_MENU_FXAA_DESC,
-    UI_MENU_REFLEX, UI_MENU_REFLEX_DESC, UI_MENU_REFLEX_OFF, UI_MENU_REFLEX_ON, UI_MENU_REFLEX_BOOST,
+    UI_MENU_REFLEX, UI_MENU_REFLEX_DESC, UI_MENU_REFLEX_AUTO, UI_MENU_REFLEX_OFF, UI_MENU_REFLEX_ON, UI_MENU_REFLEX_BOOST,
     UI_MENU_SCENE_UPSCALER, UI_MENU_SCENE_UPSCALER_DESC, UI_MENU_SCENE_UPSCALER_OFF, UI_MENU_SCENE_UPSCALER_DLSS,
-    UI_MENU_SCENE_UPSCALER_FSR3, UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU, UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL, UI_MENU_FSR3_SHARPNESS,
-    UI_MENU_FSR3_SHARPNESS_DESC,
+    UI_MENU_SCENE_UPSCALER_FSR3, UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU, UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL, UI_MENU_FSR_SHARPNESS,
+    UI_MENU_FSR_SHARPNESS_DESC, UI_MENU_SCENE_UPSCALER_FSR4, UI_MENU_SCENE_UPSCALER_NO_FSR4_GPU,
+    UI_MENU_SCENE_UPSCALER_NO_FSR4_DLL, UI_MENU_SCENE_UPSCALER_NO_FSR4_OS,
 
     // Game
     UI_MENU_FPS_LIMIT, UI_MENU_FPS_LIMIT_DESC, UI_MENU_FPS_30, UI_MENU_FPS_40, UI_MENU_FPS_45, UI_MENU_FPS_60, UI_MENU_FPS_90,
@@ -228,7 +229,7 @@ typedef enum {
     UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_JA, UI_MENU_LANGNAME_FR, UI_MENU_LANGNAME_DE, UI_MENU_LANGNAME_IT,
     UI_MENU_LANGNAME_ES, UI_MENU_LANGNAME_NL, UI_MENU_LANGNAME_RU, UI_MENU_LANGNAME_ZH_HANS,
     UI_MENU_LANGNAME_ZH_HANT, UI_MENU_LANGNAME_KO, UI_MENU_LANGNAME_PT_BR, UI_MENU_LANGNAME_EN_GB,
-    UI_MENU_LANGNAME_FR_CA, UI_MENU_LANGNAME_ES_419,
+    UI_MENU_LANGNAME_FR_CA, UI_MENU_LANGNAME_ES_419, UI_MENU_LANGNAME_VI,
 
     // Advanced
     UI_MENU_ADV_WARNING,
@@ -331,7 +332,7 @@ const char *ui_text_lang(const char *switch_code);
 typedef struct { const char *code; UiTextId name; } UiGameLang;
 int ui_text_game_langs(int game_version, UiGameLang *out, int max);
 
-// Menu text: ui_text_in(menu language, id). The menu language is TOTK_MENU_LANG ("en", "ru", "pt-BR", "zh-Hans");
-// unset, the system UI language when the catalog has menu text for it (English, Russian, Brazilian Portuguese,
-// Simplified Chinese), else English. Follows a live change of the setting.
+// Menu text: ui_text_in(menu language, id). The menu language is TOTK_MENU_LANG ("en", "ru", "pt-BR", "zh-Hans", "de",
+// "fr", "es", "it", "nl", "ja", "ko"); unset, the system UI language when the catalog has menu text for it, Simplified
+// Chinese for Traditional Chinese, else English. Follows a live change of the setting.
 const char *menu_text(UiTextId id);

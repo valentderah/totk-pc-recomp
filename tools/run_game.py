@@ -137,7 +137,20 @@ def release_gpu_lock(f):
     f.close()
 
 
+def tag_name(value):
+    if '/' in value or '\\' in value:
+        raise argparse.ArgumentTypeError('run tag must be a name without path separators')
+    return value
+
+
+def check_profile_destination(dest):
+    source, target = PROFILE.resolve(), Path(dest).resolve()
+    if source.is_relative_to(target) or target.is_relative_to(source):
+        raise ValueError('profile copy must not overlap the original profile')
+
+
 def profile_copy(dest, save):
+    check_profile_destination(dest)
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(PROFILE, dest)
@@ -149,6 +162,18 @@ def profile_copy(dest, save):
         shutil.copytree(SAVES / save, users[0])
 
 
+def stop_process(proc):
+    """Stop this run's child before its disposable profile is removed, including an interrupted wait."""
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('exe_dir', type=Path, help='build directory holding totk.exe')
@@ -157,7 +182,7 @@ def main():
     ap.add_argument('--seconds', type=float, required=True,
                     help='game time to run: the run ends once the world clock (game time since the save loaded) passed '
                          'this many seconds (shot is taken of that frame)')
-    ap.add_argument('--tag', default='run', help='names the profile copy and the log')
+    ap.add_argument('--tag', type=tag_name, default='run', help='names the profile copy and the log (no path separators)')
     ap.add_argument('--shot', type=Path, help='PNG of the last frame; turns async pipeline builds off (boot.c)')
     ap.add_argument('--log', type=Path, help='default: <exe dir>/logs/<tag>.log')
     ap.add_argument('--env', action='append', default=[], metavar='KEY=VALUE', help='extra environment, repeatable')
@@ -166,6 +191,11 @@ def main():
     a = ap.parse_args()
 
     exe_dir = a.exe_dir.resolve()
+    prof = exe_dir / f'prof-{a.tag}'
+    try:
+        check_profile_destination(prof)
+    except ValueError as e:
+        ap.error(str(e))
     log = (a.log or exe_dir / 'logs' / f'{a.tag}.log').resolve()
     log.parent.mkdir(parents=True, exist_ok=True)
     gpu = take_gpu_lock(exe_dir) if a.quiet else None
@@ -174,7 +204,6 @@ def main():
         if a.quiet:
             while busy():
                 time.sleep(10)
-        prof = exe_dir / f'prof-{a.tag}'
         profile_copy(prof, a.save)
 
         env = dict(os.environ, TOTK_ASSUME_FOCUS='1', TOTK_INPUT='none', TOTK_INPUT_SCRIPT=str(a.script.resolve()))
@@ -192,9 +221,12 @@ def main():
                 f.flush()
                 start = time.time()
                 proc = subprocess.Popen(args, cwd=exe_dir, env=env, stdout=f, stderr=subprocess.STDOUT)
-                if not a.show:
-                    threading.Thread(target=keep_in_background, args=(proc,), daemon=True).start()
-                rc = proc.wait()
+                try:
+                    if not a.show:
+                        threading.Thread(target=keep_in_background, args=(proc,), daemon=True).start()
+                    rc = proc.wait()
+                finally:
+                    stop_process(proc)
                 f.write(f'run_game: rc={rc} wall={time.time() - start:.0f}s; others running after: '
                         f'totk.exe {count("totk.exe")}, ninja.exe {count("ninja.exe")}\n')
         finally:

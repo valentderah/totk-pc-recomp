@@ -1,7 +1,7 @@
 """totk.ini: set the game language and keep everything else (keys and syntax as runtime/cfg.c reads them).
 
 A new file starts from totk.ini.example, whose lines are all commented defaults. The language goes into `lang`
-(a Switch language code, runtime/ov_system.c): an active `lang = ...` line is rewritten in place, else the commented
+(a Switch language code, runtime/ov_system.c): the last active `lang = ...` line is rewritten in place, else the commented
 `# lang = ...` line of the example is activated, else the line is added to [language] (created at the end if
 missing). Other lines, comments and line order stay as they are.
 """
@@ -32,8 +32,9 @@ def set_language(text, lang):
     """text with `lang = <lang>` (an alias written as its canonical code); see the module docstring."""
     lang = canonical_language(lang)
     lines = text.splitlines()
-    for i, line in enumerate(lines):
-        m = ACTIVE.match(line)
+    # runtime/cfg.c add gives the last non-empty value priority, regardless of section or the totk_ prefix.
+    for i in range(len(lines) - 1, -1, -1):
+        m = ACTIVE.match(lines[i])
         if m:
             lines[i] = f'{m.group(1)}lang{m.group(2)}{lang}'
             return '\n'.join(lines) + '\n'
@@ -53,10 +54,14 @@ def set_language(text, lang):
 
 
 def get_language(text):
-    for line in text.splitlines():
+    for line in reversed(text.splitlines()):
         m = ACTIVE.match(line)
         if m:
-            return m.group(3)
+            value = m.group(3)
+            if len(value) >= 2 and value[0] == value[-1] == '"':
+                value = value[1:-1]
+            if value:   # cfg.c add ignores empty values, including an empty quoted string
+                return value
     return None
 
 

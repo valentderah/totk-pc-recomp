@@ -3328,6 +3328,22 @@ static void bi_done(VkExec *ex, const VkPipeInfo *info, const VkPipeState *s, co
     D->B.bi_valid = 1;
 }
 
+// Mesa ANV (Intel iGPU, Linux): a draw whose vertex shader reads a storage buffer reads stale data inside a pass unless
+// the sampler cache is invalidated first: the half-resolution particle pass drew campfire smoke and clouds as white or
+// dark blobs and turned the sky white for single frames (#927). A by-region barrier before such a draw removes it
+// (0 of 1460 frames broken against 57 of 779, about 2 fps of 40 on an Iris Xe); a stall alone or the attachment flush
+// alone does not. The barrier costs about 5% of the frame rate on an Iris Xe and was only tested there, so it is off
+// on every GPU by default; TOTK_ANV_VS_BARRIER=1 (ini: anv_vs_barrier = 1) turns it on, 0 keeps it off.
+static int anv_vs_barrier(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = cfg_get("TOTK_ANV_VS_BARRIER");
+        on = e && *e && strcmp(e, "0") != 0;
+        rt_log("vk_exec: barrier before vertex-stage storage reads in a pass %s", on ? "on" : "off");
+    }
+    return on;
+}
+
 // Pass, shaders, pipeline, fixed state and resources for a draw. 0: the draw is skipped.
 static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     VkExecDraw *D = ex->draw;
@@ -3540,6 +3556,8 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     if (bim == 2) bi_census(ex, info, sp, bgt, bgb, bsg, sm_hit);   // on counts nothing: it is what gets timed
     bind_resources(ex, info, bim ? bgt : NULL, bgb);
     if (fbl & ex->fb_dirty) feedback_barrier(ex);
+    else if (ex->in_pass && anv_vs_barrier() && gfx_shader_resources(vs, GFX_RES_SSBO, &(const GfxShaderRes *){0}))
+        { uint32_t keep = ex->fb_dirty; feedback_barrier(ex); ex->fb_dirty = keep; }   // keep fb_dirty: feedback_prepare learns from it
     feedback_written(ex, sp);
     bind_vertex_buffers(ex);
     if (vk_dump_armed) vk_dump_draw(ex, sp, p, info);

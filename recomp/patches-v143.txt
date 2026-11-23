@@ -1251,3 +1251,31 @@ site shutter main 25e55d0 bc605900 bc605900 f9402ea9 927ef529 39400129 1e230123 
 # keep their numbers.
 set freecam  TOTK_FREECAM_PATCH  0
 site freecam main 6286d4 f9400e68 94d2de1f   # ldr x8, [x19, #0x18]
+
+# Thunderstorm lightning (issue #1287). While the current weather type has IsThunder (main+0x62a40c), the world
+# manager's lightning update (main+0x62aac4, called once per frame from main+0x62a310) runs a state machine whose times
+# advance by the world's frame step: near strikes for 150 to 450 units (state 1), a phase main+0x21c34d0 ends (2), 30
+# and 240 units without (3, 4), then 1 again; 5 takes over from 1 when main+0x21d2930 returns false and leads back to 0.
+# On top of it the update draws, each update, a random number in [0, 1) for each of three fixed chances: 0.013333 in
+# every state but 0 for a distant bolt (bit 0 of its +8 flags, which main+0x58b4d8 hands to the environment, where
+# main+0x69fb98 starts the effect Far_Lightning 2000 m from the camera along its view, picked by main+0x21c3940), 0.01
+# in state 1 to pick a near strike (a point 90 m ahead of the camera, main+0x21c4c74, struck by main+0x21c3a6c once 90
+# units of frame step pass without another pick) and 0.01 in states 1 and 5 for bit 3, which sets the environment
+# input's flag +0x2e4 as a near strike does (main+0x58b4fc). Counted in one storm with a local build that logs each
+# draw that succeeds: with the set off 22 distant bolts a minute at 30 fps, 52 at 60 and 94 to 96 at 120, each one a
+# Far_Lightning effect, and bit 3 19, 34 and 64 to 80 times a minute of state 1. Near strikes stayed at 14 to 18 in
+# 205 s at every rate: state 1 lets its last pick strike in state 2, where nothing is drawn, and state 2 ends with a
+# strike of its own, so the picks that start the countdown again at high frame rates change little. Each site
+# multiplies the chance it loads by the frame ratio, time object +0x38 ([[main+0x3ad27c8] + 0xc8], as the sets bounce
+# and shutter read it), at most 1: above 30 fps the rates per second of 30 fps (counted: 26, 27 and 20 to 24 distant
+# bolts a minute at 30, 60 and 120 fps, bit 3 12 to 17 times a minute of state 1), and at 30 fps and below the game's
+# own chances. After each site x10 and the two scratch registers (s3 and s4 at the first,
+# where s2 is the chance; s2 and s3 at the others) are written, or a call comes, before any read; at the second the
+# chance is s9, which the prologue saves and both draws of state 1 compare with. Its own switch, lightning_fix
+# (TOTK_LIGHTNING_FIX); 0 runs the game's loads.
+set lightning TOTK_LIGHTNING_FIX 1
+site lightning main 62b1fc bd472d02 bd472d02 f001a52a f943e54a f940654a bd403943 1e2e1004 1e247863 1e230842   # ldr s2, [x8, #0x72c] (0.013333)
+site lightning main 62b3d8 bd4ccd09 bd4ccd09 f001a52a f943e54a f940654a bd403942 1e2e1003 1e237842 1e220929   # ldr s9, [x8, #0xccc] (0.01)
+site lightning main 62b51c bd4ccd01 bd4ccd01 f001a52a f943e54a f940654a bd403942 1e2e1003 1e237842 1e220821   # ldr s1, [x8, #0xccc] (0.01)
+#   each: the game's load; adrp x10, main+0x3ad2000; ldr x10, [x10, #0x7c8]; ldr x10, [x10, #0xc8];
+#   ldr s3 (s2), [x10, #0x38] (ratio); fmov s4 (s3), #1.0; fminnm (ratio, 1.0); fmul (chance * ratio)
