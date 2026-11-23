@@ -297,6 +297,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_RUMBLE_CURVE_DESC] = "Lower values make weak vibration stronger.",
     [UI_MENU_RUMBLE_TRIGGERS] = "Trigger vibration (Xbox)",
     [UI_MENU_RUMBLE_TRIGGERS_DESC] = "Vibrates the triggers of an Xbox controller too.",
+    [UI_MENU_SWITCH2] = "Switch 2 controllers (Bluetooth)",
+    [UI_MENU_SWITCH2_DESC] = "Joy-Con 2 and Pro Controller 2 over Bluetooth, with their gyro and HD rumble. To pair one, hold its Sync button with the game open; after that any button reconnects it. Don't pair it in Windows' Bluetooth settings. Applies at the next start.",
     [UI_MENU_PAD_LAYOUT] = "Button layout",
     [UI_MENU_PAD_LAYOUT_DESC] = "Which button is A. Nintendo: the right one, as on a Switch. Xbox: the bottom one, as "
                                 "labelled on an Xbox controller (cross on a PlayStation controller). Automatic picks "
