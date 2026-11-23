@@ -112,6 +112,12 @@
 # prewarm_xlate = 8
 # Vulkan graphics pipeline library, 0 or 1. Default: on.
 # gpl = 1
+# A graphics pipeline is the fast link of its stage libraries and nothing more, at boot (the prebuild) and during play
+# alike; the optimised build never replaces it. Building the known pipelines then drops from about 37 s to 2.9 s here,
+# with the same picture and frame rate, because the game is bound by its submits and not by the optimised code.
+# 0 builds the optimised pipelines instead, for a comparison run. The pipeline cache file is neither read nor written
+# while this is on: nothing in it is read back. Default: on.
+# pipe_fast_only = 1
 
 # Textures and memory.
 # ASTC texture decoding: native (the GPU's own ASTC support), gpu (a compute shader), cpu, or auto (native when the GPU
