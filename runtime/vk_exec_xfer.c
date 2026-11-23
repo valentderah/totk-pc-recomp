@@ -594,6 +594,7 @@ static void clear_tex(VkExec *ex, const p_clear_tex *p) {
             return;
         }
         memcpy(&cv, &p->c, sizeof cv);
+        if (vk_dump_armed) vk_dump_probe_clear(t->mem, "clear_tex", cv.float32);
         vk_exec_pass_end(ex);
         vk_exec_barrier(ex);
         vkCmdClearColorImage(ex->cb, img->image, VK_IMAGE_LAYOUT_GENERAL, &cv, 1, &rng);

@@ -71,7 +71,31 @@ typedef struct Tex {
     uint64_t use_seq;             // order of the last creation or take-back among all entries
     uint64_t rel_seq;             // while released: use_seq of the newest entry placed before this release; an entry
                                   // with a later use_seq on overlapping storage replaced this one's bytes
+    uint64_t dbg;                 // TOTK_TEX_WATCH: an id for this image, told apart in the log
 } Tex;
+
+// TOTK_TEX_WATCH=<hex storage address>: log which image of that storage a pass renders into, which one a binding
+// samples, and which image a new descriptor made. A sample that reads another image than the pass wrote holds stale or
+// empty content, and the log says so.
+static uint64_t diag_addr;
+static int diag_on = -1;
+static uint64_t diag_ids;
+static int diag_ready(void) {
+    if (diag_on < 0) {
+        const char *e = cfg_get("TOTK_TEX_WATCH");   // unset: the console build has no ini key, and strtoull(NULL) faults
+        diag_on = e ? (diag_addr = strtoull(e, NULL, 0)) != 0 : 0;
+    }
+    return diag_on;
+}
+static void diag_sample(int id, const Tex *e) {
+    if (e && diag_ready() && e->key.addr == diag_addr)
+        rt_log("texwatch: binding %d samples image #%llu", id, (unsigned long long)e->dbg);
+}
+void vk_texture_diag_target(const VkTexImage *img) {
+    const Tex *e = (const Tex *)img;
+    if (e && diag_ready() && e->key.addr == diag_addr)
+        rt_log("texwatch: a pass renders into image #%llu", (unsigned long long)e->dbg);
+}
 
 // A slot keeps what vk_texture_by_id resolved for it, so a draw binding skips the key lookup and the address chain: the
 // entry (ce), valid while the generation of its address (agen) is still cgen, the view and has_view handed out with it,
@@ -1438,6 +1462,14 @@ static Tex *entry_of(const tex_t *t) {
         }
         if (!(e = create_tex(t, &k, tex_alias))) return NULL;
         perf_count(PERF_CNT_TEX_NEW);
+        int watched = diag_ready() && k.addr == diag_addr;
+        if (watched) {
+            e->dbg = ++diag_ids;
+            rt_log("texwatch: image #%llu made at %#llx: fmt %#x %ux%u levels %u target %d samples %d bytes %u %s", 
+                   (unsigned long long)e->dbg, (unsigned long long)k.addr, (unsigned)k.d.format, (unsigned)k.d.width,
+                   (unsigned)k.d.height, (unsigned)k.d.levels, (int)k.d.target, (int)k.d.samples, (unsigned)e->t.L.size,
+                   e->bound_to ? "in pool memory" : "own memory");
+        }
         dropped_check(&k);
         e->use_seq = ++use_counter;
         // released entries of another descriptor at this address are replaced by the new one; a live one holding
@@ -1454,8 +1486,10 @@ static Tex *entry_of(const tex_t *t) {
                 src = p;
         }
         if (alias) perf_count(PERF_CNT_TEX_ALIAS);
+        int copied = 0;
         if (tex_alias) {
             if (src && alias_copy(e, src)) {
+                copied = 1;
                 n_alias_copied++;
                 if (e->pub.mirrored) {   // the content is src's GPU render, newer than the storage bytes
                     vk_mem_changed(e->pub.addr, e->t.L.size, 0, &e->wgen);
@@ -1470,6 +1504,10 @@ static Tex *entry_of(const tex_t *t) {
                 }
             }
         }
+        if (watched)
+            rt_log("texwatch: image #%llu at %#llx: %s", (unsigned long long)e->dbg, (unsigned long long)k.addr,
+                   copied ? "took the live image's content" : alias ? "starts empty, no source to take it from"
+                                                                   : "alone at its storage");
         e->next_at = nvn_hm_get(&by_addr, &k.addr);
         nvn_hm_put(&by_addr, &k.addr, e);
         nvn_hm_put(&by_key, &k, e);
@@ -1786,6 +1824,7 @@ const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view) {
         }
         if (view) *view = has_view ? v : s->v;
         if (has_view) *has_view = view ? hv : s->has_view;
+        diag_sample(id, f);
         return f ? &f->pub : NULL;
     }
     if (!s->ce || s->cgen != g) {   // resolved again: an entry at its address was created, dropped or released, or the
@@ -1798,6 +1837,7 @@ const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view) {
             if (r && (!r->uploaded || r->checked != submit_epoch)) make_fresh_snap(r), r->checked = submit_epoch;
             if (view) *view = has_view ? v : s->v;
             if (has_view) *has_view = view ? hv : s->has_view;
+            diag_sample(id, r);
             return r ? &r->pub : NULL;
         }
         s->ce = r;
@@ -1820,6 +1860,7 @@ const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view) {
     }
     if (view) *view = has_view ? s->cview : s->v;
     if (has_view) *has_view = view ? s->chas_view : s->has_view;
+    diag_sample(id, e);
     return e ? &e->pub : NULL;
 }
 

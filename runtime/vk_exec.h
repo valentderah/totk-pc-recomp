@@ -284,6 +284,9 @@ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeIn
 void vk_dump_dispatch(VkExec *ex, const GfxShader *cs, VkPipeline p, const VkPipeInfo *info, const p_dispatch *d);
 void vk_dump_copy(VkExec *ex, uint32_t op, const void *payload);   // before a copy or texture clear is replayed
 void vk_dump_present(uint64_t frame);    // vk_be_present: waits for the dump frame's copies and closes the logs
+void vk_dump_freeze(uint64_t frame);     // flight's freeze trigger: aim the dump at that frame (TOTK_DUMP=auto)
+void vk_dump_probe(VkExec *ex);         // TOTK_DUMP_PROBE: read a patch of the named image at the start of every frame
+void vk_dump_probe_clear(const void *mem, const char *what, const float v[4]);   // the probe names that image: say who clears it
 
 // c0, the NVN driver constant bank of one stage (vk_exec_draw.c; TOTK_FIX_C0=0 binds zeros instead): bank is
 // VK_C0_BYTES, stage an NVN stage (0 vertex, 1 fragment, 5 compute), ssbo and ubo the 16 bound slots of that stage.

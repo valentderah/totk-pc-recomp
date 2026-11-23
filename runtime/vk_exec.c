@@ -377,6 +377,7 @@ static void resolve_target(const tex_t *t, const view_t *v, int has_v, int depth
                        v->format, t->d.format);
     }
     o->image = img->image;
+    vk_texture_diag_target(img);
     o->img = img;
     o->scale = img->scale ? img->scale : 1;
     o->format = fmt;
@@ -674,8 +675,15 @@ static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags
 
 void vk_exec_barrier(VkExec *ex) { barrier_to(ex, NULL, NULL, 0); }
 
+// ---- TOTK_SCENE_CLEAR (read and applied in the clears section below)
+static uintptr_t scene_clear_addr;        // the scene colour target the game clears at the top of every frame
+static int scene_clear_mode = -1;         // -1 unread, 0 as the game asks, 1 the clear that opens a frame is dropped
+static uint64_t scene_clear_first_frame;  // the frame the last pass began in: a clear before any pass belongs to the frame that starts now
+static int scene_clear_dropped;
+
 void vk_exec_pass_begin(VkExec *ex) {
     if (ex->in_pass) return;
+    scene_clear_first_frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
     resolve_rt(ex);
     vk_contact_pass_begin(ex);
     vk_dlaa_pass(ex);   // DLAA runs before the bloom chain's first pass (vk_dlaa.c)
@@ -692,6 +700,7 @@ void vk_exec_pass_begin(VkExec *ex) {
         want[nwant] = t->image, wasp[nwant++] = i < 8 ? VK_IMAGE_ASPECT_COLOR_BIT : t->img->aspect;
     }
     barrier_to(ex, want, wasp, nwant);   // passes, clears, copies and dispatches see each other's results
+    if (vk_dump_armed) vk_dump_probe(ex);   // TOTK_DUMP_PROBE: what the frame's first pass is about to read
     ex->fbl_mask = fbl;
     ex->fb_dirty = 0;
     ex->pass_serial++;
@@ -830,8 +839,31 @@ static void clear_attachment(VkExec *ex, const VkClearAttachment *a) {
     ex->fb_dirty |= a->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT ? 1u << a->colorAttachment : 0x100u;
 }
 
+// The game clears the scene colour target to zero at the top of every frame and the menu then samples that target for
+// its blurred backdrop: cleared first, the backdrop is always black. On the console the backdrop shows the last world
+// frame, so the read has to land before the clear. With TOTK_SCENE_CLEAR naming the target, the clear that opens a frame
+// (no pass has begun in this frame yet) is dropped and the menu samples what the last world frame left there.
+static void scene_clear_init(void) {
+    if (scene_clear_mode >= 0) return;
+    scene_clear_mode = 0;
+    const char *a = cfg_get("TOTK_SCENE_CLEAR");
+    if (a && *a) {
+        scene_clear_addr = (uintptr_t)strtoull(a, NULL, 0);
+        const char *m = cfg_get("TOTK_SCENE_CLEAR_MODE");
+        scene_clear_mode = !m || !*m || !strcmp(m, "skip_start");
+    }
+    rt_log("vk: TOTK_SCENE_CLEAR: %s clear of %#llx", scene_clear_mode ? "the opening" : a && *a ? "no" : "no named", (unsigned long long)scene_clear_addr);
+}
+
+// A clear that reaches the scene target before this frame's first pass is the frame's opening clear.
+static int scene_clear_opening(const VkExec *ex, const VkExecTarget *t) {
+    if (scene_clear_mode != 1 || (uintptr_t)t->tex->mem != scene_clear_addr) return 0;
+    return __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1 != scene_clear_first_frame && whole_target(ex, t);
+}
+
 static void clear_color(VkExec *ex, const p_clear_color *c) {
     ex->fr.clears++;
+    scene_clear_init();
     if (ex->render_disabled) return;
     resolve_rt(ex);
     int i = c->index;
@@ -848,6 +880,12 @@ static void clear_color(VkExec *ex, const p_clear_color *c) {
     const VkExecTarget *t = &ex->color[i];
     VkClearColorValue cv;
     memcpy(cv.float32, c->rgba, sizeof cv.float32);   // integer targets: the payload's bits as the front end stored them
+    if (vk_dump_armed) vk_dump_probe_clear(t->tex->mem, whole_target(ex, t) ? "clear_color" : "clear_attachment", cv.float32);
+    if (scene_clear_opening(ex, t)) {
+        if (++scene_clear_dropped % 600 == 1)
+            rt_log("vk: TOTK_SCENE_CLEAR: %d opening clears of the scene dropped so far", scene_clear_dropped);
+        return;
+    }
     if (whole_target(ex, t)) {
         vk_exec_barrier(ex);
         VkImageSubresourceRange r = {VK_IMAGE_ASPECT_COLOR_BIT, t->level, 1, t->base_layer, t->layers};
