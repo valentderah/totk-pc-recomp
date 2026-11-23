@@ -57,6 +57,7 @@ TESTS = {
     'pack_shader_cache_test':   ('.venv', None, [], ''),
     'spin_waits_test':          ('.venv', None, [], ''),
     'worktree_test':            ('.venv', None, [], ''),
+    'run_game_test':            ('.venv', None, [], ''),
     'installer_test':           ('.venv-py314', None, [], ''),
     'ncz_test':                 ('.venv-py314', None, [], ''),
     'romfs_prompts_test':       ('.venv-py314', None, [], ''),
