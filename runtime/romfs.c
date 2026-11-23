@@ -761,6 +761,102 @@ static int restbl_packs(Restbl *out, const Restbl *base, int *packs, int *lines)
     return raised;
 }
 
+// ---- the merged table across starts. Building it opens every mod file and unpacks the mods' packs: about 7 s with an
+// HD texture pack and The Second Quest (13,725 files). A start whose inputs are the same as the last one's serves the
+// table that start wrote. The key is a SHA-256 over this code's version, the port version, the game's table entry, and
+// for every shipped table and every mod or manifest overlay its path, place in the order and file identity (volume,
+// file id, size, write time). <profile>/mods/<table>.key holds the key, what the build gave (a table or none) and the
+// SHA-256 of the written table, so a copied profile keeps it; anything else there is a miss and the table is built
+// again. TOTK_RESTBL_CACHE=0 builds it at every start.
+#define RESTBL_CACHE_VERSION 2
+typedef struct { char magic[8]; uint32_t version, outcome; uint8_t key[32], table[32]; } RestblCache;
+enum { RESTBL_NONE = 1, RESTBL_TABLE = 2 };
+
+static void restbl_cache_paths(char *key, size_t key_cap, char *table, size_t table_cap) {
+    const char *leaf = strrchr(restbl_rel, '/') ? strrchr(restbl_rel, '/') + 1 : restbl_rel;
+    need(snprintf(table, table_cap, "%s/mods/%s", rt_config()->profile, leaf) < (int)table_cap, "table path");
+    need(snprintf(key, key_cap, "%s.key", table) < (int)key_cap, "table key path");
+}
+
+static void hash_file_id(Sha256 *h, const char *path) {
+    PlatFile *f = open_read(path);
+    Identity id = {0};
+    if (f) id = identity_of(f), plat_file_close(f);
+    sha256_update(h, path, strlen(path) + 1);
+    sha256_update(h, &id, sizeof id);
+}
+
+static void restbl_cache_key(uint64_t gi, uint8_t out[32]) {
+    Sha256 h;
+    sha256_init(&h);
+    static const char tag[] = "totk restbl cache";
+    uint32_t v = RESTBL_CACHE_VERSION;
+    sha256_update(&h, tag, sizeof tag);
+    sha256_update(&h, &v, sizeof v);
+    sha256_update(&h, rt_port_version, strlen(rt_port_version) + 1);
+    Entry ge = entry(gi);
+    sha256_update(&h, &ge, sizeof ge);
+    for (size_t s = 0; s < nshipped; s++) {
+        int32_t m[2] = {shipped[s].mod, shipped[s].other};
+        sha256_update(&h, m, sizeof m);
+        hash_file_id(&h, shipped[s].file);
+    }
+    uint64_t n = noverlay;
+    sha256_update(&h, &n, sizeof n);
+    for (size_t k = 0; k < noverlay; k++) {
+        const Overlay *o = &overlays[k];
+        if (!o->mod && o->prio != 1 && o->index != gi) continue;
+        int64_t place[3] = {o->index == ADDED ? -1 : (int64_t)o->index, o->prio, o->mod};
+        sha256_update(&h, o->name, strlen(o->name) + 1);
+        sha256_update(&h, o->path, strlen(o->path) + 1);
+        sha256_update(&h, place, sizeof place);
+        sha256_update(&h, &o->id, sizeof o->id);
+    }
+    sha256_final(&h, out);
+}
+
+static void restbl_cache_store(const uint8_t key[32], int outcome) {
+    char kp[2300], tp[2300];
+    restbl_cache_paths(kp, sizeof kp, tp, sizeof tp);
+    RestblCache c = {.magic = "TOTKRSZ", .version = RESTBL_CACHE_VERSION, .outcome = (uint32_t)outcome};
+    c.magic[7] = 'C';
+    memcpy(c.key, key, 32);
+    if (outcome == RESTBL_TABLE) {
+        uint64_t n = 0;
+        uint8_t *z = plat_file_read(tp, &n);
+        if (!z) return;
+        sha256(z, (size_t)n, c.table);
+        free(z);
+    }
+    if (!plat_file_write_atomic(kp, &c, sizeof c))
+        rt_log("RomFS: cannot write %s; the table is built at every start", kp);
+}
+
+// 1 when the last start's result fits: its table is served again (or none, as then).
+static int restbl_cache_use(const uint8_t key[32], Overlay *served, const char *keeps, double t0) {
+    char kp[2300], tp[2300];
+    restbl_cache_paths(kp, sizeof kp, tp, sizeof tp);
+    uint64_t n = 0;
+    RestblCache *c = (RestblCache *)plat_file_read(kp, &n);
+    int hit = c && n == sizeof *c && !memcmp(c->magic, "TOTKRSZC", 8) && c->version == RESTBL_CACHE_VERSION &&
+              !memcmp(c->key, key, 32) && (c->outcome == RESTBL_NONE || c->outcome == RESTBL_TABLE);
+    if (hit && c->outcome == RESTBL_TABLE) {
+        uint64_t zn = 0;
+        uint8_t *z = plat_file_read(tp, &zn), sum[32];
+        if (z) sha256(z, (size_t)zn, sum);
+        hit = z && !memcmp(sum, c->table, 32);
+        if (!hit) free(z);
+        hit = hit && serve_generated(restbl_rel, served, z, (size_t)zn, "mods", "merged resource sizes, kept from the "
+                                     "last start", keeps);
+    }
+    if (hit)
+        rt_log("RomFS: resource size table: the mods' files are the ones of the last start: %s (%.0f ms)",
+               c->outcome == RESTBL_TABLE ? "its merged table is used" : "they fit the game's entries",
+               (now_s() - t0) * 1000);
+    free(c);
+    return hit;
+}
+
 // With a player mod (or the TOTK_ROMFS_MODS manifest) serving files: the game's table with every shipped table of this
 // version merged in (an entry larger than the game's wins), the entries a mod's table for another version gives for
 // that mod's files, and each served mod file's entry raised to what its size needs (restbl_grow for a file the game
@@ -773,6 +869,15 @@ static void restbl_overlay(void) {
     static const char keeps[] = "mod files that grew may fail to load";
     double t0 = now_s();
     uint64_t gi = lower(restbl_rel);
+    uint8_t cache_key[32];
+    Overlay *served_now = NULL;
+    for (size_t k = 0; k < noverlay; k++)
+        if (overlays[k].index == gi) served_now = &overlays[k];
+    int cached = rt_knob("RESTBL_CACHE", "1");
+    if (cached) {
+        restbl_cache_key(gi, cache_key);
+        if (restbl_cache_use(cache_key, served_now, keeps, t0)) return;
+    }
     Entry ge = entry(gi);
     void *gz = ge.size < (64u << 20) ? malloc((size_t)ge.size) : NULL;
     Restbl *base = NULL, *out = NULL;
@@ -838,6 +943,7 @@ static void restbl_overlay(void) {
     if (!merged && !raised && !members && !served) {
         restbl_free(out);
         rt_log("RomFS: resource size table: the mods' files fit the game's entries (%.0f ms)", (now_s() - t0) * 1000);
+        if (cached) restbl_cache_store(cache_key, RESTBL_NONE);
         return;
     }
     size_t rn = 0, zn = 0;
@@ -852,10 +958,12 @@ static void restbl_overlay(void) {
         rt_log("RomFS: cannot pack the merged resource size table; %s", keeps);
         return;
     }
-    if (serve_generated(restbl_rel, served, z, zn, "mods", "merged resource sizes", keeps))
+    if (serve_generated(restbl_rel, served, z, zn, "mods", "merged resource sizes", keeps)) {
         rt_log("RomFS: resource size table: %d tables merged (%d entries), %d entries raised for mod files (%d "
                "added files estimated), %d for members of %d mod packs, %.0f ms", tables, merged, raised, estimated,
                members, packs, (now_s() - t0) * 1000);
+        if (cached) restbl_cache_store(cache_key, RESTBL_TABLE);
+    }
 }
 
 // The HeapDef table a bigger game resolution or TOTK_TEX_HEAP_EXTRA_MB needs (resolution.c): its texture heaps and
