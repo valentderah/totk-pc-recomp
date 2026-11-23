@@ -67,6 +67,7 @@ TESTS = {
     'exefs_patches_test':       ('.venv', None, [], ''),
     'exefs_plugins_test':       ('.venv', None, [], ''),
     'lift_cache_test':          ('.venv', None, [], ''),
+    'ab_summary_test':          ('.venv', None, [], ''),
     'settings_doc_check':       ('.venv', None, [], ''),
     'mouse_direct_check':       ('.venv', 'cc', ['--cc', '<cc>'], 'compiles its checks with clang'),
     'cheats_vm_check':          ('.venv', 'cc', ['--cc', '<cc>'], 'compiles runtime/cheats.c into a harness with clang'),
