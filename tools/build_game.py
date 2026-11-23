@@ -70,6 +70,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -160,15 +161,13 @@ if WIN:
     # _WIN32_WINNT: Windows 10, the port's minimum. MSYS2's headers default to it, llvm-mingw's (the release toolchain)
     # to Windows 7, which hides the per-monitor DPI functions gfx_window_win.c and dpi_probe_win.c call.
     RT_FLAGS.append('-D_WIN32_WINNT=0x0A00')
-    # -Xlinker passes the map path as one argument; -Wl, would split it at any comma in the build dir path
-    LINK_FLAGS = ['-fuse-ld=lld', '-Wl,--stack,16777216', '-Xlinker', '"--Map=$builddir/totk.map"']   # the map feeds tools/prof_report.py
+    LINK_FLAGS = ['-fuse-ld=lld', '-Wl,--stack,16777216']
     LINK_LIBS = ['-lpsapi', '-lbcrypt', '-lvulkan-1', '-luser32', '-lgdi32', '-ldwmapi', '-limm32', '-lwinmm', '-lole32', '-lshell32', '-luuid', '-lSDL3', '-lopus', '-l:libvpx.a', '-l:libzstd.a', '-l:libstdc++.a', '-l:libwinpthread.a']   # Vulkan back end; libvpx static (movies); libzstd static (resolution.c)
     VMA_INCLUDE = UCRT.parent / 'include' / 'vma'   # vk_mem_alloc.h; MSYS2 package vulkan-memory-allocator
 else:
     # -no-pie: the lifted modules' function tables (hundreds of thousands of pointers) need no load-time relocation.
     # $ORIGIN: a libSDL3.so.0 next to totk comes before the system's (the release's portable folder).
-    LINK_FLAGS = ['-fuse-ld=lld', '-no-pie', '-Wl,-z,noexecstack', "'-Wl,-rpath,$$ORIGIN'",
-                  '"-Wl,-Map=$builddir/totk.map"']
+    LINK_FLAGS = ['-fuse-ld=lld', '-no-pie', '-Wl,-z,noexecstack', "'-Wl,-rpath,$$ORIGIN'"]
     LINK_LIBS = ['-lvulkan', '-lSDL3', '-lopus', '-lvpx', '-lzstd', '-l:libstdc++.a', '-lm', '-lpthread', '-ldl']
     VMA_INCLUDE = Path('/usr/include')   # vk_mem_alloc.h; Arch (AUR) vulkan-memory-allocator, Debian libvulkan-memory-allocator-dev
 # Without a system vk_mem_alloc.h, the header the Windows release pins (tools/make_release.py, VMA 3.4.0) is fetched once
@@ -269,10 +268,12 @@ def flag_path(p):
 
 
 def cmd_arg(s):
-    """s for a Ninja command line: Ninja-escaped, and quoted when it holds a space (a user or folder name), as clang and
-    lld split their Windows command line at unquoted spaces."""
-    s = s.replace('$', '$$')
-    return f'"{s}"' if ' ' in s else s
+    """One command argument: quote for the host's command parser, then escape Ninja's dollar signs."""
+    if not WIN:   # Ninja runs Unix commands through sh: double quotes alone still expand $ and command substitutions
+        s = shlex.quote(s)
+    elif ' ' in s:
+        s = f'"{s}"'
+    return s.replace('$', '$$')
 
 
 def cmd_path(p):
@@ -505,6 +506,8 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=(), runtime_lib=Non
                                                      ffx / 'spirv'))   # FidelityFX/host headers, ffx_shader_blobs.h, ffx_shaders_vk.h
     rt_inc = f'{inc} -I {cmd_path(out)} -I {vma} -I {imgui} {ffx_inc}'   # romfs_config.h, vk_mem_alloc.h (+ deps headers), imgui.h
     libs = [f'-L {cmd_path(DEPS / "lib")}'] + (LLVM_LINK_LIBS if WIN else LINK_LIBS) if DEPS else LINK_LIBS
+    # The map feeds tools/prof_report.py. Quote its literal path before Ninja expansion; -Xlinker preserves commas.
+    map_arg = cmd_arg('--Map=' + flag_path(out / 'totk.map'))
     lines = [
         '# Written by tools/build_game.py; do not edit.',
         'ninja_required_version = 1.10',
@@ -512,7 +515,7 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=(), runtime_lib=Non
         cc_line(),
         genflags_line(RUNTIME, gen),
         f'rtflags = {" ".join(RT_FLAGS)} {rt_inc}',
-        f'ldflags = {" ".join(LINK_FLAGS)}',
+        f'ldflags = {" ".join(LINK_FLAGS)} -Xlinker {map_arg}',
         f'libs = {" ".join(libs)}',
         '',
         'pool gen',
