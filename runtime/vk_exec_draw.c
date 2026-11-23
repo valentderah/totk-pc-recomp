@@ -3556,7 +3556,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     bind_resources(ex, info, bim ? bgt : NULL, bgb);
     if (fbl & ex->fb_dirty) feedback_barrier(ex);
     else if (ex->in_pass && anv_vs_barrier() && gfx_shader_resources(vs, GFX_RES_SSBO, &(const GfxShaderRes *){0}))
-        feedback_barrier(ex);
+        { uint32_t keep = ex->fb_dirty; feedback_barrier(ex); ex->fb_dirty = keep; }   // keep fb_dirty: feedback_prepare learns from it
     feedback_written(ex, sp);
     bind_vertex_buffers(ex);
     if (vk_dump_armed) vk_dump_draw(ex, sp, p, info);
