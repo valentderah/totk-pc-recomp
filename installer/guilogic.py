@@ -30,7 +30,7 @@ UI_LANGUAGE_LABELS = {'en': 'English', 'ru': 'Русский', 'pt-BR': 'Portugu
                       'de': 'Deutsch', 'fr': 'Français', 'es': 'Español', 'it': 'Italiano', 'nl': 'Nederlands',
                       'ja': '日本語', 'ko': '한국어'}
 STEP_ORDER = ('check', 'kit', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss',
-              'cleanup')
+              'fsr', 'cleanup')
 # message parameter -> catalog id prefix of the names that replace its raw values
 PARAM_NAMES = {'lang': 'lang.', 'known': 'lang.', 'step': 'step.', 'input': 'param.input.'}
 LANG_PT_BR = 0x0416   # Portuguese (Brazil), the whole LANGID: Portugal's Portuguese stays English
@@ -142,6 +142,14 @@ def amount(cat, done, total, unit):
 
 # ---- the form ----------------------------------------------------------------------------------------------------
 
+def fsr_default(adapters):
+    """Whether the window ticks Download AMD FSR at start: only with an AMD display adapter among adapters (their
+    names, screens.windows_adapter_names). The step downloads on any GPU when ticked (steps.Fsr); on other GPUs, and
+    when no adapter could be listed, the box starts unticked, so a player without an AMD GPU never downloads AMD's
+    libraries (about 36 MB) without choosing to."""
+    return any('AMD' in a.upper() or 'RADEON' in a.upper() for a in adapters)
+
+
 @dataclass
 class Form:
     base: str = ''
@@ -151,6 +159,7 @@ class Form:
     lang: str = ''
     dest: str = ''
     dlss: bool = False
+    fsr: bool = False
 
     def installed_state(self):
         """The recorded state of the install folder (totk-install.json), or None. Never raises."""
@@ -203,6 +212,8 @@ class Form:
             cmd.append('--verify')
         if self.dlss:
             cmd.append('--dlss')
+        if self.fsr:
+            cmd.append('--fsr')
         return cmd
 
 

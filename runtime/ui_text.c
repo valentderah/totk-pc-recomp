@@ -34,6 +34,8 @@ typedef struct { const char *lang; const char *const *text; } Row;
 #define DLSS_FILE "libnvidia-ngx-dlss.so"
 #define EXE_FILE "totk"
 #endif
+// AMD's FSR 4 libraries (Windows only), as the setup downloads them next to the executable.
+#define FFX_FILES "amd_fidelityfx_loader_vk.dll, amd_fidelityfx_upscaler_vk.dll"
 
 static const char *const text_en[UI_TEXT_COUNT] = {
     SWKBD("Text entry", "Enter a name", "Horse", "OK", "Cancel", "Controller: A = OK, B = Cancel"),
@@ -182,15 +184,19 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_SCENE_UPSCALER] = "3D scene upscaler",
     [UI_MENU_SCENE_UPSCALER_DESC] = "A temporal upscaler for the 3D scene: smoother edges and less shimmer, and in a mode below Native it draws "
                                     "the scene smaller and scales it up, which saves GPU time. NVIDIA DLSS needs an NVIDIA "
-                                    "RTX GPU and " DLSS_FILE " next to " EXE_FILE "; AMD FSR 3.1 runs on any GPU. Off keeps "
+                                    "RTX GPU and " DLSS_FILE " next to " EXE_FILE "; AMD FSR 3.1 runs on any GPU; AMD FSR 4 "
+                                    "(Windows) needs a Radeon GPU AMD offers it for and " FFX_FILES " next to " EXE_FILE ". Off keeps "
                                     "the game's own scaling and FXAA. The HUD is not touched; the upscaler and sharpness "
                                     "above still fit the game image to the window. Takes effect after a restart.",
     [UI_MENU_SCENE_UPSCALER_OFF] = "Off", [UI_MENU_SCENE_UPSCALER_DLSS] = "NVIDIA DLSS",
-    [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1",
+    [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1", [UI_MENU_SCENE_UPSCALER_FSR4] = "AMD FSR 4",
+    [UI_MENU_SCENE_UPSCALER_NO_FSR4_GPU] = "FSR 4: not offered for this GPU",
+    [UI_MENU_SCENE_UPSCALER_NO_FSR4_DLL] = "FSR 4: AMD's FSR libraries are missing",
+    [UI_MENU_SCENE_UPSCALER_NO_FSR4_OS] = "FSR 4: Windows only",
     [UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU] = "DLSS: needs an NVIDIA RTX GPU",
     [UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL] = "DLSS: " DLSS_FILE " is missing",
-    [UI_MENU_FSR3_SHARPNESS] = "FSR 3.1 sharpness",
-    [UI_MENU_FSR3_SHARPNESS_DESC] = "Sharpening of the 3D scene after FSR 3.1; 0 turns it off.",
+    [UI_MENU_FSR_SHARPNESS] = "FSR sharpness",
+    [UI_MENU_FSR_SHARPNESS_DESC] = "Sharpening of the 3D scene after AMD FSR 3.1 or FSR 4; 0 turns it off.",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws. Above 60 is experimental and needs Game speed "
@@ -828,15 +834,19 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_SCENE_UPSCALER_DESC] = "Временной апскейлер для 3D-сцены: ровнее края и меньше мерцания, а в режимах ниже «Родного» он "
                                     "рисует сцену меньше и увеличивает её, что экономит время видеокарты. NVIDIA DLSS "
                                     "нужна видеокарта NVIDIA RTX и " DLSS_FILE " рядом с " EXE_FILE "; AMD FSR 3.1 "
-                                    "работает на любой видеокарте. «Выкл» оставляет собственное масштабирование игры и "
+                                    "работает на любой видеокарте; AMD FSR 4 (Windows) нужна видеокарта Radeon, для "
+                                    "которой AMD его предлагает, и " FFX_FILES " рядом с " EXE_FILE ". «Выкл» оставляет собственное масштабирование игры и "
                                     "FXAA. Интерфейс не затрагивается; масштабирование и резкость выше по-прежнему "
                                     "подгоняют изображение игры под окно. Действует после перезапуска.",
     [UI_MENU_SCENE_UPSCALER_OFF] = "Выкл", [UI_MENU_SCENE_UPSCALER_DLSS] = "NVIDIA DLSS",
-    [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1",
+    [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1", [UI_MENU_SCENE_UPSCALER_FSR4] = "AMD FSR 4",
+    [UI_MENU_SCENE_UPSCALER_NO_FSR4_GPU] = "FSR 4: недоступен для этой видеокарты",
+    [UI_MENU_SCENE_UPSCALER_NO_FSR4_DLL] = "FSR 4: нет библиотек FSR от AMD",
+    [UI_MENU_SCENE_UPSCALER_NO_FSR4_OS] = "FSR 4: только Windows",
     [UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU] = "DLSS: нужна видеокарта NVIDIA RTX",
     [UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL] = "DLSS: нет " DLSS_FILE,
-    [UI_MENU_FSR3_SHARPNESS] = "Резкость FSR 3.1",
-    [UI_MENU_FSR3_SHARPNESS_DESC] = "Повышение резкости 3D-сцены после FSR 3.1; 0 выключает его.",
+    [UI_MENU_FSR_SHARPNESS] = "Резкость FSR",
+    [UI_MENU_FSR_SHARPNESS_DESC] = "Повышение резкости 3D-сцены после AMD FSR 3.1 или FSR 4; 0 выключает его.",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
     [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду. Выше 60 — экспериментальный режим, нужна «Скорость "
@@ -1941,15 +1951,19 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_SCENE_UPSCALER_DESC] = "Um upscaler temporal para a cena 3D: bordas mais suaves e menos cintilação, e nos modos abaixo do "
                                     "Nativo ele desenha a cena menor e a amplia, o que poupa tempo da GPU. O NVIDIA DLSS "
                                     "precisa de uma GPU NVIDIA RTX e do " DLSS_FILE " ao lado do " EXE_FILE "; o AMD FSR "
-                                    "3.1 roda em qualquer GPU. Desligado mantém a escala e o FXAA do próprio jogo. O HUD "
+                                    "3.1 roda em qualquer GPU; o AMD FSR 4 (Windows) precisa de uma GPU Radeon para a qual a AMD o "
+                                    "oferece e de " FFX_FILES " ao lado do " EXE_FILE ". Desligado mantém a escala e o FXAA do próprio jogo. O HUD "
                                     "não é afetado; o upscaler e a nitidez acima continuam ajustando a imagem do jogo à "
                                     "janela. Vale após reiniciar.",
     [UI_MENU_SCENE_UPSCALER_OFF] = "Desligado", [UI_MENU_SCENE_UPSCALER_DLSS] = "NVIDIA DLSS",
-    [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1",
+    [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1", [UI_MENU_SCENE_UPSCALER_FSR4] = "AMD FSR 4",
+    [UI_MENU_SCENE_UPSCALER_NO_FSR4_GPU] = "FSR 4: não oferecido para esta GPU",
+    [UI_MENU_SCENE_UPSCALER_NO_FSR4_DLL] = "FSR 4: faltam as bibliotecas FSR da AMD",
+    [UI_MENU_SCENE_UPSCALER_NO_FSR4_OS] = "FSR 4: só no Windows",
     [UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU] = "DLSS: precisa de uma GPU NVIDIA RTX",
     [UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL] = "DLSS: falta o " DLSS_FILE,
-    [UI_MENU_FSR3_SHARPNESS] = "Nitidez do FSR 3.1",
-    [UI_MENU_FSR3_SHARPNESS_DESC] = "Aumento de nitidez da cena 3D após o FSR 3.1; 0 desliga.",
+    [UI_MENU_FSR_SHARPNESS] = "Nitidez do FSR",
+    [UI_MENU_FSR_SHARPNESS_DESC] = "Aumento de nitidez da cena 3D após o AMD FSR 3.1 ou FSR 4; 0 desliga.",
     [UI_MENU_TAB_CHEATS] = "Cheats",
     [UI_MENU_CHEATS_NONE] = "Nenhum cheat para esta versão do jogo. Os cheats de um mod são um arquivo de cheats do "
                             "Atmosphere na pasta cheats dele, com o nome da build do jogo: mods\\<mod>\\cheats\\%s. "
@@ -2697,14 +2711,18 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_SCENE_UPSCALER] = "3D 场景超分",
     [UI_MENU_SCENE_UPSCALER_DESC] = "用于 3D 场景的时间性超分：边缘更平滑，闪烁更少；低于“原生”的模式会以更小的尺寸绘制场景再放大，以节省 GPU "
                                     "时间。NVIDIA DLSS 需要 NVIDIA RTX 显卡，并将 " DLSS_FILE " 放在 " EXE_FILE " 旁；AMD "
-                                    "FSR 3.1 可在任何显卡上运行。“关”保留游戏自己的缩放和 FXAA。HUD 不受影响；上方的缩放"
+                                    "FSR 3.1 可在任何显卡上运行；AMD FSR 4（Windows）需要 AMD 为其提供 FSR 4 的 Radeon 显卡，并将 " FFX_FILES
+                                    " 放在 " EXE_FILE " 旁。“关”保留游戏自己的缩放和 FXAA。HUD 不受影响；上方的缩放"
                                     "方式和锐度仍负责把游戏画面适配到窗口。重启后生效。",
     [UI_MENU_SCENE_UPSCALER_OFF] = "关", [UI_MENU_SCENE_UPSCALER_DLSS] = "NVIDIA DLSS",
-    [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1",
+    [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1", [UI_MENU_SCENE_UPSCALER_FSR4] = "AMD FSR 4",
+    [UI_MENU_SCENE_UPSCALER_NO_FSR4_GPU] = "FSR 4：此显卡不提供",
+    [UI_MENU_SCENE_UPSCALER_NO_FSR4_DLL] = "FSR 4：缺少 AMD 的 FSR 库",
+    [UI_MENU_SCENE_UPSCALER_NO_FSR4_OS] = "FSR 4：仅限 Windows",
     [UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU] = "DLSS：需要 NVIDIA RTX 显卡",
     [UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL] = "DLSS：缺少 " DLSS_FILE,
-    [UI_MENU_FSR3_SHARPNESS] = "FSR 3.1 锐度",
-    [UI_MENU_FSR3_SHARPNESS_DESC] = "FSR 3.1 之后 3D 场景的锐化强度；0 为关闭。",
+    [UI_MENU_FSR_SHARPNESS] = "FSR 锐度",
+    [UI_MENU_FSR_SHARPNESS_DESC] = "AMD FSR 3.1 或 FSR 4 之后 3D 场景的锐化强度；0 为关闭。",
     [UI_MENU_TAB_CHEATS] = "金手指",
     [UI_MENU_CHEATS_NONE] = "此游戏版本没有金手指。模组的金手指是它的 cheats 文件夹中以游戏构建命名的 Atmosphere "
                             "金手指文件：mods\\<模组>\\cheats\\%s。重启游戏后才会读取。对于修改游戏代码的金手指，"

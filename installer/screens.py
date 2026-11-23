@@ -94,6 +94,28 @@ def windows_displays():
     return out
 
 
+def windows_adapter_names():
+    """The names of the display adapters Windows lists (EnumDisplayDevicesW, "AMD Radeon RX 9060 XT"), without
+    starting Vulkan; [] elsewhere or when the call fails. The setup window decides its defaults by them before the host
+    check has run."""
+    if os.name != 'nt':
+        return []
+    try:
+        user32 = ctypes.WinDLL('user32')
+        out, i = [], 0
+        while i < 64:
+            dev = DISPLAY_DEVICEW()
+            dev.cb = ctypes.sizeof(dev)
+            if not user32.EnumDisplayDevicesW(None, i, ctypes.byref(dev), 0):
+                break
+            i += 1
+            if dev.DeviceString and dev.DeviceString not in out:
+                out.append(dev.DeviceString)
+        return out
+    except (OSError, AttributeError, ValueError):
+        return []
+
+
 XRANDR = re.compile(r'\sconnected\s+(?:primary\s+)?(\d+)x(\d+)\+')
 
 

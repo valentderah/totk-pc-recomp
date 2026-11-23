@@ -196,6 +196,7 @@ Many rows below are developer tools that only act together with another setting 
 | `dlss_reactive` (default `0`) | `1` builds a reactive mask for DLSS where it ran. | Changes how DLSS blends moving areas; a test setting. | Caution |
 | `fsr3_debug` (default `0`) | With `scene_upscaler = fsr3`: `1` creates the FSR 3.1 context with the SDK's input checks, whose warnings go to the log (the first 32). | Adds checks to every FSR 3.1 dispatch and log lines. | Caution |
 | `fsr3_view` (default `0`) | With `scene_upscaler = fsr3`: `1` shows FSR 3.1's own debug view of its inputs and state in place of the picture. | The frame shows a debug image while it is set. | Caution |
+| `fsr4_debug` (default `0`) | With `scene_upscaler = fsr4`: `1` creates the FSR 4 context with the AMD libraries' input checks, whose findings go to the log. | Adds checks to every FSR 4 dispatch and log lines. | Caution |
 | `mv_check` | Frame interval; every that many DLSS frames copies the light target and motion images to host memory and logs how well the vectors explain the picture. | Costs a GPU-to-host copy and a comparison on the completion thread at each interval. | Caution |
 | `mv_survey` (default `0`) | `1` notes the uniform blocks of each scene draw and compares them with those of earlier frames. | Adds per-draw work and log output. | Caution |
 | `mvobj_all` (default `0`) | `1` also lists draws for object motion that read no object blocks (terrain and grass). | More draws are checked and listed, which costs time. | Caution |

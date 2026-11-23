@@ -139,6 +139,18 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
   that computes last frame's position from last frame's blocks (the game writes them into two copies that take turns;
   the uniform snapshot keeps both) and writes the difference into the motion image. `TOTK_MV_CHECK` measures the
   vectors against the picture, `TOTK_DLAA_TIMES` times the passes on the GPU. `fxaa` switches the game's own FXAA pass.
+- AMD FSR (`scene_upscaler = fsr3` or `fsr4`). The same frame, jitter and motion vectors (with the per-object pass)
+  go to AMD's FSR instead of DLSS: `vk_dlaa.c` `evaluate` calls `fsr_evaluate` where it would call NGX, and everything
+  around it is shared, including the texture bias (AMD's log2(scene / output) - 1), `fsr_sharpness` (FSR's own RCAS in
+  place of the FXAA's sharpening), the skip of the game's FXAA and of its copy of the scene onto itself, and the dynamic
+  resolution held at 100 %. The camera's planes and field of view come from the scene camera block (`vk_fg.cpp`
+  `vk_fg_camera`). FSR 3.1 (`vk_fsr3.cpp`) is compiled from the FidelityFX SDK 1.1.4 sources and runs on any GPU. FSR 4
+  (`vk_ffx.c`, Windows) is AMD's FSR SDK 2.4 signed libraries: `amd_fidelityfx_loader_vk.dll` is loaded at run time from
+  the executable's folder and finds `amd_fidelityfx_upscaler_vk.dll` next to it; only the descriptor layouts of
+  `ffx_api_min.h` are compiled in. At start the upscaler versions the libraries offer for the device are listed and the
+  newest FSR 4 is pinned; without one the scene upscaler stays off (no FSR 3 from the libraries). `vk_device.c` enables
+  `VK_KHR_cooperative_matrix` and `VK_EXT_shader_float8` with their features when FSR 4 is picked and the device has
+  them. Both hold one context per output size, made again when it changes.
 - Occlusion queries never block the CPU; a result that is not ready counts as visible.
 - ASTC textures are uploaded as they are where the device reports `textureCompressionASTC_LDR`, and decoded by a compute shader everywhere else (`vk_astc.c`, `TOTK_ASTC`). The CPU decoder (`tex_astc*.c`) is the fallback and the test oracle.
 - Draw state. A draw whose program, bound state and textures repeat reuses the previous draw's shaders and skips rebuilding its descriptor sets; descriptor sets are written through update templates (`vk_exec_draw.c`, `vk_pipeline.c`).
