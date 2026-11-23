@@ -246,6 +246,8 @@ def screenshots(exe):
     with tempfile.TemporaryDirectory() as tmp:
         game = Path(tmp)
         (game / 'totk.ini').write_text('fullscreen = 1\n')
+        for mod, part in (('Alpha', 'romfs'), ('Beta', 'exefs')):   # the Mods tab's list draws
+            (game / 'mods' / mod / part).mkdir(parents=True)
         for lang in ('en', 'ru', 'pt-BR', 'zh-Hans'):
             for tab in range(11 if WIN else 10):   # tab 10: Updates (Windows), not checked
                 shot = game / f'{lang}-{tab}.bmp'

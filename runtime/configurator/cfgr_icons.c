@@ -209,6 +209,16 @@ void icon_draw(struct nk_command_buffer *c, Icon icon, struct nk_rect r, struct 
         line(&p, 0.22f, 0.22f, 0.78f, 0.78f);
         line(&p, 0.78f, 0.22f, 0.22f, 0.78f);
         break;
+    case ICON_UP: {
+        float ch[] = {0.20f, 0.66f, 0.5f, 0.34f, 0.80f, 0.66f};
+        poly(&p, ch, 3);
+        break;
+    }
+    case ICON_DOWN: {
+        float ch[] = {0.20f, 0.34f, 0.5f, 0.66f, 0.80f, 0.34f};
+        poly(&p, ch, 3);
+        break;
+    }
     case ICON_CHECK: {
         float ck[] = {0.14f, 0.52f, 0.40f, 0.78f, 0.88f, 0.24f};
         poly(&p, ck, 3);

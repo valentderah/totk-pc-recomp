@@ -138,11 +138,44 @@ static const nk_rune *cjk_ranges(void) {
     add_text_runes(NULL, "…×—–«»·•");
     qsort(g_cjk_ranges, (size_t)g_cjk_n, sizeof *g_cjk_ranges, rune_cmp);
     free(out);
-    out = malloc(sizeof *out * (size_t)(g_cjk_n * 2 + 8));
+    out = malloc(sizeof *out * (size_t)(g_cjk_n * 2 + 12));
     int k = 0;
     out[k++] = 0x20, out[k++] = 0x24F;
+    out[k++] = 0x370, out[k++] = 0x3FF;   // the other languages' names in the language list: Greek, Cyrillic
+    out[k++] = 0x400, out[k++] = 0x52F;
     for (int i = 0; i < g_cjk_n; i++) out[k++] = g_cjk_ranges[i], out[k++] = g_cjk_ranges[i];
     out[k] = 0;
+    return out;
+}
+
+static void cjk_font_load(void) {
+    char path[CR_PATH];
+    if (!g_cjk_font && plat_font_path("zh-Hans", path, sizeof path)) {
+        uint64_t n = 0;
+        g_cjk_font = plat_file_read(path, &n);
+        g_cjk_size = (size_t)n;
+    }
+}
+
+// Outside Chinese the language list still names Chinese in its own script: those few glyphs come from the system's
+// CJK font, merged into the body font (as ui/menu.cpp fonts_up merges them into the game's menu font). Pairs of
+// [r, r], zero-terminated; empty without such a font.
+static const nk_rune *lang_name_ranges(void) {
+    static nk_rune out[2 * 32 + 1];
+    nk_rune runes[32];
+    int n = 0;
+    const char *t = ui_text_in("en", UI_MENU_LANGNAME_ZH_HANS);
+    for (int len; t && *t && n < 32; t += len) {
+        nk_rune r;
+        len = nk_utf_decode(t, &r, 4);
+        if (!len) break;
+        int dup = 0;
+        for (int i = 0; i < n; i++) dup |= runes[i] == r;
+        if (r >= 0x2E80 && !dup) runes[n++] = r;
+    }
+    qsort(runes, (size_t)n, sizeof *runes, rune_cmp);
+    for (int i = 0; i < n; i++) out[i * 2] = out[i * 2 + 1] = runes[i];
+    out[n * 2] = 0;
     return out;
 }
 
@@ -154,21 +187,22 @@ static void fonts_build(void) {
     const void *data = roboto_ttf;
     size_t size = sizeof roboto_ttf;
     const nk_rune *ranges = latin;
-    if (cjk) {   // without a system CJK font the Chinese text shows as boxes, as in the game's menu
-        char path[CR_PATH];
-        if (!g_cjk_font && plat_font_path("zh-Hans", path, sizeof path)) {
-            uint64_t n = 0;
-            g_cjk_font = plat_file_read(path, &n);
-            g_cjk_size = (size_t)n;
-        }
-        if (g_cjk_font) data = g_cjk_font, size = g_cjk_size, ranges = cjk_ranges();
-    }
+    cjk_font_load();   // without a system CJK font the Chinese text shows as boxes, as in the game's menu
+    if (cjk && g_cjk_font) data = g_cjk_font, size = g_cjk_size, ranges = cjk_ranges();
     if (g_atlas) nk_font_atlas_clear(g_atlas);
     g_atlas = nk_sdl_font_stash_begin(g_ctx);
     struct nk_font_config cfg = nk_font_config(0);
     cfg.range = ranges;
     cfg.oversample_h = 2, cfg.oversample_v = 1;
     g_body = nk_font_atlas_add_from_memory(g_atlas, (void *)data, size, roundf(S(16.5f)), &cfg);
+    const nk_rune *names = cjk || !g_cjk_font ? NULL : lang_name_ranges();
+    if (names && names[0]) {   // Nuklear merges into the atlas' first font: the body font, which the lists use
+        struct nk_font_config mc = nk_font_config(0);
+        mc.range = names;
+        mc.merge_mode = 1;
+        mc.oversample_h = 2, mc.oversample_v = 1;
+        nk_font_atlas_add_from_memory(g_atlas, g_cjk_font, g_cjk_size, roundf(S(16.5f)), &mc);
+    }
     g_small = nk_font_atlas_add_from_memory(g_atlas, (void *)data, size, roundf(S(13.5f)), &cfg);
     g_head = nk_font_atlas_add_from_memory(g_atlas, (void *)data, size, roundf(S(19)), &cfg);
     g_title = nk_font_atlas_add_from_memory(g_atlas, (void *)data, size, roundf(S(23)), &cfg);
@@ -581,6 +615,19 @@ static float combo_h(int n) {
     return (S(28) + st->window.spacing.y) * (float)n + st->window.combo_padding.y * 2 + S(8);
 }
 
+// A drop-down list of names: up to max_rows of them without a scroll bar (nk_combo clamps the list to a height of its
+// own, short of its rows by the list's padding, so even five names scrolled). Returns the picked index.
+static int combo_list(const char *const *names, int n, int cur, float w, int max_rows) {
+    if (n <= 0) return cur;
+    if (nk_combo_begin_label(g_ctx, names[cur >= 0 && cur < n ? cur : 0], nk_vec2(w, combo_h(n < max_rows ? n : max_rows)))) {
+        nk_layout_row_dynamic(g_ctx, S(28), 1);
+        for (int i = 0; i < n; i++)
+            if (nk_combo_item_label(g_ctx, names[i], NK_TEXT_LEFT)) cur = i;
+        nk_combo_end(g_ctx);
+    }
+    return cur;
+}
+
 static void folder_picked(void *userdata, const char *const *files, int filter) {
     (void)filter;
     SDL_LockMutex(g_pick_lock);
@@ -670,7 +717,7 @@ static void value_widget(int idx, const CrRow *r, struct nk_rect w, int disabled
             const char *names[MAX_ITEMS + 1];
             for (int i = 0; i < n; i++) names[i] = it[i].name;
             nk_layout_space_push(g_ctx, nk_rect(w.x, w.y, w.w, h));
-            int got = nk_combo(g_ctx, names, n, sel, (int)S(28), nk_vec2(w.w, combo_h(n < 12 ? n : 12)));
+            int got = combo_list(names, n, sel, w.w, 12);
             if (got != sel) set_value(r, it[got].value);
         }
         break;
@@ -1253,6 +1300,166 @@ static void update_poll(void) {
     }
 }
 
+// ---- Mods: the installed mods, as the game's menu lists them (ui/menu.cpp tab_mods): the subfolders of the mods
+// folder (TOTK_MODS_DIR, else mods next to the game), top first in the order of MODS_ORDER (names separated by '|',
+// unnamed ones below by name), switched off when MODS_DISABLED names them (mods.c, which the game reads at start).
+// The window writes both keys as the game's menu does (mods.c write_keys); what a mod holds and whether the port can
+// use it the game's menu tells, after the start that scans it.
+enum { MODS_MAX = 256, MOD_NAME = 256 };
+typedef struct { char name[MOD_NAME], parts[96]; } ModRow;
+static ModRow *g_mods;
+static int g_nmods;
+static Uint64 g_mods_at;   // when the folder was read; 0 reads it again
+static char g_mods_dir[CR_PATH];
+static const char *g_mods_order;   // MODS_ORDER while sorting
+
+// The position of name in the '|'-separated list, or -1 (mods.c list_pos).
+static int mod_pos(const char *list, const char *name) {
+    size_t n = strlen(name);
+    int k = 0;
+    for (const char *p = list; p && *p; k++) {
+        const char *bar = strchr(p, '|');
+        size_t len = bar ? (size_t)(bar - p) : strlen(p);
+        if (len == n && !memcmp(p, name, n)) return k;
+        p = bar ? bar + 1 : NULL;
+    }
+    return -1;
+}
+
+static int mod_by_order(const void *a, const void *b) {
+    const ModRow *x = a, *y = b;
+    int px = mod_pos(g_mods_order, x->name), py = mod_pos(g_mods_order, y->name);
+    if (px >= 0 && py >= 0) return px - py;
+    if (px >= 0 || py >= 0) return px >= 0 ? -1 : 1;
+    return strcmp(x->name, y->name);
+}
+
+static int mods_list_cb(const char *name, int kind, uint64_t size, void *ctx) {
+    (void)size, (void)ctx;
+    if (kind != PLAT_FS_DIR || g_nmods >= MODS_MAX) return g_nmods < MODS_MAX;
+    ModRow *m = &g_mods[g_nmods];
+    if (snprintf(m->name, sizeof m->name, "%s", name) >= (int)sizeof m->name) return 1;
+    // the folders that say what it holds, by the names mods.c looks for
+    static const char *const parts[] = {"romfs", "romfslite", "exefs", "cheats", "atmosphere", "contents"};
+    m->parts[0] = 0;
+    for (size_t i = 0; i < sizeof parts / sizeof *parts; i++) {
+        char p[CR_PATH + MOD_NAME + 16];
+        snprintf(p, sizeof p, "%s/%s/%s", g_mods_dir, name, parts[i]);
+        if (!plat_dir_exists(p)) continue;
+        size_t at = strlen(m->parts);
+        snprintf(m->parts + at, sizeof m->parts - at, "%s%s", at ? " · " : "", parts[i]);
+    }
+    g_nmods++;
+    return 1;
+}
+
+static void mods_read(void) {
+    if (g_mods_at && SDL_GetTicks() < g_mods_at + 2000) return;
+    g_mods_at = SDL_GetTicks();
+    const char *env = getenv("TOTK_MODS_DIR"), *own = model_own("MODS_DIR");
+    if (env && *env) snprintf(g_mods_dir, sizeof g_mods_dir, "%s", env);
+    else if (own && *own) snprintf(g_mods_dir, sizeof g_mods_dir, "%s", own);
+    else snprintf(g_mods_dir, sizeof g_mods_dir, "%s/mods", model_dir());
+    if (!g_mods) g_mods = calloc(MODS_MAX, sizeof *g_mods);
+    g_nmods = 0;
+    if (!g_mods || !plat_dir_exists(g_mods_dir)) return;
+    plat_fs_list(g_mods_dir, mods_list_cb, NULL);
+    g_mods_order = model_own("MODS_ORDER");
+    qsort(g_mods, (size_t)g_nmods, sizeof *g_mods, mod_by_order);
+    g_mods_order = NULL;
+}
+
+// MODS_ORDER as every name top first and MODS_DISABLED as the switched-off ones, with mod i switched (flip) and moved
+// by delta; names holding '|' are left out of both, as the game leaves them out.
+static void mods_write(int i, int flip, int delta) {
+    if (delta && i + delta >= 0 && i + delta < g_nmods) {
+        ModRow t = g_mods[i];
+        g_mods[i] = g_mods[i + delta], g_mods[i + delta] = t;
+    }
+    const char *was = model_own("MODS_DISABLED");
+    size_t cap = (size_t)g_nmods * (MOD_NAME + 1) + 1;
+    char *order = calloc(cap, 1), *off = calloc(cap, 1);
+    if (order && off) {
+        for (int k = 0; k < g_nmods; k++) {
+            const char *n = g_mods[k].name;
+            if (strchr(n, '|')) continue;
+            int disabled = mod_pos(was, n) >= 0;
+            if (flip && k == i) disabled = !disabled;
+            if (*order) strcat(order, "|");
+            strcat(order, n);
+            if (disabled) {
+                if (*off) strcat(off, "|");
+                strcat(off, n);
+            }
+        }
+        model_set("MODS_ORDER", order);
+        model_set("MODS_DISABLED", off);
+    }
+    free(order);
+    free(off);
+}
+
+static void draw_mods(void) {
+    mods_read();
+    heading(cr_text(UI_MENU_MODS_INSTALLED));
+    if (!g_nmods) note(cr_text(UI_MENU_MODS_NONE), C_DIM, ICON_NONE);
+    else note(cr_text(UI_CFG_MODS_NOTE), C_DIM, ICON_NONE);
+    struct nk_rect area = nk_window_get_content_region(g_ctx);
+    float pad = S(16), cw = area.w - g_ctx->style.window.scrollbar_size.x - S(10);
+    float lh = g_small->handle.height + S(4), title_h = g_body->handle.height + S(8);
+    float h = pad * 2 + title_h + lh - S(4);
+    const char *disabled = model_own("MODS_DISABLED");
+    int act = -1, flip = 0, delta = 0;
+    for (int i = 0; i < g_nmods; i++) {
+        const ModRow *m = &g_mods[i];
+        int on = mod_pos(disabled, m->name) < 0;
+        nk_layout_space_begin(g_ctx, NK_STATIC, h, 8);
+        struct nk_rect b = nk_layout_space_rect_to_screen(g_ctx, nk_rect(0, 0, cw, h));
+        struct nk_command_buffer *c = nk_window_get_canvas(g_ctx);
+        nk_fill_rect(c, b, S(10), hovering(b) ? C_CARD_HI : C_CARD);
+        if (on) nk_fill_rect(c, nk_rect(b.x, b.y + S(8), S(4), b.h - S(16)), S(2), C_GOLD);
+        // the right side: up, down, the switch with its word
+        const char *word = cr_text(on ? UI_MENU_ON : UI_MENU_OFF);
+        float ww = text_w(g_body, word, -1), sw = S(44), bw = S(34), wy = (h - S(32)) / 2;
+        float sx = b.w - pad - sw - ww - S(12), ux = sx - S(16) - bw * 2 - S(8);
+        float tw = ux - pad * 2;
+        char tb[MOD_NAME + 8], num[16];
+        snprintf(num, sizeof num, "%d", i + 1);
+        float x = b.x + pad, y = b.y + pad - S(2), nw = text_w(g_small, num, -1) + S(12);
+        draw_text(c, g_small, x, y + (g_body->handle.height - g_small->handle.height) / 2, nw, num, -1, C_DIM);
+        draw_text(c, g_body, x + nw, y, tw - nw, fit_head(g_body, m->name, tw - nw, tb, sizeof tb), -1, on ? C_TEXT : C_DIM);
+        draw_text(c, g_small, x + nw, y + title_h, tw - nw, m->parts[0] ? m->parts : "—", -1, RGB(124, 150, 132));
+        nk_layout_space_push(g_ctx, nk_rect(ux, wy, bw, S(32)));
+        struct nk_rect ub = nk_widget_bounds(g_ctx);
+        if (i == 0) nk_widget_disable_begin(g_ctx);
+        if (btn("", ICON_UP, BTN_NORMAL) && i > 0) act = i, delta = -1;
+        if (i == 0) nk_widget_disable_end(g_ctx);
+        tip(ub, cr_text(UI_CFG_MOD_UP));
+        nk_layout_space_push(g_ctx, nk_rect(ux + bw + S(8), wy, bw, S(32)));
+        struct nk_rect db = nk_widget_bounds(g_ctx);
+        if (i + 1 == g_nmods) nk_widget_disable_begin(g_ctx);
+        if (btn("", ICON_DOWN, BTN_NORMAL) && i + 1 < g_nmods) act = i, delta = 1;
+        if (i + 1 == g_nmods) nk_widget_disable_end(g_ctx);
+        tip(db, cr_text(UI_CFG_MOD_DOWN));
+        nk_layout_space_push(g_ctx, nk_rect(sx, wy, ww + S(12) + sw, S(32)));
+        struct nk_rect sb = nk_widget_bounds(g_ctx);
+        if (switch_widget(on)) act = i, flip = 1;
+        draw_text_mid(c, g_body, nk_rect(sb.x, sb.y, ww + S(4), sb.h), word, on ? C_GOLD : C_DIM);
+        nk_layout_space_end(g_ctx);
+    }
+    if (act >= 0) mods_write(act, flip, delta);
+    // the folder, made when it is missing
+    const char *open = cr_text(UI_MENU_MODS_OPEN);
+    nk_layout_row_begin(g_ctx, NK_STATIC, S(34), 1);
+    nk_layout_row_push(g_ctx, btn_w(open, ICON_FOLDER));
+    if (btn(open, ICON_FOLDER, BTN_NORMAL)) {
+        plat_file_mkdir_p(g_mods_dir);
+        if (!plat_open_folder(g_mods_dir)) status(1, "%s", g_mods_dir);
+        g_mods_at = 0;
+    }
+    nk_layout_row_end(g_ctx);
+}
+
 static void draw_rows(void) {
     if (g_tab == CR_TAB_UPDATES && !g_search[0]) {
         draw_updates();
@@ -1265,6 +1472,7 @@ static void draw_rows(void) {
         draw_other();
         return;
     }
+    if (g_tab == CR_TAB_MODS && !g_search[0]) draw_mods();
     int last_tab = -1, last_group = -2;
     const char *last_doc = NULL;
     for (int i = 0; i < cr_row_count; i++) {
@@ -1320,7 +1528,7 @@ static void header(float width) {
             if (!strcmp(it[k].value, v ? v : "")) cur = k;
         }
         nk_layout_space_push(g_ctx, nk_rect(lx, mid - S(17), lw, S(34)));
-        int pick = nk_combo(g_ctx, nm, n, cur, (int)S(28), nk_vec2(lw, combo_h(n)));
+        int pick = combo_list(nm, n, cur, lw, 16);
         if (pick != cur) model_set("MENU_LANG", it[pick].value);
     }
     // the game folder between them: icon, the path's end that fits, Change…

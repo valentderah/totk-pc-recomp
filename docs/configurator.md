@@ -28,6 +28,13 @@ in-game menu's, the icons are drawn shapes (`cfgr_icons.c`), and the window and 
   tab counts the keys `totk.ini` sets there. **Expert** lists every other key of `runtime/cfg.c` `known[]`, grouped as
   `docs/settings.md` groups them, with its description from there or from `totk.ini.example` (in English).
   **Other keys** lists the keys of the file the runtime does not know and adds new ones.
+- **Mods** starts, as the game's menu does, with the installed mods: the subfolders of the mods folder (`mods_dir`,
+  else `mods` next to the game), top first in the order of `mods_order`, each with the folders that say what it holds
+  (`romfs`, `exefs`, `cheats`, ...), up and down, and its switch; *Open mods folder* makes and opens the folder. The
+  window writes `mods_order` and `mods_disabled` as the game's menu writes them (`runtime/mods.c` `write_keys`), for the
+  next start. What the port can use of a mod, and its conflicts, the game's menu shows after a start.
+- **Languages.** The language list names each language in its own script; outside Chinese the Chinese name's glyphs
+  come from the system's CJK font, merged into the window's font, as the game's menu does.
 - **Rows.** A row is a card: the name, its marks, a line with the key, its default and, for the keys the Steam Deck
   profile changes (`cfg.c` `DECK[]`), the value there, then the description; the value's control is on the right. On
   and off are a switch, up to four choices one segmented control, longer lists a drop-down, numbers a slider with the

@@ -813,6 +813,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_CFG_UPD_READY] = "Ready: %s",
     [UI_CFG_UPD_SETUP_FAILED] = "Could not start the setup: %s",
     [UI_CFG_UPD_BANNER] = "Update %s is out",
+    [UI_CFG_MOD_UP] = "Move up",
+    [UI_CFG_MOD_DOWN] = "Move down",
+    [UI_CFG_MODS_NOTE] = "Top first: where two mods change the same file, the upper one wins. The order and the switches take effect when the game starts next.",
 };
 
 static const char *const text_ru[UI_TEXT_COUNT] = {
@@ -1591,6 +1594,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_CFG_UPD_READY] = "Готово: %s",
     [UI_CFG_UPD_SETUP_FAILED] = "Не удалось запустить установщик: %s",
     [UI_CFG_UPD_BANNER] = "Вышло обновление %s",
+    [UI_CFG_MOD_UP] = "Выше",
+    [UI_CFG_MOD_DOWN] = "Ниже",
+    [UI_CFG_MODS_NOTE] = "Сверху вниз: если два мода меняют один файл, побеждает тот, что выше. Порядок и переключатели вступят в силу при следующем запуске игры.",
 };
 
 static const char *const text_pt_br[UI_TEXT_COUNT] = {
@@ -2407,6 +2413,9 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_CFG_UPD_READY] = "Pronto: %s",
     [UI_CFG_UPD_SETUP_FAILED] = "Não foi possível iniciar o instalador: %s",
     [UI_CFG_UPD_BANNER] = "Atualização %s disponível",
+    [UI_CFG_MOD_UP] = "Subir",
+    [UI_CFG_MOD_DOWN] = "Descer",
+    [UI_CFG_MODS_NOTE] = "De cima para baixo: quando dois mods mudam o mesmo arquivo, vence o de cima. A ordem e os interruptores valem a partir do próximo início do jogo.",
 };
 
 // Simplified Chinese: this row covers the software keyboard and the whole menu, so the menu and the overlay read Chinese
@@ -3270,6 +3279,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_CFG_UPD_READY] = "已就绪：%s",
     [UI_CFG_UPD_SETUP_FAILED] = "无法启动安装程序：%s",
     [UI_CFG_UPD_BANNER] = "有新版本 %s",
+    [UI_CFG_MOD_UP] = "上移",
+    [UI_CFG_MOD_DOWN] = "下移",
+    [UI_CFG_MODS_NOTE] = "从上到下：两个模组修改同一文件时，靠上的优先。顺序和开关在下次启动游戏时生效。",
 };
 
 // German
