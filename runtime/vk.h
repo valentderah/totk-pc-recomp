@@ -66,6 +66,7 @@ typedef struct {
     int mesa;                          // a Mesa driver the game runs on: RADV, ANV or NVK
     int intel_igpu_win;                // Intel's Windows driver on an integrated GPU (UHD, Iris Xe, Core Ultra graphics)
     int demote;                        // shaderDemoteToHelperInvocation enabled: modules may use OpDemoteToHelperInvocation
+    int null_attach;                   // TOTK_NULL_ATTACH=1: empty colour slots get a dummy attachment (vk_exec.c null_attach_view)
 } VkCaps;
 extern VkCaps vk_caps;
 void vk_caps_driver(VkPhysicalDevice p);             // first, before vkCreateDevice: vk_caps.amd, amd_sc, mesa, intel_igpu_win
@@ -507,10 +508,10 @@ typedef struct {
 // into it, when the last draw into it was that copy and the swapchain is HDR10.
 void vk_hdr_present_source(const VkTexImage *win, VkImage *image, VkFormat *format);
 void vk_hdr_image_gone(VkImage image);
-// TOTK_NULL_ATTACH=1: empty colour slots of a pass get a dummy VK_EXEC_NULL_ATTACH_FMT attachment, and the pipelines name
-// that format for them with writes masked off (vk_exec.c vk_exec_null_attach, vk_pipeline.c gkey_fill).
+// vk_caps.null_attach: empty colour slots of a pass get a dummy VK_EXEC_NULL_ATTACH_FMT attachment, and the pipelines
+// name that format for them with writes masked off (vk_exec.c null_attach_view, vk_pipeline.c gkey_fill).
 #define VK_EXEC_NULL_ATTACH_FMT VK_FORMAT_R8_UNORM
-int vk_exec_null_attach(void);
+void vk_exec_null_attach_release(void);   // vk_device.c, before the device goes: frees the dummy attachments
 const VkTexImage *vk_texture_get(const tex_t *t);   // created and made current; NULL for BUFFER or unmapped formats
 const VkTexImage *vk_texture_revive(const tex_t *t, uint32_t pos);  // the entry vk_texture_get would return if it exists, made live at op pos
 // A texture slot; a slot whose texture was finalized follows the live texture at the same storage (hle_nvn.c).

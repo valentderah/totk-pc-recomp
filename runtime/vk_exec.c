@@ -674,33 +674,39 @@ static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags
 
 void vk_exec_barrier(VkExec *ex) { barrier_to(ex, NULL, NULL, 0); }
 
-// TOTK_NULL_ATTACH=1 (null_attach, default 0): colour slots of a pass that hold no target get a view of a dummy image
-// instead of VK_NULL_HANDLE. Leaving a slot's imageView null is valid Vulkan, but Intel's legacy Windows driver for
-// 6th-10th generation graphics (HD 520, UHD 620; driver 101.21xx, Vulkan 1.3.215) faulted inside vkCmdBeginRendering at
-// the game's first pass with an empty slot, the 1600x896 scene G-buffer pass with slots 2 and 4 empty (issue #1343).
-// The pipelines then name NULL_ATTACH_FMT for those slots, with their writes masked off (vk_pipeline.c gkey_fill,
-// target_wmask), so the views match the pipelines' formats. One image per pass size, layer count and sample count,
-// in GENERAL from the start (moved there in the upload batch) and kept to the end; loads and stores are DONT_CARE.
+// TOTK_NULL_ATTACH=1 (null_attach, default 0; vk_caps.null_attach): colour slots of a pass that hold no target get a
+// view of a dummy image instead of VK_NULL_HANDLE. Leaving a slot's imageView null is valid Vulkan, but Intel's legacy
+// Windows driver for 6th-10th generation graphics (HD 520, UHD 620; driver 101.21xx, Vulkan 1.3.215) faulted inside
+// vkCmdBeginRendering reading an attachment entry of the pass, at the first scene passes after the logo (issue #1343);
+// whether the empty slots are the cause is untested on that driver. The pipelines then name NULL_ATTACH_FMT for those
+// slots, with their writes masked off (vk_pipeline.c gkey_fill, target_wmask), so the views match the pipelines'
+// formats. Only slots below the last one with a target get a dummy: the pipelines' colorAttachmentCount ends there
+// (vk_pipeline.c target_count), and a pass without colour targets keeps none. All empty slots of a pass share one
+// view; an image serves every pass it covers (size, layers) with its sample count, so TotK makes one or two per scene
+// resolution. Each is moved to GENERAL in the upload batch and kept until the device goes (vk_exec_null_attach_release);
+// loads and stores are DONT_CARE, so the slots cost no bandwidth.
 #define NULL_ATTACH_MAX 24
 typedef struct { uint32_t w, h, layers, samples; VkImage img; VmaAllocation alloc; VkImageView view; } NullAttach;
 static NullAttach null_att[NULL_ATTACH_MAX];
 static int nnull_att;
 static PlatMutex null_att_lock = PLAT_MUTEX_INIT;
 
-int vk_exec_null_attach(void) {
-    static int on = -1;
-    if (on < 0) {
-        on = rt_knob("NULL_ATTACH", "0") == 1;
-        if (on) rt_log("vk_exec: empty colour slots get a dummy attachment (TOTK_NULL_ATTACH=1)");
+void vk_exec_null_attach_release(void) {
+    VkCtx *c = vk_ctx();
+    plat_mutex_lock(&null_att_lock);
+    for (int i = 0; c && i < nnull_att; i++) {
+        vkDestroyImageView(c->device, null_att[i].view, NULL);
+        vmaDestroyImage(c->vma, null_att[i].img, null_att[i].alloc);
     }
-    return on;
+    nnull_att = 0;
+    plat_mutex_unlock(&null_att_lock);
 }
 
 static VkImageView null_attach_view(uint32_t w, uint32_t h, uint32_t layers, uint32_t samples) {
     plat_mutex_lock(&null_att_lock);
-    for (int i = 0; i < nnull_att; i++) {
+    for (int i = 0; i < nnull_att; i++) {   // a view may be larger than the render area (VkRenderingInfo needs it to cover it)
         const NullAttach *a = &null_att[i];
-        if (a->w == w && a->h == h && a->layers == layers && a->samples == samples) {
+        if (a->w >= w && a->h >= h && a->layers >= layers && a->samples == samples) {
             VkImageView v = a->view;
             plat_mutex_unlock(&null_att_lock);
             return v;
@@ -719,7 +725,8 @@ static VkImageView null_attach_view(uint32_t w, uint32_t h, uint32_t layers, uin
                             .samples = (VkSampleCountFlagBits)samples, .tiling = VK_IMAGE_TILING_OPTIMAL,
                             .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    if (vmaCreateImage(c->vma, &ci, &ai, &a.img, &a.alloc, NULL) != VK_SUCCESS) {
+    VmaAllocationInfo info = {0};
+    if (vmaCreateImage(c->vma, &ci, &ai, &a.img, &a.alloc, &info) != VK_SUCCESS) {
         if (!warned++) rt_log("vk_exec: a %ux%u x %u dummy attachment could not be created: the slot stays empty", w, h, layers);
         plat_mutex_unlock(&null_att_lock);
         return VK_NULL_HANDLE;
@@ -739,8 +746,10 @@ static VkImageView null_attach_view(uint32_t w, uint32_t h, uint32_t layers, uin
     image_barrier(cb, a.img, VK_IMAGE_LAYOUT_UNDEFINED, layers);
     vk_upload_end();
     null_att[nnull_att++] = a;
+    int n = nnull_att;
     plat_mutex_unlock(&null_att_lock);
-    rt_log("vk_exec: dummy attachment %ux%u x %u, %u samples, for empty colour slots", w, h, layers, samples);
+    rt_log("vk_exec: dummy attachment %ux%u x %u, %u samples, for empty colour slots: %.2f MiB (%d of %d)", w, h, layers,
+           samples, info.size / 1048576.0, n, NULL_ATTACH_MAX);
     return a.view;
 }
 
@@ -766,12 +775,18 @@ void vk_exec_pass_begin(VkExec *ex) {
     ex->fb_dirty = 0;
     ex->pass_serial++;
     VkRenderingAttachmentInfo ca[8], da = {0}, sa = {0};
+    uint32_t dummies = 0;   // null_attach: empty slots below this get a dummy (the pipelines' colorAttachmentCount)
+    VkImageView dummy = VK_NULL_HANDLE;
+    if (vk_caps.null_attach)
+        for (uint32_t i = 0; i < ex->pass_ncolor; i++)
+            if (ex->color[i].image) dummies = i + 1;
     for (uint32_t i = 0; i < ex->pass_ncolor; i++) {
         const VkExecTarget *t = &ex->color[i];
         ca[i] = (VkRenderingAttachmentInfo){.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         if (!t->image) {
-            if (vk_exec_null_attach()) {   // a dummy for the empty slot, which the pipelines name too (see above)
-                ca[i].imageView = null_attach_view(ex->pass_w, ex->pass_h, ex->pass_layers, ex->pass_samples);
+            if (i < dummies) {   // a dummy for the empty slot, which the pipelines name too (null_attach_view)
+                if (!dummy) dummy = null_attach_view(ex->pass_w, ex->pass_h, ex->pass_layers, ex->pass_samples);
+                ca[i].imageView = dummy;
                 ca[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
                 ca[i].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
                 ca[i].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
