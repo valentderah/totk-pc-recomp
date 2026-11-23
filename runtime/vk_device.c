@@ -289,6 +289,7 @@ typedef struct {
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr;
     VkPhysicalDeviceAddressBindingReportFeaturesEXT abr;
     VkPhysicalDevicePresentIdFeaturesKHR pid;
+    VkPhysicalDeviceAntiLagFeaturesAMD al;
 } FeatureChain;
 
 static int create_device(void) {
@@ -357,16 +358,21 @@ static int create_device(void) {
         g_vk.has_nv_checkpoints = 1;
         ext[n_ext++] = VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME;
     }
-    // NVIDIA Reflex Low Latency (VK_NV_low_latency2 requires VK_KHR_present_id)
+    // Low latency (the reflex setting): auto, on and boost use what the GPU has, NVIDIA Reflex (VK_NV_low_latency2,
+    // which requires VK_KHR_present_id) or AMD Anti-Lag 2 (VK_AMD_anti_lag: RADV and AMD's Windows driver).
     const char *rv = cfg_value("TOTK_REFLEX");
-    if (rv && strcmp(rv, "off") != 0 && strcmp(rv, "0") != 0) {
+    if (strcmp(rv, "off") != 0 && strcmp(rv, "0") != 0) {
         if (has_ext(ep, ne, VK_KHR_PRESENT_ID_EXTENSION_NAME) && has_ext(ep, ne, "VK_NV_low_latency2")) {
             g_vk.has_nv_reflex = 1;
             ext[n_ext++] = VK_KHR_PRESENT_ID_EXTENSION_NAME;
             ext[n_ext++] = "VK_NV_low_latency2";
             CHAIN(pid, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR);
+        } else if (has_ext(ep, ne, VK_AMD_ANTI_LAG_EXTENSION_NAME)) {
+            g_vk.has_amd_antilag = 1;
+            ext[n_ext++] = VK_AMD_ANTI_LAG_EXTENSION_NAME;
+            CHAIN(al, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ANTI_LAG_FEATURES_AMD);
         } else {
-            rt_log("Reflex: VK_NV_low_latency2 not available");
+            rt_log("Low latency: neither VK_NV_low_latency2 nor VK_AMD_anti_lag is available");
         }
     }
     // Graphics pipeline library: chained last so it can be dropped again when vk_caps_gpl declines it.
@@ -418,6 +424,11 @@ static int create_device(void) {
         g_vk.has_nv_reflex = 0;
         rt_log("Reflex: VK_NV_low_latency2 not available (no presentId feature)");
     }
+    if (g_vk.has_amd_antilag && !c->al.antiLag) {
+        g_vk.has_amd_antilag = 0;
+        rt_log("Anti-Lag: VK_AMD_anti_lag not available (no antiLag feature)");
+    }
+    if (g_vk.has_amd_antilag) rt_log("Anti-Lag: AMD Anti-Lag 2 on (VK_AMD_anti_lag)");
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
     {
         const char *e = cfg_get("TOTK_FEEDBACK");
