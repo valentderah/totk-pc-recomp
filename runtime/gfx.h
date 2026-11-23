@@ -33,6 +33,10 @@ void vk_reflex_marker(int marker, uint64_t present_id);   // present_id: the fra
 uint64_t vk_reflex_frame_begin(void);   // SIMULATION_START: the new frame's present ID
 uint64_t vk_reflex_frame(void);         // the ID of the frame the game simulates now
 void vk_reflex_sleep(void);             // before SIMULATION_START: the driver's latency sleep
+// AMD Anti-Lag 2 (gfx_present.c, VK_AMD_anti_lag): the driver paces the CPU from the INPUT call to the PRESENT call of a
+// frame. Both return at once with low latency off or the GPU lacking the extension.
+void vk_antilag_input(uint64_t frame);     // before the frame's input and simulation; may sleep
+void vk_antilag_present(uint64_t frame);   // right before the frame's vkQueuePresentKHR
 
 // ---- shader service client (gfx_shader.c)
 enum { GFX_STAGE_VS, GFX_STAGE_TCS, GFX_STAGE_TES, GFX_STAGE_GS, GFX_STAGE_FS, GFX_STAGE_CS };
