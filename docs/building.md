@@ -78,6 +78,9 @@ of them.
    .venv-py314\Scripts\python tools\extract.py
    ```
 
+   `--skip-base-romfs` leaves out the base game's 17 GB RomFS image (`extracted0omfs`): no build step reads it, and
+   the update merge verifies what it takes from the base game file. Only a build of 1.0.0 itself needs it.
+
 4. Shader translator (no game files; again after a change to its sources, and `tools\make_release.py` stops on an older
    one). This publishes `build\xlate\totk_xlate.exe`:
 
