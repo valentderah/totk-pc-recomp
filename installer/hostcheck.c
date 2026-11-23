@@ -100,8 +100,10 @@ int main(void) {
         json_string(p.deviceName);
         printf(", \"api\": [%u, %u, %u], \"type\": %d, \"missing_extensions\": [", VK_API_VERSION_MAJOR(p.apiVersion),
                VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion), (int)p.deviceType);
+        // runtime/vk_device.c k_required_ext (tests/installer_host_test.py compares the two lists).
+        // VK_EXT_external_memory_host is optional there: without it the game runs on shadow storage.
         const char *required[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
-                                 VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
+                                 VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME};
         uint32_t count = 0;
         VkResult er = extensions ? extensions(devs[i], NULL, &count, NULL) : VK_ERROR_INITIALIZATION_FAILED;
         VkExtensionProperties *ep = NULL;

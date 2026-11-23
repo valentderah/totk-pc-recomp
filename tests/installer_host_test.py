@@ -1,6 +1,7 @@
 """Reject unmet runtime GPU requirements before extraction or compilation; no game inputs needed."""
 import copy
 import json
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -50,8 +51,7 @@ class HostTest(unittest.TestCase):
                 self.assertIn('fixture GPU', caught.exception.params['devices'])
 
     def test_each_missing_runtime_extension_is_rejected(self):
-        for name in ('VK_KHR_swapchain', 'VK_KHR_push_descriptor', 'VK_EXT_depth_clip_control',
-                     'VK_EXT_external_memory_host'):
+        for name in ('VK_KHR_swapchain', 'VK_KHR_push_descriptor', 'VK_EXT_depth_clip_control'):
             with self.subTest(extension=name):
                 with self.assertRaises(steps.InstallError) as caught:
                     self.check([dict(self.gpu, missing_extensions=[name])])
@@ -84,6 +84,23 @@ class HostTest(unittest.TestCase):
             with self.subTest(message=message):
                 with self.assertRaisesRegex(steps.InstallError, message):
                     self.check(devices, **changes)
+
+
+class RequiredExtensionsTest(unittest.TestCase):
+    """installer/hostcheck.c asks for the extensions runtime/vk_device.c requires, no more and no fewer."""
+    ROOT = Path(__file__).resolve().parents[1]
+
+    @staticmethod
+    def names(text, start):
+        block = text[text.index(start):]
+        block = block[:block.index('}')]
+        return sorted(re.findall(r'VK_[A-Z0-9_]+_EXTENSION_NAME', block))
+
+    def test_setup_and_runtime_require_the_same_extensions(self):
+        setup = self.names((self.ROOT / 'installer' / 'hostcheck.c').read_text(encoding='utf-8'), 'const char *required[]')
+        runtime = self.names((self.ROOT / 'runtime' / 'vk_device.c').read_text(encoding='utf-8'), 'k_required_ext[]')
+        self.assertTrue(runtime)
+        self.assertEqual(setup, runtime)
 
 
 if __name__ == '__main__':
