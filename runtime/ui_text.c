@@ -2954,9 +2954,9 @@ static const char *const text_de[UI_TEXT_COUNT] = {
     [UI_MENU_FXAA] = "Kantenglättung des Spiels (FXAA)",
     [UI_MENU_FXAA_DESC] = "Die FXAA-Kantenglättung des Spiels. Sie verwischt feine Details etwas; mit DLAA wird sie "
                           "nicht gebraucht.",
-    [UI_MENU_REFLEX] = "NVIDIA Reflex Low Latency",
-    [UI_MENU_REFLEX_DESC] = "Senkt die Systemlatenz auf NVIDIA-GPUs über VK_NV_low_latency2. Ein + Boost hält die "
-                            "GPU-Takte in CPU-begrenzten Szenen hoch.",
+    [UI_MENU_REFLEX] = "Niedrige Latenz",
+    [UI_MENU_REFLEX_DESC] = "Senkt die Systemlatenz. Ein nutzt NVIDIA Reflex (VK_NV_low_latency2); Ein + Boost hält zusätzlich die NVIDIA-GPU-Takte in CPU-begrenzten Szenen hoch. Automatisch nutzt Reflex auf NVIDIA und AMD Anti-Lag 2 (VK_AMD_anti_lag) auf AMD. Gilt nach einem Neustart.",
+    [UI_MENU_REFLEX_AUTO] = "Automatisch",
     [UI_MENU_REFLEX_OFF] = "Aus",
     [UI_MENU_REFLEX_ON] = "Ein",
     [UI_MENU_REFLEX_BOOST] = "Ein + Boost",
@@ -3861,9 +3861,9 @@ static const char *const text_fr[UI_TEXT_COUNT] = {
     [UI_MENU_FXAA] = "Anticrénelage du jeu (FXAA)",
     [UI_MENU_FXAA_DESC] = "Le lissage des bords FXAA du jeu. Il floute un peu les détails fins ; avec DLAA, il n'est "
                           "pas nécessaire.",
-    [UI_MENU_REFLEX] = "NVIDIA Reflex Faible latence",
-    [UI_MENU_REFLEX_DESC] = "Réduit la latence du système sur les GPU NVIDIA avec VK_NV_low_latency2. Activé + Boost "
-                            "garde les fréquences du GPU élevées dans les scènes limitées par le CPU.",
+    [UI_MENU_REFLEX] = "Faible latence",
+    [UI_MENU_REFLEX_DESC] = "Réduit la latence du système. Activé utilise NVIDIA Reflex (VK_NV_low_latency2) ; Activé + Boost maintient aussi les fréquences du GPU NVIDIA élevées dans les scènes limitées par le CPU. Automatique utilise Reflex sur NVIDIA et AMD Anti-Lag 2 (VK_AMD_anti_lag) sur AMD. S'applique après un redémarrage.",
+    [UI_MENU_REFLEX_AUTO] = "Automatique",
     [UI_MENU_REFLEX_OFF] = "Désactivé",
     [UI_MENU_REFLEX_ON] = "Activé",
     [UI_MENU_REFLEX_BOOST] = "Activé + Boost",
@@ -4782,9 +4782,9 @@ static const char *const text_es[UI_TEXT_COUNT] = {
     [UI_MENU_FXAA] = "Antialiasing del juego (FXAA)",
     [UI_MENU_FXAA_DESC] = "El suavizado de bordes FXAA del propio juego. Difumina un poco los detalles finos; con "
                           "DLAA no hace falta.",
-    [UI_MENU_REFLEX] = "NVIDIA Reflex Low Latency",
-    [UI_MENU_REFLEX_DESC] = "Reduce la latencia del sistema en GPU NVIDIA mediante VK_NV_low_latency2. Sí + Boost "
-                            "mantiene altas las frecuencias de la GPU en escenas limitadas por la CPU.",
+    [UI_MENU_REFLEX] = "Baja latencia",
+    [UI_MENU_REFLEX_DESC] = "Reduce la latencia del sistema. Sí usa NVIDIA Reflex (VK_NV_low_latency2); Sí + Boost mantiene además altas las frecuencias de la GPU NVIDIA en escenas limitadas por la CPU. Automático usa Reflex en NVIDIA y AMD Anti-Lag 2 (VK_AMD_anti_lag) en AMD. Se aplica tras reiniciar.",
+    [UI_MENU_REFLEX_AUTO] = "Automático",
     [UI_MENU_REFLEX_OFF] = "No",
     [UI_MENU_REFLEX_ON] = "Sí",
     [UI_MENU_REFLEX_BOOST] = "Sí + Boost",
@@ -5688,9 +5688,9 @@ static const char *const text_it[UI_TEXT_COUNT] = {
     [UI_MENU_FXAA] = "Antialiasing del gioco (FXAA)",
     [UI_MENU_FXAA_DESC] = "Lo smussamento dei bordi FXAA del gioco. Sfoca un po' i dettagli fini; con DLAA attivo non "
                           "serve.",
-    [UI_MENU_REFLEX] = "NVIDIA Reflex Low Latency",
-    [UI_MENU_REFLEX_DESC] = "Riduce la latenza di sistema sulle GPU NVIDIA tramite VK_NV_low_latency2. Sì + Boost "
-                            "mantiene alte le frequenze della GPU nelle scene limitate dalla CPU.",
+    [UI_MENU_REFLEX] = "Bassa latenza",
+    [UI_MENU_REFLEX_DESC] = "Riduce la latenza del sistema. Sì usa NVIDIA Reflex (VK_NV_low_latency2); Sì + Boost mantiene inoltre alte le frequenze della GPU NVIDIA nelle scene limitate dalla CPU. Automatico usa Reflex su NVIDIA e AMD Anti-Lag 2 (VK_AMD_anti_lag) su AMD. Si applica dopo un riavvio.",
+    [UI_MENU_REFLEX_AUTO] = "Automatico",
     [UI_MENU_REFLEX_OFF] = "No",
     [UI_MENU_REFLEX_ON] = "Sì",
     [UI_MENU_REFLEX_BOOST] = "Sì + Boost",
@@ -6601,9 +6601,9 @@ static const char *const text_nl[UI_TEXT_COUNT] = {
     [UI_MENU_FXAA] = "Anti-aliasing van het spel (FXAA)",
     [UI_MENU_FXAA_DESC] = "De eigen FXAA-randverzachting van het spel. Ze maakt fijne details iets vager; met DLAA is "
                           "ze niet nodig.",
-    [UI_MENU_REFLEX] = "NVIDIA Reflex Low Latency",
-    [UI_MENU_REFLEX_DESC] = "Vermindert de systeemlatentie op NVIDIA-GPU's met VK_NV_low_latency2. Aan + Boost houdt "
-                            "de GPU-kloksnelheden hoog in scènes die door de CPU worden beperkt.",
+    [UI_MENU_REFLEX] = "Lage latentie",
+    [UI_MENU_REFLEX_DESC] = "Verlaagt de systeemlatentie. Aan gebruikt NVIDIA Reflex (VK_NV_low_latency2); Aan + Boost houdt bovendien de klokfrequenties van de NVIDIA-GPU hoog in scènes die door de CPU beperkt zijn. Automatisch gebruikt Reflex op NVIDIA en AMD Anti-Lag 2 (VK_AMD_anti_lag) op AMD. Geldt na een herstart.",
+    [UI_MENU_REFLEX_AUTO] = "Automatisch",
     [UI_MENU_REFLEX_OFF] = "Uit",
     [UI_MENU_REFLEX_ON] = "Aan",
     [UI_MENU_REFLEX_BOOST] = "Aan + Boost",
@@ -7457,9 +7457,9 @@ static const char *const text_ja[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_ULTRA] = "ウルトラパフォーマンス",
     [UI_MENU_FXAA] = "ゲームのアンチエイリアス (FXAA)",
     [UI_MENU_FXAA_DESC] = "ゲーム標準の FXAA による輪郭の平滑化です。細部が少しぼやけます。DLAA がオンなら不要です。",
-    [UI_MENU_REFLEX] = "NVIDIA Reflex 低遅延モード",
-    [UI_MENU_REFLEX_DESC] = "VK_NV_low_latency2 を使って、NVIDIA GPU のシステム遅延を減らします。「オン + ブースト」は、CPU がボトルネックの場面でも GPU "
-                            "のクロックを高く保ちます。",
+    [UI_MENU_REFLEX] = "低遅延",
+    [UI_MENU_REFLEX_DESC] = "システムの遅延を減らします。オンは NVIDIA Reflex (VK_NV_low_latency2) を使い、オン + ブースト は CPU がボトルネックの場面で NVIDIA GPU のクロックも高く保ちます。自動は NVIDIA では Reflex、AMD では AMD Anti-Lag 2 (VK_AMD_anti_lag) を使います。再起動後に反映されます。",
+    [UI_MENU_REFLEX_AUTO] = "自動",
     [UI_MENU_REFLEX_OFF] = "オフ",
     [UI_MENU_REFLEX_ON] = "オン",
     [UI_MENU_REFLEX_BOOST] = "オン + ブースト",
@@ -8208,9 +8208,9 @@ static const char *const text_ko[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_ULTRA] = "울트라 성능",
     [UI_MENU_FXAA] = "게임 안티에일리어싱 (FXAA)",
     [UI_MENU_FXAA_DESC] = "게임 기본 FXAA 윤곽 부드럽게 하기입니다. 세부가 약간 흐려집니다. DLAA가 켜져 있으면 필요 없습니다.",
-    [UI_MENU_REFLEX] = "NVIDIA Reflex Low Latency",
-    [UI_MENU_REFLEX_DESC] = "VK_NV_low_latency2를 사용해 NVIDIA GPU에서 시스템 지연 시간을 줄입니다. '켜기 + 부스트'는 CPU 병목 장면에서 GPU 클럭을 높게 "
-                            "유지합니다.",
+    [UI_MENU_REFLEX] = "낮은 지연",
+    [UI_MENU_REFLEX_DESC] = "시스템 지연을 줄입니다. 켜기는 NVIDIA Reflex(VK_NV_low_latency2)를 사용하고, 켜기 + 부스트는 CPU 병목 장면에서 NVIDIA GPU 클럭도 높게 유지합니다. 자동은 NVIDIA에서는 Reflex, AMD에서는 AMD Anti-Lag 2(VK_AMD_anti_lag)를 사용합니다. 다시 시작한 뒤 적용됩니다.",
+    [UI_MENU_REFLEX_AUTO] = "자동",
     [UI_MENU_REFLEX_OFF] = "끄기",
     [UI_MENU_REFLEX_ON] = "켜기",
     [UI_MENU_REFLEX_BOOST] = "켜기 + 부스트",
@@ -8944,8 +8944,9 @@ static const char *const text_vi[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_PERFORMANCE] = "Hiệu năng", [UI_MENU_DLSS_ULTRA] = "Siêu hiệu năng",
     [UI_MENU_FXAA] = "Khử răng cưa của game (FXAA)",
     [UI_MENU_FXAA_DESC] = "FXAA làm mịn cạnh của chính game. Nó làm nhòe chi tiết nhỏ một chút; khi bật DLAA thì không cần.",
-    [UI_MENU_REFLEX] = "NVIDIA Reflex Low Latency",
-    [UI_MENU_REFLEX_DESC] = "Giảm độ trễ hệ thống trên GPU NVIDIA bằng VK_NV_low_latency2. Bật + Boost giữ xung GPU cao trong các cảnh bị CPU giới hạn.",
+    [UI_MENU_REFLEX] = "Độ trễ thấp",
+    [UI_MENU_REFLEX_DESC] = "Giảm độ trễ hệ thống. Bật dùng NVIDIA Reflex (VK_NV_low_latency2); Bật + Boost còn giữ xung nhịp GPU NVIDIA ở mức cao trong các cảnh bị giới hạn bởi CPU. Tự động dùng Reflex trên NVIDIA và AMD Anti-Lag 2 (VK_AMD_anti_lag) trên AMD. Áp dụng sau khi khởi động lại.",
+    [UI_MENU_REFLEX_AUTO] = "Tự động",
     [UI_MENU_REFLEX_OFF] = "Tắt",
     [UI_MENU_REFLEX_ON] = "Bật",
     [UI_MENU_REFLEX_BOOST] = "Bật + Boost",
