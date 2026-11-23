@@ -123,13 +123,21 @@ The Mods tab order decides between a plugin and another mod's patch on the same 
 plugin site over one of the port's own patches turns that built-in patch off while the mod is on.
 
 The rebuild refuses a plugin when its start-up or the code its redirects reach needs what the port does not give it:
-system calls other than the few its start-up needs (memory queries and maps, the clock, debug output), library calls
-outside a reviewed list (memory and string functions, the heap, text formatting), threads, services or input; a
-redirect that is not one of exlaunch's hook shapes (inline hook, replace hook, call-site rewrite); or two runs of its
-start-up that differ in code; or a start-up that crashes the service run or does not return within two minutes. The
-row then says **Its plugin ... cannot run in the port** with the reason, and the mod stays off; **Use <mod> without its
-code** uses the rest of it, including its other plugins that were built in. UltraCam stays refused: it hooks the graphics API,
+system calls other than the few its start-up needs (memory queries and maps, the heap size, the clock, debug output),
+or a library call the game itself never makes and a reviewed list does not hold (memory and string functions, the heap,
+text formatting, mutexes, the clock, the system language, the SD card's files), such as network sockets or the module
+loader. A library call the game makes (threads, input, time, its files) runs on the path the game runs on. A start-up
+still gets only the system calls above, so it cannot start a thread or open a service; a redirect that is not one of exlaunch's hook shapes
+(inline hook, replace hook, call-site rewrite, a branch into its code from inside a game function, a pointer in the
+game's data swapped for one into its code); a write into the game's read-only data or into another module; two runs of
+its start-up that differ in code; or a start-up that crashes the service run or does not return within two minutes.
+The row then says **Its plugin ... cannot run in the port** with the reason, and the mod stays off; **Use <mod> without
+its code** uses the rest of it, including its other plugins that were built in. UltraCam stays refused: it hooks the graphics API,
 reads input and opens sockets.
+
+When a start-up calls into the middle of a game function, the rebuild lifts the game again with that address as a
+function start and reruns the start-up, up to four times. A plugin that reads or writes files on the SD card gets
+the folder `sdcard` in the game's profile folder in its place.
 
 `plugin_trace = 1` in `totk.ini` logs the first call into each of a plugin's hooks (`plugins: hook entry ... reached`).
 
