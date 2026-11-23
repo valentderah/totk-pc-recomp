@@ -184,6 +184,10 @@
 # vk_dyn_a2c = 1
 # Pin the shader subgroup size to 32 when the GPU allows it.
 # vk_subgroup_pin = 1
+# 1 gives empty colour slots of a render pass a dummy image instead of none. Default: 0. A workaround to try if the
+# game crashes right after the Nintendo logo on an Intel HD or UHD graphics chip (6th to 10th generation, such as
+# HD 520 or UHD 620) with Intel's older driver (101.21xx); it costs a few MB of video memory.
+# null_attach = 0
 
 [display]
 # Device profile: auto (the Steam Deck when this is one), desktop or deck. On a Steam Deck the keys this file does not
