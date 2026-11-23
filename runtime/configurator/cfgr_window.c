@@ -63,6 +63,7 @@ static char g_status[512];
 static Uint64 g_status_until;
 static int g_status_bad;
 static int g_scroll_reset = 1;
+static float g_sel_y, g_sel_h;   // the selected tab's line in the left panel, this frame (screen y; 0 high: none)
 static Uint64 g_next_file_check;
 static int g_file_changed;
 
@@ -1435,12 +1436,17 @@ static void sidebar(void) {
     nk_layout_row_end(g_ctx);
     separator(S(8));
     nk_layout_row_dynamic(g_ctx, S(34), 1);
+    g_sel_h = 0;
     for (int t = 0; t < CR_TAB_COUNT; t++) {
         if (t == CR_TAB_EXPERT) {
             separator(S(6));
             nk_layout_row_dynamic(g_ctx, S(34), 1);
         }
         int on = t == g_tab && !g_search[0];
+        if (on) {
+            struct nk_rect b = nk_widget_bounds(g_ctx);
+            g_sel_y = b.y, g_sel_h = b.h;
+        }
         if (nav_item(tab_icon(t), C_DIM, tab_name(t), tab_set_count(t), on)) {
             if (t != g_tab || g_search[0]) g_scroll_reset = 1;
             g_tab = t, g_search[0] = 0;
@@ -1448,6 +1454,10 @@ static void sidebar(void) {
     }
 #ifdef _WIN32   // the releases' setups are Windows programs (cfgr_update.c)
     int on = g_tab == CR_TAB_UPDATES && !g_search[0];
+    if (on) {
+        struct nk_rect b = nk_widget_bounds(g_ctx);
+        g_sel_y = b.y, g_sel_h = b.h;
+    }
     if (nav_item_badge(ICON_UPDATES, C_DIM, cr_text(UI_CFG_TAB_UPDATES), 0,
                        update_available() ? cr_text(UI_CFG_UPD_NEW) : NULL, on)) {
         if (!on) g_scroll_reset = 1, g_inst_at = 0;
@@ -1857,6 +1867,17 @@ static void frame(void) {
             side_need = nk_widget_bounds(g_ctx).y - top;
             blank();
             nk_style_pop_vec2(g_ctx);
+            // a tab chosen from elsewhere (the footer's update button, a search cleared) scrolls into view
+            static int side_tab = -1;
+            if (g_sel_h > 0 && g_tab != side_tab) {
+                side_tab = g_tab;
+                nk_uint sx, sy;
+                nk_group_get_scroll(g_ctx, "side", &sx, &sy);
+                float off = g_sel_y - top, view = body_h - S(16), y = (float)sy;
+                if (off < y) y = off - S(8);
+                else if (off + g_sel_h > y + view) y = off + g_sel_h - view + S(8);
+                if (y != (float)sy) nk_group_set_scroll(g_ctx, "side", sx, (nk_uint)fmaxf(0, y));
+            }
             nk_group_end(g_ctx);
         }
         if (group_begin("page", NK_WINDOW_NO_SCROLLBAR, nk_vec2(S(14), S(10)))) {
