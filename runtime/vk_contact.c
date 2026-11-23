@@ -226,7 +226,10 @@ job:
 }
 
 void vk_contact_exec(VkExec *ex, const VkExecJob *j) {
-    if (C.rt) { vk_rt_exec(ex, j); return; }
+    if (C.rt) {
+        vk_rt_exec(ex, j);
+        if (!C.strength) return;
+    }
     if (!C.tried) init(vk_ctx());
     if (!C.ok) return;
     VkImageView in = vk_exec_target_view(j->depth.img, VK_FORMAT_R32_SFLOAT, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT,

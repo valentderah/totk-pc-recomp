@@ -802,9 +802,9 @@ static int init(VkCtx *c) {
     VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1};
     VkDescriptorPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1,
                                       .pPoolSizes = &ps};
-    VkDescriptorSetLayout sets[3];
+    VkDescriptorSetLayout sets[2];
     VkPushConstantRange pr = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 112};
-    VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 3,
+    VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 2,
                                      .pSetLayouts = sets, .pushConstantRangeCount = 1, .pPushConstantRanges = &pr};
     VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST,
                               .minFilter = VK_FILTER_NEAREST, .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
@@ -1722,7 +1722,7 @@ static void cache_skip(void) {
 // The late draws a second shadow pass drops (TOTK_RT_SHADOW_EARLY): their captures' clip vertices are written over
 // next frame, so the meshes they queued for the cache (pend) or for a compare with their copy (vfyl) go back to
 // waiting, as at a skipped pass; else cache_copy copied next frame's triangles at their clip offsets into the cache
-// under their identity (found by Gemini 4 Neon reviewing the sun-loss bug). The frame does not end here.
+// under their identity. The frame does not end here.
 static void cache_drop_late(void) {
     if (!R.cache) return;
     plat_mutex_lock(&mesh_lock);
@@ -2020,9 +2020,6 @@ void vk_rt_exec(VkExec *ex, const VkExecJob *j) {
                                           VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1, 0);
     if (!in || !out) { cache_skip(); return; }
     vk_exec_barrier(ex);   // as vk_contact_exec: a full barrier that also takes feedback-layout images to GENERAL
-    // the passes below may write the scene colour (the GI, the test view): a fence write-back snapshot made before is
-    // stale, as for the contact shadows (vk_contact_exec)
-    vk_texture_storage_written(j->scene.img);
     VkCommandBuffer cb = ex->cb;
     if (R.wattr_clear && R.wattr.buf) {   // materials just switched on (mat_switch)
         vkCmdFillBuffer(cb, R.wattr.buf, 0, VK_WHOLE_SIZE, 0);
@@ -2378,6 +2375,7 @@ void vk_rt_release(void) {
     if (R.scene2) R.destroy_as(c->device, R.scene2, NULL);
     if (R.up_pipe) vkDestroyPipeline(c->device, R.up_pipe, NULL);
     if (R.qp) vkDestroyQueryPool(c->device, R.qp, NULL);
+    if (prof_qp) vkDestroyQueryPool(c->device, prof_qp, NULL), prof_qp = VK_NULL_HANDLE;
     if (R.ao_pipe) vkDestroyPipeline(c->device, R.ao_pipe, NULL);
     if (R.inj_pipe) vkDestroyPipeline(c->device, R.inj_pipe, NULL);
     if (R.sh_pipe) vkDestroyPipeline(c->device, R.sh_pipe, NULL);
@@ -2416,7 +2414,7 @@ void vk_rt_release(void) {
     if (R.dsl) vkDestroyDescriptorSetLayout(c->device, R.dsl, NULL);
     if (R.as_dsl) vkDestroyDescriptorSetLayout(c->device, R.as_dsl, NULL);
     if (R.pool) vkDestroyDescriptorPool(c->device, R.pool, NULL);
-    int rq = R.rq, pf = R.pf;   // the device's; the settings are read again (read_settings)
+    int rq = R.rq, pf = R.pf, nd = R.null_desc;   // the device's; the settings are read again (read_settings)
     memset(&R, 0, sizeof R);
-    R.rq = rq, R.pf = pf;
+    R.rq = rq, R.pf = pf, R.null_desc = nd;
 }
