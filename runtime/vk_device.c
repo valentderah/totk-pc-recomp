@@ -13,6 +13,7 @@
 #include "platform/platform.h"
 #include "vk_dlaa.h"
 #include "vk_fg.h"
+#include "vk_ffx.h"
 #include "vk_fsr3.h"
 
 static VkCtx g_vk;
@@ -289,6 +290,10 @@ typedef struct {
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr;
     VkPhysicalDeviceAddressBindingReportFeaturesEXT abr;
     VkPhysicalDevicePresentIdFeaturesKHR pid;
+    VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop;   // FSR 4 (vk_ffx.c)
+#ifdef VK_EXT_SHADER_FLOAT8_EXTENSION_NAME
+    VkPhysicalDeviceShaderFloat8FeaturesEXT f8;          // FSR 4 (vk_ffx.c)
+#endif
 } FeatureChain;
 
 static int create_device(void) {
@@ -340,7 +345,16 @@ static int create_device(void) {
         CHAIN(fbl, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT);
         CHAIN(lr, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR);
     }
-    vk_dlaa_device_exts(ep, ne, ext, &n_ext, 40);   // NGX's; the twelve slots after it stay for the nine below
+    vk_dlaa_device_exts(ep, ne, ext, &n_ext, 40);   // NGX's or FSR 4's; the twelve slots after it stay for the nine below
+    // FSR 4's shader extensions (vk_ffx_device_exts) are enabled with their features, as far as the driver reports them
+    for (uint32_t i = 0; i < n_ext; i++) {
+        if (!strcmp(ext[i], VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME))
+            CHAIN(coop, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR);
+#ifdef VK_EXT_SHADER_FLOAT8_EXTENSION_NAME
+        else if (!strcmp(ext[i], VK_EXT_SHADER_FLOAT8_EXTENSION_NAME))
+            CHAIN(f8, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT);
+#endif
+    }
     if (has_ext(ep, ne, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) { g_vk.has_memory_budget = 1; ext[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME; }
     // GPU timestamps on the CPU clock (vk_sync.c): the perf line splits GPU idle time into waiting for a submission or not.
     if (has_ext(ep, ne, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)) { g_vk.has_calibrated = 2; ext[n_ext++] = VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME; }
@@ -486,6 +500,7 @@ static void destroy_all(void) {
     if (g_vk.device) vkDeviceWaitIdle(g_vk.device);
     if (g_vk.device) vk_fg_release();
     if (g_vk.device) fsr3_release();
+    if (g_vk.device) vk_ffx_release();
     if (g_vk.device) vk_astc_release();
     if (g_vk.device) vk_deswz_release();
     if (g_vk.device) vk_crumbs_release();

@@ -38,8 +38,10 @@ except ImportError:
 from . import ini
 from . import layout as layouts
 from . import recent
+from . import screens
 from .guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGE_LABELS, UI_LANGUAGES, Catalog, Form, Model,
-                       Process, amount, default_game_language, describe_event, parse_line, windows_ui_language)
+                       Process, amount, default_game_language, describe_event, fsr_default, parse_line,
+                       windows_ui_language)
 
 POLL_MS = 100
 GLYPH = {PENDING: '\u25cb', RUNNING: '\u25b6', DONE: '\u2714', SKIPPED: '\u2013', FAILED: '\u2716'}
@@ -437,6 +439,12 @@ class App:
         dlss = ttk.Checkbutton(content, variable=self.dlss_var)
         self.bind_text(dlss, 'text', 'ui.dlss')
         dlss.pack(anchor='w', pady=(dpi.px(12), 0))
+        # Ticked by default with an AMD display adapter only (guilogic.fsr_default); the player can tick it on any GPU.
+        # Its source and licence line follows DLSS's under More details.
+        self.fsr_var = tk.BooleanVar(value=fsr_default(screens.windows_adapter_names()))
+        fsr = ttk.Checkbutton(content, variable=self.fsr_var)
+        self.bind_text(fsr, 'text', 'ui.fsr')
+        fsr.pack(anchor='w', pady=(dpi.px(4), 0))
         # The explanations stay out of the way until asked for: a link opens them under it
         self.details_toggle = ttk.Label(content, style='Link.TLabel', cursor='hand2', takefocus=True)
         self.bind_text(self.details_toggle, 'text', 'ui.more_details')
@@ -445,7 +453,8 @@ class App:
         self.details_toggle.pack(anchor='w', pady=(dpi.px(8), 0))
         self.details = ttk.Frame(content)   # packed after the link when open; no holder frame, as an emptied Tk frame keeps
         # the height its last child gave it
-        for id in ('ui.dlss_help', 'ui.formats_help', 'ui.compressed_help', 'ui.firmware_help', 'ui.keys_private'):
+        for id in ('ui.dlss_help', 'ui.fsr_help', 'ui.formats_help', 'ui.compressed_help', 'ui.firmware_help',
+                   'ui.keys_private'):
             self.label(self.details, id, style='Muted.TLabel', wraplength=WRAP - dpi.px(16),
                        justify='left').pack(anchor='w', pady=(dpi.px(6), 0))
         self.details_open = False
@@ -527,7 +536,7 @@ class App:
     def form(self):
         return Form(base=self.vars['base'].get(), update=self.vars['update'].get(), keys=self.vars['keys'].get(),
                     firmware=self.vars['firmware'].get(), lang=self.selected_lang(), dest=self.vars['dest'].get(),
-                    dlss=self.dlss_var.get())
+                    dlss=self.dlss_var.get(), fsr=self.fsr_var.get())
 
     def set_prefill(self, name, value):
         self.programmatic = True
@@ -803,7 +812,7 @@ class App:
 # ---- self test ---------------------------------------------------------------------------------------------------
 
 SAMPLE_START = {'type': 'start', 'release': 'selftest', 'mode': 'install', 'dest': 'Z:/selftest/TotK', 'log': 'D:\\log.txt',
-                'steps': ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss', 'cleanup']}
+                'steps': ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss', 'fsr', 'cleanup']}
 SAMPLE_RUN = [
     SAMPLE_START,
     {'type': 'plan', 'run': ['check', 'fonts', 'extract'], 'skip': {}},

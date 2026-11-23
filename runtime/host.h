@@ -313,6 +313,7 @@ void res_init(void);                                       // after rt_patches_i
 float res_dlss_lod_bias(void);                             // TOTK_DLSS upscaling: texture LOD bias (<= 0)
 int res_dlss_mode(const char *mode);                       // TOTK_DLSS changed while running: new scene size
 int res_dlss_dll(void);                                    // the DLSS library is next to the executable
+int res_ffx_dlls(void);                                    // AMD's two FSR 4 libraries are (Windows; 0 elsewhere)
 void res_fn_hit(uint64_t addr, uint64_t x0);               // main.c fnprof_hit: catches the renderer at start
 void res_present(Cpu *c);                                  // nvnQueuePresentTexture: applies a pending scene size
 void res_sizes(unsigned out[2], unsigned scene[2]);      // the output and scene sizes in effect (the game's own

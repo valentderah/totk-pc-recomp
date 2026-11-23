@@ -41,8 +41,8 @@ from installer.runner import Context  # noqa: E402
 from installer.steps import Fonts, all_steps  # noqa: E402
 from installer.guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGE_LABELS,  # noqa: E402
                                 UI_LANGUAGES, Catalog, Form, Model, Process, amount, default_game_language,
-                                describe_event, parse_line, ui_language_for_langid, ui_language_for_locale,
-                                windows_ui_language)
+                                describe_event, fsr_default, parse_line, ui_language_for_langid,
+                                ui_language_for_locale, windows_ui_language)
 
 INSTALLED = ROOT / 'build' / 'install-test'
 FIXTURE = ROOT / 'build' / 'inst-gui' / 'e2e-install'
@@ -180,6 +180,22 @@ class RunStatesTest(unittest.TestCase):
         self.assertIsNone(m.error)
         self.assertEqual(m.warnings, [])
         self.assertEqual(m.result, 'ok')
+
+
+class FsrDefaultTest(unittest.TestCase):
+    """Download AMD FSR is ticked at start with an AMD adapter only: not with other GPUs, nor when no adapter could be
+    listed."""
+
+    def test_amd(self):
+        self.assertTrue(fsr_default(['AMD Radeon RX 9060 XT']))
+        self.assertTrue(fsr_default(['Intel(R) UHD Graphics', 'AMD Radeon(TM) Graphics']))
+
+    def test_other_gpus(self):
+        self.assertFalse(fsr_default(['NVIDIA GeForce RTX 4080 SUPER']))
+        self.assertFalse(fsr_default(['Intel(R) Arc(TM) A770 Graphics', 'Microsoft Basic Render Driver']))
+
+    def test_unknown(self):
+        self.assertFalse(fsr_default([]))
 
 
 class FormTest(unittest.TestCase):

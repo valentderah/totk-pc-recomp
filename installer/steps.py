@@ -1,5 +1,5 @@
-"""The eleven setup steps of docs/installer.md: check, kit, fonts, extract, lift, compile, prepare, pc_prompts, shapes,
-dlss, cleanup.
+"""The twelve setup steps of docs/installer.md: check, kit, fonts, extract, lift, compile, prepare, pc_prompts,
+shapes, dlss, fsr, cleanup.
 
 Extraction runs in this process through tools/extract.py (the package's sibling tools/, which ships with it); fonts
 runs the vendored extract_shared_fonts.py on the firmware folder; lift, compile and prepare run the bundled Python on
@@ -8,7 +8,8 @@ recomp/gen.py, tools/build_game.py, tools/make_romfs_patches.py and tools/prepar
 with the bundled clang (hostcheck.c).
 
 Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, shared-fonts/ (Chinese and Korean text), totk.exe
-and its DLLs, nvngx_dlss.dll (with --dlss), romfs-index.bin, romfs-patches/, romfs-patches-xbox/,
+and its DLLs, nvngx_dlss.dll (with --dlss), amd_fidelityfx_loader_vk.dll and amd_fidelityfx_upscaler_vk.dll (with
+--fsr), romfs-index.bin, romfs-patches/, romfs-patches-xbox/,
 romfs-patches-xbox-label/, romfs-patches-pc/, romfs-patches-<w>x<h>/ and romfs-patches-<style>-<w>x<h>/ (for the
 screen shapes and the prompts style this player needs, installer/screens.py), totk_xlate.exe, the
 shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json, and on Windows build-kit/ (Kit): the release
@@ -1761,7 +1762,87 @@ class Dlss(Step):
         return {'installed': DLSS_VERSION}
 
 
-# ---- 8. clean up
+# ---- 8. AMD FSR
+
+# AMD's FSR 4 for scene_upscaler = fsr4 (runtime/vk_ffx.c): the ffx-api loader and the upscaler effect, which the
+# loader finds next to itself. AMD's FSR SDK license lets them be redistributed in binary form with its notice
+# (THIRD_PARTY_NOTICES.md); the setup still does not ship them: with --fsr it downloads AMD's signed copies from the SDK
+# repository at a pinned tag and checks their hashes. The game runs without them; scene_upscaler = fsr4 then does
+# nothing.
+FSR_VERSION = '2.4.0'   # the FSR SDK release; the upscaler DLL is FSR 4.1.2 (FSR 3.1.6 inside goes unused)
+FSR_BASE = (f'https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/v{FSR_VERSION}/'
+            'Kits/FidelityFX/signedbin/')
+FSR_FILES = (   # name, size, SHA-256
+    ('amd_fidelityfx_loader_vk.dll', 39184, '38a56a01fb3565c0757d9f5c1e4e69de4b65e5f2e5769b323b200dc1f142bab9'),
+    ('amd_fidelityfx_upscaler_vk.dll', 36135696, '4a7e895af6e0b615d40a84d59eb8c2b1054ad91cdd0c739567940270d51bdab7'),
+)
+FSR_LICENSE = f'https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/v{FSR_VERSION}/docs/license.md'
+
+
+class Fsr(Step):
+    """With --fsr on Windows: AMD's FSR loader and upscaler next to totk.exe; the game pins FSR 4 where they offer it
+    for the GPU. Libraries the player put there (other versions) are kept. A failed download warns and is tried again
+    on the next run; the game runs without them."""
+
+    id = 'fsr'
+
+    def key(self, ctx):
+        if not getattr(ctx.options, 'fsr', False):
+            return fingerprint('fsr-2', 'off')
+        return fingerprint('fsr-2', FSR_VERSION, *(sha for _, _, sha in FSR_FILES))
+
+    def current(self, ctx, record):
+        if record.get('failed'):
+            return False
+        return not record.get('installed') or all((ctx.dest / name).is_file() for name, _, _ in FSR_FILES)
+
+    def run(self, ctx):
+        if not getattr(ctx.options, 'fsr', False):
+            return {}
+        if os.name != 'nt':
+            return {'skipped': 'not_windows'}
+        rep = ctx.reporter
+        present = [ctx.dest / name for name, _, _ in FSR_FILES if (ctx.dest / name).is_file()]
+        if present:
+            if all((ctx.dest / name).is_file() and file_sha256(ctx.dest / name) == sha for name, _, sha in FSR_FILES):
+                return {'installed': FSR_VERSION}
+            # A set the player put there (or half of one): kept as it is, the loader and its effect belong together
+            rep.warning('warn.fsr_kept', path=str(present[0]))
+            return {'kept': True}
+        total, done = sum(size for _, size, _ in FSR_FILES), 0
+        rep.progress('fsr', 'download', 0, total, 'bytes', force=True)
+        rep.log(f'fsr: {FSR_BASE} (license {FSR_LICENSE})')
+        parts = []
+        try:
+            for name, size, sha in FSR_FILES:
+                url, part = FSR_BASE + name, ctx.temp / (name + '.part')
+                parts.append(part)
+                part.parent.mkdir(parents=True, exist_ok=True)
+                h, got = hashlib.sha256(), 0
+                with urllib.request.urlopen(url, timeout=60) as r, open(part, 'wb') as f:
+                    while block := r.read(1 << 20):
+                        f.write(block)
+                        h.update(block)
+                        got += len(block)
+                        rep.progress('fsr', 'download', min(done + got, total), total, 'bytes')
+                if got != size or h.hexdigest() != sha:
+                    raise OSError(f'{name}: {got} bytes, SHA-256 {h.hexdigest()[:16]}, not the expected file')
+                done += size
+            # both downloaded and checked: only then into the install folder, so it never holds half a set
+            for (name, _, _), part in zip(FSR_FILES, parts):
+                replace_file(part, ctx.dest / name)
+                remove(part)
+        # urllib's errors, timeouts and a bad file; a connection cut mid-file raises http.client.IncompleteRead,
+        # which is not an OSError
+        except (OSError, http.client.HTTPException) as e:
+            for part in parts:
+                remove(part)
+            rep.warning('warn.fsr_download_failed', url=FSR_BASE, detail=str(e)[:300])
+            return {'failed': True}
+        return {'installed': FSR_VERSION}
+
+
+# ---- 9. clean up
 
 class Cleanup(Step):
     id = 'cleanup'
@@ -1843,4 +1924,5 @@ def romfs_problem(romfs, expected):
 
 
 def all_steps():
-    return [Check(), Kit(), Fonts(), Extract(), Lift(), Compile(), Prepare(), PcPrompts(), Shapes(), Dlss(), Cleanup()]
+    return [Check(), Kit(), Fonts(), Extract(), Lift(), Compile(), Prepare(), PcPrompts(), Shapes(), Dlss(), Fsr(),
+            Cleanup()]
