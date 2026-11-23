@@ -11,7 +11,7 @@
 #include "vk_ahead.h"  // TOTK_SYNC_AHEAD=check hooks (vk_ahead_on)
 
 // Required (device choice fails without them): Vulkan 1.3; VK_KHR_swapchain, VK_KHR_push_descriptor,
-// VK_EXT_depth_clip_control, VK_EXT_external_memory_host; features timelineSemaphore, dynamicRendering,
+// VK_EXT_depth_clip_control; features timelineSemaphore, dynamicRendering,
 // synchronization2, shaderStorageImageWriteWithoutFormat, depthClipControl, shaderInt64, samplerAnisotropy,
 // independentBlend, geometryShader, textureCompressionBC.
 // Optional (flag set in VkCtx when enabled): the has_* members.
@@ -45,6 +45,8 @@ typedef struct VkCtx {
     // (attachable images get feedback usage, a by-region barrier inside the pass); else (or TOTK_FEEDBACK=restart)
     // VK_FEEDBACK_RESTART (the pass ends and restarts behind the full barrier).
     int feedback;                           // VK_FEEDBACK_*
+    int has_external_memory_host;           // VK_EXT_external_memory_host; without it CPU-visible pools get shadow
+                                            // storage (vk_memory.c mirror_mode), as under Wine
     uint32_t min_imported_host_alignment;   // VK_EXT_external_memory_host
     VkDeviceSize vma_block;                 // VMA's block size for heaps over 1 GiB (TOTK_VMA_BLOCK_MIB, vk_device.c)
     int device_index;                       // index in vkEnumeratePhysicalDevices
@@ -343,7 +345,8 @@ int vk_mem_flush_add_probe(void);        // --probe-vkexec: the flush range list
 uint64_t vk_mem_mirror_uploaded(void);   // --probe-vkexec: bytes copied into mirrors since the last summary line
 int vk_mem_mirror_probe(uint64_t addr);   // --probe-vkexec: the pool at addr gets its mirror as on a first buffer use;
                                           // 1 when it has one
-void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m);   // once
+void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m,
+                      int host_import);   // once; host_import: VK_EXT_external_memory_host is enabled
 int vk_mem_class_of(uint64_t addr);               // VK_MCLS_* of the pool at addr (NONE when unbacked)
 void vk_mem_census(uint64_t frame);               // at each present: pool census and traffic, logged at frame 1800 and,
                                                   // with TOTK_TRACE=perf, every 1800 frames
