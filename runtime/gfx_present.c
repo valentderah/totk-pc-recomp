@@ -390,9 +390,9 @@ static void latency_note(VkCtx *c, uint64_t pid) {
                      "end %.2f ms", full, gi.timingCount, full ? sum / full / 1000.0 : 0.0);
         }
     }
-    rt_log("reflex: frame start to present %.2f ms over %llu frames (reflex %s, anti-lag %s)%s", g_lat.n ? g_lat.ns / 1e6 / g_lat.n : 0.0,
+    rt_log("reflex: frame start to present %.2f ms over %llu frames (reflex %s%s)%s", g_lat.n ? g_lat.ns / 1e6 / g_lat.n : 0.0,
            (unsigned long long)g_lat.n, g_reflex_mode == 2 ? "boost" : g_reflex_mode == 1 ? "on" : "off",
-           c->has_amd_antilag ? "on" : "off", drv);
+           c->has_amd_antilag ? ", anti-lag on" : "", drv);
     g_lat.n = g_lat.ns = 0;
 }
 
@@ -457,18 +457,25 @@ void vk_reflex_sleep(void) {
 // ---- AMD Anti-Lag 2 (VK_AMD_anti_lag)
 static PFN_vkAntiLagUpdateAMD g_antilag_update;
 
+// The INPUT call runs on the game thread (nvnWindowAcquireTexture), the PRESENT call on the present thread (flip_one,
+// g_pl held): both carry the frame's ID, as the spec asks of a frame's two calls. The first call of either thread loads
+// the entry point; the atomics keep that load race-free.
 static void antilag_update(VkAntiLagStageAMD stage, uint64_t frame) {
     VkCtx *c = vk_ctx();
     if (!c || !c->has_amd_antilag || !frame) return;
-    if (!g_antilag_update) g_antilag_update = (PFN_vkAntiLagUpdateAMD)vkGetDeviceProcAddr(c->device, "vkAntiLagUpdateAMD");
-    if (!g_antilag_update) return;
+    PFN_vkAntiLagUpdateAMD fn = __atomic_load_n(&g_antilag_update, __ATOMIC_ACQUIRE);
+    if (!fn) {
+        fn = (PFN_vkAntiLagUpdateAMD)vkGetDeviceProcAddr(c->device, "vkAntiLagUpdateAMD");
+        if (!fn) return;
+        __atomic_store_n(&g_antilag_update, fn, __ATOMIC_RELEASE);
+    }
     // the driver holds frames to the pacer's frame limit, as Reflex's minimum interval does (0: no limit known)
     double hz = frame_step_limit_hz();
     VkAntiLagPresentationInfoAMD pi = {
         .sType = VK_STRUCTURE_TYPE_ANTI_LAG_PRESENTATION_INFO_AMD, .stage = stage, .frameIndex = frame};
     VkAntiLagDataAMD d = {.sType = VK_STRUCTURE_TYPE_ANTI_LAG_DATA_AMD, .mode = VK_ANTI_LAG_MODE_ON_AMD,
                           .maxFPS = hz > 0 ? (uint32_t)(hz + 0.5) : 0, .pPresentationInfo = &pi};
-    g_antilag_update(c->device, &d);
+    fn(c->device, &d);
 }
 
 void vk_antilag_input(uint64_t frame) { antilag_update(VK_ANTI_LAG_STAGE_INPUT_AMD, frame); }

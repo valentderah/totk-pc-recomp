@@ -345,10 +345,10 @@
 # processes these effects too, as before (the default until the inventory preview, the scope and water edges are
 # checked on NVIDIA). The upscaling DLSS modes always process them. Changes while the game runs take effect at once.
 # dlaa_effects_after = 0
-# Low latency: off, auto, on or boost. Reduces system input latency with what the GPU has: NVIDIA Reflex
-# (VK_NV_low_latency2) or AMD Anti-Lag 2 (VK_AMD_anti_lag: Mesa RADV, AMD's Windows driver). auto and on pick the
-# one the GPU supports and do nothing on a GPU with neither; boost also keeps NVIDIA GPU clocks high in CPU-bound
-# scenes. Frames are held to the frame limit the pacer uses. Read at start.
+# Low latency: off, auto, on or boost. Reduces system input latency. on and boost enable NVIDIA Reflex
+# (VK_NV_low_latency2); boost also keeps NVIDIA GPU clocks high in CPU-bound scenes. auto enables Reflex, or AMD
+# Anti-Lag 2 (VK_AMD_anti_lag: Mesa RADV, AMD's Windows driver) on a GPU without Reflex. On a GPU with neither the
+# setting does nothing. Frames are held to the frame limit the pacer uses. Read at start.
 # reflex = off
 # The game's own FXAA after the post effects; with DLAA on it is not needed. Changes while the game runs take effect at
 # once.
