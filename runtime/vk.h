@@ -38,7 +38,8 @@ typedef struct VkCtx {
         has_astc_ldr,                       // textureCompressionASTC_LDR (enabled when reported)
         has_calibrated,                     // VK_KHR/EXT_calibrated_timestamps (GPU idle split in the perf line)
         has_hdr_metadata,                   // VK_EXT_hdr_metadata (vk_hdr.c vk_hdr_metadata)
-        has_nv_reflex;                      // VK_NV_low_latency2 (NVIDIA Reflex Low Latency)
+        has_nv_reflex,                      // VK_NV_low_latency2 (NVIDIA Reflex Low Latency)
+        has_amd_antilag;                    // VK_AMD_anti_lag (AMD Anti-Lag 2)
     // Feedback loops (maxwell.md 1.9, vk_exec_draw.c feedback_prepare): a draw samples a target of its open pass that
     // an earlier draw of the pass wrote. TOTK_FEEDBACK=0: VK_FEEDBACK_OFF (sampled in GENERAL without a barrier, the
     // old behaviour); VK_FEEDBACK_LAYOUT with VK_EXT_attachment_feedback_loop_layout and dynamicRenderingLocalRead
