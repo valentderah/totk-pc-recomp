@@ -298,13 +298,26 @@ static float clamp01(float v) { return v > 0 ? (v < 1 ? v : 1) : 0; }   // NaN -
 // neutral frequency), all at 320 Hz and above (the high band's), log scale between.
 static float light_share(float f) { return f > 160 ? (f < 320 ? log2f(f / 160) : 1) : 0; }
 
-// Switch HD rumble -> SDL_RumbleGamepad. Each side's two bands split by frequency between the heavy (low) and the light
+// Switch HD rumble -> SDL_RumbleGamepad (a Switch 2 controller over Bluetooth gets every value as it comes instead,
+// both bands' amplitude and frequency per side: input_rumble_stream). Each side's two bands split by frequency between the heavy (low) and the light
 // (high) motor (light_share) and add up as energy per motor (root of the summed squares); the stronger side drives each
 // motor. A side the game has not updated for 250 ms is silent. Each send lasts 250 ms and is renewed every 50 ms while
 // the game streams, so the pad stops by itself when the game stops sending (pause, freeze). Under vib_lock.
 static void rumble_update(uint64_t now) {
     float heavy = 0, light = 0;
     rumble_cfg();
+    {   // a Switch 2 controller over Bluetooth: both sides' values as they are, curve and strength on the amplitudes
+        float hd[2][4];
+        for (int s = 0; s < 2; s++) {
+            const VibrationValue *v = &vib_last[s];
+            int live = vib_allowed && vib_at[s] && now - vib_at[s] <= RUMBLE_STALE_NS;
+            hd[s][0] = live ? motor(clamp01(v->amp_low)) / 65535.0f : 0;
+            hd[s][1] = live && v->freq_low > 0 ? v->freq_low : 160;
+            hd[s][2] = live ? motor(clamp01(v->amp_high)) / 65535.0f : 0;
+            hd[s][3] = live && v->freq_high > 0 ? v->freq_high : 320;
+        }
+        input_rumble_stream((const float (*)[4])hd);
+    }
     for (int s = 0; s < 2 && vib_allowed; s++) {
         if (!vib_at[s] || now - vib_at[s] > RUMBLE_STALE_NS) continue;
         const VibrationValue *v = &vib_last[s];

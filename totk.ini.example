@@ -430,6 +430,10 @@
 # rumble_strength = 130
 # rumble_curve = 0.6
 # rumble_triggers = 0
+# Switch 2 controllers (Pro Controller 2, Joy-Con 2) over Bluetooth LE, connected by the game itself (Windows; read at
+# start): 1 on, 2 on and logs every Bluetooth LE device it sees once. Pair one by holding its Sync button with the game
+# open (not in Windows' Bluetooth settings); after that any button reconnects it. docs/controls.md.
+# switch2 = 0
 # Which gamepad button is Switch A: nintendo (by position: east A, south B, west Y, north X), xbox (south A, east B,
 # west X, north Y, as an Xbox pad labels them; cross A on a PlayStation pad) or auto (nintendo for a pad with Nintendo
 # labels, xbox for the others). The bind_ lines below apply on top. Changes while the game runs take effect at once.

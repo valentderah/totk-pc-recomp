@@ -16,6 +16,7 @@
 #include "host.h"
 #include "input.h"
 #include "input_map.h"
+#include "switch2.h"
 #include "input_wsys.h"
 #include "nvn_api.h"
 #include "ui/menu.h"
@@ -677,6 +678,7 @@ static void start(void) {
     if (!SDL_Init(SDL_INIT_GAMEPAD)) { state = -1; rt_log("input: SDL gamepad init failed (%s), keyboard only", SDL_GetError()); }
     else state = 1;
     if (state == 1) test_pad_attach();
+    if (state == 1) switch2_start();   // Switch 2 controllers over Bluetooth, as virtual gamepads (TOTK_SWITCH2)
     if (state == 1) {
         scan_pads();
         if (!pad) rt_log("input: no gamepad (keyboard only until one is connected)");
@@ -1226,6 +1228,21 @@ int input_rumble_triggers_enabled(void) {
     return cfg_bool("TOTK_RUMBLE_TRIGGERS");
 }
 
+// Under lock: the open pad is a Switch 2 controller over Bluetooth (switch2.c's virtual gamepad), which takes the game's
+// vibration as HD samples through input_rumble_stream and nothing from input_rumble. Checked on each call: the
+// controller registers its gamepad only once it is attached, after SDL may already have listed it.
+static int pad_s2(void) {
+    return state == 1 && pad && switch2_owns(SDL_GetGamepadID(pad));
+}
+
+int input_rumble_stream(const float v[2][4]) {
+    int ok = 0;
+    plat_mutex_lock(&lock);
+    if (pad_s2()) ok = switch2_rumble_hd(SDL_GetGamepadID(pad), v);
+    plat_mutex_unlock(&lock);
+    return ok;
+}
+
 // The rumble worker. input_rumble only stores the newest request (rq) and wakes the worker; the worker sends it to the
 // gamepad. A Bluetooth HID write can block for tens of milliseconds, and the callers are the guest thread that runs
 // SendVibrationValue and every path that takes `lock`, so no SDL rumble call is made on them. Requests that pile up
@@ -1249,7 +1266,7 @@ static void rumble_write(uint16_t low, uint16_t high, uint32_t ms) {
     SDL_Gamepad *g = NULL;
     int triggers = input_rumble_triggers_enabled();
     plat_mutex_lock(&lock);
-    if (state == 1 && pad && pad_rumble) g = SDL_OpenGamepad(SDL_GetGamepadID(pad));
+    if (state == 1 && pad && pad_rumble && !pad_s2()) g = SDL_OpenGamepad(SDL_GetGamepadID(pad));   // (a Switch 2 pad: input_rumble_stream)
     plat_mutex_unlock(&lock);
     if (!g) return;
     SDL_RumbleGamepad(g, low, high, ms);
