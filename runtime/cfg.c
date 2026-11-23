@@ -204,7 +204,7 @@ static const CfgMeta metas[] = {
     {"GAMEPLAY_MAP_ZOOM_SENSITIVITY", "1", "0.25..4", LIVE}, {"GAMEPLAY_ROTATION_SENSITIVITY", "1", "0.25..4", LIVE},
     {"GAMEPLAY_DISTANCE_SENSITIVITY", "1", "0.25..4", LIVE}, {"GAMEPLAY_ITEM_SENSITIVITY", "1", "0.25..4", LIVE},
     {"GAMEPLAY_WEAPON_WHEEL", "1", "0|1", LIVE}, {"GAMEPLAY_WEAPON_SENSITIVITY", "1", "0.25..4", LIVE},
-    {"MENU_LANG", "", "en|ru|pt-BR|zh-Hans", LIVE},
+    {"MENU_LANG", "", "en|ru|pt-BR|zh-Hans|de|fr|es|it|nl|ja|ko|vi", LIVE},
     // plat_font_path on Linux: 1 asks fontconfig which file draws the language, 0 keeps the fixed distribution
     // paths. A rebuild of the atlas reads it, so a change shows on the next window size or language switch.
     {"MENU_FONT_FONTCONFIG", "1", "0|1", LIVE},

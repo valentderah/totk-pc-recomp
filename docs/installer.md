@@ -190,8 +190,8 @@ python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR
   install sections, the explanations under More details, the share notice next to Start) in the Sun Valley ttk theme
   (`installer/vendor/sv_ttk/`, the platform theme when it does not load), step list with progress, space line,
   collapsible log, Cancel (Ctrl+Break to the CLI's process group, then it waits for the exit), finish screen with Open
-  folder. English, Russian, Brazilian Portuguese, Simplified Chinese, German, French, Spanish, Italian, Dutch, Japanese
-  or Korean (`guilogic.UI_LANGUAGES`), chosen from the Windows display language (every Chinese, zh-TW and zh-HK
+  folder. English, Russian, Brazilian Portuguese, Simplified Chinese, German, French, Spanish, Italian, Dutch, Japanese,
+  Korean or Vietnamese (`guilogic.UI_LANGUAGES`), chosen from the Windows display language (every Chinese, zh-TW and zh-HK
   included, gives Simplified Chinese; pt-PT and languages without a catalog give English), switchable in the window;
   every sentence is an id in `installer/text/<lang>.json`. The game language starts as the window's when the game has
   it; a Chinese or Korean window still starts with English, because that game text needs the Switch shared fonts,
