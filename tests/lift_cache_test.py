@@ -1,6 +1,7 @@
 """recomp/gen.py's lift cache (<mod>/lift_cache.json) on a module it makes itself: a run with unchanged inputs reuses
-every chunk, a changed patch site, spin wait or function hook lifts only the chunk that holds it, a chunk file or cache entry changed
-behind the cache's back is not taken, a cache that cannot be written only warns, TOTK_LIFT_CACHE=0 and a change to
+every chunk, a changed patch site, spin wait or function hook lifts only the chunk that holds it, a site two ordered
+sets contest tests its pick byte (recomp/patches.py `ordered`) while one ordered set alone is emitted as an unordered
+one, a chunk file or cache entry changed behind the cache's back is not taken, a cache that cannot be written only warns, TOTK_LIFT_CACHE=0 and a change to
 the generator's sources or options lift everything, and the output always equals a --no-cache lift's, folded.txt
 included. No game files.
 
@@ -20,6 +21,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tests'))
 sys.path.insert(0, str(ROOT / 'tools'))
+sys.path.insert(0, str(ROOT / 'recomp'))
+import patches  # noqa: E402
 from check_content import GENERATED_MARKER  # noqa: E402
 # The jump table module and the NSO writer of tests/exefs_patches_test.py; a change there changes this test's module,
 # and test_reuse_and_invalidation checks that it still has its jump table (folded.txt 1020 1024).
@@ -42,12 +45,16 @@ TEXT = JT_TEXT + struct.pack('<5I', bl(G, H), RET, MOV_W8_100, bl(H + 4, G), RET
 SPIN = 'spin main 48 c'
 
 
-def patch_file(*replacements, first=None, spin=False, hooks=()):
+def patch_file(*replacements, first=None, spin=False, hooks=(), ordered=False, cheat=None):
     """A patch file with set a patching h's mov with each replacement (sets a0, a1, ...); first: a set defined before
-    them, which moves their indices; spin: SPIN too; hooks: a hook line with these function offsets."""
+    them, which moves their indices; spin: SPIN too; hooks: a hook line with these function offsets; ordered: the a
+    sets are ordered (recomp/patches.py); cheat: an unordered set c with this replacement at the site, before them."""
     lines = [f'set {first} TEST_{first.upper()} 0'] if first else []
+    if cheat:
+        lines += ['set c TEST_C 0', f'site c main {H:x} {MOV_W8_100:08x} {cheat:08x}']
     for i, w in enumerate(replacements):
-        lines += [f'set a{i} TEST_A{i} 0', f'site a{i} main {H:x} {MOV_W8_100:08x} {w:08x}']
+        lines += [f'set a{i} TEST_A{i} 0' + (' ordered' if ordered else ''),
+                  f'site a{i} main {H:x} {MOV_W8_100:08x} {w:08x}']
     if spin:
         lines.append(SPIN)
     if hooks:
@@ -148,6 +155,34 @@ class LiftCache(unittest.TestCase):
         self.assertEqual(self.gen(patch_file(MOV_W8_200))['chunks_reused'], 3)
         self.assert_like_fresh(patch_file(MOV_W8_200))
 
+    def test_ordered_sets(self):
+        """Two ordered sets on h's mov make it a contested site: their alternatives test rt_patch_pick[0] (1 for a0, 2
+        for a1) and patches.h lists the site; the cheat before them keeps its switch and its place. One ordered set
+        alone emits what an unordered one does, header included. The pick is in the key: only h's chunk again."""
+        h = lambda: self.chunk(2).read_text()  # noqa: E731
+        header = lambda: (self.d / 'gen' / 'patches.h').read_text()  # noqa: E731
+        self.gen(patch_file(MOV_W8_300))
+        plain, plain_header = h(), header()
+        self.assertEqual(self.gen(patch_file(MOV_W8_300, ordered=True))['chunks_reused'], 3)
+        self.assertEqual((h(), header()), (plain, plain_header))
+        self.assertNotIn('RT_PATCH_PICK', plain_header)
+
+        self.gen(patch_file(MOV_W8_300, MOV_W8_200, cheat=MOV_W8_200))
+        self.assertNotIn('rt_patch_pick', h())
+        stats = self.gen(patch_file(MOV_W8_300, MOV_W8_200, ordered=True, cheat=MOV_W8_200))
+        self.assertEqual(stats['chunks_reused'], 2)
+        text = h()
+        self.assertIn('extern uint8_t rt_patch_pick[];', text)
+        self.assertIn('extern uint8_t rt_patch_on[];', text)
+        on, pick1, pick2 = (text.index(s) for s in ('if (rt_patch_on[0])', 'if (rt_patch_pick[0] == 1)',
+                                                     'if (rt_patch_pick[0] == 2)'))
+        self.assertLess(on, pick1)
+        self.assertLess(pick1, pick2)
+        self.assertNotIn('rt_patch_on[1]', text)
+        self.assertIn('#define RT_PATCH_PICK_COUNT 1', header())
+        self.assertIn(f'X(0, "main", {H:#x}, 1, 2)', header())
+        self.assert_like_fresh(patch_file(MOV_W8_300, MOV_W8_200, ordered=True, cheat=MOV_W8_200))
+
     def test_spin_wait_is_in_the_key(self):
         self.gen(patch_file(MOV_W8_200))
         self.assertEqual(self.gen(patch_file(MOV_W8_200, spin=True))['chunks_reused'], 2)
@@ -240,6 +275,31 @@ class LiftCache(unittest.TestCase):
         lifter = copy / 'recomp' / 'lifter.py'
         lifter.write_text(lifter.read_text() + '# another comment\n')
         self.assertEqual(run(), 0)
+
+
+class Picks(unittest.TestCase):
+    """recomp/patches.py: which sites are contested and how the patch file declares ordered sets."""
+
+    def table(self, text):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'patches.txt'
+            p.write_text(text)
+            return patches.load(p, [('main', 0x8000000, 0x100000), ('sdk', 0x9000000, 0x100000)])
+
+    def test_contested_sites(self):
+        t = self.table('set b E_B 1\nset m1 E_M1 0 ordered\nset m2 E_M2 0 ordered\nset m3 E_M3 0 ordered\n'
+                       'site b main 20 d503201f d503201f\nsite m2 main 20 d503201f d503201f\n'
+                       'site m1 main 20 d503201f d503201f\nsite m3 main 10 d503201f d503201f\n'
+                       'site m3 sdk 30 d503201f d503201f\nsite m1 sdk 30 d503201f d503201f\n')
+        self.assertEqual(t.ordered, {1, 2, 3})
+        # by module name and offset; the sets in file order of their site lines; main+0x10 has one ordered set
+        self.assertEqual(t.picks(), [('main', 0x20, [2, 1]), ('sdk', 0x30, [3, 1])])
+        self.assertEqual(t.picks_for('sdk', 0x9000000), {0x9000030: (1, {3: 1, 1: 2})})
+        self.assertIn('X(0, "main", 0x20, 2, 1) X(1, "sdk", 0x30, 3, 1)', patches.header_text(t, 'm'))
+
+    def test_bad_keyword(self):
+        with self.assertRaises(patches.PatchError):
+            self.table('set m E_M 0 sorted\n')
 
 
 if __name__ == '__main__':

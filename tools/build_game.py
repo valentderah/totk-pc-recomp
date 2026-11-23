@@ -23,13 +23,16 @@ them, else build/. tools/romfs_index.py writes build/<version>/romfs-index.bin a
 directory's index.json (runtime/romfs.c reads the index next to totk.exe). Without that index.json the build stops:
 the exe would stop at start. --no-romfs builds it anyway.
 
-Private builds reuse the main build's objects. When --out differs from build/<version>, the main build's generated
-objects are up to date (checked with a dry run of its build.ninja) and every header they include from runtime/ is
-byte-identical in --runtime (the list comes from the main build's Ninja deps log), build_game.py hardlinks those
-objects into <out>/obj and compiles only runtime/*.c. A hardlink is a snapshot: clang and Ninja replace an object by
-renaming a new file over it, so a later main rebuild leaves the linked copies alone. Otherwise (a header differs, a
-main object is missing or stale, another --gen) it compiles everything and prints one line saying why. --full-build
-skips the check.
+Private builds reuse the main build's objects. When --out differs from build/<version>, build_game.py hardlinks into
+<out>/obj every generated object of build/<version> whose compile is provably the one ours would run, and compiles the
+rest (main_objects): the main build.ninja has the same compiler, flags and rule, the main generated objects are up to
+date (a dry run of its build.ninja), and every file the main compile read (its Ninja deps log: the .c, the runtime/ and
+generated headers, the system headers) is byte-identical on our side and unchanged since the object was written, and
+so is the compiler. --gen may name another generated C directory, such as a private lift of a patch: only the chunks
+that differ from generated/<version> compile. A hardlink is a snapshot: clang and Ninja replace an object by renaming
+a new file over it, so a later main rebuild leaves the linked copies alone. The build prints `reused N of M generated
+objects ..., compiling K`, --verbose lists the K with the reason; when nothing can be reused (other flags, a stale main
+build) it prints one line saying why. --full-build skips the check.
 
 Object manifest. A flipped bit in an object written by an earlier build stays forever, because Ninja rebuilds an object
 only when its inputs change, and forks hardlink the object into every private build. So each build dir keeps
@@ -44,6 +47,9 @@ big machine does not run out of memory on the largest chunks. Each phase reports
 of its processes (Windows job object accounting: committed private bytes).
 
 --ninja PATH names the Ninja to run; without MSYS2 the bin/ninja.exe of the release folder (tools/make_release.py) is used.
+--portable (the setup's builds, installer/steps.py build_args) writes every path on the tools' drive relative to the
+folder above tools/, through '..' where needed, so the install folder that holds the build kit, the generated C and the
+build folder can move and the next build stays incremental (PORTABLE).
 --toolchain DIR builds with an llvm-mingw tree (DIR/bin/clang.exe) instead of MSYS2 UCRT64 clang. Ninja still comes
 from MSYS2. The libraries and headers MSYS2 supplies (Vulkan, SDL3, Opus, libvpx, VMA) then come from --deps DIR
 (default toolchain/deps-mingw: include/, lib/ with the import libraries and libvpx.a, bin/ with the DLLs copied next to
@@ -62,6 +68,7 @@ import ctypes.wintypes as wt   # the job-object structures below; importing it w
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -117,6 +124,13 @@ def set_cpu(cpu):
 # keeps the names equal between the training build and a build from another tree (a worktree, an install).
 PGO_NAMES = ['-mllvm', '-static-func-full-module-prefix=false']
 PGO_INPUT = None   # the .profdata of --pgo FILE: every compile depends on it, so a new profile rebuilds them
+# --portable (the setup's builds in an install folder, installer/steps.py build_args): build.ninja names every path on
+# ROOT's drive relative to ROOT, the compiler too. clang names its own headers by its absolute folder whatever argv[0]
+# says, so with --toolchain the compiles also get -resource-dir and --sysroot relative to ROOT (the folders clang would
+# take itself); the Ninja deps log then holds no absolute path. Ninja runs in ROOT, so a folder that holds ROOT, the
+# generated C and the build folder (the install folder with build-kit/ and build-cache/work/) can move without a full
+# recompile.
+PORTABLE = False
 
 
 def set_pgo(pgo, out):
@@ -187,9 +201,11 @@ LLVM_LINK_LIBS = ['-lpsapi', '-lbcrypt', '-luser32', '-lgdi32', '-ldwmapi', '-li
 DEFAULT_DEPS = ROOT / 'toolchain' / 'deps-mingw'
 # Runtime sources compiled per install, not in the library: romfs.c includes romfs_config.h, patches.c and ov_zstd.c
 # the patches.h of the player's game version (its patch page is the page after that version's main; ov_zstd.c's host
-# functions sit on it). mouse_direct.c and ov_ability.c also register host callbacks relative to that version's patch
-# page. A library source that includes one of PER_VERSION_HEADERS stops the library build (library_sources).
-INSTALL_SIDE = {'romfs.c', 'patches.c', 'ov_zstd.c', 'mouse_direct.c', 'ov_ability.c'}
+# functions sit on it). mouse_direct.c, ov_ability.c and freecam.c also register host callbacks relative to that version's patch
+# page. plugin_init.c reads the install's own plugin records from patches.h (RT_PLUGINS, RT_PLUGIN_WRITES): a mod plugin
+# the rebuild built in. A library source that includes one of PER_VERSION_HEADERS stops the library build
+# (library_sources).
+INSTALL_SIDE = {'romfs.c', 'patches.c', 'ov_zstd.c', 'mouse_direct.c', 'ov_ability.c', 'plugin_init.c', 'freecam.c'}
 PER_VERSION_HEADERS = ('"patches.h"', '"romfs_config.h"')
 LIB_NAME = 'libtotkrt.a'
 AR = UCRT / 'llvm-ar.exe' if WIN else on_path('llvm-ar')
@@ -208,12 +224,25 @@ MEM_BUDGET = 50 * GiB  # total for all compile jobs
 
 def below_root(p):
     """Resolved p relative to ROOT, else to MAIN_ROOT (the same relative path through the worktree's junctions), else
-    absolute."""
+    absolute; with --portable relative to ROOT through '..' when it is on ROOT's drive."""
     p = Path(p).resolve()
     for root in (ROOT, MAIN_ROOT):
         if p.is_relative_to(root):
             return p.relative_to(root)
+    if PORTABLE:
+        try:
+            return Path(os.path.relpath(p, ROOT))
+        except ValueError:   # another drive
+            pass
     return p
+
+
+def tool_arg(p):
+    """A program for a Ninja command line: relative like the other paths with --portable (with backslashes on Windows:
+    CreateProcess does not find a relative program named with forward slashes), else absolute."""
+    if not PORTABLE:
+        return cmd_arg(p.as_posix())
+    return cmd_arg(str(below_root(p)) if WIN else below_root(p).as_posix())
 
 
 def ninja_path(p):
@@ -240,6 +269,13 @@ def read_layout(gen):
     """[(name, base, size)] from layout.json (same format as recomp/layout.py read(), without its NSO dependency)."""
     data = json.loads((gen / 'layout.json').read_text())
     return [(m['name'], int(m['base'], 16), int(m['size'], 16)) for m in data]
+
+
+def read_plugin_files(gen):
+    """{plugin<N>: (NSO path, SHA-256)} from layout.json: the mod code modules recomp/layout.py placed after sdk. They
+    are no ExeFS files, so the runtime reads each from its path and checks it against this hash."""
+    data = json.loads((gen / 'layout.json').read_text())
+    return {m['name']: (m['file'], m['sha256']) for m in data if 'file' in m}
 
 
 def chunk_files(gen, mod):
@@ -278,8 +314,10 @@ def copy_romfs_patches(version, out):
     manifest, the same way when it differs: romfs-patches, romfs-patches-xbox, romfs-patches-xbox-label and
     romfs-patches-pc (the same with Xbox or keyboard and mouse button prompts, make_romfs_patches.py --prompts) and
     the ones of another shape, romfs-patches-<w>x<h> and romfs-patches-<style>-<w>x<h> (make_romfs_patches.py
-    --aspect), which runtime/romfs.c overlay_init needs for a game resolution that is not 16:9."""
-    names = sorted(p.name for p in (ROOT / 'build' / version).glob('romfs-patches*') if p.is_dir())
+    --aspect), which runtime/romfs.c overlay_init needs for a game resolution that is not 16:9. The <name>.part-<pid>
+    folders a make_romfs_patches.py run writes before it renames them into place are no overlay and stay behind."""
+    names = sorted(p.name for p in (ROOT / 'build' / version).glob('romfs-patches*')
+                   if p.is_dir() and '.part-' not in p.name)
     for name in names:
         src = ROOT / 'build' / version / name
         dst = out / name
@@ -322,7 +360,8 @@ def runtime_sources(skip=()):
     """Every runtime/*.c, *.cpp, platform/*.c, *.rc, the in-game menu (ui/*.cpp) and Dear ImGui of this OS except the
     names in skip, so a task adds a file without editing this script."""
     pats = ('*.c', '*.cpp', 'platform/*.c', '*.rc', 'ui/*.cpp', 'third_party/imgui/*.cpp',
-            'third_party/imgui/backends/*.cpp')
+            'third_party/imgui/backends/*.cpp', 'third_party/FidelityFX/sdk/src/shared/*.cpp', 'third_party/FidelityFX/sdk/src/backends/vk/*.cpp',
+            'third_party/FidelityFX/sdk/src/components/*/*.cpp')
     return sorted(p for pat in pats for p in RUNTIME.glob(pat) if p.name not in skip and not other_os(p.name))
 
 
@@ -366,9 +405,11 @@ def runtime_object(out, src):
     return out / 'obj' / 'runtime' / rel.with_suffix('.o')
 
 
-def module_glue(layout, linked, hashes, paths, version):
+def module_glue(layout, linked, hashes, paths, version, plugins=None):
     """C for build/<version>/modules.c: the layout table, the linked modules' function tables (dispatch.h), the
-    expected ExeFS hashes, the game version and the default game paths (host.h)."""
+    expected ExeFS hashes, the game version and the default game paths (host.h). plugins: read_plugin_files(); a plugin
+    row of the layout table also names its file and hash."""
+    plugins = plugins or {}
     out = [f'// Module glue written by tools/build_game.py; do not edit. {GENERATED_MARKER}',
            '#include "dispatch.h"', '#include "host.h"', '#include "layout.h"', '']
     for name, base, size in layout:
@@ -376,7 +417,9 @@ def module_glue(layout, linked, hashes, paths, version):
         out.append(f'_Static_assert(MOD_{u}_BASE == {base:#x}ull && MOD_{u}_SIZE == {size:#x}ull, '
                    f'"layout.h and layout.json disagree on {name}");')
     out += ['', 'const RtLayoutEntry rt_layout[] = {']
-    out += [f'    {{"{n}", MOD_{n.upper()}_BASE, MOD_{n.upper()}_SIZE}},' for n, _, _ in layout]
+    out += [f'    {{"{n}", MOD_{n.upper()}_BASE, MOD_{n.upper()}_SIZE' +
+            (f', {c_string(plugins[n][0])}, {c_string(plugins[n][1])}' if n in plugins else '') + '},'
+            for n, _, _ in layout]
     out += ['};', f'const int rt_layout_count = {len(layout)};', '']
     for name in linked:
         out += [f'extern const uint64_t {name}_fn_addrs[];', f'extern const GuestFn {name}_fn_ptrs[];',
@@ -404,25 +447,56 @@ def port_version():
     return path.read_text(encoding='utf-8').strip() if path.is_file() else 'unknown'
 
 
-def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=None, make_lib=False, stamp=None):
-    """build.ninja text, and the object lists per module. With prebuilt the generated objects already exist in
-    out/obj and are link inputs without a compile edge. runtime_lib: a prebuilt library replaces the runtime objects
-    except INSTALL_SIDE. make_lib: build only that library, from the runtime objects except INSTALL_SIDE. stamp: the
-    install_stamp file, an extra input of the runtime objects and of the link."""
+def cc_line():
+    """The cc binding of build.ninja. A compiler cache (sccache) may front clang: every lift rewrites the generated
+    chunks with the same contents, so the cached objects save the compile step on the next build."""
+    cache = f'{cmd_arg(os.environ["SCCACHE"])} ' if os.environ.get('SCCACHE') else ''
+    return f'cc = {cache}{tool_arg(CLANG)}'
+
+
+def genflags_line(rt, gen):
+    """The genflags binding of build.ninja for runtime directory rt and generated C directory gen."""
+    return f'genflags = {" ".join(GEN_FLAGS)} -I {cmd_path(rt)} -I {cmd_path(gen)}'
+
+
+# The compile rule of the generated C; main_objects compares the main build's copy of it with this one.
+CC_GEN_RULE = ['rule cc_gen',
+               '  command = $cc $genflags -MD -MF $out.d -c $in -o $out',
+               '  deps = gcc',
+               '  depfile = $out.d',
+               '  description = CC $in']
+GEN_EDGE_BINDINGS = ['  pool = gen']   # the only per-edge binding of a cc_gen edge
+
+
+def pgo_dep():
+    """The implicit input every compile edge carries under --pgo FILE: the profile."""
+    return f' | {ninja_path(PGO_INPUT)}' if PGO_INPUT else ''
+
+
+def gen_object(mod, f):
+    """The object of generated file f of module mod, relative to the build directory."""
+    return Path('obj') / mod / (f.stem + '.o')
+
+
+def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=(), runtime_lib=None, make_lib=False, stamp=None):
+    """build.ninja text, and the object lists per module. prebuilt: generated objects (gen_object paths) that already
+    exist in out/obj and are link inputs without a compile edge. runtime_lib: a prebuilt library replaces the runtime
+    objects except INSTALL_SIDE. make_lib: build only that library, from the runtime objects except INSTALL_SIDE.
+    stamp: the install_stamp file, an extra input of the runtime objects and of the link."""
     inc = f'-I {cmd_path(RUNTIME)} -I {cmd_path(gen)}'
     vma = f'{cmd_path(DEPS / "include")} -I {cmd_path(DEPS / "include" / "vma")}' if DEPS else cmd_path(vma_include())
     imgui = cmd_path(RUNTIME / 'third_party' / 'imgui')
-    rt_inc = f'{inc} -I {cmd_path(out)} -I {vma} -I {imgui}'   # romfs_config.h, vk_mem_alloc.h (+ deps headers), imgui.h
+    ffx = RUNTIME / 'third_party' / 'FidelityFX'
+    ffx_inc = ' '.join(f'-I {cmd_path(d)}' for d in (ffx / 'sdk' / 'include', ffx / 'sdk' / 'src' / 'backends' / 'shared',
+                                                     ffx / 'spirv'))   # FidelityFX/host headers, ffx_shader_blobs.h, ffx_shaders_vk.h
+    rt_inc = f'{inc} -I {cmd_path(out)} -I {vma} -I {imgui} {ffx_inc}'   # romfs_config.h, vk_mem_alloc.h (+ deps headers), imgui.h
     libs = [f'-L {cmd_path(DEPS / "lib")}'] + (LLVM_LINK_LIBS if WIN else LINK_LIBS) if DEPS else LINK_LIBS
-    # A compiler cache (sccache) may front clang: every lift rewrites the generated chunks with the same contents, so
-    # the cached objects save the compile step on the next build.
-    cache = f'{cmd_arg(os.environ["SCCACHE"])} ' if os.environ.get('SCCACHE') else ''
     lines = [
         '# Written by tools/build_game.py; do not edit.',
         'ninja_required_version = 1.10',
         f'builddir = {ninja_path(out)}',
-        f'cc = {cache}{cmd_arg(CLANG.as_posix())}',
-        f'genflags = {" ".join(GEN_FLAGS)} {inc}',
+        cc_line(),
+        genflags_line(RUNTIME, gen),
         f'rtflags = {" ".join(RT_FLAGS)} {rt_inc}',
         f'ldflags = {" ".join(LINK_FLAGS)}',
         f'libs = {" ".join(libs)}',
@@ -430,11 +504,7 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         'pool gen',
         f'  depth = {pool_depth}',
         '',
-        'rule cc_gen',
-        '  command = $cc $genflags -MD -MF $out.d -c $in -o $out',
-        '  deps = gcc',
-        '  depfile = $out.d',
-        '  description = CC $in',
+        *CC_GEN_RULE,
         '',
         'rule cc_rt',
         '  command = $cc $rtflags -MD -MF $out.d -c $in -o $out',
@@ -442,8 +512,16 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         '  depfile = $out.d',
         '  description = CC $in',
         '',
+        # AMD's FidelityFX SDK sources (runtime/third_party/FidelityFX/sdk/src): ffx_compat.h is force-included so they
+        # build with clang (what MSVC's headers bring in on their own, the _s string functions); -w: AMD's code is not ours to fix
+        'rule cc_ffx',
+        f'  command = $cc $rtflags -include ffx_compat.h -I {cmd_path(ffx)} -I {cmd_path(ffx / "sdk" / "src" / "shared")} -w -MD -MF $out.d -c $in -o $out',
+        '  deps = gcc',
+        '  depfile = $out.d',
+        '  description = CC $in',
+        '',
         'rule rc',
-        f'  command = {cmd_arg(WINDRES.as_posix())} -I {cmd_path(RUNTIME)} -O coff $in -o $out',
+        f'  command = {tool_arg(WINDRES)} -I {cmd_path(RUNTIME)} -O coff $in -o $out',
         '  description = RC $in',
         '',
         'rule link',
@@ -454,14 +532,14 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         '',
     ]
     objs = {}
-    pgo_dep = f' | {ninja_path(PGO_INPUT)}' if PGO_INPUT else ''
+    pgo = pgo_dep()
     for mod, files in mods.items():
         objs[mod] = []
         for f in files:
-            o = out / 'obj' / mod / (f.stem + '.o')
-            if not prebuilt:
-                lines.append(f'build {ninja_path(o)}: cc_gen {ninja_path(f)}{pgo_dep}')
-                lines.append('  pool = gen')
+            o = out / gen_object(mod, f)
+            if gen_object(mod, f) not in prebuilt:
+                lines.append(f'build {ninja_path(o)}: cc_gen {ninja_path(f)}{pgo}')
+                lines += GEN_EDGE_BINDINGS
             objs[mod].append(o)
     rt = []
     sources = runtime_sources(skip)
@@ -477,15 +555,16 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
             lines.append(f'build {ninja_path(o)}: rc {ninja_path(src)} | {ninja_path(RUNTIME / "totk.manifest")} '
                          f'{ninja_path(RUNTIME / "totk.ico")}')
         else:
-            stamp_dep = (' | ' if not pgo_dep else ' ') + ninja_path(stamp) if stamp else ''
-            lines.append(f'build {ninja_path(o)}: cc_rt {ninja_path(src)}{pgo_dep}{stamp_dep}')
+            stamp_dep = (' | ' if not pgo else ' ') + ninja_path(stamp) if stamp else ''
+            rule = 'cc_ffx' if src.is_relative_to(ffx / 'sdk') else 'cc_rt'
+            lines.append(f'build {ninja_path(o)}: {rule} {ninja_path(src)}{pgo}{stamp_dep}')
         rt.append(o)
     objs['runtime'] = rt
     every = [o for v in objs.values() for o in v]
     exe = out / EXE
     if make_lib:
         exe = out / LIB_NAME
-        lines += ['', 'rule ar', f'  command = {cmd_arg(AR.as_posix())} rcs $out $in', '  description = AR $out', '', f'build {ninja_path(exe)}: ar ' + ' '.join(ninja_path(o) for o in every),
+        lines += ['', 'rule ar', f'  command = {tool_arg(AR)} rcs $out $in', '  description = AR $out', '', f'build {ninja_path(exe)}: ar ' + ' '.join(ninja_path(o) for o in every),
                   'build objects: phony ' + ' '.join(ninja_path(o) for o in every), f'default {ninja_path(exe)}', '']
         return '\n'.join(lines), objs, exe
     rule = 'link'
@@ -502,65 +581,218 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     return '\n'.join(lines), objs, exe
 
 
+# Environment variables through which clang adds include directories or options that build.ninja does not show.
+CLANG_ENV = ('CPATH', 'C_INCLUDE_PATH', 'CPLUS_INCLUDE_PATH', 'OBJC_INCLUDE_PATH', 'CCC_OVERRIDE_OPTIONS')
+# Names a preprocessor probe looks up: a new file of that name in our tree could change the compile.
+HAS_INCLUDE = re.compile(rb'__has_include(?:_next)?\s*\(\s*[<"]([^>"]+)[>"]')
+REUSED_LIST = 'reused.txt'   # obj/reused.txt: the objects the last build hardlinked or copied from the main build
+
+
+class FileBasicInfo(ctypes.Structure):
+    _fields_ = [('CreationTime', ctypes.c_longlong), ('LastAccessTime', ctypes.c_longlong),
+                ('LastWriteTime', ctypes.c_longlong), ('ChangeTime', ctypes.c_longlong), ('FileAttributes', wt.DWORD)]
+
+
+def change_time_ns(path):
+    """The last time path's contents or metadata changed, in ns since 1970, or None when it cannot be read. On Windows
+    the NTFS ChangeTime (also the write and creation times, whichever is latest): a package manager restores a file's
+    old mtime on install, and Windows gives a file created under a just-deleted name the old file's creation time, but
+    either write moves ChangeTime. Elsewhere st_ctime, which a write or a replacement moves too."""
+    if not WIN:
+        try:
+            st = os.stat(path)
+        except OSError:
+            return None
+        return max(st.st_ctime_ns, st.st_mtime_ns)
+    k32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    k32.CreateFileW.restype = wt.HANDLE
+    k32.CreateFileW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD, ctypes.c_void_p, wt.DWORD, wt.DWORD, wt.HANDLE]
+    k32.GetFileInformationByHandleEx.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD]
+    k32.CloseHandle.argtypes = [wt.HANDLE]
+    # FILE_READ_ATTRIBUTES, share read/write/delete, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS
+    h = k32.CreateFileW(str(path), 0x80, 7, None, 3, 0x02000000, None)
+    if h is None or h == wt.HANDLE(-1).value:
+        return None
+    info = FileBasicInfo()
+    ok = k32.GetFileInformationByHandleEx(h, 0, ctypes.byref(info), ctypes.sizeof(info))   # FileBasicInfo
+    k32.CloseHandle(h)
+    if not ok:
+        return None
+    return (max(info.ChangeTime, info.LastWriteTime, info.CreationTime) - 116444736000000000) * 100
+
+
+def compiler_files():
+    """The clang binary and the LLVM libraries beside it (MSYS2 and llvm-mingw: bin/; Linux: lib/) that hold the
+    compiler: a new compiler replaces one of them."""
+    c = CLANG.resolve()
+    files = [c]
+    for d in (c.parent, c.parent.parent / 'lib'):
+        for pat in ('libclang-cpp*', 'libLLVM*'):
+            files += sorted(p for p in d.glob(pat) if p.is_file())
+    return files
+
+
+def same_bytes(a, b):
+    """a and b hold the same bytes."""
+    if a.stat().st_size != b.stat().st_size:
+        return False
+    with open(a, 'rb', buffering=0) as fa, open(b, 'rb', buffering=0) as fb:
+        while True:
+            x, y = fa.read(1 << 20), fb.read(1 << 20)
+            if x != y:
+                return False
+            if not x:
+                return True
+
+
+def new_names(mine, theirs):
+    """Lower-case base names of the files below mine that have no counterpart below theirs."""
+    if mine == theirs:
+        return set()
+    return {p.name.lower() for p in mine.rglob('*') if p.is_file() and not (theirs / p.relative_to(mine)).exists()}
+
+
 def main_objects(gen, main_out, rt_dir, mods):
-    """({relative object path: the main build's object}, '') when the main build's generated objects can stand in for
-    ours, else (None, why). That holds when the main build.ninja compiles the same sources with the same flags, its
-    objects are up to date, and every header they include from runtime/ is byte-identical in rt_dir."""
+    """Which of the main build's generated objects can stand in for ours. Returns ({gen_object path: the main build's
+    object}, '', [(gen_object path, why it compiles)]), or (None, why, []) when none can.
+
+    An object is reused only when its compile is provably the one the main build ran: the main build.ninja has the
+    same compiler, flags and rule (with the main runtime/ and generated/<version> in place of ours) and a plain edge
+    for the object; the main generated objects are up to date (a dry run of the main build.ninja); and every file the
+    main compile read (its record in the main Ninja deps log: the .c, the runtime and generated headers, the system
+    headers) has the same bytes on our side and has not changed since the object was written, nor have the compiler's
+    binaries. A file new on our side whose name one of those compiles included or probed with __has_include could
+    change what an include finds, so it blocks the reuse too. Anything unknown compiles."""
     main_ninja = main_out / 'build.ninja'
     if not main_ninja.is_file():
-        return None, f'{flag_path(main_ninja)} not found'
-    if gen != (ROOT / 'generated' / main_out.name).resolve():
-        return None, 'generated C directory is not the main one'
+        return None, f'{flag_path(main_ninja)} not found', []
+    env_set = [v for v in CLANG_ENV if os.environ.get(v)]
+    if env_set:
+        return None, f'{env_set[0]} is set', []
+    main_gen = (ROOT / 'generated' / main_out.name).resolve()
+    main_rt = (MAIN_ROOT / 'runtime').resolve()
     lines = main_ninja.read_text(encoding='utf-8').splitlines()
-    sources = dict(l[6:].split(': cc_gen ') for l in lines if l.startswith('build ') and ': cc_gen ' in l)
-    flags = next((l for l in lines if l.startswith('genflags = ')), '')
-    if not flags.startswith('genflags = ' + ' '.join(GEN_FLAGS) + ' -I '):
-        return None, 'main build uses other compile flags'
-    pairs = {}
+    if cc_line() not in lines or genflags_line(main_rt, main_gen) not in lines:
+        return None, 'main build uses another compiler or other compile flags', []
+    i = lines.index(CC_GEN_RULE[0]) if CC_GEN_RULE[0] in lines else -1
+    if i < 0 or lines[i:i + len(CC_GEN_RULE) + 1] != CC_GEN_RULE + ['']:
+        return None, 'main build has another compile rule', []
+    edges = {}   # main object -> (inputs, edge bindings)
+    for j, l in enumerate(lines):
+        if l.startswith('build ') and ': cc_gen ' in l:
+            o, src = l[6:].split(': cc_gen ', 1)
+            k = j + 1
+            while k < len(lines) and lines[k].startswith('  '):
+                k += 1
+            edges[o] = (src, lines[j + 1:k])
+
+    candidates, skipped = {}, []
     for mod, files in mods.items():
         for f in files:
-            o = Path('obj') / mod / (f.stem + '.o')
+            o = gen_object(mod, f)
             theirs = main_out / o
-            if sources.get(ninja_path(theirs)) != ninja_path(f):
-                return None, f'main build has no edge for {f.name}'
-            if not theirs.is_file():
-                return None, f'main object {flag_path(theirs)} is missing'
-            pairs[o] = theirs
-    # Ninja runs in the main checkout: the main build.ninja is relative to it, and the worktree's runtime/ files carry newer
-    # mtimes that would make every object look stale. Header equality is checked byte for byte below.
+            try:
+                main_src = main_gen / f.relative_to(gen)
+            except ValueError:
+                skipped.append((o, f'{f} is outside {flag_path(gen)}'))
+                continue
+            if edges.get(ninja_path(theirs)) != (ninja_path(main_src) + pgo_dep(), GEN_EDGE_BINDINGS):
+                skipped.append((o, f'main build has no plain edge for {flag_path(main_src)}'))
+            elif not theirs.is_file():
+                skipped.append((o, f'main object {flag_path(theirs)} is missing'))
+            else:
+                candidates[o] = (theirs, f, main_src)
+    if not candidates:
+        return {}, '', skipped
+
+    # Ninja runs in the main checkout: the main build.ninja is relative to it, and the worktree's runtime/ files carry
+    # newer mtimes that would make every object look stale. Equality of what we compile is checked byte for byte below.
     env = dict(os.environ, PATH=str(UCRT) + os.pathsep + os.environ.get('PATH', '')) if WIN else dict(os.environ)
-    targets = [ninja_path(t) for t in pairs.values()]
+    targets = [ninja_path(t) for t, _, _ in candidates.values()]
     for i in range(0, len(targets), 200):
         r = subprocess.run([str(NINJA), '-f', str(main_ninja), '-n', '-d', 'explain'] + targets[i:i + 200], cwd=MAIN_ROOT,
                            env=env, capture_output=True, text=True)
         if r.returncode or 'no work to do' not in r.stdout:
-            return None, f'main generated objects are stale ({flag_path(main_out)} needs a build)'
+            return None, f'main generated objects are stale ({flag_path(main_out)} needs a build)', []
     r = subprocess.run([str(NINJA), '-f', str(main_ninja), '-t', 'deps'], cwd=MAIN_ROOT, env=env, capture_output=True,
                        text=True)
-    ours = {flag_path(t) for t in pairs.values()}
-    headers, cur = set(), False
+    if r.returncode:
+        return None, f'cannot read the Ninja deps log of {flag_path(main_out)}', []
+    deps, cur = {}, None   # main object -> ([files its compile read], record valid)
     for l in r.stdout.splitlines():
         if l.startswith(' '):
-            if cur:
-                headers.add(l.strip())
+            if cur is not None and l.strip():
+                deps[cur][0].append(l.strip())
+        elif ': #deps ' in l:
+            cur = l.split(': #deps ')[0]
+            deps[cur] = ([], l.rstrip().endswith('(VALID)'))
         else:
-            cur = l.split(': #deps')[0] in ours
-    main_rt = MAIN_ROOT / 'runtime'
-    for h in sorted(headers):
-        p = Path(h) if Path(h).is_absolute() else MAIN_ROOT / h
-        try:
-            rel = p.resolve().relative_to(main_rt)
-        except ValueError:
+            cur = None
+
+    compiler = [change_time_ns(p) for p in compiler_files()]
+    compiler_ns = None if None in compiler else max(compiler)
+    added = new_names(gen, main_gen) | new_names(rt_dir, main_rt)
+    seen = {}   # dep as the deps log names it -> (problem or '', change time, names it includes or probes)
+
+    def check_dep(h):
+        p = (Path(h) if Path(h).is_absolute() else MAIN_ROOT / h).resolve()
+        if p.is_relative_to(main_gen):
+            mine = gen / p.relative_to(main_gen)
+        elif p.is_relative_to(main_rt):
+            mine = rt_dir / p.relative_to(main_rt)
+        elif p.is_relative_to(MAIN_ROOT) or p.is_relative_to(ROOT):
+            return f'{h} is neither generated C nor runtime/', 0, set()
+        else:
+            mine = p   # a system header: both compiles read this file
+        ct = change_time_ns(p)
+        if ct is None:
+            return f'cannot read {h}', 0, set()
+        if not mine.is_file() or (mine != p and not same_bytes(mine, p)):
+            return f'{flag_path(mine)} differs from {h}', ct, set()
+        names = {p.name.lower()}
+        if p.suffix.lower() not in ('.c', '.cpp'):
+            names |= {Path(n.decode(errors='replace')).name.lower() for n in HAS_INCLUDE.findall(p.read_bytes())}
+        return '', ct, names
+
+    pairs = {}
+    for o, (theirs, f, main_src) in candidates.items():
+        rec, valid = deps.get(flag_path(theirs), (None, False))
+        if not rec or not valid:
+            skipped.append((o, 'no valid record in the main Ninja deps log'))
             continue
-        mine = rt_dir / rel
-        if not mine.is_file() or mine.read_bytes() != p.read_bytes():
-            return None, f'header {rel.as_posix()} differs in {flag_path(rt_dir)}'
-    return pairs, ''
+        written = theirs.stat().st_mtime_ns
+        if compiler_ns is None or compiler_ns >= written:
+            skipped.append((o, 'the compiler changed after the main object was written'))
+            continue
+        if (main_src.resolve().as_posix().lower() not in
+                {(Path(h) if Path(h).is_absolute() else MAIN_ROOT / h).resolve().as_posix().lower() for h in rec[:1]}):
+            skipped.append((o, f'the main deps log names another source than {flag_path(main_src)}'))
+            continue
+        why, names = '', set()
+        for h in rec:
+            if h not in seen:
+                seen[h] = check_dep(h)
+            problem, ct, n = seen[h]
+            if problem:
+                why = problem
+            elif ct >= written:
+                why = f'{h} changed after the main object was written'
+            names |= n
+            if why:
+                break
+        if not why and names & added:
+            why = f'new file {sorted(names & added)[0]} could change what an include finds'
+        if why:
+            skipped.append((o, why))
+        else:
+            pairs[o] = theirs
+    return pairs, '', skipped
 
 
 def link_objects(out, pairs):
     """Hardlink the main build's objects into out. Clang and Ninja replace an object by renaming a new file over it,
-    so a link keeps the old bytes after a main rebuild. Copies where linking fails."""
+    so a link keeps the old bytes after a main rebuild. Copies where linking fails. obj/reused.txt lists them, so a
+    later build that compiles one of them deletes it first (a copy is no hardlink unlink_shared would see)."""
     for o, theirs in pairs.items():
         dst = out / o
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -572,15 +804,24 @@ def link_objects(out, pairs):
             os.link(theirs, dst)
         except OSError:
             shutil.copy2(theirs, dst)
+    write_if_changed(out / 'obj' / REUSED_LIST, ''.join(f'{o.as_posix()}\n' for o in sorted(pairs)))
 
 
-def unlink_shared(out, mods):
-    """Drop generated objects still hardlinked to another build, so the next compile writes a new file."""
+def unlink_shared(out, mods, keep=()):
+    """Drop the generated objects outside keep that are still hardlinked to another build or were copied from one, so
+    the next compile writes a new file."""
+    listed = out / 'obj' / REUSED_LIST
+    reused = set(listed.read_text(encoding='utf-8').split()) if listed.is_file() else set()
     for mod, files in mods.items():
         for f in files:
-            o = out / 'obj' / mod / (f.stem + '.o')
-            if o.exists() and o.stat().st_nlink > 1:
-                o.unlink()
+            o = gen_object(mod, f)
+            if o in keep:
+                continue
+            p = out / o
+            if p.exists() and (p.stat().st_nlink > 1 or o.as_posix() in reused):
+                p.unlink()
+    if not keep:
+        listed.unlink(missing_ok=True)
 
 
 MANIFEST = 'objects.sha256'
@@ -638,14 +879,17 @@ def ninja_build(base, targets, env):
             sys.exit(code)
 
 
-def verify_objects(out, objs, borrowed, main_out, pairs, base, env):
-    """Verify every object before the link; see the module docstring. borrowed: the hardlinked generated objects of
-    main_out (checked against its manifest, never recorded); the others belong to out."""
+def verify_objects(out, objs, main_out, pairs, base, env):
+    """Verify every object before the link; see the module docstring. pairs: the generated objects hardlinked from
+    main_out (main_objects; checked against its manifest, never recorded); the others belong to out."""
     t0 = time.monotonic()
-    owned = [o for mod, v in objs.items() for o in v if not (borrowed and mod != 'runtime')]
-    shared = [o for mod, v in objs.items() for o in v if borrowed and mod != 'runtime']
+    pairs = pairs or {}
+    owned = [o for v in objs.values() for o in v if o.relative_to(out) not in pairs]
+    shared = [o for v in objs.values() for o in v if o.relative_to(out) in pairs]
     man_path = out / 'obj' / MANIFEST
     man = read_manifest(man_path)
+    for o in shared:   # an entry of an object this build compiled before it was reused
+        man.pop(o.relative_to(out / 'obj').as_posix(), None)
     verified, bad, _ = check_objects(out, owned, man, True)
     recompiled = 0
     if bad:
@@ -815,6 +1059,8 @@ def main():
     ap.add_argument('--runtime', type=Path, help='runtime source directory (default runtime)')
     ap.add_argument('--full-build', action='store_true',
                     help="compile the generated C even where build/<version>'s objects could be reused")
+    ap.add_argument('--verbose', action='store_true',
+                    help="list the generated objects that do not reuse build/<version>'s, and why")
     ap.add_argument('--skip-runtime', default='',
                     help='comma-separated runtime/*.c names to leave out (the link needs another definition of what they '
                          'define)')
@@ -849,8 +1095,14 @@ def main():
                     help='compile the generated code at -O2 without a profile (the --pgo level), for A/B builds')
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
+    ap.add_argument('--portable', action='store_true',
+                    help='paths in build.ninja relative to the tools\' folder, also through .. (an install folder that '
+                         'moves with its build kit and build folder)')
     args = ap.parse_args()
     set_cpu(args.cpu)
+    if args.portable:
+        global PORTABLE
+        PORTABLE = True
 
     gen = (args.gen or ROOT / 'generated' / args.version).resolve()
     out = (args.out or ROOT / 'build' / args.version).resolve()
@@ -889,6 +1141,12 @@ def main():
         CLANG = TOOLCHAIN_BIN / f'clang{suffix}'
         AR = TOOLCHAIN_BIN / f'llvm-ar{suffix}'
         WINDRES = TOOLCHAIN_BIN / 'llvm-windres.exe'
+        if PORTABLE and WIN:
+            resource = sorted((TOOLCHAIN_BIN.parent / 'lib' / 'clang').glob('*'))
+            if len(resource) != 1:
+                sys.exit(f'--portable: {TOOLCHAIN_BIN.parent / "lib" / "clang"} holds {len(resource)} version folders')
+            for flags in (GEN_FLAGS, RT_FLAGS):
+                flags += ['-resource-dir', cmd_path(resource[0]), f'--sysroot={cmd_path(TOOLCHAIN_BIN.parent)}']
     if args.toolchain and WIN or args.deps and (args.toolchain or not WIN):   # Linux: --deps only, never deps-mingw
         DEPS = (args.deps or DEFAULT_DEPS).resolve()
         dlls = sorted((DEPS / 'bin').glob('*.dll')) if WIN else []
@@ -923,10 +1181,11 @@ def main():
     cpus = os.cpu_count() or 1
     budget = min(MEM_BUDGET, int(total_ram() * 0.8))
     jobs = args.jobs or max(1, min(cpus, budget // JOB_MEM))
-    missing = [n for n in names if n not in hashes]
+    plugins = read_plugin_files(gen)
+    missing = [n for n in names if n not in hashes and n not in plugins]
     if missing:
         sys.exit(f'{expected}: no exefs_sha256 for {missing}')
-    write_if_changed(out / 'modules.c', module_glue(layout, linked, hashes, paths, args.version))
+    write_if_changed(out / 'modules.c', module_glue(layout, linked, hashes, paths, args.version, plugins))
     if has_romfs:
         count, size, dt = romfs_index.write(paths['romfs'], out)
         print(f'romfs index: {count} files, {mib(size)}, {dt:.1f} s')
@@ -941,7 +1200,7 @@ def main():
         sys.exit(f'{stale[0]}: its SPIR-V header no longer matches; run python tools/build_shaders.py')
     skip = {s for s in args.skip_runtime.split(',') if s}
     main_out = (ROOT / 'build' / args.version).resolve()
-    pairs = None
+    pairs, skipped = None, []
     if args.make_runtime_lib:
         mods, linked, why = {}, [], ''
     elif args.full_build:
@@ -951,15 +1210,22 @@ def main():
     elif out == main_out:
         why = ''
     else:
-        pairs, why = main_objects(gen, main_out, RUNTIME, mods)
+        t0 = time.monotonic()
+        pairs, why, skipped = main_objects(gen, main_out, RUNTIME, mods)
+        dt = time.monotonic() - t0
+    if out != main_out:   # forks hold hardlinks to the main build's objects; the main build keeps its own
+        unlink_shared(out, mods, pairs or {})
     if pairs is not None:
         link_objects(out, pairs)
-        print(f'build_game: reusing {len(pairs)} generated objects of {flag_path(main_out)} (hardlinks)')
-    else:
-        if out != main_out:   # forks hold hardlinks to the main build's objects; the main build keeps its own
-            unlink_shared(out, mods)
-        if why:
-            print(f'build_game: compiling all generated C: {why}')
+        total = sum(len(v) for v in mods.values())
+        print(f'build_game: reused {len(pairs)} of {total} generated objects of {flag_path(main_out)} (hardlinks), '
+              f'compiling {total - len(pairs)} ({dt:.1f} s to check)' +
+              (' (--verbose lists them)' if skipped and not args.verbose else ''))
+        if args.verbose:
+            for o, reason in skipped:
+                print(f'  compiles {o.as_posix()}: {reason}')
+    elif why:
+        print(f'build_game: compiling all generated C: {why}')
     runtime_lib = args.runtime_lib.resolve() if args.runtime_lib else None
     if runtime_lib and not runtime_lib.is_file():
         sys.exit(f'{runtime_lib} not found: build it with --make-runtime-lib')
@@ -969,8 +1235,7 @@ def main():
         sys.exit(f'build_game: {", ".join(missing)} missing from {flag_path(RUNTIME)}: the release must ship every '
                  f'INSTALL_SIDE source beside {runtime_lib.name}')
     stamp = install_stamp(out, runtime_lib) if runtime_lib else None
-    text, objs, exe = ninja_file(gen, out, mods, jobs, skip, pairs is not None, runtime_lib,
-                                 args.make_runtime_lib, stamp)
+    text, objs, exe = ninja_file(gen, out, mods, jobs, skip, pairs or {}, runtime_lib, args.make_runtime_lib, stamp)
     write_if_changed(out / 'build.ninja', text)
 
     env = dict(os.environ)
@@ -987,7 +1252,7 @@ def main():
     for mod, files in objs.items():
         size = sum(o.stat().st_size for o in files)
         print(f'  {mod:8} {len(files):5} objects {mib(size):>14}')
-    verify_objects(out, objs, pairs is not None, main_out, pairs, base, env)
+    verify_objects(out, objs, main_out, pairs, base, env)
     if args.cpu == 'v2':
         # Inline assembly, target attributes and intrinsics pass -march=x86-64-v2 by; one vmovdqa of a YMM register
         # stops a CPU without AVX (tools/check_isa.py)

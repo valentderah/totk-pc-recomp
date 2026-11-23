@@ -30,6 +30,7 @@ SITES = [
     ('pooloff', 0x9b93a8, 2, 'offset'), ('pooloff', 0x9b93c4, 1, 'source'),
     ('shadow', 0xd0760c, 11, 'shadow'),
     *[('cascade', a, 8, 'cascade') for a in (0x1157fb8, 0x1158040, 0x11580c8, 0x115814c)],
+    ('fixres', 0xce9280, 9, 'fixed'),
 ]
 
 
@@ -74,7 +75,7 @@ def main():
         words.append((orig, repl))
     build = ROOT / 'build'
     build.mkdir(exist_ok=True)
-    groups = {ratio: ([], []) for ratio in (1.0, 0.5, 0.25)}
+    groups = {ratio: ([], []) for ratio in (1.0, 0.9, 0.8, 0.5, 0.25)}
     page = bytearray(0x1000)
     # Distinct fields reveal an accidental load from the neighboring page slot.
     for off, value in ((0, 0.5), (4, 1 / 60), (56, 21 / 9), (60, 1.2),
@@ -92,7 +93,7 @@ def main():
         for k, (name, off, target, kind) in enumerate(SITES):
             pc = base + off
             for enabled in (0, 1):
-                for ratio in (1.0, 0.5, 0.25):
+                for ratio in groups:
                     for offset in (0, 0x7fffffff, 0x80000000, 0xffffffff):
                         mem = bytearray(initial)
                         struct.pack_into('<f', mem, 0x2008, ratio)
@@ -106,6 +107,8 @@ def main():
                         x = [0x1234567800000000 + i for i in range(31)]
                         for i in (8, 19, 20, 23, 27):
                             x[i] = BUF + 0x2000
+                        if kind == 'fixed':
+                            x[23] = 0xabcdef0000000000 | int.from_bytes(struct.pack('<f', ratio), 'little')
                         x[25], x[30] = offset, enabled
                         v = [(0x123456789abcdef << 32) | int.from_bytes(struct.pack('<f', 2.0), 'little')] * 32
                         v[1] = int.from_bytes(struct.pack('<f', 4.0), 'little')
@@ -129,12 +132,16 @@ def main():
                             elif kind == 'cascade':
                                 slot = (64, 68, 72, 76)[(0x1157fb8, 0x1158040, 0x11580c8, 0x115814c).index(off)]
                                 assert ex[target] == struct.unpack_from('<I', page, slot)[0]
+                            elif kind == 'fixed':
+                                assert ex[target] == 0x3f800000
                             # The stack save must preserve the complete x10, not just its lower word.
                             if name in ('aspect', 'fov'):
                                 assert ex[10] == x[10]
-                        allowed_x = {target} if kind in ('offset', 'source', 'shadow', 'cascade') else {9} if kind == 'map' else set()
+                        elif kind == 'fixed':
+                            assert ex[target] == x[23] & 0xffffffff
+                        allowed_x = {target} if kind in ('offset', 'source', 'shadow', 'cascade', 'fixed') else {9} if kind == 'map' else set()
                         # Integer destinations do not authorize writes to the same-numbered SIMD register.
-                        allowed_v = set() if kind in ('offset', 'source', 'shadow', 'cascade') else {0, 1} if kind == 'map' else {target}
+                        allowed_v = set() if kind in ('offset', 'source', 'shadow', 'cascade', 'fixed') else {0, 1} if kind == 'map' else {target}
                         if enabled and kind in ('map', 'aim', 'gyro'):
                             allowed_v |= {16}
                             if kind == 'map':

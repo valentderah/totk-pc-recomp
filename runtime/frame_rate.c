@@ -160,6 +160,11 @@ uint64_t frame_step_cap_ns(void) {
     double hz = limit_hz ? limit_hz : gfx_window_refresh_hz();
     if (hz < LIMIT_MIN_HZ) hz = 60;   // display rate unknown (no window yet)
     if (hz > LIMIT_MAX_HZ) hz = LIMIT_MAX_HZ;
+    // Frame generation (vk_backend.c present_pair) shows two pictures for each frame the game draws: the limit counts
+    // the pictures shown and the game draws half, 30 at least (Savage Wind's framepace_period_ns, PR #1089). Only
+    // while the last frame went out with a generated picture: a menu or a fade, which has none, keeps the whole limit.
+    // The real-time step follows the game's presents (frame_step_present), so it is the drawn frames' interval.
+    if (gfx_frame_gen_live()) hz = hz / 2 < LIMIT_MIN_HZ ? LIMIT_MIN_HZ : hz / 2;
     return (uint64_t)(1e9 / hz + 0.5);
 }
 
@@ -185,14 +190,16 @@ static uint64_t read_ptr(uint64_t a) {
     uint64_t p = 0;
     return read_guest(a, &p, 8) ? p : 0;
 }
-// 1.2.1: [main+0x4728538] (1.1.0: [main+0x4630a68], 1.4.3: [main+0x3add238]) +0x1e8 scene, its component 13 lists the
+// 1.2.1: [main+0x4728538] (1.1.0: [[main+0x4630a68]], 1.4.3: [main+0x3add238]) +0x1e8 scene, its component 13 lists the
 // resident actors; the one named "Player" has its position at +0x2b4 (MacNativeGames world_survey.c, game_version.h
 // TOTK_GAME_V121/V143). The 1.1.0 slot was measured from its own dereference chain: 181 scene accesses in that build
 // read it, and one of them reproduces this walk (the 14-component check, component 13, the 0x70 stride and the name
-// compare) instruction for instruction.
+// compare) instruction for instruction. Its slot is a GOT entry pointing to the singleton's storage, so it needs
+// one more dereference than the direct singleton slots of 1.2.1 and 1.4.3.
 static int player_pos(float xyz[3]) {
-    uint64_t module = read_ptr(MOD_MAIN_BASE + (RT_V143 ? 0x3add238 : RT_V110 ? 0x4630a68 : 0x4728538)),
-             scene = module ? read_ptr(module + 0x1e8) : 0;
+    uint64_t module = read_ptr(MOD_MAIN_BASE + (RT_V143 ? 0x3add238 : RT_V110 ? 0x4630a68 : 0x4728538));
+    if (RT_V110) module = read_ptr(module);
+    uint64_t scene = module ? read_ptr(module + 0x1e8) : 0;
     int32_t count = 0;
     if (!scene || !read_guest(scene + 0x50, &count, 4) || count < 14 || count > 256) return 0;
     uint64_t comps = read_ptr(scene + 0x58), resident = comps ? read_ptr(comps + 13 * 8) : 0;

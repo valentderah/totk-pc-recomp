@@ -1,21 +1,30 @@
-// Last frame's object and bone blocks, for per-object motion vectors (TOTK_DLAA_OBJMV, on with DLAA). The banks kept
-// start as c5, c7 and c14 and grow with what the vertex shader variants read (vk_mvprev_want); c7 and c5 are described
-// here, the others follow the same two-copy rule.
+// Last frame's object and bone blocks, for per-object motion vectors (TOTK_DLAA_OBJMV, on with DLSS or FSR 3.1, and
+// with frame generation unless TOTK_FG_OBJECTS=0). The banks kept start as c5, c7 and c14 and grow with the banks the
+// per-object listing looks up (vk_exec_draw.c mvobj_draw_ calls vk_mvprev_want with them); c7 and c5 are described here,
+// the others follow the same two-copy rule.
+// Every scene draw notes its blocks of those banks: which of an object's two copies was last frame's is told apart from
+// a neighbour object's copy only by knowing every block bound (noting only the listing's candidates turned a sixth of
+// the c7 "nearer" picks into "side" ones and doubled the copies mo_similar refuses). The banks the listing never looks
+// up (c9 and c11, which it leaves at this frame's block, and the banks of shaders it does not draw again) are left out:
+// probing them for every scene draw bought nothing.
 //
 // The scene's vertex shaders read an object's place from bank c7 (gsys_shape: one 3x4 matrix at the start of a
 // 0x100 block) and a skinned object's bones from c5 (gsys_skeleton: a run of 3x4 matrices), of this frame only. The
 // game writes both into two copies that take turns, the second right after the first: an object's block is at addr in
 // one frame and at addr +- step in the next, step its size rounded up to 256 bytes (vk_mvsurvey.c measured it: every
-// c7 pair 0x100 apart, c5 pairs their rounded size apart, the pair's contents the same object moved a little). The
-// copy this frame does not write still holds last frame's when the frame is submitted, so the uniform snapshot
-// (vk_usnap.c) also copies both neighbours of these blocks, and vk_mvprev_find picks last frame's:
-//   self    the block was bound at the same address last frame too (an object the game did not write again): itself
+// c7 pair 0x100 apart, c5 pairs their rounded size apart, the pair's contents the same object moved a little).
+// vk_mvprev_find picks last frame's address, and the bytes come from last frame's uniform snapshot (vk_usnap_prev: the
+// scene submission's arena is kept one more frame), which holds what last frame's draws read there:
+//   self    the block was bound at the same address last frame too (an object the game did not write again): itself,
+//           from this frame's snapshot
 //   side    one neighbour was bound in that bank last frame: that one
 //   nearer  both were (the copies of adjacent objects interleave): the one with more of its first 16 words equal to
 //           this frame's
 //   none    neither: a new object, no motion of its own
-// The pick is checked against what was snapshotted of that block last frame (intact: the same first CHECK bytes), and
-// a summary goes to the log every SUMMARY frames:
+// Until 2026-11-20 the snapshot copied both neighbours of every such block instead, as the copy this frame does not
+// write still holds last frame's when the frame is submitted: a third of the snapshot's bytes. TOTK_MVPREV_CHECK=1
+// still copies them and checks that the neighbour picked holds what was snapshotted of that block last frame (intact:
+// the same first CHECK bytes), so the two sources agree; a summary goes to the log every SUMMARY frames:
 //   mv_prev: c<n>: <blocks> blocks: self a %, side b %, nearer c %, none d %; intact e %; moved: still f %, under
 //            one unit g %, more h %
 #include <math.h>
@@ -76,6 +85,8 @@ static Seen *find(Seen *t, uint64_t addr, int index, int add) {
 }
 
 int vk_mvprev_on(void) { return P.on > 0; }
+int vk_mvprev_checking(void) { return P.on > 0 && P.bytes[0]; }
+int vk_mvprev_kept(int index) { return P.on > 0 && index >= 0 && index < BANKS && P.mask >> index & 1; }
 
 void vk_mvprev_want(uint32_t index_mask) {
     static int fixed = -1;
@@ -84,7 +95,7 @@ void vk_mvprev_want(uint32_t index_mask) {
 }
 
 uint64_t vk_mvprev_step(int stage, int index, uint64_t size) {
-    if (P.on <= 0 || stage != 0 || index < 0 || index >= BANKS || !(P.mask >> index & 1)) return 0;
+    if (P.on <= 0 || !P.bytes[0] || stage != 0 || index < 0 || index >= BANKS || !(P.mask >> index & 1)) return 0;
     return (size + 255) & ~(uint64_t)255;
 }
 
@@ -108,9 +119,11 @@ int vk_mvprev_find(int index, uint64_t addr, uint64_t size, uint64_t *prev, int 
     if (addr >= step && find(P.t[1], addr - step, index, 0)) cand[n++] = addr - step;
     if (!n) return 0;
     if (n == 2) {   // the copies of adjacent objects interleave: the one with more words equal to this frame's
-        const uint32_t *c = (const uint32_t *)vk_usnap_bytes(addr, 64), *a = (const uint32_t *)vk_usnap_bytes(cand[0], 64),
-                       *b = (const uint32_t *)vk_usnap_bytes(cand[1], 64);
-        if (!c || !a || !b) return 0;
+        VkDescriptorBufferInfo bi;
+        const uint8_t *pa, *pb;
+        const uint32_t *c = (const uint32_t *)vk_usnap_bytes(addr, 64);
+        if (!c || !vk_usnap_prev(cand[0], 64, 1, &bi, &pa) || !vk_usnap_prev(cand[1], 64, 1, &bi, &pb)) return 0;
+        const uint32_t *a = (const uint32_t *)pa, *b = (const uint32_t *)pb;
         int na = 0, nb = 0;
         for (int w = 0; w < 16; w++) na += c[w] == a[w], nb += c[w] == b[w];
         if (nb > na) cand[0] = cand[1];
@@ -134,9 +147,10 @@ void vk_mvprev_draw(VkExec *ex) {
 static void mvprev_draw_(VkExec *ex) {
     const VkExecTarget *z = &ex->depth;
     if (!z->image || z->width < DLAA_SCENE_MIN_W || z->format != VK_FORMAT_D32_SFLOAT) return;
+    vk_usnap_scene();   // this submission's snapshot is next frame's last-frame copy
     int check = P.bytes[0] != NULL;   // TOTK_MVPREV_CHECK=1: the summary's checks (3.6 ms a frame)
-    for (int index = 0; index < BANKS; index++) {
-        if (!(P.mask >> index & 1)) continue;
+    for (uint32_t m = P.mask & ((1u << BANKS) - 1); m; m &= m - 1) {
+        int index = __builtin_ctz(m);
         const p_bind_buf *u = &ex->ubo[0][index];
         if (!u->addr || !u->size || u->addr == P.last[index]) continue;   // the next draws keep the block: noted already
         P.last[index] = u->addr;
@@ -172,8 +186,9 @@ static void mvprev_draw_(VkExec *ex) {
 }
 
 void vk_mvprev_frame(void) {
-    // without DLSS (no NGX, no RTX GPU, dlaa = 0) nothing reads last frame's blocks: P.on stays 0, no tables
-    if (!vk_dlaa_available()) return;
+    // without an upscaler that reads the motion (DLSS with NGX up, or FSR 3.1) and without frame generation's object
+    // motion nothing reads last frame's blocks: P.on stays 0, no tables
+    if (!vk_objmv_wanted()) return;
     if (P.knob < 0) {
         P.knob = rt_knob("DLAA_OBJMV", "1");
         if (P.knob) {
@@ -186,7 +201,9 @@ void vk_mvprev_frame(void) {
             P.timed = rt_knob("MVOBJ_TIMES", "0");
         }
     }
-    int on = P.knob && cfg_bool("TOTK_DLAA");
+    // the upscaler while it runs, or frame generation while it follows the scene with its objects (it is off with
+    // either upscaler)
+    int on = P.knob && (vk_upscaler_on() || vk_fg_objects_on());
     if (on != (P.on > 0)) {
         P.on = on ? 1 : -1;
         if (P.t[0]) memset(P.t[0], 0, TABLE * sizeof(Seen)), memset(P.t[1], 0, TABLE * sizeof(Seen));

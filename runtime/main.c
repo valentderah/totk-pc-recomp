@@ -611,7 +611,7 @@ static int usage(const char *argv0) {
                     "--probe-cfg | --probe-dpi | --probe-mods | --probe-playtime | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-vkmem | "
                     "--probe-vkexec | --probe-astc | --probe-movie | --probe-crash-call | --probe-crash-null | --probe-discord | "
-                    "--prepare-shaders | --warm-shaders | --boot |--seconds S [--shot PNG]]\n", argv0);
+                    "--prepare-shaders | --warm-shaders | --boot | --plugin-init DIR | --seconds S [--shot PNG]]\n", argv0);
     return 2;
 }
 
@@ -700,6 +700,10 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[i], "--shot")) {
             if (++i == argc) return usage(argv[0]);
             cfg.shot = argv[i];
+        } else if (!mode && !strcmp(argv[i], "--plugin-init")) {   // the plugin service run (plugin_init.c)
+            if (++i == argc) return usage(argv[0]);
+            mode = argv[i - 1];
+            cfg.plugin_init = argv[i];
         } else if (!mode && !strncmp(argv[i], "--", 2)) {
             mode = argv[i];
         } else {
@@ -744,5 +748,6 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "--prepare-shaders")) return vk_pipeline_prepare_shaders();
     if (!strcmp(mode, "--warm-shaders")) return vk_pipeline_warm_shaders();
     if (!strcmp(mode, "--boot")) { cfg.boot = 1; rt_boot(); return 0; }
+    if (!strcmp(mode, "--plugin-init")) { rt_boot_plugin_init(); return 0; }
     return usage(argv[0]);
 }

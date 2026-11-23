@@ -12,26 +12,33 @@
 
 #include "launcher_text.h"
 
-#define LANGID_RUSSIAN 0x19     /* primary language id */
 #define LANGID_PT_BR 0x0416     /* the whole LANGID: Portugal's Portuguese stays English */
 #define PATH_CHARS (MAX_PATH * 2)
 
-/* The language of the window (installer/guilogic.py ui_language_for_langid): Russian, Simplified Chinese (zh-CN and
-   zh-SG; the Traditional Chinese regions get English, as the window has no Traditional Chinese), else English. */
+/* The language of the window (installer/guilogic.py ui_language_for_langid): Brazilian Portuguese by the whole LANGID,
+   the rest by the primary language (every Chinese gets Simplified Chinese), else English. */
 static void fail(void)
 {
+    static const struct { WORD primary; const wchar_t *title, *text; } by_primary[] = {
+        { LANG_RUSSIAN, LAUNCHER_TITLE_RU, LAUNCHER_PYTHON_MISSING_RU },
+        { LANG_GERMAN, LAUNCHER_TITLE_DE, LAUNCHER_PYTHON_MISSING_DE },
+        { LANG_FRENCH, LAUNCHER_TITLE_FR, LAUNCHER_PYTHON_MISSING_FR },
+        { LANG_SPANISH, LAUNCHER_TITLE_ES, LAUNCHER_PYTHON_MISSING_ES },
+        { LANG_ITALIAN, LAUNCHER_TITLE_IT, LAUNCHER_PYTHON_MISSING_IT },
+        { LANG_DUTCH, LAUNCHER_TITLE_NL, LAUNCHER_PYTHON_MISSING_NL },
+        { LANG_JAPANESE, LAUNCHER_TITLE_JA, LAUNCHER_PYTHON_MISSING_JA },
+        { LANG_KOREAN, LAUNCHER_TITLE_KO, LAUNCHER_PYTHON_MISSING_KO },
+        { LANG_CHINESE, LAUNCHER_TITLE_ZH_HANS, LAUNCHER_PYTHON_MISSING_ZH_HANS },
+    };
     LANGID ui = GetUserDefaultUILanguage();
-    int russian = (ui & 0x3ff) == LANGID_RUSSIAN, brazilian = ui == LANGID_PT_BR;
-    int chinese = ui == MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED) ||
-                  ui == MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SINGAPORE);
-    MessageBoxW(NULL,
-                russian    ? LAUNCHER_PYTHON_MISSING_RU
-                : brazilian ? LAUNCHER_PYTHON_MISSING_PT_BR
-                : chinese   ? LAUNCHER_PYTHON_MISSING_ZH_HANS
-                            : LAUNCHER_PYTHON_MISSING_EN,
-                russian ? LAUNCHER_TITLE_RU : brazilian ? LAUNCHER_TITLE_PT_BR : chinese ? LAUNCHER_TITLE_ZH_HANS
-                                                                                         : LAUNCHER_TITLE_EN,
-                MB_OK | MB_ICONERROR);
+    const wchar_t *title = LAUNCHER_TITLE_EN, *text = LAUNCHER_PYTHON_MISSING_EN;
+    if (ui == LANGID_PT_BR) {
+        title = LAUNCHER_TITLE_PT_BR; text = LAUNCHER_PYTHON_MISSING_PT_BR;
+    } else {
+        for (size_t i = 0; i < sizeof by_primary / sizeof by_primary[0]; i++)
+            if (PRIMARYLANGID(ui) == by_primary[i].primary) { title = by_primary[i].title; text = by_primary[i].text; }
+    }
+    MessageBoxW(NULL, text, title, MB_OK | MB_ICONERROR);
 }
 
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, int show)

@@ -57,7 +57,7 @@ static uint8_t *alias_pages;        // 1 per mapped 4 KiB page of the alias regi
 typedef struct { uint64_t dst, src, size; } StackMap;
 static StackMap stack_maps[MAX_STACK_MAPS];
 static unsigned nstack_maps;
-static uint8_t *module_perm[MOD_COUNT];   // per data page of each module: perm | ATTR_PERMISSION_LOCKED
+static uint8_t *module_perm[RT_MAX_MODULES];   // per data page of each module: perm | ATTR_PERMISSION_LOCKED
 
 static uint64_t align_up(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1); }
 
@@ -530,7 +530,7 @@ uint32_t mem_unmap_physical(uint64_t a, uint64_t n) { return alias_map(1, a, n);
 // as taken (Code, RX), so the SDK never picks it.
 static void taken_gap(uint64_t a, uint64_t *base, uint64_t *size) {
     uint64_t lo = 0, hi = RT_ADDRESS_LIMIT;
-    RtRange known[3 + MOD_COUNT + 2];
+    RtRange known[3 + RT_MAX_MODULES + 2];
     int n = 0;
     known[n++] = (RtRange){L.aslr.base, low_size};
     known[n++] = L.alias;
@@ -561,6 +561,9 @@ static uint64_t run_start(const uint8_t *p, uint64_t i, uint8_t v) {   // first 
     while (i > 0 && p[i - 1] == v) i--;
     return i;
 }
+
+// The plugin service run (plugin_init.c) shows rtld, its process-memory aliases and its free pool here.
+void (*mem_query_hook)(uint64_t a, RtMemoryInfo *r);
 
 uint32_t mem_query(uint64_t a, RtMemoryInfo *out) {
     RtMemoryInfo r = {.base = a & ~(PAGE - 1), .size = PAGE};
@@ -632,6 +635,7 @@ uint32_t mem_query(uint64_t a, RtMemoryInfo *out) {
         r.size = hi - lo;
     }
     plat_mutex_unlock_shared(&lock);
+    if (mem_query_hook) mem_query_hook(a, &r);
     if (out) *out = r;
     return R_OK;
 }

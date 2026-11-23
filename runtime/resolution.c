@@ -58,6 +58,7 @@
 static struct {
     int decided;
     unsigned ow, oh, sw, sh;   // output and scene
+    unsigned aw, ah;           // the output TOTK_OUTPUT_RES asks for, before shape_fallback
     int scene_set;             // the scene differs from the game's 5/6 of the output
     int heapdef_ok;            // romfs.c serves the grown HeapDef
     int on;                    // res_init switched the patch sets on
@@ -95,6 +96,19 @@ static int dlss_dll(void) {
 #endif
 }
 
+int res_dlss_dll(void) {
+    static int dll = -1;
+    if (dll < 0) dll = dlss_dll();
+    return dll;
+}
+
+// The engine picked at start can run, as far as is known before the device exists: DLSS needs its DLL (dlss_dll); FSR
+// 3.1 is built in (vk_fsr3.cpp). Off: nothing to run.
+static int upscaler_ready(void) {
+    int e = vk_upscaler_engine();
+    return e == UPSCALER_DLSS ? res_dlss_dll() : e == UPSCALER_FSR3;
+}
+
 static uint64_t shadow_kib(void);
 
 // The scene size for a share k of the output, within SCENE_MAX a side and within what a texture heap of DTA_MAX_KIB
@@ -117,15 +131,17 @@ static int scene_for(double k, unsigned *w, unsigned *h) {
 }
 
 // The scene's share of the output for a TOTK_DLSS mode; 0 for dlaa (the scene keeps base_k), while DLSS/DLAA is off
-// (the mode the menu still holds would shrink the scene for the plain upscaler) and where DLSS cannot run (dlss_dll).
+// (the mode the menu still holds would shrink the scene for the plain upscaler) and where the engine picked at start
+// cannot run (upscaler_ready).
 static double dlss_share(const char *m) {
     static const struct { const char *name; double k; } dlss[] = {
         {"quality", 2.0 / 3.0}, {"balanced", 0.58}, {"performance", 0.5}, {"ultra_performance", 1.0 / 3.0}};
-    static int dll = -1;
-    if (!cfg_bool("TOTK_DLAA")) return 0;
+    static int told;
+    if (!vk_upscaler_on()) return 0;
     for (int i = 0; i < (int)(sizeof dlss / sizeof dlss[0]); i++)
         if (!strcmp(m, dlss[i].name)) {
-            if (dll < 0 && !(dll = dlss_dll())) {
+            int ready = upscaler_ready();
+            if (!ready && !told++) {
 #ifdef _WIN32
                 rt_log("resolution: DLSS %s needs nvngx_dlss.dll next to totk.exe, which is missing: the scene follows "
                        "render_scale", m);
@@ -134,7 +150,7 @@ static double dlss_share(const char *m) {
                        "scene follows render_scale", m);
 #endif
             }
-            return dll ? dlss[i].k : 0;
+            return ready ? dlss[i].k : 0;
         }
     return 0;
 }
@@ -161,14 +177,14 @@ static void shape_fallback(void) {
 static void decide(void) {
     if (R.decided) return;
     R.decided = 1;
-    R.ow = BASE_W;
-    R.oh = BASE_H;
+    R.ow = R.aw = BASE_W;
+    R.oh = R.ah = BASE_H;
     const char *o = cfg_value("TOTK_OUTPUT_RES");
     unsigned w = 0, h = 0;
     char tail;
     if (sscanf(o, "%ux%u%c", &w, &h, &tail) == 2 && w >= 1280 && h >= 720 && w <= 7680 && h <= 4320) {
-        R.ow = w & ~1u;
-        R.oh = h & ~1u;
+        R.ow = R.aw = w & ~1u;
+        R.oh = R.ah = h & ~1u;
         shape_fallback();
     } else {
         rt_log("resolution: TOTK_OUTPUT_RES=%s is not <width>x<height> in 1280x720..7680x4320; 1920x1080", o);
@@ -191,12 +207,13 @@ static void decide(void) {
         if (n >= 256 && n <= 4096 && !(n & 7)) R.shadow = n;
         else rt_log("resolution: TOTK_SHADOW_RES=%s is not game or a size 256..4096 (a multiple of 8); game", sr);
     }
-    // A DLSS mode other than dlaa sets the scene size instead. On 1.4.3 with DLSS able to run (DLAA on, the DLL there)
+    // A DLSS mode other than dlaa sets the scene size instead. On 1.4.3 with the scene upscaler able to run (DLSS with
+    // its DLL there, or FSR 3.1 in the build)
     // the mode can change while the game runs (res_dlss_mode): the scene patch is then always on and the heap is sized
     // for the largest scene the modes ask for. Everyone else keeps the game's own scene size and its dynamic resolution
     // unless render_scale or a DLSS mode asks for another, and a heap sized for that scene alone.
     R.base_k = k;
-    R.live = RT_V143 && cfg_bool("TOTK_DLAA") && dlss_dll();
+    R.live = RT_V143 && vk_upscaler_on() && upscaler_ready();
     const char *m = cfg_value("TOTK_DLSS");
     R.dlss_k = dlss_share(m);
     if (R.dlss_k) rt_log("resolution: DLSS %s: the scene at %.0f %% of the output (render_scale ignored)", m, R.dlss_k * 100);
@@ -510,9 +527,10 @@ static void shadow_init(uint8_t *page) {
 // ---- start: the patch page and the sets
 static uint64_t pack(unsigned w, unsigned h) { return (uint64_t)h << 32 | w; }
 
-// TOTK_SHADOW_RANGE (percent, 50 to 400; 100 = the game's): the sun's shadow cascades end at 20, 40, 80 and 160 m.
-// Other values multiply those distances through the cascade patch set (recomp/patches-v143.txt), so the sharp first
-// cascade reaches further and the visible steps between cascades move away from the player, at the cost of shadow
+// TOTK_SHADOW_RANGE (percent, 50 to 400; 100 = the game's): the sun's shadow cascades end at 20, 40, 80 and 160 m by
+// the depth shadow parameters' defaults; in the field the shadow controller computes the boundaries from the camera
+// each frame instead. Other values multiply the boundaries through the cascade patch set (recomp/patches-v143.txt and
+// patches-v121.txt; the controller's sites take page +64 over 20 as the factor), so the sharp first cascade reaches further and the visible steps between cascades move away from the player, at the cost of shadow
 // texels per metre (TOTK_SHADOW_SCALE pays that back).
 static void res_shadow_range(void) {
     int pct = cfg_int("TOTK_SHADOW_RANGE"), set = rt_patch_set("cascade");
@@ -625,10 +643,10 @@ int res_wants_wide_overlay(const unsigned out[2]) {
     return !res_is_16x9(out[0], out[1]) && rt_patch_set("aspect") >= 0;
 }
 
-// Field of view (TOTK_FOV, percent of the game's own, 70..140, live): the camera's vertical view angle times the
-// factor on page +60 (recomp/patches-v143.txt, set fov). The horizontal angle follows through the aspect ratio. 100
-// switches the set off, so the camera code is the game's own. Runs on a settings change (gfx_present.c
-// window_settings_live), the first time at the first present.
+// Field of view (TOTK_FOV, percent of the game's own, 70..140, live): the camera's vertical view angle times the factor
+// on page +60 (recomp/patches-v110.txt, patches-v121.txt and patches-v143.txt, set fov). The horizontal angle follows
+// through the aspect ratio. 100 switches the set off, so the camera code is the game's own. Runs on a settings change
+// (gfx_present.c window_settings_live), the first time at the first present.
 #define FOV_MIN 70
 #define FOV_MAX 140
 void res_fov_live(void) {
@@ -648,7 +666,7 @@ void res_fov_live(void) {
     rt_log("resolution: field of view %d%% of the game's", pct);
 }
 
-// TOTK_DYNAMIC_RES = 0 holds the game's dynamic resolution at 100 % (recomp/patches-v121.txt and patches-v143.txt,
+// TOTK_DYNAMIC_RES = 0 holds the game's dynamic resolution at 100 % (patches-v110.txt, patches-v121.txt and patches-v143.txt,
 // set fixres), so the scene renders at the size render_scale chose. The game picks its tier (100, 90 or 80 %) mostly
 // from a fixed cost model made for the Switch: one term grows with the object counts, one with (scene width / 1600)
 // squared. The GPU time it also measures (two NVN report timestamps, a frame apart) only lowers that prediction when the
@@ -656,24 +674,39 @@ void res_fov_live(void) {
 // 2867-wide scene stays at 100 %, one wider than about 2970 does not, and a 4267-wide one (5120x1440 at render_scale
 // 83) fits no tier and falls back to 80 % every frame, whatever the GPU's load. 1 (the default) leaves the game's own
 // stepping and the set off. Runs on a settings change (gfx_present.c window_settings_live), like res_fov_live.
+// FSR 3.1 as the scene upscaler holds it at 100 % whatever dynamic_res says, as codexx-dev's pull request #1245 does
+// for its FSR: each tier is a scene of another size, so every step starts FSR's history again, and below 100 % the
+// game ends its frame another way (a frame log on 1.4.3: its copy shader scales the scene straight into the
+// output-sized target instead of the scaling FXAA draw), which #1245 measured as a picture that went soft and sharp in
+// turns at a 2560x1440 scene. A 1280x720 scene (1080p, quality) stayed at 100 % through a 70 s town run, so it gains
+// nothing there; the hold matters for the wide scenes the cost model steps down.
 void res_dynres_live(void) {
     static int set = -2, shown = -1;
     if (set == -2) set = rt_patch_set("fixres");
-    int dyn = cfg_bool("TOTK_DYNAMIC_RES");
-    if (dyn == shown) return;
-    shown = dyn;
+    int fsr = vk_upscaler_on() && vk_upscaler_engine() == UPSCALER_FSR3;
+    int dyn = cfg_bool("TOTK_DYNAMIC_RES") && !fsr;
+    int state = dyn | fsr << 1;
+    if (state == shown) return;
+    shown = state;
     if (set < 0) {
         if (!dyn) rt_log("resolution: this game version has no fixed-resolution patch; the game keeps its dynamic resolution");
         return;
     }
     rt_patch_switch(set, !dyn);
     rt_log("resolution: dynamic resolution %s",
-           dyn ? "on: the game's own 100, 90 or 80 %" : "off: the scene stays at 100 %");
+           dyn   ? "on: the game's own 100, 90 or 80 %"
+           : fsr ? "off while FSR 3.1 upscales the scene: the scene stays at 100 %"
+                 : "off: the scene stays at 100 %");
 }
 
 void res_wanted(unsigned out[2]) {
     decide();
     out[0] = R.ow, out[1] = R.oh;
+}
+
+void res_asked(unsigned out[2]) {
+    decide();
+    out[0] = R.aw, out[1] = R.ah;
 }
 
 // A TOTK_DLSS change while the game runs (vk_dlaa.c, at a present): the new scene size goes to the patch page, where

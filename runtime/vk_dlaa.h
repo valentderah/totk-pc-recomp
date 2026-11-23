@@ -1,4 +1,5 @@
-// DLAA (vk_dlaa.c): NVIDIA DLSS at the scene's own size, behind TOTK_DLAA (totk.ini dlaa = 1).
+// DLAA (vk_dlaa.c): the scene upscaler, NVIDIA DLSS or AMD FSR 3.1 (vk_fsr3.cpp), behind scene_upscaler (dlaa = 1 without
+// it: DLSS).
 #pragma once
 #include "vk.h"
 
@@ -6,7 +7,7 @@
 // output renders 640 wide, smaller windows less.
 #define DLAA_SCENE_MIN_W 320u
 
-int vk_dlaa_wanted(void);   // the setting is on (the device may still lack DLSS)
+int vk_dlaa_wanted(void);   // DLSS is the scene upscaler picked at start (the device may still lack it)
 // vk_device.c: NGX's instance and device extensions join the lists (room for max names); vk_dlaa_init after the
 // device exists brings NGX up and checks that DLSS is available.
 void vk_dlaa_instance_exts(const char **ext, uint32_t *n, uint32_t max);
@@ -14,6 +15,11 @@ void vk_dlaa_device_exts(const VkExtensionProperties *have, uint32_t nhave, cons
 void vk_dlaa_init(void);
 // 1 when dlaa is on and NGX came up with DLSS (after vk_dlaa_init): a DLSS mode's smaller scene is scaled up by DLSS.
 int vk_dlaa_available(void);
+// 1 when the per-object motion runs (DLSS's and FSR 3.1's half after vk_dlaa_init, frame generation's live): DLSS
+// with NGX up (vk_dlaa_available), FSR 3.1 picked as the scene upscaler, or frame generation following the scene with
+// its objects (vk_fg_objects_on: TOTK_FG_OBJECTS, default 1).
+int vk_objmv_wanted(void);
+int vk_fg_objects_on(void);
 // vk_exec.c vk_exec_pass_begin, once the pass's targets are resolved and before its barrier: arms the frame on the
 // scene's light target or, at the first quarter-width pass after it, runs DLAA on that target. Each present ends the
 // frame (vk_dlaa_frame).
@@ -25,6 +31,12 @@ void vk_dlaa_pass(VkExec *ex);
 int vk_dlaa_plan(const VkExec *ex, VkExecJob *j);
 void vk_dlaa_exec(VkExec *ex, const VkExecJob *j);
 void vk_dlaa_frame(void);
+// Frame generation without DLSS (vk_dlaa.c, "frame generation"), sequential replay: vk_dlaa_hud before each draw once
+// its pass has begun (vk_exec_draw.c prepare_draw, while vk_dlaa_fg_on), vk_dlaa_sub_end at the end of each
+// submission's replay with no pass open (vk_exec.c vk_exec_record).
+extern int vk_dlaa_fg_on;
+void vk_dlaa_hud(VkExec *ex);
+void vk_dlaa_sub_end(VkExec *ex);
 // vk_exec_draw.c, each draw before its fixed state is recorded: notes the scene camera block (vk_dlaa_draw), and moves
 // the viewport of the scene's draws by the frame's jitter (vk_dlaa_viewport, when the viewport is recorded).
 void vk_dlaa_draw(VkExec *ex);
@@ -42,6 +54,9 @@ void vk_mvprev_draw(VkExec *ex);   // vk_mvprev.c: notes the scene draw's object
 int vk_mvobj_execute(VkExec *ex, uint64_t cam, VkImageView mv, VkImageView depth, VkFormat depth_fmt, uint32_t w,
                      uint32_t h);
 int vk_dlaa_prev_camera(VkDescriptorBufferInfo *out, float jitter[2]);
+// nvn_api_core.c ov_memcpy, after a 64-byte copy on the game's thread: the camera jitter of 1.4.3 (vk_dlaa.c).
+void vk_dlaa_camera_copied(uint64_t lr, uint64_t dst, uint64_t off);
+void vk_dlaa_game_present(void);   // vk_backend.c, each of the game's presents, on its thread
 // vk_mvcheck.c (TOTK_MV_CHECK, test): mv_pass hands it the motion image after the camera pass and, after the object
 // pass, the motion image again and the scene light target it ran on; it measures how well the vectors fit the picture.
 void vk_mvcheck_camera(VkCommandBuffer cb, VkImage mv, uint32_t w, uint32_t h, float jx, float jy);

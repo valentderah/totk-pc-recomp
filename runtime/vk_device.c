@@ -12,6 +12,8 @@
 #include "vk.h"
 #include "platform/platform.h"
 #include "vk_dlaa.h"
+#include "vk_fg.h"
+#include "vk_fsr3.h"
 
 static VkCtx g_vk;
 static int g_ready;
@@ -22,7 +24,10 @@ static PlatMutex g_lock = PLAT_MUTEX_INIT;
 // the debug messenger. The newest AB_N events stay in a ring written without a lock (one atomic add each), so a device
 // fault names the object behind its address and whether it was unbound before the fault, which is memory freed while
 // a submission still used it. One event per image, buffer or memory block made or freed, none per draw.
-// TOTK_ADDR_REPORT=0 turns it off.
+// Off by default; TOTK_ADDR_REPORT=1 turns it on for a run that chases a device fault. Our callback is cheap, but with
+// the feature on AMD's Windows driver (26.10.1) tracks every bound range in a chained hash map it searches on nearly
+// every recorded command: the chains grow as textures stream in and out, and recording a submission cost 3-4 times
+// more after minutes of play in a busy area (#1174).
 #define AB_N (1u << 15)
 typedef struct { uint64_t seq, base, size, handle, issued, done; int32_t type; uint32_t unbind; } AbEvent;
 static AbEvent *ab_ring;
@@ -137,8 +142,7 @@ static int create_instance(void) {
         rt_log("vk: TOTK_VK_VALIDATION set but %s is not installed; continuing without", layers[0]);
         validate = 0;
     }
-    const char *ar = cfg_get("TOTK_ADDR_REPORT");
-    ab_want = !(ar && !strcmp(ar, "0")) && instance_ext_present(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    ab_want = cfg_bool("TOTK_ADDR_REPORT") && instance_ext_present(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     if (ab_want && !ab_ring && !(ab_ring = calloc(AB_N, sizeof *ab_ring))) ab_want = 0;
     if (validate || ab_want) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     if (vk_hdr_wanted() && instance_ext_present(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME))   // HDR10 surface formats
@@ -405,8 +409,8 @@ static int create_device(void) {
     // wherever reported; vk_pipeline.c spirv_demote emits OpDemoteToHelperInvocation only when it is.
     vk_caps.demote = c->f13.shaderDemoteToHelperInvocation;
     rt_log("vk: GPU address map for device faults: %s",
-           has_abr && c->abr.reportAddressBinding ? "on (VK_EXT_device_address_binding_report; TOTK_ADDR_REPORT=0 turns it off)"
-           : !ab_want ? "off (TOTK_ADDR_REPORT=0 or no VK_EXT_debug_utils)"
+           has_abr && c->abr.reportAddressBinding ? "on (VK_EXT_device_address_binding_report, TOTK_ADDR_REPORT=1)"
+           : !ab_want ? "off (TOTK_ADDR_REPORT=1 turns it on; it slows recording on some drivers)"
                       : "unavailable (no VK_EXT_device_address_binding_report)");
     g_vk.has_buffer_device_address = c->f12.bufferDeviceAddress;
     // VkPresentIdKHR on a present needs the presentId feature, not just the extension
@@ -480,6 +484,8 @@ static long g_errors_total;     // outlives the device so the probe can print it
 static void destroy_all(void) {
     gfx_window_release_vk();
     if (g_vk.device) vkDeviceWaitIdle(g_vk.device);
+    if (g_vk.device) vk_fg_release();
+    if (g_vk.device) fsr3_release();
     if (g_vk.device) vk_astc_release();
     if (g_vk.device) vk_deswz_release();
     if (g_vk.device) vk_crumbs_release();
@@ -505,7 +511,7 @@ int vk_init(void) {
     if (!g_ready) {
         memset(&g_vk, 0, sizeof g_vk);
         if (create_instance() && pick_device() && create_device())
-            g_ready = 1, vk_mem_host_probe(), vk_upload_pools_init(), vk_headroom_start(), vk_dlaa_init();
+            g_ready = 1, vk_mem_host_probe(), vk_upload_pools_init(), vk_headroom_start(), vk_dlaa_init(), vk_fg_init();
         else destroy_all();
     }
     int ok = g_ready;

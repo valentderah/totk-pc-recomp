@@ -19,7 +19,8 @@ offsets count the NSO header (0x100 bytes) before main's image; a pchtxt offset 
 A pchtxt patch line applies between @enabled and @disabled; @stop ends the file.
 
 --out gets the --patches file followed by one set per file with sites (`mod_<hash>`, switch TOTK_MODPATCH_<HASH>,
-default off) and its sites. --status gets one line per file, mods by name, tab separated:
+default off, `ordered`: where sets of several files patch one site, the runtime runs the one of the mod highest on the
+Mods tab, recomp/patches.py) and its sites. --status gets one line per file, mods by name, tab separated:
 
   <file hash> <content hash> <kind> <built-in sets> <note>
 
@@ -318,7 +319,7 @@ def build(args):
     m = Main(args.exefs / 'main')
     md = MainData(m) if args.data else None
     bid = m.nso.build_id
-    text = args.patches.read_text()
+    text = args.patches.read_text(encoding='utf-8')
     builtin = builtin_sites(text)
     files = patch_files(args.mods)
     sets, sites, status, data_lines, kinds = [], [], [], [], {}
@@ -330,7 +331,7 @@ def build(args):
         if file_sites:
             name = f'mod_{key.lower()}'
             label = f'{mod}/{rel}'.encode('ascii', 'replace').decode()
-            sets.append(f'set {name} TOTK_MODPATCH_{key} 0   # {label}')
+            sets.append(f'set {name} TOTK_MODPATCH_{key} 0 ordered   # {label}')
             for a, repl in sorted(file_sites.items()):
                 sites.append(f'site {name} main {a:x} {m.word(a):08x} {" ".join(f"{w:08x}" for w in repl)}')
                 over += [s for s in builtin.get(a, []) if s not in over]
@@ -350,7 +351,7 @@ def build(args):
     if sets:
         text += ('\n# ExeFS patches of the mods folder (tools/exefs_patches.py)\n' + '\n'.join(sets) + '\n'
                  + '\n'.join(sites) + '\n')
-    args.out.write_text(text)
+    args.out.write_text(text, encoding='utf-8')
     args.status.parent.mkdir(parents=True, exist_ok=True)
     args.status.write_text('\n'.join(status) + ('\n' if status else ''), encoding='utf-8')
     if args.data:

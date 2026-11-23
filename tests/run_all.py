@@ -55,6 +55,7 @@ TESTS = {
     'ncz_test':                 ('.venv-py314', None, [], ''),
     'romfs_prompts_test':       ('.venv-py314', None, [], ''),
     'exefs_patches_test':       ('.venv', None, [], ''),
+    'exefs_plugins_test':       ('.venv', None, [], ''),
     'settings_doc_check':       ('.venv', None, [], ''),
     'mouse_direct_check':       ('.venv', 'cc', ['--cc', '<cc>'], 'compiles its checks with clang'),
     'cheats_vm_check':          ('.venv', 'cc', ['--cc', '<cc>'], 'compiles runtime/cheats.c into a harness with clang'),

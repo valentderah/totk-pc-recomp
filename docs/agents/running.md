@@ -27,8 +27,10 @@ results without flooding its context. Setting names and file formats live in [se
 
 - `--seconds` is game time since the world loaded (the log line `frame step: world clock starts` marks the start), at
   any frame rate. Measure and script by game time; a frame count at another fps is another scene.
-- `--script` replays input ([controls.md](../controls.md), "Scripted input"). A new script starts with the presses of
-  `tools/input/load_save.txt`, which load the first save from the title. `TOTK_INPUT_RECORD` turns a person's play into
+- `--script` replays input ([controls.md](../controls.md), "Scripted input"). A new script starts with every line of
+  `tools/input/load_save.txt`, which loads the first save from the title: A every 2.5 s until the load ends, because a
+  slow boot eats presses and a run left on a title dialog shows nothing. Its timed line stops those presses when the
+  world clock starts; a script without a timed line would carry them into the world. `TOTK_INPUT_RECORD` turns a person's play into
   a script; ask the user to record the repro rather than guessing the button sequence.
 - `--shot` saves the last frame and builds pipelines synchronously: use it for pictures, never for timing.
 - `--quiet` waits until no other `totk.exe` or `ninja.exe` runs. Every timing you report comes from a `--quiet` run.
@@ -53,6 +55,7 @@ scene you expected. Title menus on a slow boot eat presses, and runs of one scri
 | every render pass of one frame | `TOTK_DUMP=<frame>` and `TOTK_DUMP_DIR`: a PNG per pass target plus `passes.txt` (draws, bound textures with swizzles, storage buffers, copies, clears) and `images.txt`; `TOTK_DUMP_BUF` adds a guest buffer |
 | Vulkan misuse | `TOTK_VK_VALIDATION=1` (needs the Vulkan SDK), run into the world; compare the message kinds with a run without your change. The layer caps repeats, so counts are not totals |
 | which pass the GPU was in at a device lost | the `vk: pass marks` lines; on by default on AMD, `TOTK_PASS_CRUMBS=1` elsewhere |
+| which object held the address of a GPU memory fault | `TOTK_ADDR_REPORT=1` (off by default: it slows recording, on AMD's Windows driver more and more over a session); the `vk: fault address` lines after the device lost |
 | a crash | the crash report at the end of the log: exception, guest and host addresses, registers |
 | a run on a large card that acts like a small one | `TOTK_VRAM_LIMIT_MIB=<MiB>` |
 
