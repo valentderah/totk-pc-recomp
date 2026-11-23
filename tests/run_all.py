@@ -53,6 +53,7 @@ TESTS = {
     'excl_mt':                  ('.venv', 'cc', [], 'compiles the threaded exclusive-monitor harness with clang'),
     'check_isa_test':           ('.venv', None, [], ''),
     'compile_budget_test':      ('.venv', None, [], ''),
+    'extract_skip_base_romfs_test': ('.venv-py314', None, [], ''),
     'pack_shader_cache_test':   ('.venv', None, [], ''),
     'spin_waits_test':          ('.venv', None, [], ''),
     'worktree_test':            ('.venv', None, [], ''),
