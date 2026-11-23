@@ -22,13 +22,16 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - Custom resolutions (1080p, 2k...), supersampling and AMD FSR 1 upscaling
 - NVIDIA DLSS / DLAA on RTX GPUs: the setup downloads `nvngx_dlss.dll` from NVIDIA's DLSS SDK repository
   (github.com/NVIDIA/DLSS, NVIDIA RTX SDK license) when it finds an RTX GPU; untick it in the setup to skip it
+- AMD FSR 3.1 on any GPU, and AMD FSR 4 on Windows on the Radeon GPUs AMD's FSR SDK libraries support, in the same
+  modes as DLSS: for FSR 4 the setup downloads AMD's signed FSR SDK libraries
+  (github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK, AMD FSR SDK license), ticked by default with an AMD GPU
 - HDR10 output with peak, game and HUD brightness settings
 - 16:10 (Steam Deck, handhelds), 3:2 (Surface, Framework), 21:9 and 32:9 (ultrawide) game resolutions, with the camera and the interface in that shape
 - Anisotropic texture filtering up to 16x, for sharp ground into the distance
 - In-game settings menu (F1) and performance overlay (F10)
 - Play time across runs on the Game tab of the settings menu, kept in `playtime.txt` next to the saves
 - Discord Rich Presence ("Playing TotK Recomp" with the play time), off by default, own application id supported
-- Setup in 11 languages, in-game menu in 4 ([Languages](#languages))
+- Setup in 12 languages, in-game menu in 12 ([Languages](#languages))
 - Keyboard, mouse and gamepad with remapping, rumble and gyro
 - Stereo or 5.1 surround sound output
 - Xbox and PlayStation button prompts: Xbox's LB, RB, LT, RT, Menu, View and A, B, X, Y, or PlayStation's ○ × △ □, L1, R1, L2, R2, Options and Share, as labelled on the button to press, with either button layout
@@ -43,7 +46,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 
 The game keeps the text and voices of every language it shipped with. The port's own setup and in-game menu (F1) come
 in these; both follow the Windows display language, and the menu has its own choice on its Menu tab. A Traditional
-Chinese Windows gets the Simplified Chinese setup.
+Chinese Windows gets the Simplified Chinese setup and menu.
 
 | Language | Setup | In-game menu |
 |---|:---:|:---:|
@@ -51,13 +54,14 @@ Chinese Windows gets the Simplified Chinese setup.
 | Русский | ✅ | ✅ |
 | Português (Brasil) | ✅ | ✅ |
 | 简体中文 | ✅ | ✅ |
-| Deutsch | ✅ | English |
-| Français | ✅ | English |
-| Español | ✅ | English |
-| Italiano | ✅ | English |
-| Nederlands | ✅ | English |
-| 日本語 | ✅ | English |
-| 한국어 | ✅ | English |
+| Deutsch | ✅ | ✅ |
+| Français | ✅ | ✅ |
+| Español | ✅ | ✅ |
+| Italiano | ✅ | ✅ |
+| Nederlands | ✅ | ✅ |
+| 日本語 | ✅ | ✅ |
+| 한국어 | ✅ | ✅ |
+| Tiếng Việt | ✅ | ✅ |
 
 Spotted a clumsy phrase, or want your language added? The setup texts are in `installer/text/<language>.json`, the
 menu texts in `runtime/ui_text.c`; open an issue or a pull request ([CONTRIBUTING.md](CONTRIBUTING.md)). Fixes from
@@ -71,13 +75,14 @@ native speakers are welcome.
 
 ### Windows
 
-Requirements: Windows 10 or later, an x86-64 CPU with SSE4.2 (AVX2/FMA machines get a faster build), a GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`, about 36 GiB free during setup (20 GiB after).
+Requirements: Windows 10 or later, an x86-64 CPU with SSE4.2 (AVX2/FMA machines get a faster build), a GPU with Vulkan 1.3 (`VK_EXT_external_memory_host` recommended: without it the game copies its memory pools and runs slower), about 36 GiB free during setup (20 GiB after).
 
 1. Download `TotK-Setup-<version>-windows.zip` from [Releases](../../releases/latest) and unpack it.
 2. Start `TotK-Setup.exe`. If SmartScreen warns about an unsigned app, choose *More info*, then *Run anyway*.
 3. Pick your game files, the language and an install folder, and press *Start*. The setup builds the game once. With
    an NVIDIA RTX GPU it also downloads NVIDIA DLSS, unless you untick *Download NVIDIA DLSS*; turn DLSS on in the
-   menu (F1).
+   menu (F1). With *Download AMD FSR 4* ticked (the default with an AMD GPU) it downloads AMD's FSR SDK libraries;
+   in the menu, pick *AMD FSR 4* as the *3D scene upscaler*.
 4. Play `totk.exe` from the install folder.
 
 ### Linux

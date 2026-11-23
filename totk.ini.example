@@ -22,7 +22,7 @@
 # frame_queue = 0
 # Frame generation: off, or fsr3 (AMD FSR 3 frame interpolation). A generated picture goes on screen between each two
 # the game draws: twice the pictures, the game at half of fps_limit (the limit counts the pictures shown), the controls
-# about half a frame later. For displays of 120 Hz and more; off with DLSS, FSR 3.1 (scene_upscaler) or HDR, and in
+# about half a frame later. For displays of 120 Hz and more; off with DLSS, FSR (scene_upscaler) or HDR, and in
 # menus and fades. Applies at once.
 # frame_gen = off
 # Real-time frame step: game speed follows the clock instead of the frame count.
@@ -41,6 +41,9 @@
 # Game 1.4.3: the two launchers in Tenbez Shrine throw the stone ball into the other launcher's seat above 30 fps.
 # 0 = the game's own speed, tuned for 30 fps.
 # shutter_fix = 1
+# Games 1.2.1 and 1.4.3: above 30 fps a thunderstorm has the lightning of 30 fps, instead of more distant bolts and
+# lightning flashes the higher the frame rate. 0 = the game's own chances per frame, tuned for 30 fps.
+# lightning_fix = 1
 
 [performance]
 # The keys of this section and of [diagnostics] are for testing and troubleshooting, and take effect at the next start.
@@ -181,6 +184,10 @@
 # vk_dyn_a2c = 1
 # Pin the shader subgroup size to 32 when the GPU allows it.
 # vk_subgroup_pin = 1
+# 1 gives empty colour slots of a render pass a dummy image instead of none. Default: 0. A workaround to try if the
+# game crashes right after the Nintendo logo on an Intel HD or UHD graphics chip (6th to 10th generation, such as
+# HD 520 or UHD 620) with Intel's older driver (101.21xx); it costs a few MB of video memory.
+# null_attach = 0
 
 [display]
 # Device profile: auto (the Steam Deck when this is one), desktop or deck. On a Steam Deck the keys this file does not
@@ -231,7 +238,7 @@
 # Dynamic resolution: 1 lets the game lower the scene to 90 or 80 % of that size, 0 keeps it at 100 %. The game decides
 # by a cost estimate made for the Switch, which grows with the scene's width and ignores how fast your GPU is: a
 # scene wider than about 3000 pixels can drop to 80 % on any GPU. 1 is the default. 1.1.0, 1.2.1 and 1.4.3. Changes in
-# the menu take effect at once. While FSR 3.1 upscales the scene (scene_upscaler = fsr3) it stays at 100 %.
+# the menu take effect at once. While FSR upscales the scene (scene_upscaler = fsr3 or fsr4) it stays at 100 %.
 # dynamic_res = 1
 # Scaling to the window when it is larger than the game resolution: fsr (AMD FSR 1) or bilinear, and FSR's sharpening
 # from 0 (off) to 100. Changes while the game runs take effect at once.
@@ -296,24 +303,27 @@
 
 # The temporal upscaler for the 3D scene: off (the game's own scaling and FXAA), dlss (NVIDIA DLSS, on NVIDIA RTX GPUs
 # with the DLSS model from NVIDIA's DLSS SDK next to the executable: Windows nvngx_dlss.dll next to totk.exe; Linux
-# libnvidia-ngx-dlss.so.<version> next to totk, with the NVIDIA driver's libnvidia-ngx.so.1 installed) or fsr3 (AMD FSR
-# 3.1 from AMD's FidelityFX SDK, on any GPU). FSR 3.1 below native (dlss = quality and down) pays where the GPU limits
-# the frame rate: integrated GPUs, weak cards, 4K output; where the CPU limits it, its own GPU and CPU time make the game
-# slower. An engine that cannot run here leaves the game's own scaling in place. The HUD is drawn after it, at the
-# output size, and is not touched. The present's upscaler and sharpness below still scale the game image to the window.
-# Frame generation stays off with fsr3. Read at start. Without this line, dlaa = 1 (the older switch) means dlss.
+# libnvidia-ngx-dlss.so.<version> next to totk, with the NVIDIA driver's libnvidia-ngx.so.1 installed), fsr3 (AMD FSR
+# 3.1 from AMD's FidelityFX SDK, on any GPU) or fsr4 (AMD FSR 4, Windows only, on the Radeon GPUs AMD's FSR SDK
+# libraries offer it for, with amd_fidelityfx_loader_vk.dll and amd_fidelityfx_upscaler_vk.dll next to totk.exe, which
+# the setup downloads; without FSR 4 for the GPU the log says so and the scene upscaler is off). FSR below native (dlss =
+# quality and down) pays where the GPU limits the frame rate: integrated GPUs, weak cards, 4K output; where the CPU
+# limits it, its own GPU and CPU time make the game slower. An engine that cannot run here leaves the game's own scaling
+# in place. The HUD is drawn after it, at the output size, and is not touched. The present's upscaler and sharpness
+# below still scale the game image to the window. Frame generation stays off with fsr3 and fsr4. Read at start. Without
+# this line, dlaa = 1 (the older switch) means dlss.
 # scene_upscaler = off
 # The older DLSS switch, read only when scene_upscaler is not set: 1 is scene_upscaler = dlss.
 # dlaa = 0
-# The upscaling mode of the scene upscaler, DLSS or FSR 3.1: dlaa (native: the 3D scene at full size, anti-aliased
+# The upscaling mode of the scene upscaler, DLSS or FSR: dlaa (native: the 3D scene at full size, anti-aliased
 # only), quality, balanced, performance or ultra_performance (the scene at 67, 58, 50 or 33 % of the output, scaled up by
 # the upscaler; these replace render_scale and sharpen texture filtering to match). They apply only while a scene
 # upscaler runs; otherwise the scene follows render_scale. Changes while the game runs take effect at once (1.4.3; 1.2.1
 # at the next start).
 # dlss = dlaa
-# FSR 3.1's own sharpening of the 3D scene, from 0 (off) to 100. The game's sharpening is part of its FXAA, which FSR
-# 3.1 replaces, so at 0 FSR's picture is softer than the game's own. Only with scene_upscaler = fsr3. Changes while the
-# game runs take effect at once.
+# FSR's own sharpening of the 3D scene, from 0 (off) to 100. The game's sharpening is part of its FXAA, which FSR
+# replaces, so at 0 FSR's picture is softer than the game's own. Only with scene_upscaler = fsr3 or fsr4. Changes while
+# the game runs take effect at once.
 # fsr_sharpness = 80
 # The DLSS model: default (NVIDIA's advice per mode: K for dlaa, quality and balanced, M for performance, L for
 # ultra_performance), k (K in every mode) or j (the other transformer model: slightly less ghosting behind moving
@@ -339,8 +349,10 @@
 # processes these effects too, as before (the default until the inventory preview, the scope and water edges are
 # checked on NVIDIA). The upscaling DLSS modes always process them. Changes while the game runs take effect at once.
 # dlaa_effects_after = 0
-# NVIDIA Reflex Low Latency (NVIDIA GPUs supporting VK_NV_low_latency2): off, on, or boost.
-# Reduces system input latency; boost keeps GPU clocks high in CPU-bound scenes. Read at start.
+# Low latency: off, auto, on or boost. Reduces system input latency. on and boost enable NVIDIA Reflex
+# (VK_NV_low_latency2); boost also keeps NVIDIA GPU clocks high in CPU-bound scenes. auto enables Reflex, or AMD
+# Anti-Lag 2 (VK_AMD_anti_lag: Mesa RADV, AMD's Windows driver) on a GPU without Reflex. On a GPU with neither the
+# setting does nothing. Frames are held to the frame limit the pacer uses. Read at start.
 # reflex = off
 # The game's own FXAA after the post effects; with DLAA on it is not needed. Changes while the game runs take effect at
 # once.
@@ -364,8 +376,8 @@
 # lang = en-US
 # System mode reported to the game: docked or handheld.
 # operation_mode = docked
-# Language of the settings menu and the overlay: en, ru, pt-BR or zh-Hans. Default: the Windows display language, English if
-# it is none of them.
+# Language of the settings menu and the overlay: en, ru, pt-BR, zh-Hans, de, fr, es, it, nl, ja, ko or vi. Default: the
+# Windows display language (Simplified Chinese for any Chinese), English if it is none of them.
 # menu_lang = en
 
 [discord]
@@ -563,6 +575,11 @@
 # cheats and the other patch files load. Its files may expect the missing code. 0: only the mods mods_no_code names.
 # Read at start. Default: 0.
 # mods_without_code = 0
+# 1: the resource size table merged from the mods' files at start is kept in <profile>/mods/ and served again at the
+# next start when no mod file, shipped table, the mod list or order, the game files or totk.exe changed (a file counts
+# as changed when its size, write time or file id did). It saves the merge at start. A tool that rewrites a mod file
+# with the same size and write time is not seen: set 0 while editing mod files that way. Read at start. Default: 0.
+# restbl_cache = 0
 # Extra room in MiB (0 to 4096) for the heap the world's textures stream into, for HD texture packs. Packs made for
 # emulators with 8 GB of DRAM grow it in their own HeapDef table (System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs):
 # the port reads that growth at start and applies it itself (about 3339 MiB for the HDPacks 4K pack), so such a pack
