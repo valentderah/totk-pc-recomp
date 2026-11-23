@@ -282,6 +282,10 @@ static int heap_fault_raced(uint64_t a) {
     return plat_mem_state(a & ~(PAGE - 1), (a & ~(PAGE - 1)) + PAGE, &end) == PLAT_PROT_RW;
 }
 
+int mem_heap_lazy(void) { return heap_lazy; }
+
+void mem_heap_commit(uint64_t a, uint64_t n) { heap_commit_range(a, n); }
+
 uint64_t mem_heap_uncommitted(void) {
     if (!heap_lazy) return 0;
     uint64_t size = __atomic_load_n(&heap_size, __ATOMIC_ACQUIRE), done = __atomic_load_n(&heap_committed, __ATOMIC_RELAXED);
