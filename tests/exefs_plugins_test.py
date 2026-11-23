@@ -182,6 +182,12 @@ class Check(unittest.TestCase):
         self.assertEqual(hooks[0]['callback'], f'plugin0+{CB_OFF:#x}')
         self.assertEqual(hooks[0]['trampoline'], f'plugin0+{TRAMP_OFF:#x}')
 
+    def test_good_with_fp_impl(self):   # Magic of the Kingdom: the impl that saves d0..d15 as well
+        self.assertIn('exl_inline_hook_with_fp_impl', xp.HOOK_IMPLS)
+        hooks, reasons = xp.check_record(record(), {PLUGIN + IMPL_OFF: 'exl_inline_hook_with_fp_impl'})
+        self.assertEqual(reasons, [])
+        self.assertEqual(hooks[0]['impl'], 'exl_inline_hook_with_fp_impl')
+
     def test_good_plain_original(self):
         self.assertEqual(self.reasons(record(original=0xAA0003F3)), [])   # mov x19, x0, copied as it is
 
