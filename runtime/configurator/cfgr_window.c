@@ -193,20 +193,24 @@ static void fonts_build(void) {
     g_atlas = nk_sdl_font_stash_begin(g_ctx);
     struct nk_font_config cfg = nk_font_config(0);
     cfg.range = ranges;
-    cfg.oversample_h = 2, cfg.oversample_v = 1;
+    cfg.oversample_h = 1, cfg.oversample_v = 1, cfg.pixel_snap = 1;   // sharp: see the texture below
     g_body = nk_font_atlas_add_from_memory(g_atlas, (void *)data, size, roundf(S(16.5f)), &cfg);
     const nk_rune *names = cjk || !g_cjk_font ? NULL : lang_name_ranges();
     if (names && names[0]) {   // Nuklear merges into the atlas' first font: the body font, which the lists use
         struct nk_font_config mc = nk_font_config(0);
         mc.range = names;
         mc.merge_mode = 1;
-        mc.oversample_h = 2, mc.oversample_v = 1;
+        mc.oversample_h = 1, mc.oversample_v = 1, mc.pixel_snap = 1;
         nk_font_atlas_add_from_memory(g_atlas, g_cjk_font, g_cjk_size, roundf(S(16.5f)), &mc);
     }
     g_small = nk_font_atlas_add_from_memory(g_atlas, (void *)data, size, roundf(S(13.5f)), &cfg);
     g_head = nk_font_atlas_add_from_memory(g_atlas, (void *)data, size, roundf(S(19)), &cfg);
     g_title = nk_font_atlas_add_from_memory(g_atlas, (void *)data, size, roundf(S(23)), &cfg);
     nk_sdl_font_stash_end(g_ctx);
+    // The glyphs are baked at the screen's pixel size (S() follows the display scale), one texel per pixel; sampled
+    // linearly at the fractional positions layout gives them they came out soft, so the atlas is sampled nearest and
+    // draw_text starts text on whole pixels.
+    if (g_body->handle.texture.ptr) SDL_SetTextureScaleMode((SDL_Texture *)g_body->handle.texture.ptr, SDL_SCALEMODE_NEAREST);
     nk_style_set_font(g_ctx, &g_body->handle);
     g_font_scale = g_scale, g_font_cjk = cjk;
 }
@@ -354,7 +358,7 @@ static int wrap(const struct nk_font *f, const char *s, float w, Span *out, int 
 static void draw_text(struct nk_command_buffer *c, const struct nk_font *f, float x, float y, float w, const char *s, int n,
                       struct nk_color col) {
     if (n < 0) n = (int)strlen(s);
-    nk_draw_text(c, nk_rect(x, y, w, f->handle.height + S(4)), s, n, &f->handle, C_NONE, col);
+    nk_draw_text(c, nk_rect(roundf(x), roundf(y), w, f->handle.height + S(4)), s, n, &f->handle, C_NONE, col);
 }
 
 // text vertically centred in r, from its left edge
