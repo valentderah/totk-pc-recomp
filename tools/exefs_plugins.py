@@ -37,7 +37,7 @@ The check (check_record) accepts a record only when every rule holds; each broke
   - the init called only the svcs ALLOWED_SVCS, GetInfo with ALLOWED_INFO, and the imports ALLOWED_IMPORTS;
   - every write into a game module is a word of main's .text whose original is no br, blr or ret, and it is one of:
     - an inline hook (MSFix, Full Inventory Expansion): `b <stub>` into a plugin's .text, the stub in exlaunch's
-      shape (stur x30, [sp, #-0x10]; bl exl_inline_hook_impl or the float one; ldur x30, [sp, #-0x10];
+      shape (stur x30, [sp, #-0x10]; bl one of exlaunch's hook impls, HOOK_IMPLS; ldur x30, [sp, #-0x10];
       b <trampoline>; .quad <callback in the plugin's .text>), the trampoline the site's original relocated (the
       same word, the same PC-relative target, or exlaunch's long form of it, relocation_end) and its jump back to
       the site + 4 (returns_to);
@@ -86,7 +86,10 @@ ALLOWED_IMPORTS = SAFE_LIBC | {SNPRINTF, '_ZN2nn2oe17GetDisplayVersionEPNS0_14Di
 # talks to a service or changes memory mappings.
 REACH_IMPORTS = SAFE_LIBC | {SNPRINTF}
 SVC_OUTPUT_DEBUG_STRING = 0x27
-HOOK_IMPLS = ('exl_inline_hook_impl', 'exl_inline_float_hook_impl')
+# exlaunch's inline-hook entry points. Each saves the registers its context holds, calls the callback with that context
+# and restores them; none saves NZCV (recomp/flags.py). exl_inline_hook_with_fp_impl (Magic of the Kingdom) saves
+# d0..d15 next to x0..x29.
+HOOK_IMPLS = ('exl_inline_hook_impl', 'exl_inline_float_hook_impl', 'exl_inline_hook_with_fp_impl')
 STUR_X30 = 0xF81F03FE   # stur x30, [sp, #-0x10]
 LDUR_X30 = 0xF85F03FE   # ldur x30, [sp, #-0x10]
 STUB_WORDS = 6          # 4 instructions and the callback's .quad
