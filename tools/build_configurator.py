@@ -31,7 +31,7 @@ WIN = os.name == 'nt'
 UCRT = Path(r'C:\msys64\ucrt64\bin')
 EXE = 'totk-config.exe' if WIN else 'totk-config'
 SHARED = ['cfg.c', 'ui_text.c', 'input_map.c', 'platform/common.c', 'platform/win32.c' if WIN else 'platform/linux.c']
-WIN_LIBS = ['-lSDL3', '-lbcrypt', '-lwinmm', '-lshell32', '-lole32', '-luuid', '-luser32', '-lgdi32', '-ldwmapi',
+WIN_LIBS = ['-lSDL3', '-lwinhttp', '-lbcrypt', '-lwinmm', '-lshell32', '-lole32', '-luuid', '-luser32', '-lgdi32', '-ldwmapi',
             '-limm32', '-lpsapi']
 POSIX_LIBS = ['-lSDL3', '-lm', '-lpthread', '-ldl']
 # Nuklear 4.13.4 (MIT or public domain, THIRD_PARTY_NOTICES.md): its one header is over the repository's file size limit

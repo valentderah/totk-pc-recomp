@@ -18,6 +18,8 @@
 // Tabs: the in-game menu's settings tabs in its order (ui/menu.cpp kTabNames), then the window's own two.
 enum { CR_TAB_SCREEN, CR_TAB_GAME, CR_TAB_SOUND, CR_TAB_CONTROLS, CR_TAB_AMIIBO, CR_TAB_MENU, CR_TAB_ADVANCED,
        CR_TAB_MODS, CR_TAB_EXPERT, CR_TAB_OTHER, CR_TAB_COUNT };
+// The window's Updates page (Windows), after the tabs of settings.
+enum { CR_TAB_UPDATES = CR_TAB_COUNT };
 // Row kinds: what the menu row is (opt_toggle, opt_choice / opt_choice_list, opt_slider, binds_key_row), a folder, a
 // binding (BIND_*), or free text.
 enum { CR_TOGGLE, CR_CHOICE, CR_SLIDER, CR_TEXT, CR_KEY, CR_FOLDER, CR_BIND };
@@ -98,6 +100,51 @@ int model_launch(void);   // starts the game from its folder; 1 when it started
 int window_run(const char *shot, int tab, const char *search);
 // --popup with --screenshot: the dialog the picture shows (1 new profile, 2 rename, 3 delete, 4 unsaved changes on close)
 extern int cr_shot_popup;
+
+// ---- cfgr_update.c: the latest release from GitHub, its download and its setup (Windows)
+#include <stdint.h>
+typedef struct {
+    char tag[64], name[128], page[256], published[32];
+    int ver[3];
+    char *notes;                       // the release text (Markdown), NULL none
+    char asset[160], sha256[65], url[512];
+    uint64_t size;
+} CrRelease;
+typedef struct {
+    char run[64];     // the version of the totk.exe that ran last (logs/totk.log), when it ran after the setup
+    char setup[64];   // the release whose setup made the folder (totk-install.json)
+    int custom;       // totk.exe is a build of its own, which an update replaces
+    int have, ver[3]; // the version to compare with a release: the one that ran, else the setup's
+} CrInstalled;
+enum { UPD_IDLE, UPD_CHECKING, UPD_CHECKED, UPD_DOWNLOADING, UPD_VERIFYING, UPD_UNPACKING, UPD_READY, UPD_FAILED };
+typedef struct {
+    int phase;
+    uint64_t done, total;   // UPD_DOWNLOADING
+    char msg[512];          // UPD_FAILED: why
+    char folder[CR_PATH];   // UPD_READY: the unpacked release
+} CrUpdState;
+
+int upd_parse_version(const char *s, int v[3]);   // "v0.5.0", "0.5.0+6151ac4f", "0.5" -> 1
+int upd_version_cmp(const int a[3], const int b[3]);
+int upd_version_in_log(const char *text, char *out, size_t cap);
+int upd_parse_release(const char *json, const char *base, CrRelease *r, char *err, size_t en);   // base NULL: the API's
+void upd_release_free(CrRelease *r);
+int upd_safe_entry(const char *name);             // an archive entry that stays inside its folder
+void upd_installed(const char *dir, CrInstalled *out);
+int upd_game_running(const char *dir);            // the folder's game exe runs (Windows refuses to open it for writing)
+int upd_check(CrRelease *out, char *err, size_t en);                             // one API call, on this thread
+int upd_download(const CrRelease *r, char *folder, size_t fcap, char *err, size_t en);   // download, check, unpack
+int upd_start_setup(const char *release, const char *game, char *err, size_t en);
+// the window's threads: the check, then download, check and unpack of the release checked
+void upd_check_async(void);
+void upd_fetch_async(void);
+void upd_state(CrUpdState *out);
+int upd_latest(CrRelease *out);   // 1 when a check succeeded; the notes stay owned by cfgr_update.c
+int upd_busy(void);
+void upd_set_failed(const char *why);
+// the window's own setting, apart from totk.ini: ask GitHub when the window opens
+int upd_pref_check_at_start(void);
+int upd_pref_set_check_at_start(int on);
 
 // ---- text: the menu language's text of id (menu_text), English for -1
 const char *cr_text(int id);

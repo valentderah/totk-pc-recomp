@@ -66,7 +66,7 @@ static int g_scroll_reset = 1;
 static Uint64 g_next_file_check;
 static int g_file_changed;
 
-enum { POP_NONE, POP_NEW, POP_RENAME, POP_DELETE, POP_CLOSE };
+enum { POP_NONE, POP_NEW, POP_RENAME, POP_DELETE, POP_CLOSE, POP_UPDATE };
 static int g_pop;
 static char g_pop_name[CR_NAME];
 static int g_pop_preset;
@@ -134,7 +134,7 @@ static const nk_rune *cjk_ranges(void) {
     static nk_rune *out;
     g_cjk_n = 0;
     ui_text_visit("zh-Hans", add_text_runes, NULL);
-    add_text_runes(NULL, "…×—–«»·");
+    add_text_runes(NULL, "…×—–«»·•");
     qsort(g_cjk_ranges, (size_t)g_cjk_n, sizeof *g_cjk_ranges, rune_cmp);
     free(out);
     out = malloc(sizeof *out * (size_t)(g_cjk_n * 2 + 8));
@@ -975,7 +975,277 @@ static int tab_set_count(int t) {
     return n;
 }
 
+// ---- the Updates page (cfgr_update.c does the work on its threads)
+static CrInstalled g_inst;
+static Uint64 g_inst_at;   // when g_inst was read; 0 reads it again
+static int g_install_when_ready, g_check_at_start = -1;
+
+static void installed_refresh(void) {
+    if (g_inst_at && SDL_GetTicks() < g_inst_at + 5000) return;
+    upd_installed(model_dir(), &g_inst);
+    g_inst_at = SDL_GetTicks();
+}
+
+static int update_available(void) {
+    CrRelease r;
+    if (!upd_latest(&r)) return 0;
+    installed_refresh();
+    return !g_inst.have || upd_version_cmp(r.ver, g_inst.ver) > 0;
+}
+
+// The release text without what does not read as plain text here: HTML tags, quote marks, GitHub's [!NOTE] lines,
+// bold and code marks. Headings keep their words; the caller colours them.
+static char *clean_notes(const char *md) {
+    size_t n = strlen(md);
+    char *out = malloc(n + 1), *o = out;
+    int in_tag = 0, line_start = 1;
+    for (const char *p = md; *p; p++) {
+        if (*p == '<') { in_tag = 1; continue; }
+        if (in_tag) { if (*p == '>') in_tag = 0; continue; }
+        if (*p == '\r') continue;
+        if (line_start) {
+            while (*p == '>' || *p == ' ') p++;
+            if (p[0] == '[' && p[1] == '!') {   // [!NOTE] and the like: the whole line
+                while (*p && *p != '\n') p++;
+                if (!*p) break;
+                continue;
+            }
+            line_start = 0;
+        }
+        if ((p[0] == '*' && p[1] == '*') || (p[0] == '_' && p[1] == '_')) { p++; continue; }
+        if (*p == '`') continue;
+        *o++ = *p;
+        line_start = *p == '\n';
+    }
+    *o = 0;
+    return out;
+}
+
+// the notes as rows of a scrolled list: headings gold, list items with a bullet
+static void notes_rows(const char *notes, float w) {
+    char *text = clean_notes(notes);
+    float lh = g_small->handle.height + S(5);
+    for (char *line = text; line && *line;) {
+        char *end = strchr(line, '\n');
+        if (end) *end = 0;
+        const struct nk_font *f = g_small;
+        struct nk_color col = C_DESC;
+        char buf[1200];
+        const char *s = line;
+        if (*s == '#') {
+            while (*s == '#') s++;
+            while (*s == ' ') s++;
+            f = g_body, col = C_GOLD;
+        }
+        if ((s[0] == '-' || s[0] == '*') && s[1] == ' ') snprintf(buf, sizeof buf, "•  %s", s + 2), s = buf;
+        if (!*s) {
+            nk_layout_row_dynamic(g_ctx, S(6), 1);
+            blank();
+        } else {
+            Span sp[24];
+            int n = wrap(f, s, w, sp, 24);
+            if (n > 24) n = 24;
+            nk_style_push_font(g_ctx, &f->handle);
+            for (int i = 0; i < n; i++) {
+                nk_layout_row_dynamic(g_ctx, f == g_small ? lh : f->handle.height + S(10), 1);
+                nk_text_colored(g_ctx, sp[i].p, sp[i].n, NK_TEXT_LEFT, col);
+            }
+            nk_style_pop_font(g_ctx);
+        }
+        line = end ? end + 1 : NULL;
+    }
+    free(text);
+}
+
+// A card of the page: a rounded panel the width of a row card, h high; the caller draws into the layout space.
+static struct nk_rect card_begin(float h) {
+    struct nk_rect area = nk_window_get_content_region(g_ctx);
+    float cw = area.w - g_ctx->style.window.scrollbar_size.x - S(10);
+    nk_layout_space_begin(g_ctx, NK_STATIC, h, 16);
+    struct nk_rect b = nk_layout_space_rect_to_screen(g_ctx, nk_rect(0, 0, cw, h));
+    nk_fill_rect(nk_window_get_canvas(g_ctx), b, S(10), C_CARD);
+    return b;
+}
+
+static float para_h(const struct nk_font *f, const char *text, float w) {
+    Span sp[16];
+    int n = wrap(f, text, w, sp, 16);
+    return (float)(n > 16 ? 16 : n) * (f->handle.height + S(4));
+}
+
+static void para(const struct nk_font *f, const char *text, float x, float y, float w, struct nk_color col) {
+    Span sp[16];
+    int n = wrap(f, text, w, sp, 16);
+    for (int i = 0; i < n && i < 16; i++)
+        draw_text(nk_window_get_canvas(g_ctx), f, x, y + (f->handle.height + S(4)) * (float)i, w, sp[i].p, sp[i].n, col);
+}
+
+static void draw_updates(void) {
+    installed_refresh();
+    if (g_check_at_start < 0) g_check_at_start = upd_pref_check_at_start();
+    struct nk_command_buffer *c = nk_window_get_canvas(g_ctx);
+    float pad = S(18), gap = S(10);
+    // what the folder has
+    {
+        struct nk_rect area = nk_window_get_content_region(g_ctx);
+        float w = area.w - g_ctx->style.window.scrollbar_size.x - S(10) - pad * 2;
+        const char *custom_note = cr_text(UI_CFG_UPD_CUSTOM_NOTE);
+        float h = pad + g_head->handle.height + gap + g_title->handle.height + gap +
+                  (g_inst.setup[0] ? g_small->handle.height + gap : 0) + (g_inst.custom ? para_h(g_small, custom_note, w) + gap : 0) +
+                  pad - gap;
+        struct nk_rect b = card_begin(h);
+        float x = b.x + pad, y = b.y + pad;
+        icon_draw(c, ICON_SCREEN, nk_rect(x, y + S(2), S(18), S(18)), C_GOLD);
+        draw_text(c, g_head, x + S(28), y, w, cr_text(UI_CFG_UPD_INSTALLED), -1, C_GOLD);
+        y += g_head->handle.height + gap;
+        const char *v = g_inst.run[0] ? g_inst.run : g_inst.setup[0] ? g_inst.setup : cr_text(UI_CFG_UPD_UNKNOWN);
+        draw_text(c, g_title, x, y, w, v, -1, C_TEXT);
+        float vx = x + text_w(g_title, v, -1) + S(12);
+        if (g_inst.custom) pill(vx, y + (g_title->handle.height - g_small->handle.height) / 2 - S(2),
+                                cr_text(UI_CFG_UPD_CUSTOM), C_BG, C_WARN);
+        y += g_title->handle.height + gap;
+        if (g_inst.setup[0]) {
+            char s[160];
+            snprintf(s, sizeof s, cr_text(UI_CFG_UPD_SETUP_WITH), g_inst.setup);
+            draw_text(c, g_small, x, y, w, s, -1, C_DIM);
+            y += g_small->handle.height + gap;
+        }
+        if (g_inst.custom) para(g_small, custom_note, x, y, w, C_WARN);
+        nk_layout_space_end(g_ctx);
+    }
+    // the latest release
+    CrRelease rel;
+    int have = upd_latest(&rel), newer = update_available(), busy = upd_busy();
+    CrUpdState st;
+    upd_state(&st);
+    struct nk_rect area = nk_window_get_content_region(g_ctx);
+    float w = area.w - g_ctx->style.window.scrollbar_size.x - S(10) - pad * 2;
+    char status_text[700] = "";
+    struct nk_color status_col = C_DIM;
+    switch (st.phase) {
+    case UPD_CHECKING: snprintf(status_text, sizeof status_text, "%s", cr_text(UI_CFG_UPD_CHECKING)); break;
+    case UPD_VERIFYING: snprintf(status_text, sizeof status_text, "%s", cr_text(UI_CFG_UPD_VERIFYING)); break;
+    case UPD_UNPACKING: snprintf(status_text, sizeof status_text, "%s", cr_text(UI_CFG_UPD_UNPACKING)); break;
+    case UPD_READY:
+        snprintf(status_text, sizeof status_text, cr_text(UI_CFG_UPD_READY), st.folder), status_col = C_GOLD;
+        break;
+    case UPD_FAILED: snprintf(status_text, sizeof status_text, "%s", st.msg), status_col = C_RED; break;
+    default: break;
+    }
+    float notes_h = have && rel.notes && *rel.notes ? S(250) : 0;
+    const char *prefs_note = cr_text(UI_CFG_UPD_PREFS_NOTE);
+    float h = pad + S(34) + gap;
+    if (have) h += S(30) + gap + (notes_h ? notes_h + gap : 0) + S(40) + gap;
+    else h += g_body->handle.height + gap;
+    if (st.phase == UPD_DOWNLOADING) h += S(26) + gap;
+    else if (status_text[0]) h += para_h(g_body, status_text, w) + gap;
+    h += S(30) + S(4) + g_small->handle.height + pad;
+    struct nk_rect b = card_begin(h);
+    float x = b.x + pad, y = b.y + pad, lx = pad, ly = pad;   // screen and layout-space positions
+    icon_draw(c, ICON_UPDATES, nk_rect(x, y + S(6), S(18), S(18)), C_GOLD);
+    draw_text(c, g_head, x + S(28), y + S(5), w, cr_text(UI_CFG_UPD_LATEST), -1, C_GOLD);
+    const char *chk = cr_text(UI_CFG_UPD_CHECK_NOW);
+    float cbw = btn_w(chk, ICON_RESTART);
+    nk_layout_space_push(g_ctx, nk_rect(lx + w - cbw, ly, cbw, S(34)));
+    if (busy) nk_widget_disable_begin(g_ctx);
+    if (btn(chk, ICON_RESTART, BTN_NORMAL)) upd_check_async();
+    if (busy) nk_widget_disable_end(g_ctx);
+    y += S(34) + gap, ly += S(34) + gap;
+    if (have) {
+        draw_text(c, g_head, x, y + S(3), w, rel.name, -1, C_TEXT);
+        float px = x + text_w(g_head, rel.name, -1) + S(12), py = y + S(6);
+        px += pill(px, py, cr_text(newer ? UI_CFG_UPD_NEW : UI_CFG_UPD_UP_TO_DATE), C_BG, newer ? C_GOLD : C_GREEN_HI) + S(12);
+        char meta[96];
+        snprintf(meta, sizeof meta, "%.10s · %.0f MB", rel.published, (double)rel.size / 1e6);
+        draw_text(c, g_small, px, py + S(1), w, meta, -1, C_DIM);
+        if (rel.page[0]) {
+            const char *pg = cr_text(UI_CFG_UPD_RELEASE_PAGE);
+            float pw = btn_w(pg, ICON_NONE);
+            nk_layout_space_push(g_ctx, nk_rect(lx + w - pw, ly, pw, S(30)));
+            if (btn(pg, ICON_NONE, BTN_GHOST)) SDL_OpenURL(rel.page);
+        }
+        y += S(30) + gap, ly += S(30) + gap;
+        if (notes_h) {
+            nk_fill_rect(c, nk_rect(x, y, w, notes_h), S(8), C_EDIT);
+            nk_layout_space_push(g_ctx, nk_rect(lx, ly, w, notes_h));
+            struct nk_style_window *ws = &g_ctx->style.window;
+            nk_style_push_style_item(g_ctx, &ws->fixed_background, nk_style_item_color(C_NONE));
+            nk_style_push_vec2(g_ctx, &ws->group_padding, nk_vec2(S(14), S(10)));
+            int open = nk_group_begin(g_ctx, "notes", 0);
+            nk_style_pop_vec2(g_ctx), nk_style_pop_style_item(g_ctx);
+            if (open) {
+                nk_style_push_vec2(g_ctx, &ws->spacing, nk_vec2(S(4), S(1)));
+                notes_rows(rel.notes, w - S(28) - ws->scrollbar_size.x - S(8));
+                nk_style_pop_vec2(g_ctx);
+                nk_group_end(g_ctx);
+            }
+            y += notes_h + gap, ly += notes_h + gap;
+        }
+        char ib[96];
+        snprintf(ib, sizeof ib, cr_text(UI_CFG_UPD_INSTALL), rel.tag);
+        float iw = btn_w(ib, ICON_UPDATES) + S(16);
+        nk_layout_space_push(g_ctx, nk_rect(lx, ly, iw, S(40)));
+        if (busy || g_install_when_ready) nk_widget_disable_begin(g_ctx);
+        if (btn(ib, ICON_UPDATES, newer ? BTN_PRIMARY : BTN_NORMAL)) {
+            if (upd_game_running(model_dir())) status(1, cr_text(UI_CFG_UPD_GAME_RUNNING), cr_game_exe);
+            else g_pop = POP_UPDATE;
+        }
+        if (busy || g_install_when_ready) nk_widget_disable_end(g_ctx);
+        y += S(40) + gap, ly += S(40) + gap;
+    } else {
+        draw_text(c, g_body, x, y, w, cr_text(UI_CFG_UPD_NOT_CHECKED), -1, C_DIM);
+        y += g_body->handle.height + gap, ly += g_body->handle.height + gap;
+    }
+    if (st.phase == UPD_DOWNLOADING) {   // a bar with the megabytes on it
+        float f = st.total ? (float)st.done / (float)st.total : 0, bh = S(26);
+        nk_fill_rect(c, nk_rect(x, y, w, bh), S(6), C_EDIT);
+        if (f > 0) nk_fill_rect(c, nk_rect(x, y, fmaxf(S(12), w * f), bh), S(6), C_GREEN);
+        char d[128];
+        snprintf(d, sizeof d, cr_text(UI_CFG_UPD_DOWNLOADING), (double)st.done / 1e6, (double)st.total / 1e6);
+        float dw = text_w(g_small, d, -1);
+        draw_text(c, g_small, x + (w - dw) / 2, y + (bh - g_small->handle.height) / 2 - S(1), dw + S(4), d, -1, C_TEXT);
+        y += bh + gap, ly += bh + gap;
+    } else if (status_text[0]) {
+        para(g_body, status_text, x, y, w, status_col);
+        float ph = para_h(g_body, status_text, w);
+        y += ph + gap, ly += ph + gap;
+    }
+    // ask GitHub when the window opens: the window's own setting
+    const char *at = cr_text(UI_CFG_UPD_AT_START);
+    nk_layout_space_push(g_ctx, nk_rect(lx, ly, S(46), S(30)));
+    if (switch_widget(g_check_at_start > 0)) {
+        g_check_at_start = g_check_at_start > 0 ? 0 : 1;
+        if (!upd_pref_set_check_at_start(g_check_at_start)) status(1, "%s", cr_text(UI_MENU_SAVE_FAILED));
+    }
+    draw_text_mid(c, g_body, nk_rect(x + S(56), y, w - S(56), S(30)), at, g_check_at_start > 0 ? C_TEXT : C_DIM);
+    y += S(30) + S(4);
+    draw_text(c, g_small, x, y, w, prefs_note, -1, C_DIM);
+    nk_layout_space_end(g_ctx);
+}
+
+// After the confirmation: settings saved, then download, check and unpack on a thread; update_poll starts the setup
+// once the release is ready and closes the window.
+static void update_poll(void) {
+    CrUpdState st;
+    upd_state(&st);
+    if (st.phase == UPD_FAILED) g_install_when_ready = 0;
+    if (!g_install_when_ready || st.phase != UPD_READY) return;
+    g_install_when_ready = 0;
+    char err[512];
+    if (upd_game_running(model_dir())) status(1, cr_text(UI_CFG_UPD_GAME_RUNNING), cr_game_exe);
+    else if (upd_start_setup(st.folder, model_dir(), err, sizeof err)) g_quit = 1;
+    else {
+        char why[600];
+        snprintf(why, sizeof why, cr_text(UI_CFG_UPD_SETUP_FAILED), err);
+        upd_set_failed(why);
+    }
+}
+
 static void draw_rows(void) {
+    if (g_tab == CR_TAB_UPDATES && !g_search[0]) {
+        draw_updates();
+        return;
+    }
     int shown = 0;
     if (g_tab == CR_TAB_EXPERT && !g_search[0]) note(cr_text(UI_CFG_EXPERT_NOTE), C_WARN, ICON_WARN);
     if (g_tab == CR_TAB_OTHER && !g_search[0]) {
@@ -1059,8 +1329,8 @@ static void header(float width) {
 }
 
 // ---- the left panel: profiles, then the tabs
-// A line of the panel: icon, label, a count at the right; returns its click.
-static int nav_item(Icon icon, struct nk_color icol, const char *label, int count, int selected) {
+// A line of the panel: icon, label, a count (or a word) at the right; returns its click.
+static int nav_item_badge(Icon icon, struct nk_color icol, const char *label, int count, const char *word, int selected) {
     struct nk_rect b;
     int click = hit(&b), hov = hovering(b);
     struct nk_command_buffer *c = nk_window_get_canvas(g_ctx);
@@ -1070,8 +1340,10 @@ static int nav_item(Icon icon, struct nk_color icol, const char *label, int coun
     float is = S(18);
     if (icon) icon_draw(c, icon, nk_rect(b.x + S(12), b.y + (b.h - is) / 2, is, is), selected ? C_GOLD : icol);
     float tx = b.x + (icon ? S(40) : S(12)), cw = 0;
-    char num[16] = "";
-    if (count > 0) snprintf(num, sizeof num, "%d", count), cw = text_w(g_small, num, -1) + S(14);
+    char num[64] = "";
+    if (word) snprintf(num, sizeof num, "%s", word), count = 1;
+    else if (count > 0) snprintf(num, sizeof num, "%d", count);
+    if (count > 0) cw = text_w(g_small, num, -1) + S(14);
     char buf[256];
     const char *t = fit_head(g_body, label, b.x + b.w - tx - cw - S(10), buf, sizeof buf);
     draw_text_mid(c, g_body, nk_rect(tx, b.y, b.w, b.h), t, selected ? C_GOLD : C_TEXT);
@@ -1082,6 +1354,10 @@ static int nav_item(Icon icon, struct nk_color icol, const char *label, int coun
         draw_text(c, g_small, pr.x + S(7), pr.y + S(1), cw, num, -1, selected ? C_BG : C_GOLD);
     }
     return click;
+}
+
+static int nav_item(Icon icon, struct nk_color icol, const char *label, int count, int selected) {
+    return nav_item_badge(icon, icol, label, count, NULL, selected);
 }
 
 static void side_label(const char *text) {
@@ -1159,6 +1435,14 @@ static void sidebar(void) {
             g_tab = t, g_search[0] = 0;
         }
     }
+#ifdef _WIN32   // the releases' setups are Windows programs (cfgr_update.c)
+    int on = g_tab == CR_TAB_UPDATES && !g_search[0];
+    if (nav_item_badge(ICON_UPDATES, C_DIM, cr_text(UI_CFG_TAB_UPDATES), 0,
+                       update_available() ? cr_text(UI_CFG_UPD_NEW) : NULL, on)) {
+        if (!on) g_scroll_reset = 1, g_inst_at = 0;
+        g_tab = CR_TAB_UPDATES, g_search[0] = 0;
+    }
+#endif
 }
 
 // ---- the page: banners, search, rows
@@ -1328,7 +1612,7 @@ static void preset_list(Preset p, float height) {
 
 static void popups(float w, float h) {
     if (g_pop == POP_NONE) return;
-    float pw = fminf(S(620), w - S(40)), ph = g_pop == POP_NEW ? S(640) : g_pop == POP_RENAME ? S(250) : S(250);
+    float pw = fminf(S(620), w - S(40)), ph = g_pop == POP_NEW ? S(640) : g_pop == POP_UPDATE ? S(380) : S(250);
     ph = fminf(ph, h - S(24));
     struct nk_rect r = nk_rect((w - pw) / 2, (h - ph) / 2, pw, ph);
     // the page behind dims
@@ -1398,6 +1682,43 @@ static void popups(float w, float h) {
         }
         if (!g_pop_name[0]) nk_widget_disable_end(g_ctx);
         nk_layout_row_end(g_ctx);
+    } else if (g_pop == POP_UPDATE) {
+        CrRelease rel;
+        if (!upd_latest(&rel)) close = 1;
+        else {
+            char title[128], custom[400];
+            snprintf(title, sizeof title, cr_text(UI_CFG_UPD_INSTALL), rel.tag);
+            popup_title(title, ICON_UPDATES, C_GOLD);
+            float tw = pw - S(48);
+            const char *t1 = cr_text(UI_CFG_UPD_CONFIRM), *t3 = cr_text(UI_CFG_UPD_CONFIRM_CLOSE);
+            installed_refresh();
+            custom[0] = 0;
+            if (g_inst.custom) snprintf(custom, sizeof custom, cr_text(UI_CFG_UPD_CONFIRM_CUSTOM), g_inst.run[0] ? g_inst.run : "?", rel.tag);
+            else if (!update_available()) snprintf(custom, sizeof custom, "%s", cr_text(UI_CFG_UPD_CONFIRM_SAME));
+            const char *texts[3] = {t1, custom, t3};
+            const struct nk_font *fonts[3] = {g_body, g_body, g_small};
+            struct nk_color cols[3] = {C_DESC, C_WARN, C_DIM};
+            for (int i = 0; i < 3; i++) {
+                if (!texts[i][0]) continue;
+                nk_layout_row_dynamic(g_ctx, para_h(fonts[i], texts[i], tw), 1);
+                struct nk_rect b = nk_widget_bounds(g_ctx);
+                blank();
+                para(fonts[i], texts[i], b.x, b.y, tw, cols[i]);
+            }
+            nk_layout_row_begin(g_ctx, NK_STATIC, S(36), 3);
+            nk_layout_row_push(g_ctx, fmaxf(S(1), pw - S(48) - bw * 2 - S(24)));
+            blank();
+            nk_layout_row_push(g_ctx, bw);
+            if (btn(cr_text(UI_MENU_RESET_NO), ICON_NONE, BTN_GHOST)) close = 1;
+            nk_layout_row_push(g_ctx, bw);
+            if (btn(cr_text(UI_CFG_TAB_UPDATES), ICON_UPDATES, BTN_PRIMARY)) {
+                close = 1;
+                if (upd_game_running(model_dir())) status(1, cr_text(UI_CFG_UPD_GAME_RUNNING), cr_game_exe);
+                else if (model_unsaved() && !model_save()) status(1, "%s", cr_text(UI_MENU_SAVE_FAILED));
+                else g_install_when_ready = 1, upd_fetch_async();
+            }
+            nk_layout_row_end(g_ctx);
+        }
     } else if (g_pop == POP_DELETE || g_pop == POP_CLOSE) {
         int del = g_pop == POP_DELETE;
         popup_title(no_dots(del ? UI_CFG_DELETE : UI_CFG_SAVE), del ? ICON_TRASH : ICON_WARN, del ? C_RED : C_WARN);
@@ -1579,7 +1900,14 @@ int window_run(const char *shot, int tab, const char *search) {
     input_map_reset();
     for (int a = 0; a < ACTION_COUNT && a < 64; a++)
         input_map_line(&input_map, a, g_default_binds[a], sizeof g_default_binds[a]);
-    if (tab >= 0 && tab < CR_TAB_COUNT) g_tab = tab;
+    if (tab >= 0 && tab <= CR_TAB_UPDATES) g_tab = tab;
+#ifdef _WIN32
+    // the check when the window opens, if the player asked for it; a screenshot of the page asks only when told to
+    if (shot ? tab == CR_TAB_UPDATES && getenv("TOTK_CONFIG_SHOT_CHECK") : upd_pref_check_at_start()) {
+        upd_check_async();
+        for (int i = 0; shot && upd_busy() && i < 300; i++) SDL_Delay(100);
+    }
+#endif
     if (search) snprintf(g_search, sizeof g_search, "%s", search);
     if (shot && cr_shot_popup) {
         g_pop = cr_shot_popup;
@@ -1592,7 +1920,8 @@ int window_run(const char *shot, int tab, const char *search) {
     while (!g_quit) {
         SDL_Event ev;
         nk_input_begin(g_ctx);
-        int got = shot || SDL_HasEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST) ? SDL_PollEvent(&ev) : SDL_WaitEventTimeout(&ev, 500);
+        int wait = upd_busy() || g_install_when_ready ? 100 : 500;   // a download's progress redraws on its own
+        int got = shot || SDL_HasEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST) ? SDL_PollEvent(&ev) : SDL_WaitEventTimeout(&ev, wait);
         while (got) {
             if (ev.type == SDL_EVENT_QUIT || ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
                 if (model_unsaved() && !shot) g_pop = POP_CLOSE;
@@ -1610,6 +1939,7 @@ int window_run(const char *shot, int tab, const char *search) {
         }
         nk_input_end(g_ctx);
         handle_pick();
+        update_poll();
         if (SDL_GetTicks() >= g_next_file_check) {
             g_next_file_check = SDL_GetTicks() + 1000;
             if (model_file_changed()) {

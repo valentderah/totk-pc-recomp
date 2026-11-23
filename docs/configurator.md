@@ -64,6 +64,29 @@ one sets:
 
 The presets are in `runtime/configurator/cfgr_model.c`; every value is one `cfg.c` `metas[]` accepts.
 
+### Updates (Windows)
+
+The **Updates** tab, last in the left panel, shows the version in the folder and the latest release of the project
+(`runtime/configurator/cfgr_update.c`):
+
+- **Installed** is the version of the `totk.exe` that ran last (`logs/totk.log`, "version: TotK Recomp ..."), or, until
+  the game runs after a setup, the release whose setup made the folder (`totk-install.json`). When the two differ, or
+  `totk.exe` is newer than the setup's record, the folder holds a build of its own (*own build*), which an update
+  replaces with the release's.
+- **Latest release** asks GitHub only on **Check now**, or when the window opens if *Check for updates when the window
+  opens* is on (kept in `%LOCALAPPDATA%\TotK Recomp\configurator.json`, not in `totk.ini`; a newer release marks the
+  tab *new*). It shows the release's notes and a link to its page.
+- **Update to vX.Y.Z** asks first, saves the window's changes, then downloads the release's
+  `TotK-Setup-<version>-windows.zip` into `%LOCALAPPDATA%\TotK Recomp\updates\`, checks its size and SHA-256 against
+  what GitHub lists for it (a mismatch deletes it), unpacks it with Windows' own `tar.exe` after refusing any entry
+  outside its folder, checks that the release's `VERSION` names that release, and starts that release's setup on the
+  folder (`python\pythonw.exe -m installer.gui --rebuild <folder>`, as the game's own rebuild does): saves, game files
+  and `totk.ini` stay, `totk.exe` and the shaders are rebuilt, and the game starts when it is done. The window closes
+  then. Never while the folder's `totk.exe` runs. Only this repository's release downloads are taken.
+
+HTTPS goes through WinHTTP (Windows' TLS and certificate store) and SHA-256 through BCrypt, so the window needs no
+library of its own for it. The releases' setups are Windows programs, so the tab is not shown on Linux.
+
 ### Command line
 
 | Command | What it does |
@@ -73,10 +96,14 @@ The presets are in `runtime/configurator/cfgr_model.c`; every value is one `cfg.
 | `--profile NAME` | switches to a profile (`""`: none) |
 | `--new-profile NAME [--from PRESET]` | creates a profile: `current`, `defaults`, `quality`, `performance`, `potato`, `deck` |
 | `--list [TAB]` | every row: tab, key, the value in effect, `set` when `totk.ini` sets it, `env` when a variable does |
-| `--screenshot FILE.bmp [--tab N] [--search TEXT] [--popup DIALOG]` | draws the window hidden, saves it and closes (tests, docs); `--popup` shows a dialog in it: `new`, `rename`, `delete`, `close` |
+| `--check-update` | the version in the folder and the latest release (Windows) |
+| `--download-update` | also downloads, checks and unpacks the release, without starting its setup (Windows) |
+| `--screenshot FILE.bmp [--tab N] [--search TEXT] [--popup DIALOG]` | draws the window hidden, saves it and closes (tests, docs); `--popup` shows a dialog in it: `new`, `rename`, `delete`, `close`; `--tab 10` is Updates |
 
 `TOTK_MENU_LANG` picks the language as in the game, and `TOTK_CONFIG_LOG=1` prints what `cfg.c` logs (unknown keys,
-lines without `=`).
+lines without `=`). For tests, `TOTK_CONFIG_UPDATE_API` names another GitHub API address (only `http://127.0.0.1:` or
+`http://localhost:`), `TOTK_CONFIG_UPDATES_DIR` another download folder, and `TOTK_CONFIG_SHOT_CHECK=1` lets a
+screenshot of the Updates tab check first.
 
 ## Building
 
@@ -98,11 +125,12 @@ step). It is built for x86-64-v2, so it runs on every CPU the game runs on.
 | `runtime/configurator/cfgr_model.c` | the game folder, `totk.ini` through `cfg.c`, profiles, presets, starting the game |
 | `runtime/configurator/cfgr_window.c` | the window: fonts, colours, header, left panel, rows, dialogs |
 | `runtime/configurator/cfgr_icons.c` | the icons, drawn with Nuklear's shapes |
+| `runtime/configurator/cfgr_update.c` | the Updates tab's work: the GitHub check, the download, SHA-256, unpacking, the setup |
 | `runtime/configurator/cfgr_nk.c`, `cfgr_nk.h` | Nuklear and its SDL3 renderer, compiled once |
 | `runtime/configurator/cfgr_host.c` | the few runtime functions `cfg.c` and `ui_text.c` call (log, fatal error) |
 | `tools/gen_configurator.py` | writes the settings table (`cfgr_rows.c` in the build folder) from the runtime's sources |
 | `tools/build_configurator.py` | compiles and links the window; on Windows with `runtime/totk.rc` (the game's manifest and icon); the window's icon from `runtime/totk.ico` |
-| `tests/configurator_check.py` | the table, the commands and the window in every language |
+| `tests/configurator_check.py` | the table, the commands, the updates against a fake GitHub, and the window in every language |
 | `runtime/ui_text.c` `UI_CFG_*` | the window's own words, in the menu's four languages |
 
 ## How the window knows the settings

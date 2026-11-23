@@ -10,7 +10,8 @@
    kept), an empty value removes the key, --new-profile writes each preset's keys, --profile swaps totk.ini, and
    --list names every key of the table. Then the window draws each tab once in each menu language and saves the picture
    (--screenshot), where a display is there (Windows; Linux with DISPLAY or WAYLAND_DISPLAY).
-No game files.
+3. On Windows: the updates (--check-update, --download-update, the Updates page) against a fake GitHub on 127.0.0.1.
+No game files, no network.
 """
 import argparse
 import os
@@ -97,6 +98,122 @@ def commands(exe, rows):
               '--set of an unknown key: written, with a note')
 
 
+def updates(exe):
+    """The Updates tab's work (runtime/configurator/cfgr_update.c) against a fake GitHub on this machine: the check,
+    the download with its size and SHA-256, the unpacking, and the refusals (a wrong digest, a pre-release, a download
+    from another host, a zip entry outside its folder, a release whose VERSION differs)."""
+    if not WIN:
+        print('skip  updates: Windows only (the releases are Windows setups)')
+        return
+    import hashlib
+    import http.server
+    import io
+    import json
+    import threading
+    import zipfile
+
+    def make_zip(version='9.8.7+abc1234', extra=None):
+        b = io.BytesIO()
+        with zipfile.ZipFile(b, 'w') as z:
+            z.writestr('TotK-Setup/VERSION', version + '\n')
+            z.writestr('TotK-Setup/python/pythonw.exe', b'MZ')
+            z.writestr('TotK-Setup/installer/gui.py', "ap.add_argument('--rebuild', type=Path)\n")
+            for name, data in (extra or {}).items():
+                z.writestr(name, data)
+        return b.getvalue()
+
+    routes = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = routes.get(self.path)
+            self.send_response(200 if body is not None else 404)
+            self.send_header('Content-Length', str(len(body or b'')))
+            self.end_headers()
+            self.wfile.write(body or b'')
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f'http://127.0.0.1:{server.server_address[1]}'
+    latest = '/repos/valentderah/totk-pc-recomp/releases/latest'
+
+    def serve(data, digest=None, url=None, **over):
+        rel = {'tag_name': 'v9.8.7', 'name': 'TotK Recomp 9.8.7', 'draft': False, 'prerelease': False,
+               'html_url': base + '/r', 'published_at': '2026-11-23T00:00:00Z',
+               'body': '## What changed\r\n- **Faster** loading\r\n- `totk-config` updates\r\n> [!NOTE]\r\n> Plain text',
+               'assets': [{'name': 'TotK-Setup-9.8.7-x86_64.AppImage', 'size': 1, 'digest': 'sha256:00',
+                           'browser_download_url': base + '/x'},
+                          {'name': 'TotK-Setup-9.8.7-windows.zip', 'size': len(data),
+                           'digest': digest or 'sha256:' + hashlib.sha256(data).hexdigest(),
+                           'browser_download_url': url or base + '/dl/TotK-Setup-9.8.7-windows.zip'}]}
+        rel.update(over)
+        routes[latest] = json.dumps(rel).encode()
+        routes['/dl/TotK-Setup-9.8.7-windows.zip'] = data
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        game = tmp / 'game'
+        game.mkdir()
+
+        def upd(*args, folder='u'):
+            env = {**os.environ, 'TOTK_MENU_LANG': 'en', 'TOTK_CONFIG_UPDATE_API': base,
+                   'TOTK_CONFIG_UPDATES_DIR': str(tmp / folder)}
+            r = subprocess.run([str(exe), '--dir', str(game), *args], capture_output=True, text=True, timeout=120,
+                               env=env)
+            return r.returncode, r.stdout + r.stderr
+
+        good = make_zip()
+        serve(good)
+        code, out = upd('--check-update')
+        check(code == 0 and 'latest: v9.8.7' in out and ', newer' in out, '--check-update: the fake latest release')
+        code, out = upd('--download-update')
+        rel = tmp / 'u' / 'TotK-Setup-9.8.7'
+        check(code == 0 and (rel / 'VERSION').is_file() and (rel / 'python' / 'pythonw.exe').is_file() and
+              not list((tmp / 'u').glob('*.zip*')),
+              '--download-update: downloaded, size and SHA-256 checked, unpacked, the zip gone' +
+              ('' if code == 0 else f'\n{out}'))
+        serve(good, digest='sha256:' + '0' * 64)
+        code, out = upd('--download-update', folder='u2')
+        left = list((tmp / 'u2').iterdir()) if (tmp / 'u2').is_dir() else []
+        check(code == 1 and 'SHA-256' in out and not left, 'a wrong SHA-256: refused, nothing left behind')
+        serve(good, prerelease=True)
+        code, out = upd('--check-update')
+        check(code == 1 and 'pre-release' in out, 'a pre-release: refused')
+        serve(good, url='https://example.com/TotK-Setup-9.8.7-windows.zip')
+        code, out = upd('--check-update')
+        check(code == 1 and 'not from this project' in out, 'a download from another host: refused')
+        serve(make_zip(extra={'../evil.txt': 'x'}))
+        code, out = upd('--download-update', folder='u3')
+        check(code == 1 and 'outside its folder' in out and not (tmp / 'evil.txt').exists(),
+              'a zip entry outside its folder: refused, nothing unpacked')
+        serve(make_zip(version='1.0.0'))
+        code, out = upd('--download-update', folder='u4')
+        check(code == 1 and 'says 1.0.0' in out and not (tmp / 'u4' / 'TotK-Setup-9.8.7').exists(),
+              'a release whose VERSION names another version: refused')
+        # the version installed: the setup's record and the log of the last run
+        (game / 'logs').mkdir()
+        (game / 'totk-install.json').write_text('{"format": 1, "release": "9.8.7+abc1234"}')
+        (game / 'logs' / 'totk.log').write_text('[host] version: TotK Recomp 9.8.7+abc1234, game 1.4.3\n')
+        serve(good)
+        code, out = upd('--check-update')
+        check(code == 0 and 'installed: 9.8.7+abc1234\n' in out and 'not newer' in out,
+              'installed: the release the setup made and the game ran, not newer')
+        (game / 'logs' / 'totk.log').write_text('[host] version: TotK Recomp 9.8.6+dead, game 1.4.3\n')
+        code, out = upd('--check-update')
+        check(code == 0 and '9.8.6+dead (own build)' in out and ', newer' in out,
+              'installed: a build of its own, and the release is newer')
+        # the page with the fake release, drawn
+        shot = tmp / 'updates.bmp'
+        env = {**os.environ, 'TOTK_MENU_LANG': 'en', 'TOTK_CONFIG_UPDATE_API': base, 'TOTK_CONFIG_SHOT_CHECK': '1'}
+        r = subprocess.run([str(exe), '--dir', str(game), '--screenshot', str(shot), '--tab', '10'],
+                           capture_output=True, text=True, timeout=120, env=env)
+        check(r.returncode == 0 and shot.is_file() and shot.stat().st_size > 100000, 'the Updates page draws a release')
+    server.shutdown()
+
+
 def screenshots(exe):
     if not WIN and not (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')):
         print('skip  the window: no display')
@@ -105,7 +222,7 @@ def screenshots(exe):
         game = Path(tmp)
         (game / 'totk.ini').write_text('fullscreen = 1\n')
         for lang in ('en', 'ru', 'pt-BR', 'zh-Hans'):
-            for tab in range(10):
+            for tab in range(11 if WIN else 10):   # tab 10: Updates (Windows), not checked
                 shot = game / f'{lang}-{tab}.bmp'
                 env = {**os.environ, 'TOTK_MENU_LANG': lang}
                 r = subprocess.run([str(exe), '--dir', str(game), '--screenshot', str(shot), '--tab', str(tab)],
@@ -134,6 +251,7 @@ def main():
                     import shutil
                     shutil.copy2(build_configurator.UCRT / 'SDL3.dll', exe.parent / 'SDL3.dll')
                 commands(exe, rows)
+                updates(exe)
                 screenshots(exe)
     print(f'\n{len(FAILS)} failed' if FAILS else '\nall passed')
     return 1 if FAILS else 0

@@ -5,6 +5,8 @@
 //   totk-config --profile <name>                            switch to a profile ("" for none)
 //   totk-config --new-profile <name> [--from <preset>]      current, defaults, quality, performance, potato, deck
 //   totk-config --list [<tab>]                              every row: tab, key, value in effect, marks
+//   totk-config --check-update                              the version in the folder and the latest release
+//   totk-config --download-update                           also downloads, checks and unpacks it (no setup)
 //   totk-config --screenshot <file.bmp> [--tab <n>] [--search <text>] [--popup new|rename|delete|close]
 //
 // The window and the rows follow the menu language (TOTK_MENU_LANG, else the system's).
@@ -29,6 +31,7 @@ static const char *const kPresets[PRESET_COUNT] = {"current", "defaults", "quali
 static void usage(void) {
     fputs("usage: totk-config [--dir DIR] [--set KEY=VALUE]... [--profile NAME] [--new-profile NAME [--from PRESET]]\n"
           "                   [--list [TAB]] [--screenshot FILE.bmp [--tab N] [--search TEXT]]\n"
+          "                   [--check-update | --download-update]\n"
           "presets: current, defaults, quality, performance, potato, deck\n", stderr);
 }
 
@@ -59,6 +62,33 @@ static int list(const char *tab) {
     return 0;
 }
 
+// --check-update: the version in the game folder and the latest release; --download-update also fetches it into the
+// updates folder, checks it and unpacks it, without starting its setup (cfgr_update.c).
+static int update_command(int download) {
+    CrInstalled in;
+    upd_installed(model_dir(), &in);
+    printf("installed: %s%s\n", in.run[0] ? in.run : in.setup[0] ? in.setup : "unknown", in.custom ? " (own build)" : "");
+    if (in.setup[0]) printf("set up with: %s\n", in.setup);
+    CrRelease r;
+    char err[512] = "";
+    if (!upd_check(&r, err, sizeof err)) {
+        fprintf(stderr, "totk-config: %s\n", err);
+        return 1;
+    }
+    int newer = !in.have || upd_version_cmp(r.ver, in.ver) > 0;
+    printf("latest: %s (%s, %llu bytes, sha256 %.16s...)%s\n", r.tag, r.asset, (unsigned long long)r.size, r.sha256,
+           newer ? ", newer" : ", not newer");
+    if (download) {
+        char folder[CR_PATH];
+        if (!upd_download(&r, folder, sizeof folder, err, sizeof err)) {
+            fprintf(stderr, "totk-config: %s\n", err);
+            return 1;
+        }
+        printf("ready: %s\n", folder);
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
 #ifdef _WIN32
     // a window program: the commands print into the console they were typed in, unless the output already goes to a
@@ -72,7 +102,7 @@ int main(int argc, char **argv) {
 #endif
     const char *dir = NULL, *profile = NULL, *new_profile = NULL, *from = "current", *shot = NULL, *search = NULL;
     const char *sets[64];
-    int nsets = 0, do_list = 0, tab = -1;
+    int nsets = 0, do_list = 0, tab = -1, check_update = 0, download_update = 0;
     const char *list_tab = NULL;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *next = i + 1 < argc ? argv[i + 1] : NULL;
@@ -84,6 +114,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--screenshot") && next) shot = argv[++i];
         else if (!strcmp(a, "--tab") && next) tab = atoi(argv[++i]);
         else if (!strcmp(a, "--search") && next) search = argv[++i];
+        else if (!strcmp(a, "--check-update")) check_update = 1;
+        else if (!strcmp(a, "--download-update")) check_update = download_update = 1;
         else if (!strcmp(a, "--popup") && next) {
             static const char *const pops[] = {"new", "rename", "delete", "close"};
             const char *v = argv[++i];
@@ -143,6 +175,7 @@ int main(int argc, char **argv) {
         printf("active profile: %s\n", *profile ? profile : "(none)");
     }
     if (do_list) rc = list(list_tab);
-    if (nsets || new_profile || profile || do_list) return rc;
+    if (check_update && !rc) rc = update_command(download_update);
+    if (nsets || new_profile || profile || do_list || check_update) return rc;
     return window_run(shot, tab, search);
 }
