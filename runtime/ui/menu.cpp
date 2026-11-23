@@ -691,6 +691,12 @@ static void row_shadow_range(void) {
     opt_choice_list("TOTK_SHADOW_RANGE", UI_MENU_SHADOW_RANGE, vals, names, 4, UI_MENU_SHADOW_RANGE_DESC);
 }
 
+static void row_light_full(void) {   // vk_lightfull.c
+    static const char *const vals[] = {"game", "full"};
+    const char *names[] = {menu_text(UI_MENU_LIGHT_FULL_GAME), menu_text(UI_MENU_LIGHT_FULL_FULL)};
+    opt_choice_list("TOTK_LIGHT_FULL", UI_MENU_LIGHT_FULL, vals, names, 2, UI_MENU_LIGHT_FULL_DESC);
+}
+
 static void row_grass_range(void) {
     static const char *const vals[] = {"50", "100", "150", "200", "300", "400"};
     static const char *const names[] = {"31 m (0.5x)", "62 m (1x)",  "94 m (1.5x)",
@@ -835,6 +841,7 @@ static void tab_screen(float scale) {
     opt_toggle("TOTK_LOD_STEADY", UI_MENU_LOD_STEADY, UI_MENU_LOD_STEADY_DESC);
     opt_slider("TOTK_PCSS", UI_MENU_PCSS, 0, 200, UI_MENU_PCSS_DESC, 10, "%.0f %%");
     opt_slider("TOTK_CONTACT_SHADOWS", UI_MENU_CONTACT_SHADOWS, 0, 100, UI_MENU_CONTACT_SHADOWS_DESC, 10, "%.0f %%");
+    row_light_full();
     const char *engine = row_scene_upscaler();
     if (strcmp(engine, "off")) {   // the mode serves both engines
         static const UiTextId dlss[] = {UI_MENU_DLSS_DLAA, UI_MENU_DLSS_QUALITY, UI_MENU_DLSS_BALANCED,

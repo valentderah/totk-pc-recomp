@@ -1,0 +1,45 @@
+#version 450
+// After the point lights were drawn at full size (runtime/vk_lightfull.c), into images that held nothing but them:
+// mode 0, per half-size texel: the game's half-size images get the lights the full-size ones hold in their 2x2 block,
+//         averaged (the light image, one layer per dispatch, and on layer 0 the occlusion image the second light shader
+//         adds to), written to half-size images of ours that are then copied over the game's: the half-size passes
+//         after the lights read them as the game would have drawn them;
+// mode 1, per full-size pixel: the full-size light image gets the game's half-size light image before the lights (what
+//         the lighting passes had put there), enlarged bilinearly as the full-size composite samples it, so the
+//         composite reads the game's light with the point lights at full size on top.
+// Mode 1 runs after mode 0, which reads the full-size image before it is added to; mode 0 writes no image mode 1 reads.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0) uniform sampler2D game_light;    // one layer of the game's light image (B10G11R11), linear sampler
+layout(binding = 1) uniform sampler2D game_occl;     // the game's occlusion image (RGBA8)
+layout(binding = 2, r11f_g11f_b10f) uniform image2D full_light;   // the same layer of ours, full size
+layout(binding = 3, rgba8) uniform readonly image2D full_occl;    // ours, full size
+layout(binding = 4, r11f_g11f_b10f) uniform writeonly image2D half_light;   // the same layer, half size, for the copy
+layout(binding = 5, rgba8) uniform writeonly image2D half_occl;             // half size, for the copy
+
+layout(push_constant) uniform Params {
+    ivec2 full;   // the full size
+    ivec2 half_;  // the game's size
+    int mode;     // 0: half-size sums, 1: full-size base
+    int occl;     // mode 0: also the occlusion image
+} pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (pc.mode == 0) {
+        if (any(greaterThanEqual(p, pc.half_))) return;
+        vec3 l = vec3(0.0);
+        vec4 o = vec4(0.0);
+        for (int i = 0; i < 4; i++) {
+            ivec2 q = min(p * 2 + ivec2(i & 1, i >> 1), pc.full - 1);
+            l += imageLoad(full_light, q).rgb;
+            if (pc.occl != 0) o += imageLoad(full_occl, q);
+        }
+        imageStore(half_light, p, vec4(texelFetch(game_light, p, 0).rgb + l * 0.25, 1.0));
+        if (pc.occl != 0) imageStore(half_occl, p, min(texelFetch(game_occl, p, 0) + o * 0.25, vec4(1.0)));
+    } else {
+        if (any(greaterThanEqual(p, pc.full))) return;
+        vec2 uv = (vec2(p) + 0.5) / vec2(pc.full);
+        imageStore(full_light, p, vec4(imageLoad(full_light, p).rgb + textureLod(game_light, uv, 0.0).rgb, 1.0));
+    }
+}
