@@ -1345,6 +1345,7 @@ static uint32_t target_wmask(const VkPipeState *s, int i) {
     uint32_t m = s->chmask.mask >> (4 * i) & 0xf;
     if (s->fs && !(gfx_shader_outputs(s->fs, NULL) >> i & 1)) m = 0;
     if (i == 1 && s->fs && P.f_dual_src && uses_src1(s)) m = 0;   // output 1 is the second blend source (spirv_dual_source)
+    if (!s->color_fmt[i] && vk_exec_null_attach()) m = 0;   // an empty slot's dummy attachment (vk_exec.c) takes no writes
     return m;
 }
 
@@ -1380,6 +1381,9 @@ static void gkey_fill(const VkPipeState *s, GKey *k) {
             o[3] = (uint8_t)blend_factor(b->src_a), o[4] = (uint8_t)blend_factor(b->dst_a), o[5] = (uint8_t)blend_op(b->eq_a);
         }
     }
+    if (vk_exec_null_attach())   // empty slots get the dummy attachment's format (vk_exec.c vk_exec_null_attach)
+        for (int i = 0; i < k->n_color; i++)
+            if (k->color[i] == VK_FORMAT_UNDEFINED) k->color[i] = VK_EXEC_NULL_ATTACH_FMT;
     if (!P.dyn_vi) {
         VtxInput v;
         vertex_input(s, &v);
