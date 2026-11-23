@@ -211,7 +211,8 @@ long vk_validation_errors_total(void);             // validation errors since th
 // Guest or host threads; every call needs vk_init(). The first nine have the GfxBackend signatures of gfx.h; vk_backend.c builds
 // gfx_vulkan_backend from them.
 int  vk_pool_init(pool_t *p);              // CPU-visible: guest storage imported (VK_EXT_external_memory_host) as one
-                                           // VkBuffer; physical: device-local memory; virtual: a 64 KiB page table
+                                           // VkBuffer, or its shadow copy (vk_memory.c mirror_mode); physical:
+                                           // device-local memory; virtual: a 64 KiB page table
 void vk_pool_fini(pool_t *p);              // drops images cut from the pool; waits for the GPU if it used the pool
 int  vk_pool_map_virtual(pool_t *v, int n, const void *requests);   // nvn_mapping_t[n], checked by the front end
 void vk_texture_register(int id, const tex_t *t, const view_t *v);  // texture descriptor slot (copied)
