@@ -9,6 +9,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -101,6 +102,30 @@ class PackTest(unittest.TestCase):
         psc.pack(self.cache, keep=True)
         self.assertTrue((self.cache / f'{k}.spv').exists())
         self.assertEqual(len(read_pack(self.cache / psc.PACK)), 4)
+
+    def test_parallel_pack_is_byte_identical_for_fresh_and_incremental_inputs(self):
+        for i in range(80):
+            self.shader(str(i))
+        serial = self.cache.parent / 'serial'
+        shutil.copytree(self.cache, serial)
+        self.assertEqual(psc.pack(self.cache, read_workers=8), psc.pack(serial, read_workers=1))
+        self.assertEqual((self.cache / psc.PACK).read_bytes(), (serial / psc.PACK).read_bytes())
+        self.shader('new')
+        (self.cache / f'{name("0")}.res.json').write_bytes(b'{"changed":true}')
+        (self.cache / f'{name("use1")}.use').write_bytes(b'invalid loose copy')
+        shutil.copytree(self.cache, serial, dirs_exist_ok=True)
+        self.assertEqual(psc.pack(self.cache, read_workers=8), psc.pack(serial, read_workers=1))
+        self.assertEqual((self.cache / psc.PACK).read_bytes(), (serial / psc.PACK).read_bytes())
+
+    def test_prefetch_preserves_order_and_bounds_inflight_reads(self):
+        keys = [(1, bytes([i])) for i in range(100)]
+        # The first yielded result must not require reading every file; only the bounded prefetch can start.
+        from unittest.mock import patch
+        with patch.object(psc, 'read_loose', return_value=b'data') as read:
+            iterator = psc.prefetched_files(keys, dict.fromkeys(keys, Path('fixture')), 3)
+            self.assertEqual(next(iterator), (keys[0], b'data'))
+            self.assertLessEqual(read.call_count, 6)
+            self.assertEqual([key for key, _ in iterator], keys[1:])
 
     def test_a_broken_pack_is_rebuilt_from_the_loose_files(self):
         self.shader('a')
