@@ -6,8 +6,9 @@ It compiles runtime/configurator/*.c, the settings table tools/gen_configurator.
 window shares with the game (cfg.c, ui_text.c, input_map.c, platform/), and links totk-config.exe (totk-config on
 Linux) against SDL3. Nuklear, the widget library, is fetched once into toolchain/nuklear (pinned, hash-checked). The clang is the game's: MSYS2 UCRT64 on Windows and the one on PATH elsewhere, or --toolchain's
 (an llvm-mingw or LLVM directory) with --deps' SDL3 headers and libraries, as tools/build_game.py takes them.
-On Windows it also links runtime/totk.rc, the game's own manifest (UTF-8 code page, per-monitor DPI) and icon; the
-window's icon on every system comes from the same totk.ico (icon_source below).
+On Windows it also links runtime/configurator/totk-config.rc: the game's manifest (UTF-8 code page, per-monitor DPI)
+and the window's own icon, the game's ring with a wrench (totk-config.ico); the window's icon on every system comes
+from the same .ico (icon_source below).
 tools/build_game.py calls build() after it links totk.exe, so the window lands next to the game; the release builds it
 into bin/ (tools/make_release.py, tools/make_release_linux.py) and the setup copies it into the install folder.
 """
@@ -78,7 +79,8 @@ def nuklear_dir():
     return NUKLEAR_DIR
 
 
-ICON_PX = 64   # the size of totk.ico's image the window uses for its own icon (SDL_SetWindowIcon, the header)
+ICON_PX = 64   # the size of the .ico's image the window uses for its own icon (SDL_SetWindowIcon, the header)
+ICON = Path('configurator') / 'totk-config.ico'   # under the runtime folder: the ring with a wrench
 
 
 def png_rgba(data):
@@ -117,18 +119,19 @@ def png_rgba(data):
 
 
 def icon_source(runtime):
-    """C source of cfgr_icon_rgba[], the ICON_PX x ICON_PX image of runtime/totk.ico."""
-    ico = (runtime / 'totk.ico').read_bytes()
+    """C source of cfgr_icon_rgba[], the ICON_PX x ICON_PX image of runtime/configurator/totk-config.ico."""
+    ico = (runtime / ICON).read_bytes()
     for i in range(struct.unpack('<H', ico[4:6])[0]):
         w, _, _, _, _, _, size, off = struct.unpack('<BBBBHHII', ico[6 + 16 * i:22 + 16 * i])
         if w == ICON_PX:
             px = png_rgba(ico[off:off + size])
             rows = [', '.join(str(b) for b in px[k:k + 32]) for k in range(0, len(px), 32)]
-            lines = ['// totk-config: the window icon, the 64x64 image of runtime/totk.ico (tools/build_configurator.py)',
+            lines = ['// totk-config: the window icon, the 64x64 image of runtime/configurator/totk-config.ico '
+                     '(tools/build_configurator.py)',
                      f'const int cfgr_icon_px = {ICON_PX};', 'const unsigned char cfgr_icon_rgba[] = {',
                      ',\n'.join(rows), '};', '']
             return '\n'.join(lines)
-    raise BuildError(f'totk.ico has no {ICON_PX}x{ICON_PX} image')
+    raise BuildError(f'{ICON.name} has no {ICON_PX}x{ICON_PX} image')
 
 
 def newest(paths):
@@ -194,18 +197,18 @@ def build(out, runtime=None, toolchain=None, deps=None, sysroot=None, cpu='v2', 
     if failed:
         raise BuildError('\n'.join(failed))
     objs = [str(o) for o, _ in done]
-    if WIN:   # the game's manifest and icon (runtime/totk.rc)
+    if WIN:   # the game's manifest and the window's own icon (runtime/configurator/totk-config.rc)
         res = obj / 'totk-config.res.o'
+        rc = runtime / 'configurator' / 'totk-config.rc'
         windres = next((p for p in (cc.parent / n for n in ('windres.exe', 'llvm-windres.exe',
                                                              'x86_64-w64-mingw32-windres.exe')) if p.is_file()), None)
         if not windres:
             raise BuildError(f'no windres next to {cc}')
-        if not res.is_file() or res.stat().st_mtime_ns < newest([runtime / 'totk.rc', runtime / 'totk.ico',
-                                                                  runtime / 'totk.manifest']):
-            r = subprocess.run([str(windres), '-I', str(runtime), str(runtime / 'totk.rc'), '-O', 'coff', '-o', str(res)],
+        if not res.is_file() or res.stat().st_mtime_ns < newest([rc, runtime / ICON, runtime / 'totk.manifest']):
+            r = subprocess.run([str(windres), '-I', str(runtime), str(rc), '-O', 'coff', '-o', str(res)],
                                capture_output=True, text=True, env=env, cwd=str(runtime))
             if r.returncode:
-                raise BuildError(f'totk.rc:\n{r.stdout}{r.stderr}')
+                raise BuildError(f'{rc.name}:\n{r.stdout}{r.stderr}')
         objs.append(str(res))
     exe = out / EXE
     r = subprocess.run([str(cc), *link, *objs, *libs, '-o', str(exe)], capture_output=True,

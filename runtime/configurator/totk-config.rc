@@ -1,0 +1,5 @@
+/* The manifest and icon of totk-config.exe: the game's manifest (runtime/totk.manifest: UTF-8 code page, per-monitor
+   DPI) and its own icon, the game's ring with a wrench (totk-config.ico, tools/make_configurator_icon.py), so the task
+   bar tells the settings window from the game. tools/build_configurator.py compiles it with -I runtime. */
+1 24 "totk.manifest"
+1 ICON "configurator/totk-config.ico"

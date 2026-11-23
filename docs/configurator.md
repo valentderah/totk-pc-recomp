@@ -21,7 +21,7 @@ warning above the rows; `totk.ini` is written there anyway.
 
 The left panel holds the profiles (below) and the tabs; the rows of the chosen tab, or of every tab while searching,
 fill the rest; the bottom line has the status and Revert, Save and Save and launch. The colours and the font are the
-in-game menu's, the icons are drawn shapes (`cfgr_icons.c`), and the window and its exe carry the game's icon.
+in-game menu's, the icons are drawn shapes (`cfgr_icons.c`), and the window and its exe carry the game's ring with a gold wrench.
 
 - **Tabs.** Screen, Game, Sound, Controls, Amiibo, Menu, Advanced and Mods are the in-game menu's tabs with its rows,
   including the ones the menu shows only in some states (the DLSS rows, the gameplay tweaks). The gold number beside a
@@ -139,7 +139,8 @@ step). It is built for x86-64-v2, so it runs on every CPU the game runs on.
 | `runtime/configurator/cfgr_nk.c`, `cfgr_nk.h` | Nuklear and its SDL3 renderer, compiled once |
 | `runtime/configurator/cfgr_host.c` | the few runtime functions `cfg.c` and `ui_text.c` call (log, fatal error) |
 | `tools/gen_configurator.py` | writes the settings table (`cfgr_rows.c` in the build folder) from the runtime's sources |
-| `tools/build_configurator.py` | compiles and links the window; on Windows with `runtime/totk.rc` (the game's manifest and icon); the window's icon from `runtime/totk.ico` |
+| `tools/build_configurator.py` | compiles and links the window; on Windows with `runtime/configurator/totk-config.rc` (the game's manifest and the window's icon); the window's icon from `runtime/configurator/totk-config.ico` |
+| `runtime/configurator/totk-config.ico`, `tools/make_configurator_icon.py` | the window's icon: the game's ring with a gold wrench, so the task bar tells it from the game; the script draws it again (Pillow, NumPy) |
 | `tests/configurator_check.py` | the table, the commands, the updates against a fake GitHub, and the window in every language |
 | `runtime/ui_text.c` `UI_CFG_*` | the window's own words, in the menu's four languages |
 
