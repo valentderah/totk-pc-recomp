@@ -211,7 +211,7 @@ Many rows below are developer tools that only act together with another setting 
 | `mvprev_grow` (default `1`) | `0` keeps only three banks in the previous-frame tables. | Object motion that depends on the other banks is no longer tracked. | Caution |
 | `mvprev_skip` | Hex bank mask of banks left out of the previous-frame copy, replacing the default. | Different banks are tracked, which changes object motion. | Caution |
 | `mvprev_trust` | Hex bank mask of banks whose found previous-frame copy is taken without the check. | A copy that does not match is used anyway, which can give wrong motion. | Caution |
-| `reflex` (default `off`) | `off`, `on`, or `boost`; enables NVIDIA Reflex Low Latency (`VK_NV_low_latency2`) to reduce system input latency. Read at start. | On NVIDIA GPUs supporting the extension, coordinates simulation and presentation cadence to lower latency, holding frames to the frame limit the pacer uses (`fps_limit`, the monitor's rate for `display`); `boost` keeps GPU clocks high in CPU-bound scenes. Has no effect on non-NVIDIA GPUs. | Safe |
+| `reflex` (default `off`) | `off`, `auto`, `on`, or `boost`; reduces system input latency. `on` and `boost` enable NVIDIA Reflex Low Latency (`VK_NV_low_latency2`); `auto` enables Reflex, or AMD Anti-Lag 2 (`VK_AMD_anti_lag`, Mesa RADV and AMD's Windows driver) on a GPU without Reflex. Read at start. | Only one of the two runs; on a GPU with neither extension the setting does nothing. Both coordinate simulation and presentation so input reaches the screen sooner when the GPU is the limit, holding frames to the frame limit the pacer uses (`fps_limit`, the monitor's rate for `display`). `boost` also keeps NVIDIA GPU clocks high in CPU-bound scenes. | Safe |
 
 ## Scheduling and host
 
