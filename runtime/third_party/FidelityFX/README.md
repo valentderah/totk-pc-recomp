@@ -43,3 +43,9 @@ Changes of our own (marked "TotK Recomp"):
 - `sdk/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_callbacks_glsl.h`: the luma history's storage image is
   declared `rgba16f`, the format of its images (R16G16B16A16_FLOAT in `ffx_fsr3upscaler.cpp`). It was `rgba8`, which
   the Vulkan validation layer reports as a format mismatch with undefined loads and stores.
+- `sdk/src/backends/vk/ffx_vk.cpp` `findMemoryTypeIndex`: memory types with `PROTECTED`, `DEVICE_COHERENT_AMD` or
+  `DEVICE_UNCACHED_AMD` are skipped, since the runtime enables neither protected memory nor device-coherent memory. The
+  function keeps the last matching type, and RADV lists those types after the plain device-local ones, so on a Radeon
+  780M (Mesa 26.3) FSR 3.1's images were allocated in them and its whole output was noise. When no device-local type
+  without `HOST_VISIBLE` exists (unified-memory GPUs: Adreno under Turnip) it takes a host-visible device-local one
+  instead of failing every texture allocation.
