@@ -6,12 +6,15 @@ Builds a mods folder in a temp directory with files of its own bytes at real Rom
 build/extracted/<version>/romfs/index.json unless --romfs says otherwise), runs `totk.exe --probe-fs` on it and reads the `mods:` lines of the log.
 --probe-fs compares the bytes it reads through the RomFS with every overlay file, so a wrong winner fails it too.
 A second folder checks the merged resource size table the start writes to the profile (runtime/romfs.c
-restbl_overlay): a grown file's entry, an added file's, a shipped table's and another version's table's.
+restbl_overlay): a grown file's entry, an added file's, a shipped table's and another version's table's. Then the
+table kept across starts (restbl_cache = 1, runtime/romfs.c restbl_cache_key): served again when nothing changed, built
+again after a changed mod file, an added or removed mod, another order, a new totk.exe, a damaged key or table.
 Needs the extracted RomFS of the version.
 """
 import argparse
 import json
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -43,9 +46,10 @@ def put(root, mod, rel, data, part='romfs', times=64):
     f.write_bytes(data * times)
 
 
-def run(exe, mods, order, disabled=''):
+def run(exe, mods, order, disabled='', cache='0'):
     """--probe-fs with a profile of its own beside mods (the merged resource size table is written there)."""
-    env = dict(os.environ, TOTK_MODS_DIR=str(mods), TOTK_MODS_ORDER=order, TOTK_MODS_DISABLED=disabled)
+    env = dict(os.environ, TOTK_MODS_DIR=str(mods), TOTK_MODS_ORDER=order, TOTK_MODS_DISABLED=disabled,
+               TOTK_RESTBL_CACHE=cache, TOTK_BACKGROUND_WINDOW='1', TOTK_ASSUME_FOCUS='1')
     profile = Path(mods).parent / 'profile'
     r = subprocess.run([str(exe), '--profile', str(profile), '--probe-fs'], env=env, capture_output=True, timeout=600)
     log = (r.stdout + r.stderr).decode('utf-8', 'replace')
@@ -122,6 +126,72 @@ def restbl_case(exe, version, romfs, check, tmp):
     check(merged[key(old_other)] == game[key(old_other)], 'another version\'s table leaves other files alone')
     lower = [h for h, s in game.items() if merged.get(h, 0) < s]
     check(not lower, f'no entry of the game\'s table is lowered ({len(lower)})')
+    restbl_cache_case(exe, mods, merged_file, grown, check)
+
+
+HIT = 'the mods\' files are the ones of the last start'
+BUILT = 'RomFS: resource size table: built again: '
+
+
+def restbl_cache_case(exe, mods, table, grown, check):
+    """restbl_cache = 1 across starts on the mods restbl_case made (order Grow|Ships|Old)."""
+    keyf = table.with_name(table.name + '.key')
+    order = 'Grow|Ships|Old'
+
+    def start(what, hit, why=None, order=order):
+        code, log = run(exe, mods, order, cache='1')
+        ok = code == 0 and (HIT in log) == hit and (why is None or BUILT + why in log)
+        check(ok, f'restbl_cache: {what}: ' + ('served from the last start' if hit else f'built again ({why})'), log)
+
+    start('first start', False, 'no usable key')
+    check(keyf.is_file() and keyf.stat().st_size == 80, 'restbl_cache: the key file is written beside the table')
+    good = table.read_bytes()
+    start('same mods', True)
+    check(table.read_bytes() == good, 'restbl_cache: the served table is the built one')
+
+    changed = 'the mods, the game files or the build changed'
+    f = mods / 'Grow' / 'romfs' / grown
+    data = f.read_bytes()
+    f.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))   # same size, new bytes and write time
+    start('a mod file rewritten', False, changed)
+    start('the rewritten file again', True)
+    f.write_bytes(data)
+    start('the file restored', False, changed)
+
+    put(mods, 'Extra', 'Pack/Actor/ModTest_Extra.pack.zs',
+        zstandard.ZstdCompressor(write_content_size=True).compress(bytes(40000)), times=1)
+    start('a mod added', False, changed, order=order + '|Extra')
+    shutil.rmtree(mods / 'Extra')
+    start('the mod removed', False, changed)
+    start('another order', False, changed, order='Ships|Grow|Old')
+    start('the first order again', False, changed)
+    check(table.read_bytes() == good, 'restbl_cache: the table built again equals the first one')
+
+    st = os.stat(exe)
+    try:
+        os.utime(exe, ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000_000))   # what a new build changes
+        start('a new totk.exe', False, changed)
+    finally:
+        os.utime(exe, ns=(st.st_atime_ns, st.st_mtime_ns))
+    start('the old totk.exe again', False, changed)
+
+    keyf.write_bytes(keyf.read_bytes()[:40])
+    start('a torn key file', False, 'no usable key')
+    keyf.write_bytes(os.urandom(80))
+    start('a key file of random bytes', False, 'no usable key')
+    start('after the damaged key', True)
+    t = bytearray(table.read_bytes())
+    t[len(t) // 2] ^= 0xff
+    table.write_bytes(bytes(t))
+    start('a damaged table', False, 'the kept table is missing or damaged')
+    check(table.read_bytes() == good, 'restbl_cache: the damaged table is replaced by the built one')
+    table.unlink()
+    start('a missing table', False, 'the kept table is missing or damaged')
+
+    key_before = keyf.read_bytes()
+    code, log = run(exe, mods, order)
+    check(code == 0 and HIT not in log and BUILT not in log and keyf.read_bytes() == key_before,
+          'restbl_cache = 0 (the default): the table is built, the key is neither read nor written', log)
 
 
 def main():

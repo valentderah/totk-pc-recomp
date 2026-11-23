@@ -571,6 +571,11 @@
 # cheats and the other patch files load. Its files may expect the missing code. 0: only the mods mods_no_code names.
 # Read at start. Default: 0.
 # mods_without_code = 0
+# 1: the resource size table merged from the mods' files at start is kept in <profile>/mods/ and served again at the
+# next start when no mod file, shipped table, the mod list or order, the game files or totk.exe changed (a file counts
+# as changed when its size, write time or file id did). It saves the merge at start. A tool that rewrites a mod file
+# with the same size and write time is not seen: set 0 while editing mod files that way. Read at start. Default: 0.
+# restbl_cache = 0
 # Extra room in MiB (0 to 4096) for the heap the world's textures stream into, for HD texture packs. Packs made for
 # emulators with 8 GB of DRAM grow it in their own HeapDef table (System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs):
 # the port reads that growth at start and applies it itself (about 3339 MiB for the HDPacks 4K pack), so such a pack
