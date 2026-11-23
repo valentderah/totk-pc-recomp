@@ -102,11 +102,35 @@ int res_dlss_dll(void) {
     return dll;
 }
 
-// The engine picked at start can run, as far as is known before the device exists: DLSS needs its DLL (dlss_dll); FSR
-// 3.1 is built in (vk_fsr3.cpp). Off: nothing to run.
+// AMD's FSR 4 (vk_ffx.c) loads amd_fidelityfx_loader_vk.dll from the folder of totk.exe, which finds
+// amd_fidelityfx_upscaler_vk.dll next to itself; both come from the setup's FSR step. Windows only: AMD ships no Linux
+// libraries.
+static int ffx_dlls(void) {
+#ifdef _WIN32
+    char exe[1024], path[1024 + 48];
+    if (!plat_exe_path(exe, sizeof exe)) return 1;
+    char *last = plat_last_sep(exe);
+    if (!last) return 1;
+    snprintf(path, sizeof path, "%.*s/amd_fidelityfx_loader_vk.dll", (int)(last - exe), exe);
+    if (!plat_file_exists(path)) return 0;
+    snprintf(path, sizeof path, "%.*s/amd_fidelityfx_upscaler_vk.dll", (int)(last - exe), exe);
+    return plat_file_exists(path);
+#else
+    return 0;
+#endif
+}
+
+int res_ffx_dlls(void) {
+    static int dlls = -1;
+    if (dlls < 0) dlls = ffx_dlls();
+    return dlls;
+}
+
+// The engine picked at start can run, as far as is known before the device exists: DLSS needs its DLL (dlss_dll), FSR
+// 4 AMD's two libraries (ffx_dlls); FSR 3.1 is built in (vk_fsr3.cpp). Off: nothing to run.
 static int upscaler_ready(void) {
     int e = vk_upscaler_engine();
-    return e == UPSCALER_DLSS ? res_dlss_dll() : e == UPSCALER_FSR3;
+    return e == UPSCALER_DLSS ? res_dlss_dll() : e == UPSCALER_FSR4 ? res_ffx_dlls() : e == UPSCALER_FSR3;
 }
 
 static uint64_t shadow_kib(void);
@@ -143,8 +167,12 @@ static double dlss_share(const char *m) {
             int ready = upscaler_ready();
             if (!ready && !told++) {
 #ifdef _WIN32
-                rt_log("resolution: DLSS %s needs nvngx_dlss.dll next to totk.exe, which is missing: the scene follows "
-                       "render_scale", m);
+                if (vk_upscaler_engine() == UPSCALER_FSR4)
+                    rt_log("resolution: FSR 4 %s needs amd_fidelityfx_loader_vk.dll and amd_fidelityfx_upscaler_vk.dll "
+                           "next to totk.exe, which are missing: the scene follows render_scale", m);
+                else
+                    rt_log("resolution: DLSS %s needs nvngx_dlss.dll next to totk.exe, which is missing: the scene "
+                           "follows render_scale", m);
 #else
                 rt_log("resolution: DLSS %s needs libnvidia-ngx-dlss.so.<version> next to totk, which is missing: the "
                        "scene follows render_scale", m);
@@ -208,7 +236,7 @@ static void decide(void) {
         else rt_log("resolution: TOTK_SHADOW_RES=%s is not game or a size 256..4096 (a multiple of 8); game", sr);
     }
     // A DLSS mode other than dlaa sets the scene size instead. On 1.4.3 with the scene upscaler able to run (DLSS with
-    // its DLL there, or FSR 3.1 in the build)
+    // its DLL there, FSR 4 with AMD's libraries there, or FSR 3.1 in the build)
     // the mode can change while the game runs (res_dlss_mode): the scene patch is then always on and the heap is sized
     // for the largest scene the modes ask for. Everyone else keeps the game's own scene size and its dynamic resolution
     // unless render_scale or a DLSS mode asks for another, and a heap sized for that scene alone.
@@ -674,8 +702,8 @@ void res_fov_live(void) {
 // 2867-wide scene stays at 100 %, one wider than about 2970 does not, and a 4267-wide one (5120x1440 at render_scale
 // 83) fits no tier and falls back to 80 % every frame, whatever the GPU's load. 1 (the default) leaves the game's own
 // stepping and the set off. Runs on a settings change (gfx_present.c window_settings_live), like res_fov_live.
-// FSR 3.1 as the scene upscaler holds it at 100 % whatever dynamic_res says, as codexx-dev's pull request #1245 does
-// for its FSR: each tier is a scene of another size, so every step starts FSR's history again, and below 100 % the
+// FSR 3.1 or FSR 4 as the scene upscaler holds it at 100 % whatever dynamic_res says, as codexx-dev's pull request
+// #1245 does for its FSR: each tier is a scene of another size, so every step starts FSR's history again, and below 100 % the
 // game ends its frame another way (a frame log on 1.4.3: its copy shader scales the scene straight into the
 // output-sized target instead of the scaling FXAA draw), which #1245 measured as a picture that went soft and sharp in
 // turns at a 2560x1440 scene. A 1280x720 scene (1080p, quality) stayed at 100 % through a 70 s town run, so it gains
@@ -683,7 +711,8 @@ void res_fov_live(void) {
 void res_dynres_live(void) {
     static int set = -2, shown = -1;
     if (set == -2) set = rt_patch_set("fixres");
-    int fsr = vk_upscaler_on() && vk_upscaler_engine() == UPSCALER_FSR3;
+    int e = vk_upscaler_engine();
+    int fsr = vk_upscaler_on() && (e == UPSCALER_FSR3 || e == UPSCALER_FSR4);
     int dyn = cfg_bool("TOTK_DYNAMIC_RES") && !fsr;
     int state = dyn | fsr << 1;
     if (state == shown) return;
@@ -695,7 +724,7 @@ void res_dynres_live(void) {
     rt_patch_switch(set, !dyn);
     rt_log("resolution: dynamic resolution %s",
            dyn   ? "on: the game's own 100, 90 or 80 %"
-           : fsr ? "off while FSR 3.1 upscales the scene: the scene stays at 100 %"
+           : fsr ? "off while FSR upscales the scene: the scene stays at 100 %"
                  : "off: the scene stays at 100 %");
 }
 

@@ -96,10 +96,13 @@ def orig_name(a):
 
 def open_module(name, path, base, table, plugin=False):
     """Module name for lifting: a plugin with a `plugin` line of the patch table (recomp/patches.py) is lifted from its
-    image after the init, its inline-hook stubs returning where they would branch to their trampolines."""
+    image after the init, its inline-hook stubs returning where they would branch to their trampolines. A game module's
+    `entry` lines are function starts of its lift."""
     p = table.plugins.get(name)
     if not p:
-        return Module(name, path, base, 'c', plugin=plugin)
+        mod = Module(name, path, base, 'c', plugin=plugin)
+        mod.entries = sorted(base + o for o in table.entries.get(name, ()))
+        return mod
     image = Path(p['image']).read_bytes()
     mod = Module(name, path, base, 'c', plugin=True, image=image, rets=[o + 12 for o in p['stubs']],
                  seeds=sorted(p['stubs'] | p['seeds']))
@@ -195,22 +198,56 @@ def discover(mod):
     stats = {'seeds': int(len(seeds)), 'bl_targets': int(len(np.unique(bl_tgt))),
              'materialised_targets': int(len(np.unique(mat))), 'initial_starts': int(len(starts))}
 
-    rounds = 0
-    while True:
-        rounds += 1
-        f = np.searchsorted(starts, br_src, side='right') - 1
-        live = f >= 0
-        f = np.where(live, f, 0)
-        lo = starts[f]
-        hi = np.where(f + 1 < len(starts), starts[np.minimum(f + 1, len(starts) - 1)], n)
-        out = live & ((br_tgt < lo) | (br_tgt >= hi))
-        new = np.setdiff1d(br_tgt[out], starts, assume_unique=False)
-        if not len(new):
-            break
-        starts = np.union1d(starts, new)
-    stats['rounds'] = rounds
+    def close(starts):
+        rounds = 0
+        while True:
+            rounds += 1
+            f = np.searchsorted(starts, br_src, side='right') - 1
+            live = f >= 0
+            f = np.where(live, f, 0)
+            lo = starts[f]
+            hi = np.where(f + 1 < len(starts), starts[np.minimum(f + 1, len(starts) - 1)], n)
+            out = live & ((br_tgt < lo) | (br_tgt >= hi))
+            new = np.setdiff1d(br_tgt[out], starts, assume_unique=False)
+            if not len(new):
+                return starts, rounds
+            starts = np.union1d(starts, new)
+
+    starts, stats['rounds'] = close(starts)
+    entries = getattr(mod, 'entries', ())
+    if entries:
+        extra = entry_starts(mod, starts, entries, br)
+        stats['entries'] = len(entries)
+        starts, more = close(np.union1d(starts, (np.asarray(sorted(extra), dtype=np.int64) - pc0) >> 2))
+        stats['rounds'] += more
     stats['functions'] = int(len(starts))
     return starts, stats
+
+
+def entry_starts(mod, starts, entries, br):
+    """The function starts mod's `entry` addresses add (recomp/patches.py): each entry, and every target of the jump
+    tables of the function that held it. A table whose cases fell on both sides of the new boundary would reach the
+    cases outside its function through rt_dispatch, which only enters function starts; with every case a start, the
+    table's br dispatches to them (the all-label fallback). An unresolved computed br there gets a warning: its targets
+    are not known, so a case past the entry would stop the game with a named fatal."""
+    out, pc0 = set(), mod.lo
+    for e in entries:
+        if not mod.in_text(e):
+            raise SystemExit(f'{mod.name}: the entry {e:#x} is outside its .text')
+        k = int(np.searchsorted(starts, (e - pc0) >> 2, side='right')) - 1
+        lo = pc0 + int(starts[k]) * 4
+        hi = pc0 + int(starts[k + 1]) * 4 if k + 1 < len(starts) else mod.hi
+        out.add(e)
+        if e == lo:
+            continue
+        for i in br[(br >= (lo - pc0) >> 2) & (br < (hi - pc0) >> 2)].tolist():
+            jt = jumptables.resolve(mod, pc0 + 4 * i, lo, hi)
+            if jt:
+                out.update(jt)
+            elif jumptables.is_computed(mod, pc0 + 4 * i, lo):
+                print(f'{mod.name}: warning: the entry {e:#x} lies in the function {lo:#x} with an unresolved table '
+                      f'jump at {pc0 + 4 * i:#x}', flush=True)
+    return out
 
 
 def estimate_sizes(mod, starts):
@@ -316,7 +353,8 @@ class Emitter:
 
     def replacements(self, a):
         """The lifted words of each alternative of the patched site a, in set order. Only the last word of an
-        alternative may branch (bl, b, b.cond / cbz / tbz, ret)."""
+        alternative may branch (bl, blr, b, b.cond / cbz / tbz, ret); a blr is a site's own word kept after an inline
+        hook."""
         out = []
         for _, words in self.patched[a]:
             # ('call', target): a plugin's inline hook (recomp/patches.py @call), before the site's own instruction
@@ -325,7 +363,7 @@ class Emitter:
                 last = j == len(lifted) - 1
                 if r.kind == 'hook' and not last:
                     continue
-                if r.kind != 'op' and not (last and r.kind in ('bl', 'b', 'bcond', 'ret')):
+                if r.kind != 'op' and not (last and r.kind in ('bl', 'blr', 'b', 'bcond', 'ret')):
                     raise patches.PatchError(f'{a:#x}: replacement word {words[j]:08x} is a {r.kind}')
             out.append(lifted)
         return out
@@ -363,7 +401,7 @@ class Emitter:
     def flag_plan(self, insns, entry, end, tables, succ):
         """recomp/flags.py plan for the function: each instruction's flag use over the flow succ (flow())."""
         n = len(insns)
-        calls, effects, exits = set(), [], {n}
+        calls, effects, exits, hooks = set(), [], {n}, set()
         for i, ins in enumerate(insns):
             k, a = ins.kind, entry + 4 * i
             if k in ('bl', 'blr'):
@@ -372,34 +410,45 @@ class Emitter:
                 exits.add(i)
             elif k == 'br':
                 exits.add(i)   # through rt_dispatch, also a table's default
+            elif k == 'ret' and self.mod.plugin:
+                exits.add(i)   # a plugin's caller sees the flags it leaves (recomp/flags.py)
             if a in self.patched:
                 effects.append(self.patched_effect(ins, a))
                 for words in self.replacements(a):
                     r = words[-1]
-                    if r.kind == 'bl':
+                    if r.kind in ('bl', 'blr'):
                         calls.add(i)
                     elif r.kind in ('b', 'bcond') and not entry <= r.target < end:
                         exits.add(i)
+                    if any(w.kind == 'hook' for w in words):
+                        hooks.add(i)
             else:
                 effects.append(flags.effect(ins.cond if k == 'bcond' else ins.code or ''))
         effects.append((False, None))
-        return flags.plan(effects, succ, calls, exits)
+        return flags.plan(effects, succ, calls, exits, through=calls if self.mod.plugin else (), hooks=hooks)
 
     def patched_effect(self, ins, a):
         """Flag effect of a patched site: every alternative (the original and each replacement) must write the same
-        flags, in at most one word each; the site reads flags when any alternative does (a b.cond reads them)."""
+        flags, in at most one word each; the site reads flags when any alternative does (a b.cond reads them).
+        An alternative that only branches out of the module (a plugin's branch hook, whose trampoline runs the
+        original word) counts for none: it leaves with the flags from before the site, which its tail exit publishes
+        (flags.plan), and nothing after the site in this function sees it."""
         alts = []
-        for words in [[ins]] + self.replacements(a):
+        for k, words in enumerate([[ins]] + self.replacements(a)):
             fx = [flags.effect(w.code or '') if w.kind == 'op' else flags.effect(w.cond) for w in words
                   if w.kind in ('op', 'bcond')]
             fx = [e for e in fx if e[0] or e[1]]
             if len(fx) > 1:
                 raise patches.PatchError(f'{a:#x}: several flag-using words in one alternative')
+            last = words[-1]
+            if k and not fx and last.kind == 'b' and not self.mod.lo <= last.target < self.mod.hi:
+                continue
             alts.append(fx[0] if fx else (False, None))
         if any(e[1] != alts[0][1] for e in alts):
             raise patches.PatchError(f'{a:#x}: the alternatives write different flags ({[e[1] for e in alts]})')
         reads = any(e[0] for e in alts)
-        if (alts[0][1] or reads) and (ins.kind == 'bl' or any(w[-1].kind == 'bl' for w in self.replacements(a))):
+        if (alts[0][1] or reads) and (ins.kind in ('bl', 'blr') or
+                                      any(w[-1].kind in ('bl', 'blr') for w in self.replacements(a))):
             raise patches.PatchError(f'{a:#x}: a patched call that uses flags')
         return reads, alts[0][1]
 
@@ -450,6 +499,12 @@ class Emitter:
         def publish(i):
             return fp.publish(i) if fp and fp.used else ''
 
+        def give(i):   # flags a plugin's callee or a hook's callback sees (recomp/flags.py plan's through, hooks)
+            return fp.give(i) if fp and fp.used else ''
+
+        def take(i):   # flags that callee or callback left
+            return fp.take(i) if fp and fp.used else ''
+
         def jump(t, i):
             if entry <= t < end:
                 return f'goto L_{t:x};'
@@ -478,12 +533,12 @@ class Emitter:
             if fp.used:
                 out.append('    ' + fp.decl())
 
-        def call(t, a):
+        def call(t, a, i):
             if t in starts:
                 refs.add(t)
-                return f'c->x[30] = {hx(a + 4)}; {spill}{fname(t)}(c);{reload_call}'
+                return f'{give(i)}c->x[30] = {hx(a + 4)}; {spill}{fname(t)}(c);{reload_call}{take(i)}'
             self.stats['external_calls'] += 1
-            return f'c->x[30] = {hx(a + 4)}; {spill}c->pc = {hx(t)}; rt_dispatch(c);{reload_call}'
+            return f'{give(i)}c->x[30] = {hx(a + 4)}; {spill}c->pc = {hx(t)}; rt_dispatch(c);{reload_call}{take(i)}'
 
         def op(i, code):
             code = fx(i, code)
@@ -494,25 +549,29 @@ class Emitter:
             if r.kind == 'op':
                 return op(i, r.code)
             if r.kind == 'bl':
-                return call(r.target, a)
+                return call(r.target, a, i)
             if r.kind == 'b':
                 return jump(r.target, i)
             if r.kind == 'bcond':
                 return f'if ({fx(i, r.cond)}) {{ {jump(r.target, i)} }}'
             if r.kind == 'ret':
                 return f'{spill}return;'
+            if r.kind == 'blr':   # an original call through a register (a plugin hooks Zonai Fieldworks' blr x8 sites)
+                return (f'{give(i)}c->pc = {r.target}; c->x[30] = {hx(a + 4)}; {spill}rt_dispatch(c);{reload_call}'
+                        f'{take(i)}')
             if r.kind == 'hook':
                 # a call that writes no x30, the whole Cpu current before it and read back after it: the stub saves and
                 # restores x30 itself, and the callback may change any register through exlaunch's hook context
+                # exlaunch's hook impl saves no NZCV: the callback sees the flags and the site goes on with its own
                 refs.add(r.target)
                 self.stats['plugin_hook_calls'] += 1
-                return f'{spill}{fname(r.target)}(c);{reload}'
+                return f'{give(i)}{spill}{fname(r.target)}(c);{reload}{take(i)}'
             raise patches.PatchError(f'{a:#x}: patched instruction is a {r.kind}')
 
         def patch(i, ins, a):
             """if (switch) { replacement } else if ... else { original } for a patched site (recomp/patches.py); an
             ordered set of a contested site tests the site's pick byte instead of its switch."""
-            if ins.kind not in ('op', 'bl', 'b', 'bcond'):
+            if ins.kind not in ('op', 'bl', 'blr', 'b', 'bcond'):
                 raise patches.PatchError(f'{a:#x}: patched instruction is a {ins.kind}')
             line = '   '
             n, values = self.picks.get(a, (None, {}))
@@ -548,9 +607,10 @@ class Emitter:
                     self.stats['spin_gates'] += 1
                 emit(i, '    ' + j if k == 'b' else f'    if ({fx(i, ins.cond)}) {{ {j} }}')
             elif k == 'bl':
-                emit(i, '    ' + call(ins.target, a))
+                emit(i, '    ' + call(ins.target, a, i))
             elif k == 'blr':
-                emit(i, f'    c->pc = {ins.target}; c->x[30] = {hx(a + 4)}; {spill}rt_dispatch(c);{reload_call}')
+                emit(i, f'    {give(i)}c->pc = {ins.target}; c->x[30] = {hx(a + 4)}; {spill}rt_dispatch(c);{reload_call}'
+                        f'{take(i)}')
             elif k == 'br':
                 jt = tables.get(a)
                 if jt == 'all':
@@ -562,7 +622,7 @@ class Emitter:
                 else:
                     emit(i, f'    {publish(i)}{spill}c->pc = {ins.target}; {MUSTTAIL} rt_dispatch(c);')
             elif k == 'ret':
-                emit(i, f'    {spill}return;')
+                emit(i, f'    {publish(i)}{spill}return;')
             else:
                 raise ValueError(f'{a:#x}: unknown instruction kind {k!r}')
         n = len(insns)
@@ -992,8 +1052,9 @@ def main():
             n = len(starts) if not args.limit else min(args.limit, len(starts))
             ends = np.append(abs_starts[1:], mod.hi)
             chunks = partition(est[:n], args.chunk_fns, args.chunk_bytes, args.big_fn)
-        missing = sorted(base + o for o in (table.plugins.get(name) or {}).get('seeds', ())
-                         if base + o not in set(abs_starts.tolist()))
+        # a seed that is an `orig` trampoline counts as found: dispatch takes its address to the function's copy
+        missing = sorted(base + o for o in set((table.plugins.get(name) or {}).get('seeds', ())) |
+                         table.entries.get(name, set()) if base + o not in set(abs_starts.tolist()) | set(extra))
         if missing:
             raise SystemExit(f'{name}: the seeds {", ".join(hex(a) for a in missing)} are no function starts')
         mkey = module_key(gen_key, name, path, base, abs_starts)

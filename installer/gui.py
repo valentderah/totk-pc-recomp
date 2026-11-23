@@ -39,9 +39,10 @@ except ImportError:
 from . import ini
 from . import layout as layouts
 from . import recent
+from . import screens
 from .guilogic import (DONE, DRIVER_PAGES, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGE_LABELS, UI_LANGUAGES, Catalog,
-                       Form, Model, Process, amount, default_game_language, describe_event, driver_help, parse_line,
-                       windows_ui_language)
+                       Form, Model, Process, amount, default_game_language, describe_event, driver_help, fsr_default,
+                       parse_line, windows_ui_language)
 
 POLL_MS = 100
 GLYPH = {PENDING: '\u25cb', RUNNING: '\u25b6', DONE: '\u2714', SKIPPED: '\u2013', FAILED: '\u2716'}
@@ -116,6 +117,73 @@ def use_sun_valley(root, ui_font):
     return True
 
 
+class ScrollArea(ttk.Frame):
+    """A screen's content scrolls while its action bar stays outside the viewport."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        background = ttk.Style(parent).lookup('TFrame', 'background') or parent.winfo_toplevel().cget('background')
+        self.canvas = tk.Canvas(self, width=1, height=1, borderwidth=0, highlightthickness=0, background=background)
+        self.scrollbar = ttk.Scrollbar(self, orient='vertical', command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.pack(side='left', fill='both', expand=True)
+        self.content = ttk.Frame(self.canvas)
+        self.window = self.canvas.create_window((0, 0), window=self.content, anchor='nw')
+        self.content.bind('<Configure>', lambda _e: self.canvas.configure(scrollregion=self.canvas.bbox('all')))
+        self.canvas.bind('<Configure>', lambda e: self.canvas.itemconfigure(self.window, width=e.width))
+        root = self.winfo_toplevel()
+        root.bind('<FocusIn>', self.reveal_focus, add='+')
+        for sequence in ('<MouseWheel>',) + (('<Button-4>', '<Button-5>') if sys.platform.startswith('linux') else ()):
+            root.bind(sequence, self.wheel, add='+')
+
+    def contains(self, widget):
+        return widget is self.canvas or str(widget).startswith(str(self.content) + '.') or widget is self.content
+
+    def natural(self):
+        width = self.content.winfo_reqwidth()
+        if int(self.canvas.cget('width')) == width:
+            return False
+        self.canvas.configure(width=width)
+        return True
+
+    def limit_height(self, height):
+        height = max(1, height)
+        scroll = height < self.content.winfo_reqheight()
+        changed = bool(self.scrollbar.winfo_manager()) != scroll
+        if changed:
+            if scroll:
+                self.scrollbar.pack(side='right', fill='y', before=self.canvas)
+            else:
+                self.scrollbar.pack_forget()
+        if int(self.canvas.cget('height')) != height:
+            self.canvas.configure(height=height)
+            changed = True
+        return changed
+
+    def reveal_focus(self, event):
+        if not self.contains(event.widget) or event.widget is self.canvas:
+            return
+        top = event.widget.winfo_rooty() - self.content.winfo_rooty()
+        bottom = top + event.widget.winfo_height()
+        visible = self.canvas.canvasy(0)
+        height = self.canvas.winfo_height()
+        if top < visible:
+            self.canvas.yview_moveto(top / max(1, self.content.winfo_height()))
+        elif bottom > visible + height:
+            self.canvas.yview_moveto((bottom - height) / max(1, self.content.winfo_height()))
+
+    def wheel(self, event):
+        if not self.contains(event.widget) or event.widget.winfo_class() in ('Text', 'Listbox', 'TCombobox'):
+            return
+        if self.canvas.yview() == (0.0, 1.0):
+            return
+        units = -1 if event.num == 4 else 1 if event.num == 5 else -int(event.delta / 120)
+        if not units and event.delta:
+            units = -1 if event.delta > 0 else 1
+        self.canvas.yview_scroll(units, 'units')
+        return 'break'
+
+
 class App:
     def __init__(self, root, ui_lang, layout, run_args=None, rebuild=None):
         self.root, self.layout = root, layout
@@ -182,6 +250,7 @@ class App:
         self.ui_box.pack(side='left')
         self.body = ttk.Frame(root, padding=PAD)
         self.body.pack(fill='both', expand=True)
+        self.scroll_areas = {}
         self.frames = {'form': self.build_form(), 'run': self.build_run(), 'finish': self.build_finish()}
         self.vars['lang'].set(self.lang_label(self.lang_code))
         self.vars['dest'].trace_add('write', lambda *_: self.refresh_form())
@@ -269,19 +338,40 @@ class App:
         for), so a screen or language switch does not move the buttons sideways, and the height of the shown screen,
         so no screen carries the empty band of a taller one. Every text change that can add lines calls it again, or
         pack takes the missing height from the button bars. Without `shrink` the window only grows and a size the user
-        dragged it to stays; a screen or language switch and closing the details or the log shrink it to fit."""
+        dragged it to stays; a screen or language switch and closing the details or the log shrink it to fit. A screen
+        taller than the display scrolls its content while its action bar remains outside the viewport."""
         self.root.update_idletasks()
+        widths_changed = [area.natural() for area in self.scroll_areas.values()]
+        if any(widths_changed):
+            self.root.update_idletasks()
         widths = [f.winfo_reqwidth() for f in self.frames.values()]
         shown = self.frames[self.screen] if self.screen else max(self.frames.values(), key=lambda f: f.winfo_reqheight())
         chrome = self.root.winfo_reqheight() - self.body.winfo_reqheight()   # the title row above the body
         w = max(self.root.winfo_reqwidth(), max(widths) + 2 * PAD)
         h = chrome + shown.winfo_reqheight() + 2 * PAD
+        area = self.scroll_areas.get(self.screen)
+        if area:
+            h += area.content.winfo_reqheight() - area.canvas.winfo_reqheight()
+        # Leave room for window decorations and the desktop's panels. Content scrolls; the footer stays visible.
+        limit = max(1, self.root.winfo_screenheight() - dpi.px(80))
+        if area:
+            changed = area.limit_height(area.content.winfo_reqheight() - max(0, h - limit))
+            h = min(h, limit)
+            if changed:
+                self.root.update_idletasks()
+                w = max(w, shown.winfo_reqwidth() + 2 * PAD)
         # refresh_run calls it on every poll: leave the window alone while nothing grew
         if (w, h) == self.fitted and (not shrink or self.root.winfo_height() == h):
             return
         self.fitted = (w, h)
         self.root.minsize(w, h)
         self.root.geometry(f'{max(w, self.root.winfo_width())}x{h if shrink else max(h, self.root.winfo_height())}')
+
+    def scroll_content(self, parent, name):
+        area = ScrollArea(parent)
+        area.pack(fill='both', expand=True)
+        self.scroll_areas[name] = area
+        return area.content
 
     def notice(self, parent):
         w = ttk.Label(parent, style='Notice.TLabel', wraplength=WRAP, justify='left')
@@ -312,9 +402,10 @@ class App:
         self.form_error.pack(side='bottom', anchor='w', pady=(dpi.px(4), 0))
         self.update_hint = ttk.Label(f, style='Status.TLabel', wraplength=WRAP, justify='left')
         self.update_hint.pack(side='bottom', anchor='w', pady=(dpi.px(8), 0))
-        self.form_intro = self.label(f, 'ui.intro', wraplength=WRAP, justify='left')
+        content = self.scroll_content(f, 'form')
+        self.form_intro = self.label(content, 'ui.intro', wraplength=WRAP, justify='left')
         self.form_intro.pack(anchor='w', pady=(0, dpi.px(4)))
-        grid = ttk.Frame(f)
+        grid = ttk.Frame(content)
         grid.pack(fill='x')
         grid.columnconfigure(1, weight=1)
         self.section(grid, 0, 'ui.section_files', dpi.px(6))
@@ -346,18 +437,25 @@ class App:
         # On by default and named with its source and licence: the player sees what is downloaded and can untick it.
         # The source and licence line is the first one under More details.
         self.dlss_var = tk.BooleanVar(value=True)
-        dlss = ttk.Checkbutton(f, variable=self.dlss_var)
+        dlss = ttk.Checkbutton(content, variable=self.dlss_var)
         self.bind_text(dlss, 'text', 'ui.dlss')
         dlss.pack(anchor='w', pady=(dpi.px(12), 0))
+        # Ticked by default with an AMD display adapter only (guilogic.fsr_default); the player can tick it on any GPU.
+        # Its source and licence line follows DLSS's under More details.
+        self.fsr_var = tk.BooleanVar(value=fsr_default(screens.windows_adapter_names()))
+        fsr = ttk.Checkbutton(content, variable=self.fsr_var)
+        self.bind_text(fsr, 'text', 'ui.fsr')
+        fsr.pack(anchor='w', pady=(dpi.px(4), 0))
         # The explanations stay out of the way until asked for: a link opens them under it
-        self.details_toggle = ttk.Label(f, style='Link.TLabel', cursor='hand2', takefocus=True)
+        self.details_toggle = ttk.Label(content, style='Link.TLabel', cursor='hand2', takefocus=True)
         self.bind_text(self.details_toggle, 'text', 'ui.more_details')
         for seq in ('<Button-1>', '<Return>', '<space>'):
             self.details_toggle.bind(seq, lambda _e: self.toggle_details())
         self.details_toggle.pack(anchor='w', pady=(dpi.px(8), 0))
-        self.details = ttk.Frame(f)   # packed after the link when open; no holder frame, as an emptied Tk frame keeps
+        self.details = ttk.Frame(content)   # packed after the link when open; no holder frame, as an emptied Tk frame keeps
         # the height its last child gave it
-        for id in ('ui.dlss_help', 'ui.formats_help', 'ui.compressed_help', 'ui.firmware_help', 'ui.keys_private'):
+        for id in ('ui.dlss_help', 'ui.fsr_help', 'ui.formats_help', 'ui.compressed_help', 'ui.firmware_help',
+                   'ui.keys_private'):
             self.label(self.details, id, style='Muted.TLabel', wraplength=WRAP - dpi.px(16),
                        justify='left').pack(anchor='w', pady=(dpi.px(6), 0))
         self.details_open = False
@@ -381,14 +479,15 @@ class App:
         self.cancel_button.pack(side='right')
         self.log_toggle = self.button(bar, 'ui.show_log', self.toggle_log)
         self.log_toggle.pack(side='left')
-        self.run_header = ttk.Label(f, font=(self.ui_font, 11, 'bold'))
+        content = self.scroll_content(f, 'run')
+        self.run_header = ttk.Label(content, font=(self.ui_font, 11, 'bold'))
         self.run_header.pack(anchor='w')
         self.step_rows = {}
-        self.steps_box = ttk.Frame(f)
+        self.steps_box = ttk.Frame(content)
         self.steps_box.pack(fill='x', pady=dpi.px(8))
-        self.phase_label = ttk.Label(f, wraplength=WRAP, justify='left')
+        self.phase_label = ttk.Label(content, wraplength=WRAP, justify='left')
         self.phase_label.pack(anchor='w')
-        bar_holder = ttk.Frame(f)
+        bar_holder = ttk.Frame(content)
         bar_holder.pack(fill='x', pady=(dpi.px(4), dpi.px(6)))
         self.bar = ttk.Progressbar(bar_holder, mode='determinate', maximum=1000)
         self.bar.pack(fill='both', expand=True)
@@ -398,11 +497,11 @@ class App:
             # holder follows it.
             bar_holder.pack_propagate(False)
             bar_holder.configure(height=dpi.px(22))
-        self.space_label = ttk.Label(f, wraplength=WRAP, justify='left')
+        self.space_label = ttk.Label(content, wraplength=WRAP, justify='left')
         self.space_label.pack(anchor='w')
-        self.warn_label = ttk.Label(f, wraplength=WRAP, justify='left', foreground='#9a6700')
+        self.warn_label = ttk.Label(content, wraplength=WRAP, justify='left', foreground='#9a6700')
         self.warn_label.pack(anchor='w')
-        self.log_frame = ttk.Frame(f)
+        self.log_frame = ttk.Frame(content)
         self.log = tk.Text(self.log_frame, height=10, wrap='word', state='disabled', font=(self.mono_font, 9))
         scroll = ttk.Scrollbar(self.log_frame, command=self.log.yview)
         self.log.configure(yscrollcommand=scroll.set)
@@ -422,13 +521,14 @@ class App:
         self.back_button.pack(side='left')
         if self.rebuild:   # a failed or cancelled rebuild: the game starts with the code it has
             self.button(bar, 'ui.start_game', self.start_game).pack(side='right', padx=(0, dpi.px(8)))
-        self.finish_title = ttk.Label(f, style='Title.TLabel', wraplength=WRAP, justify='left')
+        content = self.scroll_content(f, 'finish')
+        self.finish_title = ttk.Label(content, style='Title.TLabel', wraplength=WRAP, justify='left')
         self.finish_title.pack(anchor='w')
-        self.finish_text = ttk.Label(f, wraplength=WRAP, justify='left')
+        self.finish_text = ttk.Label(content, wraplength=WRAP, justify='left')
         self.finish_text.pack(anchor='w', pady=dpi.px(8))
-        self.finish_steps = ttk.Frame(f)
+        self.finish_steps = ttk.Frame(content)
         self.finish_steps.pack(fill='x', pady=(0, dpi.px(8)))
-        self.finish_notice = self.notice(f)
+        self.finish_notice = self.notice(content)
         self.finish_notice.pack(fill='x', pady=(dpi.px(8), 0))
         # A check that stopped on the graphics driver (guilogic.driver_help): one button per vendor opens its driver
         # page in the browser. Packed by refresh_finish only for those errors.
@@ -444,7 +544,7 @@ class App:
     def form(self):
         return Form(base=self.vars['base'].get(), update=self.vars['update'].get(), keys=self.vars['keys'].get(),
                     firmware=self.vars['firmware'].get(), lang=self.selected_lang(), dest=self.vars['dest'].get(),
-                    dlss=self.dlss_var.get())
+                    dlss=self.dlss_var.get(), fsr=self.fsr_var.get())
 
     def set_prefill(self, name, value):
         self.programmatic = True
@@ -724,7 +824,7 @@ class App:
 # ---- self test ---------------------------------------------------------------------------------------------------
 
 SAMPLE_START = {'type': 'start', 'release': 'selftest', 'mode': 'install', 'dest': 'Z:/selftest/TotK', 'log': 'D:\\log.txt',
-                'steps': ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss', 'cleanup']}
+                'steps': ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss', 'fsr', 'cleanup']}
 SAMPLE_RUN = [
     SAMPLE_START,
     {'type': 'plan', 'run': ['check', 'fonts', 'extract'], 'skip': {}},

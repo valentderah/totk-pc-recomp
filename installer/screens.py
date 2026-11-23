@@ -94,6 +94,28 @@ def windows_displays():
     return out
 
 
+def windows_adapter_names():
+    """The names of the display adapters Windows lists (EnumDisplayDevicesW, "AMD Radeon RX 9060 XT"), without
+    starting Vulkan; [] elsewhere or when the call fails. The setup window decides its defaults by them before the host
+    check has run."""
+    if os.name != 'nt':
+        return []
+    try:
+        user32 = ctypes.WinDLL('user32')
+        out, i = [], 0
+        while i < 64:
+            dev = DISPLAY_DEVICEW()
+            dev.cb = ctypes.sizeof(dev)
+            if not user32.EnumDisplayDevicesW(None, i, ctypes.byref(dev), 0):
+                break
+            i += 1
+            if dev.DeviceString and dev.DeviceString not in out:
+                out.append(dev.DeviceString)
+        return out
+    except (OSError, AttributeError, ValueError):
+        return []
+
+
 XRANDR = re.compile(r'\sconnected\s+(?:primary\s+)?(\d+)x(\d+)\+')
 
 
@@ -132,11 +154,16 @@ def displays():
 # ---- totk.ini (runtime/cfg.c reads the same keys, in any section, with or without the totk_ prefix)
 
 def ini_value(text, name):
+    """The last nonempty value, with matching quotes removed, as runtime/cfg.c cfg_load and add read it."""
     value = None
     for line in text.splitlines():
-        m = re.match(rf'^\s*(?:totk_)?{name}\s*=\s*([^\s#;]*)', line, re.IGNORECASE)
+        m = re.match(rf'^\s*(?:totk_)?{re.escape(name)}\s*=(.*)$', line, re.IGNORECASE)
         if m:
-            value = m.group(1)
+            candidate = m.group(1).strip()
+            if len(candidate) >= 2 and candidate[0] == candidate[-1] == '"':
+                candidate = candidate[1:-1]
+            if candidate:
+                value = candidate
     return value
 
 

@@ -1209,3 +1209,15 @@ site ability main 1622bf4 b4000155 aa0903f5 b4000155   # cbz x21 -> mov x21, x9;
 # the game with the set off in two runs of two, a pause of 1 s in none of one.
 set audiodrain TOTK_AUDIO_DRAIN_FIX 1
 site audiodrain main 883780 17fffee6 17fffeda   # b 0x883318 -> b 0x8832e8
+
+# Thunderstorm lightning (issue #1287): as in patches-v143.txt, the same update (main+0xab849c, called from
+# main+0xab7cf4) with the same chances and timers. The sites are the loads of 0.013333 (distant bolt) and of 0.01 (state
+# 1, both draws through s9, which the prologue saves; state 5). The time object is loaded as the game's own trampoline
+# check does (main+0xbda4bc): its global through the GOT slot main+0x462e038, then +0xc8. After each site x10, s2 and s3
+# are written, or a call comes, before any read.
+set lightning TOTK_LIGHTNING_FIX 1
+site lightning main ab8d50 bd43fd01 bd43fd01 d001dbaa f9401d4a f940014a f940654a bd403942 1e2e1003 1e237842 1e220821   # ldr s1, [x8, #0x3fc] (0.013333)
+site lightning main ab9014 bd46f109 bd46f109 b001dbaa f9401d4a f940014a f940654a bd403942 1e2e1003 1e237842 1e220929   # ldr s9, [x8, #0x6f0] (0.01)
+site lightning main ab8f90 bd46f101 bd46f101 d001dbaa f9401d4a f940014a f940654a bd403942 1e2e1003 1e237842 1e220821   # ldr s1, [x8, #0x6f0] (0.01)
+#   each: the game's load; adrp x10, main+0x462e000; ldr x10, [x10, #0x38]; ldr x10, [x10]; ldr x10, [x10, #0xc8];
+#   ldr s2, [x10, #0x38] (ratio); fmov s3, #1.0; fminnm s2, s2, s3; fmul (chance * ratio)

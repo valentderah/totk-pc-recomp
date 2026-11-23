@@ -11,6 +11,10 @@
 // layout with a set-then-get round trip before anything relies on it.
 //
 // Where DLAA runs in the frame, the jitter and the motion vectors: see the sections below.
+//
+// The scene upscaler (scene_upscaler) is DLSS, AMD FSR 3.1 (vk_fsr3.cpp, built from the FidelityFX SDK 1.1.4 sources)
+// or AMD FSR 4 (vk_ffx.c, AMD's FSR SDK 2.4 libraries, Windows): the arming, the jitter, the motion vectors and the
+// copy of the result below are shared, and only the call that upscales differs (evaluate, fsr_evaluate).
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +29,7 @@
 #include "input.h"
 #include "nvn_api.h"
 #include "vk_exec.h"
+#include "vk_ffx.h"
 #include "vk_fg.h"
 #include "vk_fsr3.h"
 #include "vk_rec.h"
@@ -105,25 +110,43 @@ static int p_getp(const NgxParam *p, const char *n, void **v) { return NGX_OK(((
 #endif
 
 // The scene upscaler picked at start (scene_upscaler; without it dlaa = 1 is DLSS): a restart applies another. AMD FSR
-// 3.1 (vk_fsr3.cpp) takes the same inputs at the same point of the frame as DLSS and runs on any GPU.
+// 3.1 (vk_fsr3.cpp) and FSR 4 (vk_ffx.c) take the same inputs at the same point of the frame as DLSS; FSR 3.1 runs on
+// any GPU, FSR 4 on Windows where AMD's libraries offer it for the GPU (vk_ffx_init). AMD ships those libraries for
+// Windows only, so elsewhere fsr4 is off.
 int vk_upscaler_engine(void) {
     static int e = -1;
     if (e < 0) {
         const char *v = cfg_scene_upscaler();
-        e = !strcmp(v, "dlss") ? UPSCALER_DLSS : !strcmp(v, "fsr3") ? UPSCALER_FSR3 : UPSCALER_OFF;
+        e = !strcmp(v, "dlss") ? UPSCALER_DLSS : !strcmp(v, "fsr3") ? UPSCALER_FSR3
+          : !strcmp(v, "fsr4") ? UPSCALER_FSR4 : UPSCALER_OFF;
+#ifndef _WIN32
+        if (e == UPSCALER_FSR4) {
+            rt_log("dlaa: scene_upscaler = fsr4 runs on Windows only (AMD's FSR SDK has no Linux libraries): off");
+            e = UPSCALER_OFF;
+        }
+#endif
     }
     return e;
+}
+
+// The setting's name of an engine, and the name the log gives it.
+static const char *engine_value(int e) {
+    return e == UPSCALER_DLSS ? "dlss" : e == UPSCALER_FSR3 ? "fsr3" : e == UPSCALER_FSR4 ? "fsr4" : "off";
+}
+static const char *engine_name(int e) {
+    return e == UPSCALER_DLSS ? "DLSS" : e == UPSCALER_FSR3 ? "FSR 3.1" : e == UPSCALER_FSR4 ? "FSR 4" : "none";
 }
 
 // The engine picked at start while the settings still name it (the menu turns it off at once, as dlaa did).
 int vk_upscaler_on(void) {
     int e = vk_upscaler_engine();
-    return e && !strcmp(cfg_scene_upscaler(), e == UPSCALER_DLSS ? "dlss" : "fsr3");
+    return e && !strcmp(cfg_scene_upscaler(), engine_value(e));
 }
 
 // NGX is brought up only when DLSS is the scene upscaler at start: its device extensions can only be asked for at
 // device creation, and loading the driver's NGX core on every NVIDIA machine would cost start time and change the device
-// with DLSS off. So the choice applies after a restart; with DLSS not picked (off or FSR 3.1), nothing of NGX runs.
+// with DLSS off. So the choice applies after a restart; with DLSS not picked (off or FSR), nothing of NGX runs. FSR
+// 4's device extensions are chosen at device creation as well (vk_ffx_device_exts).
 int vk_dlaa_wanted(void) {
     static int wanted = -1;
     if (wanted < 0) wanted = vk_upscaler_engine() == UPSCALER_DLSS;
@@ -182,6 +205,7 @@ void vk_dlaa_device_exts(const VkExtensionProperties *have, uint32_t nhave, cons
                          uint32_t max) {
     unsigned ni = 0, nd = 0;
     const char **ie = NULL, **de = NULL;
+    vk_ffx_device_exts(have, nhave, ext, n, max);   // FSR 4's, when it is the engine
     if (!vk_dlaa_wanted() || !core_load() || !NGX_OK(N.req_ext(&ni, &ie, &nd, &de))) return;
     for (unsigned i = 0; i < nd; i++) {
         int ok = 0;
@@ -210,12 +234,18 @@ static int vtable_ok(void) {
 }
 
 // The upscaler's half of the per-object motion's gate (vk_objmv_wanted, below the frame state): DLSS once NGX came up
-// with it (vk_dlaa_available), FSR 3.1 whenever it is the scene upscaler picked at start. Latched in vk_dlaa_init,
-// before the first frame: with no upscaler, or DLSS without NGX, it stays 0 as vk_dlaa_available does.
+// with it (vk_dlaa_available), FSR 3.1 whenever it is the scene upscaler picked at start, FSR 4 once AMD's libraries
+// offered it for the device (vk_ffx_available). Latched in vk_dlaa_init, before the first frame: with no upscaler, or
+// one that did not come up, it stays 0.
 static int objmv;
 
 void vk_dlaa_init(void) {
     objmv = vk_upscaler_engine() == UPSCALER_FSR3;
+    if (vk_upscaler_engine() == UPSCALER_FSR4) {
+        vk_ffx_init();
+        objmv = vk_ffx_available();
+        return;
+    }
     if (!vk_dlaa_wanted() || !core_load()) return;
     // The executable's folder, where NGX looks for the DLSS model library and writes its logs.
     wchar_t wdir[PLAT_PATH_MAX];
@@ -338,26 +368,38 @@ static struct {
     VkExecTarget hud_t, win;     // the output-sized target the scene is scaled into; the window texture
     float cam_dr[2];             // the viewport depth range of the draw cam_addr was noted at
     int fg_mv_ok;                // the frame's motion is in the motion image (fg_motion)
-    int fsr;                     // the engine is AMD FSR 3.1 (scene_upscaler = fsr3 at start), else DLSS
+    int fsr;                     // the AMD FSR engine (UPSCALER_FSR3 or UPSCALER_FSR4, picked at start), 0: DLSS
 } D = {.mv_ok = -1, .cfg_seen = ~0u};
 #define DLSS_SIZES (sizeof D.sizes / sizeof D.sizes[0])
 
 const VkTexImage *vk_dlaa_swap_img;
 VkImageView vk_dlaa_swap_view;
 
-// DLSS needs NGX and its model, FSR 3.1 runs on any GPU the back end runs on: on already says the engine is there.
+// DLSS needs NGX and its model, FSR 4 AMD's libraries with FSR 4 for the GPU, FSR 3.1 runs on any GPU the back end
+// runs on: on already says the engine is there (vk_dlaa_frame).
 static int dl_active(void) { return !D.failed && D.on; }
 // The scene is followed (its G-buffer, light target, end and camera): for DLSS, or with DLSS off for frame generation.
 static int track(void) { return dl_active() || D.fg; }
 int vk_dlaa_fg_on;               // D.fg for vk_exec_draw.c's per-draw test (vk_dlaa_hud)
 
 int vk_upscaler_running(void) {
-    return dl_active() && D.evals ? (D.fsr ? UPSCALER_FSR3 : UPSCALER_DLSS) : UPSCALER_OFF;
+    return dl_active() && D.evals ? (D.fsr ? D.fsr : UPSCALER_DLSS) : UPSCALER_OFF;
 }
 
 // For the menu. DLSS: after a start with it picked, what NGX said; before, an NVIDIA GPU and the DLL (an NVIDIA GPU
-// without RTX shows only once NGX came up). FSR 3.1 is built in.
+// without RTX shows only once NGX came up). FSR 4 likewise: Windows, AMD's two libraries, then after a start with it
+// picked what they offered for the device (vk_ffx_init), before one an AMD GPU (the libraries decide which Radeons get
+// FSR 4, so another Radeon shows only after that start). FSR 3.1 is built in.
 int vk_upscaler_missing(int engine) {
+    if (engine == UPSCALER_FSR4) {
+#ifndef _WIN32
+        return UPSCALER_MISSING_OS;
+#else
+        if (!res_ffx_dlls()) return UPSCALER_MISSING_DLL;
+        if (vk_ffx_tried()) return vk_ffx_available() ? 0 : UPSCALER_MISSING_GPU;
+        return vk_ctx()->props.vendorID == 0x1002 ? 0 : UPSCALER_MISSING_GPU;
+#endif
+    }
     if (engine != UPSCALER_DLSS) return 0;
     if (!res_dlss_dll()) return UPSCALER_MISSING_DLL;
     if (N.tried) return N.available ? 0 : UPSCALER_MISSING_GPU;
@@ -377,7 +419,8 @@ static int fg_objects(void) {
 int vk_fg_objects_on(void) { return D.fg && fg_objects(); }
 
 // The per-object motion's gates (vk_mvprev.c's tables, vk_usnap.c's host copy, vk_exec_draw.c's motion draws and
-// lock): the upscaler that reads the motion image (objmv: DLSS once NGX came up, or FSR 3.1 picked at start), or frame
+// lock): the upscaler that reads the motion image (objmv: DLSS once NGX came up, FSR 3.1 picked at start, or FSR 4
+// once it came up), or frame
 // generation following the scene with its objects. Frame generation is off with either upscaler, so the second term is
 // 0 whenever one runs.
 int vk_objmv_wanted(void) { return objmv || vk_fg_objects_on(); }
@@ -1303,18 +1346,18 @@ static int scene_shaped(const VkExecTarget *c) {
     return a * 20 >= b * 19 && b * 20 >= a * 19;
 }
 
-// FSR 3.1's half of evaluate (vk_fsr3.cpp), after the motion vectors and the recorder's drain: the camera, the time step
-// and the history reset, then the dispatch into e->out. 0 when it failed (DLAA is then off for the run). The camera
-// comes from the scene camera block's rows 0-10 (vk_fg.cpp vk_fg_camera, which frame generation reads too: FSR 3.1
-// wants the near and far planes and the vertical field of view for its depth tests); a cut there (a cutscene's camera
-// jump) starts a new history. The block's bytes are the snapshot's host copy, which vk_usnap.c keeps while the
-// per-object motion runs (vk_objmv_wanted, so with FSR 3.1).
+// FSR's half of evaluate (FSR 3.1: vk_fsr3.cpp, FSR 4: vk_ffx.c), after the motion vectors and the recorder's drain:
+// the camera, the time step and the history reset, then the dispatch into e->out. Both engines get the same inputs.
+// 0 when it failed (DLAA is then off for the run). The camera comes from the scene camera block's rows 0-10 (vk_fg.cpp
+// vk_fg_camera, which frame generation reads too: FSR wants the near and far planes and the vertical field of view
+// for its depth tests); a cut there (a cutscene's camera jump) starts a new history. The block's bytes are the
+// snapshot's host copy, which vk_usnap.c keeps while the per-object motion runs (vk_objmv_wanted, so with FSR).
 static int fsr_evaluate(VkExec *ex, struct Size *e, const VkExecTarget *t, const VkExecTarget *z, uint32_t ow,
                         uint32_t oh, float jx, float jy, int timed) {
     static VkFgScene cam = {.near_m = 0.1f, .far_m = 25000.0f, .fov_y = 0.8727f};   // until the first camera read
     // the SDK takes whole images: the scene's targets are level 0, layer 0 of their own images
     if (t->level || t->base_layer || z->level || z->base_layer || z->format != VK_FORMAT_D32_SFLOAT)
-        return dl_fail("FSR 3.1 input (not level 0, layer 0 of a colour and a D32F depth image)", 0), 0;
+        return dl_fail("FSR input (not level 0, layer 0 of a colour and a D32F depth image)", 0), 0;
     const float *rows = D.cam_addr ? (const float *)vk_usnap_bytes(D.cam_addr, 11 * 16) : NULL;
     int cut = rows && vk_fg_camera(rows, nvn_depth_minus_w(), D.cam_dr, &cam);
     if (D.last_color != t->image) D.reset = 1, D.why[2]++, D.last_color = t->image;
@@ -1326,19 +1369,31 @@ static int fsr_evaluate(VkExec *ex, struct Size *e, const VkExecTarget *t, const
     // without (vk_dlaa_skip_draw), so without it FSR's picture is softer than the game's own
     int sharp = cfg_int("TOTK_FSR_SHARPNESS");
     sharp = sharp < 0 ? 0 : sharp > 100 ? 100 : sharp;
-    Fsr3Frame fr = {.color = t->image, .color_format = t->format, .depth = z->image, .mv = e->mv, .out = e->out,
-                    .w = t->width, .h = t->height, .ow = ow, .oh = oh, .jx = jx, .jy = jy, .near_m = cam.near_m,
-                    .far_m = cam.infinite || cam.far_m <= cam.near_m ? 1e5f : cam.far_m, .fov_y = cam.fov_y,
-                    .dt_ms = dt > 0 && dt < 100 ? (float)dt : 16.67f, .reset = D.reset, .sharpness = sharp / 100.0f,
-                    .fence = ex->fence};
+    float far_m = cam.infinite || cam.far_m <= cam.near_m ? 1e5f : cam.far_m;
+    float dt_ms = dt > 0 && dt < 100 ? (float)dt : 16.67f;
     uint64_t c0 = timed ? kern_now_ns() : 0;
-    int ok = fsr3_dispatch(ex->cb, &fr);
+    int ok;
+    if (D.fsr == UPSCALER_FSR4) {
+        VkFfxDispatch fd = {.color = {t->image, t->format, t->width, t->height},
+                            .depth = {z->image, z->format, t->width, t->height},
+                            .mv = {e->mv, VK_FORMAT_R16G16_SFLOAT, t->width, t->height},
+                            .out = {e->out, VK_FORMAT_R16G16B16A16_SFLOAT, ow, oh}, .jx = jx, .jy = jy,
+                            .dt_ms = dt_ms, .cam_near = cam.near_m, .cam_far = far_m, .fov_y = cam.fov_y,
+                            .sharpness = sharp / 100.0f, .reset = D.reset, .fence = ex->fence};
+        ok = vk_ffx_dispatch(ex->cb, &fd);
+    } else {
+        Fsr3Frame fr = {.color = t->image, .color_format = t->format, .depth = z->image, .mv = e->mv, .out = e->out,
+                        .w = t->width, .h = t->height, .ow = ow, .oh = oh, .jx = jx, .jy = jy, .near_m = cam.near_m,
+                        .far_m = far_m, .fov_y = cam.fov_y, .dt_ms = dt_ms, .reset = D.reset,
+                        .sharpness = sharp / 100.0f, .fence = ex->fence};
+        ok = fsr3_dispatch(ex->cb, &fr);
+    }
     if (timed) T.cpu_ngx += kern_now_ns() - c0;
     if (!ok) {
         // the SDK may have bound a pipeline or descriptor sets of its own before it failed: the next draw binds
         // everything again, and the game's own scaling and FXAA run from the next frame (DLAA off for the run)
         vk_exec_draw_new_cb(ex);
-        return dl_fail("FSR 3.1 dispatch", 0), 0;
+        return dl_fail(D.fsr == UPSCALER_FSR4 ? "FSR 4 dispatch" : "FSR 3.1 dispatch", 0), 0;
     }
     return 1;
 }
@@ -1487,7 +1542,7 @@ engine_done:
         rt_log("dlaa: %llu frames anti-aliased%s (scene %ux%u, output %ux%u; %llu before the effects, %llu frames without the "
                "DLAA point, %llu with camera motion, %llu with the characters' mask, %llu without a camera, %llu jitter "
                "holds; resets: %llu size, %llu camera, %llu target; reactive mask %llu, without its copy %llu)",
-               (unsigned long long)D.evals, D.fsr ? " by FSR 3.1" : "", w, h, ow, oh, (unsigned long long)D.fx_frames, (unsigned long long)D.frames_missed,
+               (unsigned long long)D.evals, D.fsr == UPSCALER_FSR4 ? " by FSR 4" : D.fsr ? " by FSR 3.1" : "", w, h, ow, oh, (unsigned long long)D.fx_frames, (unsigned long long)D.frames_missed,
                (unsigned long long)D.mv_frames, (unsigned long long)D.masked, (unsigned long long)D.mv_none,
                (unsigned long long)D.holds, (unsigned long long)D.why[0], (unsigned long long)D.why[1],
                (unsigned long long)D.why[2], (unsigned long long)R.made, (unsigned long long)R.missed);
@@ -1832,9 +1887,9 @@ void vk_dlaa_pass(VkExec *ex) {
 }
 
 // TOTK_DLSS, read at each present (the menu switches it live): the scene size of the mode (resolution.c) and the
-// texture bias that goes with it while the upscaler runs. DLSS takes NVIDIA's log2(scene / output); FSR 3.1 takes AMD's
-// log2(scene / output) - 1 (FidelityFX FSR 3 upscaler docs, "Mipmap biasing"), so -1 also in place. The bias follows
-// the mode and the upscaler going on or off; the engine is fixed for the run.
+// texture bias that goes with it while the upscaler runs. DLSS takes NVIDIA's log2(scene / output); FSR 3.1 and FSR 4
+// take AMD's log2(scene / output) - 1 (FidelityFX FSR 3 upscaler docs, "Mipmap biasing"), so -1 also in place. The
+// bias follows the mode and the upscaler going on or off; the engine is fixed for the run.
 static void dlss_mode(void) {
     static char mode[32];
     static float bias;   // what the material samplers have (vk_texture.c starts at 0)
@@ -1844,7 +1899,8 @@ static void dlss_mode(void) {
         res_dlss_mode(m);
     }
     float b = 0.0f;
-    if (dl_active()) b = res_dlss_lod_bias() - (vk_upscaler_engine() == UPSCALER_FSR3 ? 1.0f : 0.0f);
+    int e = vk_upscaler_engine();
+    if (dl_active()) b = res_dlss_lod_bias() - (e == UPSCALER_FSR3 || e == UPSCALER_FSR4 ? 1.0f : 0.0f);
     if (b != bias) bias = b, vk_sampler_dlss_bias(b);
 }
 
@@ -1870,17 +1926,24 @@ void vk_dlaa_frame(void) {
     vk_dlaa_swap_img = NULL, vk_dlaa_swap_view = VK_NULL_HANDLE;
     dlss_mode();
     preset_check();
-    int fsr = vk_upscaler_engine() == UPSCALER_FSR3;   // fixed for the run: D.fsr never changes while on
-    int on = (fsr || N.available) && vk_upscaler_on();
+    // the engine is fixed for the run: D.fsr never changes while on. FSR 4 runs once AMD's libraries offered it for
+    // the device (vk_ffx_init said why not otherwise, and the upscaler stays off)
+    int e = vk_upscaler_engine();
+    int fsr = e == UPSCALER_FSR3 || e == UPSCALER_FSR4 ? e : 0;
+    int ready = e == UPSCALER_FSR3 || (e == UPSCALER_FSR4 ? vk_ffx_available() : N.available);
+    int on = ready && vk_upscaler_on();
     vk_fg_frame();
-    // frame generation with an upscaler is not built yet: with FSR 3.1 picked it stays off (said once)
+    // frame generation with an upscaler is not built yet: with FSR picked it stays off (said once)
     static int fg_said;
     if (fsr && on && vk_fg_engine() != VK_FG_OFF && !fg_said++)
-        rt_log("fg: frame generation off while FSR 3.1 upscales the scene (scene_upscaler = fsr3)");
+        rt_log("fg: frame generation off while %s upscales the scene (scene_upscaler = %s)", engine_name(fsr),
+               engine_value(fsr));
     int fg = fsr && on ? 0 : vk_fg_wanted(on && !D.failed);
     D.bloom = D.hud = D.hud_wait = D.fin = D.gen = D.fg_mv_ok = 0;
     if (on != D.on || fg != D.fg) {
-        if (on != D.on) rt_log("dlaa: %s", on ? (fsr ? "on with FSR 3.1" : "on") : "off");
+        if (on != D.on)
+            rt_log("dlaa: %s%s%s", on ? "on" : "off", on && fsr ? " with " : "",
+                   on && fsr == UPSCALER_FSR4 ? vk_ffx_version() : on && fsr ? "FSR 3.1" : "");
         if (fg != D.fg) rt_log("dlaa: the scene is %s for frame generation", fg ? "followed" : "no longer followed");
         D.on = on, D.fg = vk_dlaa_fg_on = fg, D.fsr = fsr;
         // either way the next DLAA frame starts a new history from an unjittered frame
@@ -1922,10 +1985,12 @@ void vk_dlaa_frame(void) {
 // stretched over the whole screen.
 static const uint64_t FXAA_FS[] = {0xf450003ebeb3dc52ull, 0x0a12f4bc2a9a4fbeull, 0x5c43ae18948d52cbull,
                                    0xaad42238801d31d8ull, 0xde20aef90fea4ce6ull, 0x755964e8dce7f34dull};
-// The fragment shader of the FXAA's first pass, the copy of the scene target into the scratch target (this build's
-// translator, seen in 1.4.3 frame logs; another hash leaves the draw alone). See vk_dlaa_skip_draw for why FSR 3.1's
-// frames skip it where it copies the scene target onto itself.
-static const uint64_t FXAA_COPY_FS[] = {0xa0fd34391f2af811ull};
+// The fragment shader of the FXAA's first pass, the copy of the scene target into the scratch target (another hash
+// leaves the draw alone): this build's translator, seen in 1.4.3 frame logs, and the one with patch 0017, whose two
+// support buffer fields change every fragment shader's hash (as with FXAA_FS above), read by codexx-dev from a 1.4.3
+// run with FSR on (pull request #1245). See vk_dlaa_skip_draw for why FSR's frames skip it where it copies the scene
+// target onto itself.
+static const uint64_t FXAA_COPY_FS[] = {0xa0fd34391f2af811ull, 0x9d065204aac9766bull};
 
 // Chunks of one submission look shaders up side by side: an entry's hash is stored before its shader, and entries are
 // added under the lock.
@@ -1970,14 +2035,14 @@ int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
                    "FXAA_FS): the FXAA stays on", (unsigned long long)fx_off_frames);
         }
     }
-    // FSR 3.1 in place (the scene as large as the output, so no scaling draw follows) goes without the game's FXAA
-    // and its copy of the scene target onto itself on every frame, as codexx-dev found for FSR (pull request #1245,
-    // vk_dlaa.c vk_dlaa_skip_draw there). Measured there on 1.4.3 at a 2560x1440 scene and output: with the upscaler on
-    // the game ran its FXAA, which also sharpens, on 17 frames in every 96 and on the others drew its copy shader from
-    // the scene target onto itself, so the picture went soft and sharp in turns. Here the dynamic resolution stays at
-    // 100 % while FSR 3.1 runs (resolution.c res_dynres_live) and FSR sharpens its own output (fsr_sharpness,
-    // fsr_evaluate) in place of the FXAA's sharpening. Scaled frames (D.up) need nothing more: there FSR's picture
-    // already replaces the scaling FXAA draw below.
+    // FSR 3.1 or FSR 4 in place (the scene as large as the output, so no scaling draw follows) goes without the game's
+    // FXAA and its copy of the scene target onto itself on every frame, as codexx-dev found for FSR (pull request
+    // #1245, vk_dlaa.c vk_dlaa_skip_draw there). Measured there on 1.4.3 at a 2560x1440 scene and output: with the
+    // upscaler on the game ran its FXAA, which also sharpens, on 17 frames in every 96 and on the others drew its copy
+    // shader from the scene target onto itself, so the picture went soft and sharp in turns. Here the dynamic
+    // resolution stays at 100 % while FSR runs (resolution.c res_dynres_live) and FSR sharpens its own output
+    // (fsr_sharpness, fsr_evaluate) in place of the FXAA's sharpening. Scaled frames (D.up) need nothing more: there
+    // FSR's picture already replaces the scaling FXAA draw below.
     int fsr_in_place = D.done && !D.up && D.fsr;
     if (fxaa && !D.up && !fsr_in_place) return 0;   // nothing to skip: no shader lookup per draw at the defaults
     if (!fs) return 0;
@@ -2003,7 +2068,7 @@ int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
         static int logged_fxaa, logged_copy;
         if (known && ex->depth.image) {
             if (!logged_fxaa)
-                logged_fxaa = 1, rt_log("dlaa: FSR 3.1 skips the game's FXAA (fragment shader %016llx) and sharpens its "
+                logged_fxaa = 1, rt_log("dlaa: FSR skips the game's FXAA (fragment shader %016llx) and sharpens its "
                                         "own picture (fsr_sharpness)", (unsigned long long)h);
             return 1;
         }
@@ -2011,7 +2076,7 @@ int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
         for (size_t i = 0; i < sizeof FXAA_COPY_FS / sizeof FXAA_COPY_FS[0]; i++) copy |= h == FXAA_COPY_FS[i];
         if (copy && ex->color[0].image == D.color.image && vk_exec_draw_samples(ex, fs, D.color.img)) {
             if (!logged_copy)
-                logged_copy = 1, rt_log("dlaa: FSR 3.1 skips the game's copy of the scene target onto itself (fragment "
+                logged_copy = 1, rt_log("dlaa: FSR skips the game's copy of the scene target onto itself (fragment "
                                         "shader %016llx)", (unsigned long long)h);
             return 1;
         }

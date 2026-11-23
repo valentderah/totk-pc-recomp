@@ -123,6 +123,9 @@ void vk_caps_init(VkCtx *c) {
     uint32_t zero_locals = env_u32("TOTK_ZERO_LOCALS", (uint32_t)vk_caps.mesa);
     gfx_shader_set_host(vk_caps.float64, vk_caps.sbuf_align, told, gather, zero_locals != 0);
     if (gather) rt_log("vk caps: gather coordinates biased for %u sub-texel bits (TOTK_GATHER_BIAS)", gather);
+    // Read here, before any pipeline key is made: the pipelines' colour formats depend on it (vk_pipeline.c gkey_fill)
+    vk_caps.null_attach = rt_knob("NULL_ATTACH", "0") == 1;
+    if (vk_caps.null_attach) rt_log("vk caps: empty colour slots get a dummy attachment (TOTK_NULL_ATTACH=1)");
 
     char dv[32];
     driver_version(dv, sizeof dv, c->props.vendorID, c->props.driverVersion);

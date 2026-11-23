@@ -356,4 +356,4 @@ each line (`mouse_camera` in `runtime/input.c`); spread a turn over lines a fram
 
 ## RenderDoc capture (blocked)
 
-`TOTK_RDOC=<frame>[,...]` (`runtime/rdoc_win.c`; `TOTK_RDOC_DIR`, `TOTK_RDOC_DLL`) loads RenderDoc before `vkCreateInstance`. RenderDoc hides `VK_EXT_external_memory_host`, which the back end requires for guest pool imports (`runtime/vk_memory.c`), so device creation fails under it. A capture needs a copy-based pool fallback first.
+`TOTK_RDOC=<frame>[,...]` (`runtime/rdoc_win.c`; `TOTK_RDOC_DIR`, `TOTK_RDOC_DLL`) loads RenderDoc before `vkCreateInstance`. RenderDoc hides `VK_EXT_external_memory_host`, which guest pool imports need (`runtime/vk_memory.c`); without it the back end gives CPU-visible pools shadow storage, as on any GPU without the extension (`vk_no_host_import`). Captures on that path are untested.
