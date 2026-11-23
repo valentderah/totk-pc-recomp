@@ -5,7 +5,7 @@
 //   totk-config --profile <name>                            switch to a profile ("" for none)
 //   totk-config --new-profile <name> [--from <preset>]      current, defaults, quality, performance, potato, deck
 //   totk-config --list [<tab>]                              every row: tab, key, value in effect, marks
-//   totk-config --screenshot <file.bmp> [--tab <n>] [--search <text>]
+//   totk-config --screenshot <file.bmp> [--tab <n>] [--search <text>] [--popup new|rename|delete|close]
 //
 // The window and the rows follow the menu language (TOTK_MENU_LANG, else the system's).
 #include <stdio.h>
@@ -84,6 +84,12 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--screenshot") && next) shot = argv[++i];
         else if (!strcmp(a, "--tab") && next) tab = atoi(argv[++i]);
         else if (!strcmp(a, "--search") && next) search = argv[++i];
+        else if (!strcmp(a, "--popup") && next) {
+            static const char *const pops[] = {"new", "rename", "delete", "close"};
+            const char *v = argv[++i];
+            for (int k = 0; k < 4; k++)
+                if (!strcmp(v, pops[k])) cr_shot_popup = k + 1;
+        }
         else if (!strcmp(a, "--list")) {
             do_list = 1;
             if (next && next[0] != '-') list_tab = argv[++i];

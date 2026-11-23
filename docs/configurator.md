@@ -15,17 +15,26 @@ describes.
 ## Using it
 
 Start `totk-config.exe` from the game folder. It edits the `totk.ini` there (the runtime reads `totk.ini` from the
-folder of `totk.exe` and nowhere else); **Change** picks another folder, and `--dir <folder>` names one at start.
+folder of `totk.exe` and nowhere else); **Change** in the header picks another folder (the header shows the end of the
+path, the whole path on hover), and `--dir <folder>` names one at start. A folder without the game's exe gets a
+warning above the rows; `totk.ini` is written there anyway.
+
+The left panel holds the profiles (below) and the tabs; the rows of the chosen tab, or of every tab while searching,
+fill the rest; the bottom line has the status and Revert, Save and Save and launch. The colours and the font are the
+in-game menu's, the icons are drawn shapes (`cfgr_icons.c`), and the window and its exe carry the game's icon.
 
 - **Tabs.** Screen, Game, Sound, Controls, Amiibo, Menu, Advanced and Mods are the in-game menu's tabs with its rows,
-  including the ones the menu shows only in some states (the DLSS rows, the gameplay tweaks). The number beside a tab
-  counts the keys `totk.ini` sets there. **Expert** lists every other key of `runtime/cfg.c` `known[]`, grouped as
+  including the ones the menu shows only in some states (the DLSS rows, the gameplay tweaks). The gold number beside a
+  tab counts the keys `totk.ini` sets there. **Expert** lists every other key of `runtime/cfg.c` `known[]`, grouped as
   `docs/settings.md` groups them, with its description from there or from `totk.ini.example` (in English).
   **Other keys** lists the keys of the file the runtime does not know and adds new ones.
-- **Rows.** A gold bar and *set* mark a key `totk.ini` sets; **Reset** removes its line, back to the default. A dot
-  marks a change not saved yet. *after restart* marks a key the game reads at start; the others apply at once when
-  the in-game menu changes them. A key a `TOTK_*` environment variable sets is greyed out: the variable wins over the
-  file.
+- **Rows.** A row is a card: the name, its marks, a line with the key, its default and, for the keys the Steam Deck
+  profile changes (`cfg.c` `DECK[]`), the value there, then the description; the value's control is on the right. On
+  and off are a switch, up to four choices one segmented control, longer lists a drop-down, numbers a slider with the
+  value beside it. A gold bar and *set* mark a key `totk.ini` sets; the reset button beside the control removes its
+  line, back to the default. An orange dot marks a change not saved yet. *after restart* (orange) marks a key the game
+  reads at start; a green flash marks one the in-game menu applies at once. A key a `TOTK_*` environment variable sets
+  is greyed out and marked: the variable wins over the file.
 - **Search** looks through every tab: names, keys and descriptions. **Only set ones** hides the keys `totk.ini` leaves
   at their defaults.
 - **Save** writes the changed keys only, the way the in-game menu does (`cfg.c` `cfg_save_to`): the changed line gets
@@ -40,7 +49,9 @@ folder of `totk.exe` and nowhere else); **Change** picks another folder, and `--
 A profile is a named `totk.ini`: `profiles/<name>.ini` next to `totk.ini`, with `profiles/active.txt` naming the one
 `totk.ini` holds now. Choosing another profile saves the window's changes, copies `totk.ini` into the active profile's
 file and the chosen profile's file over `totk.ini`. **None** leaves `totk.ini` as it is and stops tracking a profile.
-**New profile** starts from:
+The profiles are listed at the top of the left panel, the active one gold; the pencil and the bin beside **New profile**
+rename and delete the active one. **New profile** starts from one of these presets; the dialog lists what the chosen
+one sets:
 
 | Preset | What it sets on top of the current settings |
 | --- | --- |
@@ -62,7 +73,7 @@ The presets are in `runtime/configurator/cfgr_model.c`; every value is one `cfg.
 | `--profile NAME` | switches to a profile (`""`: none) |
 | `--new-profile NAME [--from PRESET]` | creates a profile: `current`, `defaults`, `quality`, `performance`, `potato`, `deck` |
 | `--list [TAB]` | every row: tab, key, the value in effect, `set` when `totk.ini` sets it, `env` when a variable does |
-| `--screenshot FILE.bmp [--tab N] [--search TEXT]` | draws the window hidden, saves it and closes (tests, docs) |
+| `--screenshot FILE.bmp [--tab N] [--search TEXT] [--popup DIALOG]` | draws the window hidden, saves it and closes (tests, docs); `--popup` shows a dialog in it: `new`, `rename`, `delete`, `close` |
 
 `TOTK_MENU_LANG` picks the language as in the game, and `TOTK_CONFIG_LOG=1` prints what `cfg.c` logs (unknown keys,
 lines without `=`).
@@ -85,11 +96,12 @@ step). It is built for x86-64-v2, so it runs on every CPU the game runs on.
 | --- | --- |
 | `runtime/configurator/cfgr_main.c` | the command line and the headless commands |
 | `runtime/configurator/cfgr_model.c` | the game folder, `totk.ini` through `cfg.c`, profiles, presets, starting the game |
-| `runtime/configurator/cfgr_window.c` | the window: fonts, colours, tabs, rows, dialogs |
+| `runtime/configurator/cfgr_window.c` | the window: fonts, colours, header, left panel, rows, dialogs |
+| `runtime/configurator/cfgr_icons.c` | the icons, drawn with Nuklear's shapes |
 | `runtime/configurator/cfgr_nk.c`, `cfgr_nk.h` | Nuklear and its SDL3 renderer, compiled once |
 | `runtime/configurator/cfgr_host.c` | the few runtime functions `cfg.c` and `ui_text.c` call (log, fatal error) |
 | `tools/gen_configurator.py` | writes the settings table (`cfgr_rows.c` in the build folder) from the runtime's sources |
-| `tools/build_configurator.py` | compiles and links the window |
+| `tools/build_configurator.py` | compiles and links the window; on Windows with `runtime/totk.rc` (the game's manifest and icon); the window's icon from `runtime/totk.ico` |
 | `tests/configurator_check.py` | the table, the commands and the window in every language |
 | `runtime/ui_text.c` `UI_CFG_*` | the window's own words, in the menu's four languages |
 

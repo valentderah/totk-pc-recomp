@@ -779,6 +779,13 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_CFG_BIND_HELP] = "Comma-separated key:<name> and pad:<button>; empty keeps the defaults: %s",
     [UI_CFG_FILE_CHANGED] = "totk.ini changed on disk.",
     [UI_CFG_RELOAD] = "Reload",
+    [UI_CFG_PROFILES] = "Profiles",
+    [UI_CFG_NO_PROFILE_NOTE] = "No profile yet: totk.ini is edited directly.",
+    [UI_CFG_DECK_VALUE] = "Steam Deck: %s",
+    [UI_CFG_SET_COUNT] = "%d set in totk.ini",
+    [UI_CFG_KEEP_MINE] = "Keep mine",
+    [UI_CFG_CLEAR] = "Clear",
+    [UI_CFG_UNSAVED_ONE] = "Not saved yet",
 };
 
 static const char *const text_ru[UI_TEXT_COUNT] = {
@@ -1523,6 +1530,13 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_CFG_BIND_HELP] = "Через запятую key:<имя> и pad:<кнопка>; пусто — по умолчанию: %s",
     [UI_CFG_FILE_CHANGED] = "totk.ini изменился на диске.",
     [UI_CFG_RELOAD] = "Перечитать",
+    [UI_CFG_PROFILES] = "Профили",
+    [UI_CFG_NO_PROFILE_NOTE] = "Профилей пока нет: правится сам totk.ini.",
+    [UI_CFG_DECK_VALUE] = "Steam Deck: %s",
+    [UI_CFG_SET_COUNT] = "Задано в totk.ini: %d",
+    [UI_CFG_KEEP_MINE] = "Оставить мои",
+    [UI_CFG_CLEAR] = "Очистить",
+    [UI_CFG_UNSAVED_ONE] = "Ещё не сохранено",
 };
 
 static const char *const text_pt_br[UI_TEXT_COUNT] = {
@@ -2305,6 +2319,13 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_CFG_BIND_HELP] = "key:<nome> e pad:<botão> separados por vírgula; vazio mantém o padrão: %s",
     [UI_CFG_FILE_CHANGED] = "O totk.ini foi alterado no disco.",
     [UI_CFG_RELOAD] = "Recarregar",
+    [UI_CFG_PROFILES] = "Perfis",
+    [UI_CFG_NO_PROFILE_NOTE] = "Nenhum perfil ainda: o totk.ini é editado diretamente.",
+    [UI_CFG_DECK_VALUE] = "Steam Deck: %s",
+    [UI_CFG_SET_COUNT] = "%d definidas no totk.ini",
+    [UI_CFG_KEEP_MINE] = "Manter as minhas",
+    [UI_CFG_CLEAR] = "Limpar",
+    [UI_CFG_UNSAVED_ONE] = "Ainda não salvo",
 };
 
 // Simplified Chinese: this row covers the software keyboard and the whole menu, so the menu and the overlay read Chinese
@@ -3134,6 +3155,13 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_CFG_BIND_HELP] = "以逗号分隔的 key:<名称> 和 pad:<按钮>；留空则使用默认：%s",
     [UI_CFG_FILE_CHANGED] = "totk.ini 已在磁盘上更改。",
     [UI_CFG_RELOAD] = "重新加载",
+    [UI_CFG_PROFILES] = "配置档",
+    [UI_CFG_NO_PROFILE_NOTE] = "还没有配置档：直接编辑 totk.ini。",
+    [UI_CFG_DECK_VALUE] = "Steam Deck：%s",
+    [UI_CFG_SET_COUNT] = "totk.ini 中已设置 %d 项",
+    [UI_CFG_KEEP_MINE] = "保留我的更改",
+    [UI_CFG_CLEAR] = "清除",
+    [UI_CFG_UNSAVED_ONE] = "尚未保存",
 };
 
 // German

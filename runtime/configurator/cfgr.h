@@ -96,6 +96,8 @@ int model_launch(void);   // starts the game from its folder; 1 when it started
 // The window until it closes; the exit code. shot: draw a few frames hidden, save them as a BMP there and close (tests,
 // docs); tab (CR_TAB_*, -1 the first) and search preset the page.
 int window_run(const char *shot, int tab, const char *search);
+// --popup with --screenshot: the dialog the picture shows (1 new profile, 2 rename, 3 delete, 4 unsaved changes on close)
+extern int cr_shot_popup;
 
 // ---- text: the menu language's text of id (menu_text), English for -1
 const char *cr_text(int id);
