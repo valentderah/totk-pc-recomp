@@ -812,12 +812,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_CFG_UPD_RELEASE_PAGE] = "Release page",
     [UI_CFG_UPD_READY] = "Ready: %s",
     [UI_CFG_UPD_SETUP_FAILED] = "Could not start the setup: %s",
-    [UI_CFG_UPD_BANNER] = "A new version is out: %s.",
-    [UI_CFG_UPD_BANNER_HAVE] = " This folder has %s.",
-    [UI_CFG_UPD_OPEN] = "Open Updates",
-    [UI_CFG_UPD_HIDE] = "Hide",
-    [UI_CFG_UPD_STOP] = "Don't check at start",
-    [UI_CFG_UPD_STOPPED] = "The window will not check for updates when it opens; Updates can turn it back on.",
+    [UI_CFG_UPD_BANNER] = "Update %s is out",
 };
 
 static const char *const text_ru[UI_TEXT_COUNT] = {
@@ -1595,12 +1590,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_CFG_UPD_RELEASE_PAGE] = "Страница релиза",
     [UI_CFG_UPD_READY] = "Готово: %s",
     [UI_CFG_UPD_SETUP_FAILED] = "Не удалось запустить установщик: %s",
-    [UI_CFG_UPD_BANNER] = "Вышла новая версия: %s.",
-    [UI_CFG_UPD_BANNER_HAVE] = " В этой папке %s.",
-    [UI_CFG_UPD_OPEN] = "Открыть «Обновления»",
-    [UI_CFG_UPD_HIDE] = "Скрыть",
-    [UI_CFG_UPD_STOP] = "Не проверять при запуске",
-    [UI_CFG_UPD_STOPPED] = "Окно больше не будет проверять обновления при открытии; включить снова можно на вкладке «Обновления».",
+    [UI_CFG_UPD_BANNER] = "Вышло обновление %s",
 };
 
 static const char *const text_pt_br[UI_TEXT_COUNT] = {
@@ -2416,12 +2406,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_CFG_UPD_RELEASE_PAGE] = "Página da versão",
     [UI_CFG_UPD_READY] = "Pronto: %s",
     [UI_CFG_UPD_SETUP_FAILED] = "Não foi possível iniciar o instalador: %s",
-    [UI_CFG_UPD_BANNER] = "Saiu uma nova versão: %s.",
-    [UI_CFG_UPD_BANNER_HAVE] = " Esta pasta tem %s.",
-    [UI_CFG_UPD_OPEN] = "Abrir Atualizações",
-    [UI_CFG_UPD_HIDE] = "Ocultar",
-    [UI_CFG_UPD_STOP] = "Não verificar ao abrir",
-    [UI_CFG_UPD_STOPPED] = "A janela não vai mais verificar atualizações ao abrir; dá para reativar em Atualizações.",
+    [UI_CFG_UPD_BANNER] = "Atualização %s disponível",
 };
 
 // Simplified Chinese: this row covers the software keyboard and the whole menu, so the menu and the overlay read Chinese
@@ -3284,12 +3269,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_CFG_UPD_RELEASE_PAGE] = "发布页面",
     [UI_CFG_UPD_READY] = "已就绪：%s",
     [UI_CFG_UPD_SETUP_FAILED] = "无法启动安装程序：%s",
-    [UI_CFG_UPD_BANNER] = "新版本已发布：%s。",
-    [UI_CFG_UPD_BANNER_HAVE] = "此文件夹中为 %s。",
-    [UI_CFG_UPD_OPEN] = "打开“更新”",
-    [UI_CFG_UPD_HIDE] = "隐藏",
-    [UI_CFG_UPD_STOP] = "打开时不检查",
-    [UI_CFG_UPD_STOPPED] = "窗口打开时将不再检查更新；可在“更新”中重新开启。",
+    [UI_CFG_UPD_BANNER] = "有新版本 %s",
 };
 
 // German

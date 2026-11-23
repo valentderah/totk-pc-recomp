@@ -220,7 +220,7 @@ def updates(exe):
                                timeout=120, env=env)
             check(f'check when the window opens: {want}\n' in r.stdout,
                   f'the check when the window opens with {text or "no settings file"}: {want}')
-        # the page with the fake release, drawn, and the banner over another page
+        # the page with the fake release, drawn, and the footer button on another page
         pics = []
         for asks in (False, True):
             shot = tmp / f'banner-{asks}.bmp'
@@ -230,7 +230,7 @@ def updates(exe):
             r = subprocess.run([str(exe), '--dir', str(game), '--screenshot', str(shot), '--tab', '0'],
                                capture_output=True, text=True, timeout=120, env=env)
             pics.append(shot.read_bytes() if r.returncode == 0 and shot.is_file() else b'')
-        check(all(pics) and pics[0] != pics[1], 'a newer release puts a banner over the Screen tab')
+        check(all(pics) and pics[0] != pics[1], 'a newer release puts a button in the footer of the Screen tab')
         shot = tmp / 'updates.bmp'
         env = {**os.environ, 'TOTK_MENU_LANG': 'en', 'TOTK_CONFIG_UPDATE_API': base, 'TOTK_CONFIG_SHOT_CHECK': '1'}
         r = subprocess.run([str(exe), '--dir', str(game), '--screenshot', str(shot), '--tab', '10'],

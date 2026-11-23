@@ -1446,40 +1446,7 @@ static void sidebar(void) {
 }
 
 // ---- the page: banners, search, rows
-// A release newer than the folder's version: a banner over every page but Updates, which opens that page, hides
-// the banner until the window opens again, or turns the check when the window opens off.
-static void update_banner(void) {
-#ifdef _WIN32
-    static int g_upd_hidden;   // closed until the window opens again
-    CrRelease r;
-    if (g_upd_hidden || (g_tab == CR_TAB_UPDATES && !g_search[0]) || !update_available() || !upd_latest(&r)) return;
-    char text[512];
-    int n = snprintf(text, sizeof text, cr_text(UI_CFG_UPD_BANNER), r.tag);
-    const char *have = g_inst.run[0] ? g_inst.run : g_inst.setup;
-    if (have[0] && n > 0 && (size_t)n < sizeof text)
-        snprintf(text + n, sizeof text - (size_t)n, cr_text(UI_CFG_UPD_BANNER_HAVE), have);
-    note(text, C_GOLD, ICON_UPDATES);
-    if (g_check_at_start < 0) g_check_at_start = upd_pref_check_at_start();
-    const char *open = cr_text(UI_CFG_UPD_OPEN), *hide = cr_text(UI_CFG_UPD_HIDE), *stop = cr_text(UI_CFG_UPD_STOP);
-    nk_layout_row_begin(g_ctx, NK_STATIC, S(32), g_check_at_start > 0 ? 3 : 2);
-    nk_layout_row_push(g_ctx, btn_w(open, ICON_UPDATES));
-    if (btn(open, ICON_UPDATES, BTN_PRIMARY)) g_tab = CR_TAB_UPDATES, g_search[0] = 0, g_scroll_reset = 1, g_inst_at = 0;
-    nk_layout_row_push(g_ctx, btn_w(hide, ICON_CLOSE));
-    if (btn(hide, ICON_CLOSE, BTN_GHOST)) g_upd_hidden = 1;
-    if (g_check_at_start > 0) {
-        nk_layout_row_push(g_ctx, btn_w(stop, ICON_NONE));
-        if (btn(stop, ICON_NONE, BTN_GHOST)) {
-            g_check_at_start = 0, g_upd_hidden = 1;
-            if (!upd_pref_set_check_at_start(0)) status(1, "%s", cr_text(UI_MENU_SAVE_FAILED));
-            else status(0, "%s", cr_text(UI_CFG_UPD_STOPPED));
-        }
-    }
-    nk_layout_row_end(g_ctx);
-#endif
-}
-
 static void banners(void) {
-    update_banner();
     if (!model_has_game()) {
         char warn[512];
         snprintf(warn, sizeof warn, cr_text(UI_CFG_NO_GAME), cr_game_exe);
@@ -1533,7 +1500,7 @@ static float search_bar(float width) {
     return h;
 }
 
-// ---- the footer: status at the left, Revert, Save, Save and launch at the right
+// ---- the footer: a new release and the status at the left, Revert, Save, Save and launch at the right
 static void footer(float width) {
     int unsaved = model_unsaved();
     char left[600];
@@ -1550,10 +1517,26 @@ static void footer(float width) {
     const char *t1 = cr_text(UI_CFG_REVERT), *t2 = cr_text(UI_CFG_SAVE), *t3 = cr_text(UI_CFG_SAVE_LAUNCH);
     float b1 = btn_w(t1, ICON_RESET), b2 = btn_w(t2, ICON_CHECK) + S(12), b3 = btn_w(t3, ICON_PLAY) + S(8);
     float h = S(H_FOOT), gap = S(10);
+    // a release newer than the folder's version: one button at the left that opens Updates (not on Updates itself)
+    char upd[160] = "";
+    float bu = 0;
+#ifdef _WIN32
+    CrRelease rel;
+    if (!(g_tab == CR_TAB_UPDATES && !g_search[0]) && update_available() && upd_latest(&rel)) {
+        snprintf(upd, sizeof upd, cr_text(UI_CFG_UPD_BANNER), rel.tag);
+        bu = btn_w(upd, ICON_UPDATES) + S(4);
+    }
+#endif
     nk_layout_space_begin(g_ctx, NK_STATIC, h, 6);
     struct nk_rect area = nk_layout_space_rect_to_screen(g_ctx, nk_rect(0, 0, width, h));
     struct nk_command_buffer *c = nk_window_get_canvas(g_ctx);
-    float lw = width - b1 - b2 - b3 - gap * 3 - S(30);
+    if (upd[0]) {
+        nk_layout_space_push(g_ctx, nk_rect(0, S(2), bu, h - S(4)));
+        if (btn(upd, ICON_UPDATES, BTN_SELECTED))
+            g_tab = CR_TAB_UPDATES, g_search[0] = 0, g_scroll_reset = 1, g_inst_at = 0;
+        area.x += bu + S(16);
+    }
+    float lw = width - b1 - b2 - b3 - gap * 3 - S(30) - (upd[0] ? bu + S(16) : 0);
     icon_draw(c, icon, nk_rect(area.x, area.y + (h - S(16)) / 2, S(16), S(16)), col);
     char buf[640];
     const char *shown = fit_head(g_body, left, lw, buf, sizeof buf);
