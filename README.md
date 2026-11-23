@@ -31,7 +31,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - In-game settings menu (F1) and performance overlay (F10)
 - Play time across runs on the Game tab of the settings menu, kept in `playtime.txt` next to the saves
 - Discord Rich Presence ("Playing TotK Recomp" with the play time), off by default, own application id supported
-- Setup in 11 languages, in-game menu in 4 ([Languages](#languages))
+- Setup in 12 languages, in-game menu in 12 ([Languages](#languages))
 - Keyboard, mouse and gamepad with remapping, rumble and gyro
 - Stereo or 5.1 surround sound output
 - Xbox and PlayStation button prompts: Xbox's LB, RB, LT, RT, Menu, View and A, B, X, Y, or PlayStation's ○ × △ □, L1, R1, L2, R2, Options and Share, as labelled on the button to press, with either button layout
@@ -46,7 +46,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 
 The game keeps the text and voices of every language it shipped with. The port's own setup and in-game menu (F1) come
 in these; both follow the Windows display language, and the menu has its own choice on its Menu tab. A Traditional
-Chinese Windows gets the Simplified Chinese setup.
+Chinese Windows gets the Simplified Chinese setup and menu.
 
 | Language | Setup | In-game menu |
 |---|:---:|:---:|
@@ -54,13 +54,14 @@ Chinese Windows gets the Simplified Chinese setup.
 | Русский | ✅ | ✅ |
 | Português (Brasil) | ✅ | ✅ |
 | 简体中文 | ✅ | ✅ |
-| Deutsch | ✅ | English |
-| Français | ✅ | English |
-| Español | ✅ | English |
-| Italiano | ✅ | English |
-| Nederlands | ✅ | English |
-| 日本語 | ✅ | English |
-| 한국어 | ✅ | English |
+| Deutsch | ✅ | ✅ |
+| Français | ✅ | ✅ |
+| Español | ✅ | ✅ |
+| Italiano | ✅ | ✅ |
+| Nederlands | ✅ | ✅ |
+| 日本語 | ✅ | ✅ |
+| 한국어 | ✅ | ✅ |
+| Tiếng Việt | ✅ | ✅ |
 
 Spotted a clumsy phrase, or want your language added? The setup texts are in `installer/text/<language>.json`, the
 menu texts in `runtime/ui_text.c`; open an issue or a pull request ([CONTRIBUTING.md](CONTRIBUTING.md)). Fixes from
