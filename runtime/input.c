@@ -13,6 +13,7 @@
 #include <SDL3/SDL.h>
 
 #include "cfg.h"
+#include "blueprint_hint.h"
 #include "host.h"
 #include "input.h"
 #include "input_map.h"
@@ -1044,8 +1045,11 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             if (selector && menu_cursor_shortcut() == 0) selector = 0;
             mouse_camera(k, selector);
             // On the map the left stick moves the cursor and the right one zooms: the mouse moves the cursor there
-            // (the scroll wheel zooms, wheel_route)
-            if (menu_cursor_map()) pick(&sl[0], &sl[1], k[0], k[1]);
+            // (the scroll wheel zooms, wheel_route). The port's own file picker scrolls from the window's wheel events
+            // (bp_picker_wheel, ui/menu.cpp), not from this accumulator, and it is only open while the game's input is
+            // blocked, so a stray zoom never reaches the game.
+            int map = menu_cursor_map();
+            if (map) pick(&sl[0], &sl[1], k[0], k[1]);
             else pick(&sr[0], &sr[1], k[0], k[1]);
             int32_t shake = shake_stick(input_map_held(down, B_SHAKE));
             if (shake) sr[0] = shake, sr[1] = 0;
@@ -1149,6 +1153,9 @@ void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_
     if (!g_block && !g_menu && !quicksave_busy()) menu_cursor_poll(buttons);
     // A quick load under way goes on while the settings menu or a text entry opens: the held picture ends with it
     if ((quicksave_busy() || (!g_block && !g_menu)) && quicksave_poll(buttons, lx, ly, rx, ry)) return;
+    // The Autobuild screen's import entry owns its button while that screen is up. It runs on the same pad read as
+    // the cursor, and only while nothing is blocked, which is what keeps it out of a menu or a quick load.
+    if (!g_block && !g_menu) bp_hint_poll(buttons);
     const int32_t axes[4] = {*lx, *ly, *rx, *ry};
     int text = blocked(&g_block, &g_block_closed, "text entry", *buttons, axes),
         menu = blocked(&g_menu, &g_menu_closed, "menu", *buttons, axes);
@@ -1160,7 +1167,7 @@ void input_poll_ui(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int
     poll_merged(buttons, lx, ly, rx, ry);
 }
 
-int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly) {
+int input_pad_sticks(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     uint64_t b = 0;
     int32_t sl[2] = {0, 0}, sr[2] = {0, 0};
     plat_mutex_lock(&lock);
@@ -1171,7 +1178,13 @@ int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly) {
     *buttons = b;
     *lx = sl[0];
     *ly = sl[1];
+    if (rx) *rx = sr[0];
+    if (ry) *ry = sr[1];
     return ok;
+}
+
+int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly) {
+    return input_pad_sticks(buttons, lx, ly, NULL, NULL);
 }
 
 uint16_t rumble_motor(float a, float curve, float strength) {
