@@ -643,6 +643,10 @@ uint64_t vk_mem_host_room(void) {
     if (at && now - at < 250) return __atomic_load_n(&room_cached, __ATOMIC_RELAXED);   // a query costs a system call
     uint64_t commit, phys;
     plat_mem_room(&commit, &phys);
+    // The game's heap commits on first use (memory.c, heap_fault): the part it has not touched yet is commit it can
+    // still claim, which an eagerly committed heap had already taken. Its physical memory was never taken either way.
+    uint64_t later = mem_heap_uncommitted();
+    if (commit != UINT64_MAX) commit = commit > later ? commit - later : 0;
     uint64_t r = host_backed == HB_UMA && phys < commit ? phys : commit;
     r = r == UINT64_MAX ? r : r > room_reserve ? r - room_reserve : 0;
     __atomic_store_n(&room_cached, r, __ATOMIC_RELAXED);

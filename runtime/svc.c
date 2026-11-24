@@ -31,7 +31,11 @@ RtStats rt_stats(void) {
     return (RtStats){__atomic_load_n(&g_svcs, __ATOMIC_RELAXED), kern_threads_created(), hostfn_calls()};
 }
 
-static int readable(uint64_t a, uint64_t n) { return plat_mem_readable(a, n); }
+// With TOTK_HEAP_LAZY the heap by the layout (its pages may not be committed before first use), anything else by
+// the OS; without it the OS for everything, as before.
+static int readable(uint64_t a, uint64_t n) {
+    return mem_heap_lazy() ? mem_guest_readable(a, n) : plat_mem_readable(a, n);
+}
 
 void kern_backtrace(const Cpu *c) {
     char d[160];

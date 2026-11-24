@@ -1024,6 +1024,7 @@ static uint32_t write_file(uint64_t h, int64_t offset, const void *buffer, uint6
     if (!plat_file_id(f, &id)) rt_fatal("fs: host save size");
     if ((uint64_t)offset + size > id.size && !(mode & FS_OPEN_APPEND)) return FS_R_APPEND_REQUIRED;
     if (file->save) save_touched();
+    mem_heap_commit((uintptr_t)buffer, size);   // TOTK_HEAP_LAZY: the kernel reads the buffer, so its chunks must exist
     for (uint64_t done = 0; done < size;) {
         uint32_t chunk = size - done > 0x40000000 ? 0x40000000 : (uint32_t)(size - done);
         int64_t put = plat_file_pwrite(f, (const uint8_t *)buffer + done, chunk, (uint64_t)offset + done);

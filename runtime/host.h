@@ -177,6 +177,11 @@ void mem_thaw(uint64_t a, uint64_t n);                     // makes the frozen r
 void mem_freeze_stats(uint64_t *frozen, uint64_t *freezes, uint64_t *fault_thaws, uint64_t *other_thaws);
                                                            // regions frozen now; freezes and thaws since the last call
 void mem_kernel_free(void *p, uint64_t size);              // TLR/TLS reuse after thread exit
+int mem_heap_lazy(void);                                   // TOTK_HEAP_LAZY is on (Windows): heap pages commit on first use
+void mem_heap_commit(uint64_t a, uint64_t n);              // commits the not yet committed heap chunks of [a, a+n) before
+                                                           // the kernel reads them; nothing when mem_heap_lazy is 0
+uint64_t mem_heap_uncommitted(void);                       // heap bytes set by SetHeapSize but not committed yet
+                                                           // (TOTK_HEAP_LAZY): commit the game can still claim
 int mem_guest_readable(uint64_t a, uint64_t n);            // [a, a+n) can be read without a fault: inside a loaded
                                                            // module or the committed heap answered from the layout,
                                                            // anything else by plat_mem_readable (an OS query)
