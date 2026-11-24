@@ -286,6 +286,13 @@ int mem_heap_lazy(void) { return heap_lazy; }
 
 void mem_heap_commit(uint64_t a, uint64_t n) { heap_commit_range(a, n); }
 
+void mem_heap_lazy_stats(uint64_t *faults, uint64_t *ns, uint64_t *committed, uint64_t *size) {
+    *faults = (uint64_t)__atomic_load_n(&lazy_faults, __ATOMIC_RELAXED);
+    *ns = (uint64_t)__atomic_load_n(&lazy_ns, __ATOMIC_RELAXED);
+    *committed = __atomic_load_n(&heap_committed, __ATOMIC_RELAXED);
+    *size = __atomic_load_n(&heap_size, __ATOMIC_ACQUIRE);
+}
+
 uint64_t mem_heap_uncommitted(void) {
     if (!heap_lazy) return 0;
     uint64_t size = __atomic_load_n(&heap_size, __ATOMIC_ACQUIRE), done = __atomic_load_n(&heap_committed, __ATOMIC_RELAXED);

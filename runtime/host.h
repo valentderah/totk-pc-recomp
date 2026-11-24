@@ -180,6 +180,9 @@ void mem_kernel_free(void *p, uint64_t size);              // TLR/TLS reuse afte
 int mem_heap_lazy(void);                                   // TOTK_HEAP_LAZY is on (Windows): heap pages commit on first use
 void mem_heap_commit(uint64_t a, uint64_t n);              // commits the not yet committed heap chunks of [a, a+n) before
                                                            // the kernel reads them; nothing when mem_heap_lazy is 0
+void mem_heap_lazy_stats(uint64_t *faults, uint64_t *ns, uint64_t *committed, uint64_t *size);
+                                                           // TOTK_HEAP_LAZY: first-use faults and their time since
+                                                           // the start, committed heap bytes, heap size
 uint64_t mem_heap_uncommitted(void);                       // heap bytes set by SetHeapSize but not committed yet
                                                            // (TOTK_HEAP_LAZY): commit the game can still claim
 int mem_guest_readable(uint64_t a, uint64_t n);            // [a, a+n) can be read without a fault: inside a loaded

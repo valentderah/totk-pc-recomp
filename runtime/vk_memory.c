@@ -585,6 +585,13 @@ void vk_mem_census(uint64_t frame) {
     rt_log("mem: commit at frame %llu: this process %.0f MB, the system %.0f of %.0f MB; room for device memory %s%.0f MiB",
            (unsigned long long)frame, proc, used, limit, room == UINT64_MAX ? "not counted " : "",
            room == UINT64_MAX ? 0.0 : room / 1048576.0);
+    if (mem_heap_lazy()) {   // what the heap's first-use commits (memory.c heap_fault) cost and saved so far
+        uint64_t nf, ns, hc, hs;
+        mem_heap_lazy_stats(&nf, &ns, &hc, &hs);
+        rt_log("mem: heap at frame %llu: %llu of %llu MiB committed, %llu first-use faults, %.1f ms in all",
+               (unsigned long long)frame, (unsigned long long)(hc >> 20), (unsigned long long)(hs >> 20),
+               (unsigned long long)nf, ns / 1e6);
+    }
     // Per heap, what VMA holds (blocks, and the allocations inside them) beside what the driver counts for the process:
     // usage above VMA's blocks is the driver's own memory (pipelines, command buffers, descriptor pools).
     VkCtx *vc = vk_ctx();
