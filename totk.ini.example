@@ -150,6 +150,11 @@
 # fix_c0 = 1
 # New GPU memory pools start zero-filled, as Switch memory does.
 # fix_zero = 1
+# Shaders that discard a pixel and then read how fast a value changes across neighbouring pixels (a texture's
+# level of detail, a derivative) keep the discarded pixel running without output, as the Switch does: stops the light
+# fringe round objects against clouds and fog on AMD. Default: 1 on AMD's own Windows driver, 0 elsewhere. 0 keeps
+# the plain discard everywhere, 1 also uses it on other drivers. Read at start.
+# demote = 1
 # Optimisations, 0 turns each off: skip bindings that did not change, remember shader lookups, reuse the previous
 # draw's pipeline when its state repeats, remember texture descriptors between draws, update descriptors in bulk,
 # skip push constants that did not change, bind only the vertex buffers a draw reads, compare and copy each draw's

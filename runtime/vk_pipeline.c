@@ -879,37 +879,72 @@ out:
 // undefined. Mesa keeps computing after a discard; AMD's Windows compiler does not, and TotK's cloud shader, which
 // discards where the scene is in front and then takes OpImageQueryLod for its noise textures, lost fog in the pixels
 // sharing a quad with a discarded one: a light fringe round every silhouette against clouds (issue #164).
-// Each OpKill whose block is a direct target of a selection header becomes OpDemoteToHelperInvocation plus a branch to
-// that selection's merge block, so the fragment goes on computing and writes nothing. An OpKill anywhere else (the end
-// of a function, a switch case) stays. NULL: nothing to change.
+// Each OpKill whose block is a direct target of a selection header, and which an explicit derivative follows (below),
+// becomes OpDemoteToHelperInvocation plus a branch to that selection's merge block, so the fragment goes on computing
+// and writes nothing. An OpKill anywhere else (the end of a function, a switch case) stays. NULL: nothing to change.
+// Only kills that an OpImageQueryLod, an OpDPdx..OpFwidthCoarse or an OpFunctionCall (whose callee may take one)
+// follows later in the same function change: the cloud shader's fringe came from OpImageQueryLod. A demoted fragment
+// runs the rest of the shader, so demoting every kill made each alpha-tested draw (grass, foliage, hair) pay for its
+// discarded pixels; implicit-LOD samples after a kill, which nearly every alpha-tested shader takes, kept the OpKill
+// they had before demote existed, without a report. Program order stands for "after": a derivative in the other arm
+// of the kill's selection demotes too (harmless), one reached only by a loop's back edge does not (that kill keeps
+// its OpKill, as before demote).
 // On by default on AMD's own drivers, where the fringe shows; other drivers keep the translator's OpKill, their output
-// unchanged. TOTK_DEMOTE=1 or 0 overrides on any driver that enables shaderDemoteToHelperInvocation (vk_caps.demote,
-// set in vk_device.c create_device); without the feature the module keeps OpKill, since the capability would be invalid.
+// unchanged. TOTK_DEMOTE=1 or 0 (ini: demote) overrides on any driver that enables shaderDemoteToHelperInvocation
+// (vk_caps.demote, set in vk_device.c create_device); without the feature the module keeps OpKill, since the
+// capability would be invalid.
+static uint64_t demote_mods, demote_kept;   // modules with an OpKill: some kill demoted, every kill kept (atomics)
+
+// Logs the split of modules with an OpKill at each power of two of their count.
+static void demote_note(int demoted) {
+    uint64_t d = demoted ? __atomic_add_fetch(&demote_mods, 1, __ATOMIC_RELAXED) : __atomic_load_n(&demote_mods, __ATOMIC_RELAXED);
+    uint64_t k = demoted ? __atomic_load_n(&demote_kept, __ATOMIC_RELAXED) : __atomic_add_fetch(&demote_kept, 1, __ATOMIC_RELAXED);
+    uint64_t t = d + k;
+    if (!(t & (t - 1)))
+        rt_log("vk_pipeline: discard as demote: %llu shaders with a discard demote it, %llu keep it (no derivative after)",
+               (unsigned long long)d, (unsigned long long)k);
+}
+
 static uint32_t *spirv_demote(const uint32_t *w, uint64_t n, uint64_t *out_n) {
-    enum { OP_EXTENSION = 10, OP_CAPABILITY = 17, OP_SELECTION_MERGE = 247, OP_LABEL = 248, OP_BRANCH = 249,
+    enum { OP_EXTENSION = 10, OP_CAPABILITY = 17, OP_FUNCTION_END = 56, OP_FUNCTION_CALL = 57, OP_IMAGE_QUERY_LOD = 105,
+           OP_DPDX = 207, OP_FWIDTH_COARSE = 215, OP_SELECTION_MERGE = 247, OP_LABEL = 248, OP_BRANCH = 249,
            OP_BRANCH_CONDITIONAL = 250, OP_KILL = 252, OP_DEMOTE = 5380, CAP_DEMOTE = 5379 };
     static const char ext_name[36] = "SPV_EXT_demote_to_helper_invocation";   // 35 characters and the terminator: 9 words
     static int on = -1;
     if (on < 0) {
         on = vk_caps.demote && rt_knob("DEMOTE", vk_caps.amd && !vk_caps.mesa ? "1" : "0");
-        rt_log("vk_pipeline: discard as demote: %s (shaderDemoteToHelperInvocation %d, TOTK_DEMOTE)", on ? "on" : "off",
-               vk_caps.demote);
+        rt_log("vk_pipeline: discard as demote: %s, for discards a derivative follows (shaderDemoteToHelperInvocation "
+               "%d, TOTK_DEMOTE)", on ? "on" : "off", vk_caps.demote);
     }
     if (!on || n < 5) return NULL;
-    uint64_t kills = 0;
+    // Pass 1: check the words, count the kills, and note each function's last derivative (or call) by function order.
+    uint64_t kills = 0, nfn = 0, cap_fn = 8, last = 0;
+    uint64_t *fn_deriv = malloc(cap_fn * sizeof *fn_deriv);
+    if (!fn_deriv) return NULL;
     for (uint64_t i = 5; i < n;) {
         uint32_t op = w[i] & 0xffff, l = w[i] >> 16;
-        if (!l || i + l > n) return NULL;
-        if (op == OP_KILL) kills++;
-        if (op == OP_CAPABILITY && l >= 2 && w[i + 1] == CAP_DEMOTE) return NULL;   // already demotes
+        if (!l || i + l > n || (op == OP_CAPABILITY && l >= 2 && w[i + 1] == CAP_DEMOTE)) {   // malformed, or demotes already
+            free(fn_deriv);
+            return NULL;
+        }
+        kills += op == OP_KILL;
+        if (op == OP_IMAGE_QUERY_LOD || (op >= OP_DPDX && op <= OP_FWIDTH_COARSE) || op == OP_FUNCTION_CALL) last = i;
+        if (op == OP_FUNCTION_END) {
+            if (nfn == cap_fn) {
+                uint64_t *g = realloc(fn_deriv, 2 * cap_fn * sizeof *fn_deriv);
+                if (!g) { free(fn_deriv); return NULL; }
+                fn_deriv = g, cap_fn *= 2;
+            }
+            fn_deriv[nfn++] = last, last = 0;
+        }
         i += l;
     }
-    if (!kills) return NULL;
+    if (!kills) { free(fn_deriv); return NULL; }
     uint32_t bound = w[3] < (1u << 22) ? w[3] : (1u << 22);
     uint32_t *merge_of = calloc(bound ? bound : 1, sizeof *merge_of);   // label -> merge block of the selection that branches to it
     uint32_t *o = malloc((n + 12 + 2 * kills) * 4);
-    if (!merge_of || !o) { free(merge_of), free(o); return NULL; }
-    uint64_t on_w = 5, changed = 0;
+    if (!merge_of || !o) { free(merge_of), free(o), free(fn_deriv); return NULL; }
+    uint64_t on_w = 5, changed = 0, fn = 0;
     uint32_t cur = 0, pending = 0;
     int declared = 0;
     memcpy(o, w, 5 * 4);
@@ -929,7 +964,7 @@ static uint32_t *spirv_demote(const uint32_t *w, uint64_t n, uint64_t *out_n) {
                 if (a[k] < bound && a[k] != pending) merge_of[a[k]] = merge_of[a[k]] ? ~0u : pending;   // two headers: leave it
         }
         pending = op == OP_SELECTION_MERGE && l >= 3 ? a[0] : 0;
-        uint32_t m = op == OP_KILL && cur < bound ? merge_of[cur] : 0;
+        uint32_t m = op == OP_KILL && cur < bound && fn < nfn && fn_deriv[fn] > i ? merge_of[cur] : 0;
         if (m && m != ~0u && m != cur) {
             o[on_w++] = 1u << 16 | OP_DEMOTE;
             o[on_w++] = 2u << 16 | OP_BRANCH, o[on_w++] = m;
@@ -937,9 +972,11 @@ static uint32_t *spirv_demote(const uint32_t *w, uint64_t n, uint64_t *out_n) {
         } else {
             memcpy(o + on_w, w + i, l * 4), on_w += l;
         }
+        fn += op == OP_FUNCTION_END;
         i += l;
     }
-    free(merge_of);
+    free(merge_of), free(fn_deriv);
+    demote_note(changed != 0);
     if (!changed) { free(o); return NULL; }
     *out_n = on_w;
     return o;
