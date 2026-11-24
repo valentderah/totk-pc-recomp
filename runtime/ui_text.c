@@ -40,6 +40,11 @@ typedef struct { const char *lang; const char *const *text; } Row;
 
 static const char *const text_en[UI_TEXT_COUNT] = {
     SWKBD("Text entry", "Enter a name", "Horse", "OK", "Cancel", "Controller: A = OK, B = Cancel"),
+    // The SDL text entry draws with SDL's ASCII debug font, so these three exist in English only (the other rows fall
+    // back to it).
+    [UI_SWKBD_SDL_KEYS_HINT] = "Keys: type, Enter OK, Esc cancel",
+    [UI_SWKBD_SDL_PAD_HINT1] = "Pad: D-pad move, bottom add, right del",
+    [UI_SWKBD_SDL_PAD_HINT2] = "Start OK, top cancel",
 
     [UI_MENU_TITLE] = "Settings",
     [UI_MENU_TAB_SCREEN] = "Screen", [UI_MENU_TAB_GAME] = "Game", [UI_MENU_TAB_MODS] = "Mods", [UI_MENU_TAB_SOUND] = "Sound",
