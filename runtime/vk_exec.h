@@ -57,6 +57,8 @@ typedef struct {
     uint64_t barrier_bit[8];                  // the game's Barrier calls that carry NVN barrier bit 0..7 (TOTK_TRACE=gfx)
     uint64_t barrier_merged;                  // the game's Barrier calls the open pass went on through (barrier_merge)
     uint64_t barrier_undone;                  // passes a draw then ended for a read the merge cannot order (merge_guard)
+    uint64_t undone_color, undone_depth;      // of those, for sampling a colour target / the depth target the draw does
+                                              // not write itself (vk_exec_draw.c merge_unwritten_reads)
     uint64_t pass_end_rt, pass_end_barrier;   // passes ended by other render targets, by the game's own Barrier (TOTK_TRACE=gfx)
     uint64_t fb_draws, fb_barriers, fb_restarts, fb_layouts;   // feedback loops: draws sampling a written target of
                                                                // their pass, in-pass barriers, pass restarts, layout

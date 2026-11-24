@@ -3128,6 +3128,23 @@ static int merge_guard(VkExec *ex, const GfxShader *vs, const GfxShader *fs) {
     return m != 0;
 }
 
+// barrier_merge: the attachments of fbl (sampled in the feedback layout) that a draw with state s reads after other
+// draws of the pass wrote them, without writing them itself. A read of a target the draw also writes (G-buffer bits
+// ORed in, blending in the shader) is a read of its own pixel, which the by-region barrier orders. A read of a target
+// the draw leaves alone is a read of what earlier draws left there, often at neighbouring pixels (blur, ambient
+// occlusion, light composites over the G-buffer, depth-based effects), which only the game's Barrier, a full one,
+// orders on every driver; the caller ends the pass for it. The rule is Savage Wind's (runtime/nvn/vulkan/exec.c, the
+// sampled-texture loop of the draw: a colour target the draw does not write ends the pass when it was written in the
+// pass, a read-only depth target when depth was), which that port runs on every GPU. A colour target counts as
+// written when the pipeline's write mask for it is not zero, depth as feedback_written counts it.
+static uint32_t merge_unwritten_reads(const VkExec *ex, const VkPipeState *s, uint32_t fbl) {
+    uint32_t r = fbl & ex->fb_dirty;
+    for (uint32_t i = 0; r & 0xff && i < ex->pass_ncolor && i < 8; i++)
+        if ((r >> i & 1) && vk_pipeline_target_wmask(s, (int)i)) r &= ~(1u << i);
+    if ((r & 0x100) && ((s->ds.dt && s->ds.dw) || s->ds.st)) r &= ~0x100u;
+    return r;
+}
+
 // ---- incremental draw preparation (TOTK_BIND_INC)
 // A draw is prepared from what changed since the context's last prepared draw in the same command buffer: the bind
 // ops mark the slots whose bytes they changed (VkExec.dirt, vk_exec_bind), every write that changes the pipeline state
@@ -3448,6 +3465,18 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         if (pg_hit) {   // check
             D->BC.checked++;
             if (memcmp(&s, &D->PM.s, sizeof s)) bi_mismatch(ex, BIM_PIPE, "pipeline memo: state differs from the memo its generation matched");
+        }
+    }
+    // barrier_merge: a read of a target this draw does not write, made after a merged Barrier, ends the pass; nothing of
+    // the draw is recorded yet, and the new pass keeps the targets and their feedback layout, so fbl and the state hold.
+    if (ex->pass_merged && fbl & ex->fb_dirty) {
+        uint32_t r = merge_unwritten_reads(ex, sp, fbl);
+        if (r) {
+            vk_exec_pass_end(ex);
+            vk_exec_pass_begin(ex);
+            ex->fr.barrier_undone++;
+            if (r & 0xff) ex->fr.undone_color++;
+            else ex->fr.undone_depth++;
         }
     }
     const VkPipeInfo *info = NULL;

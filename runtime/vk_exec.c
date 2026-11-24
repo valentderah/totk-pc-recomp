@@ -90,12 +90,12 @@ void vk_exec_frame_log(const tex_t *p, uint64_t frame) {
                                   fw[i].h, fw[i].fmt, fw[i].n);
     }
     rt_log("frame %llu: submits %llu passes %llu draws %llu/%llu clears %llu copies %llu dispatches %llu; present %p "
-           "%ux%u/%#x written %d; pass ends: targets %llu barrier %llu (%llu merged, %llu undone) bits %llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu; feedback draws %llu barriers %llu restarts %llu layouts %llu; targets%s",
+           "%ux%u/%#x written %d; pass ends: targets %llu barrier %llu (%llu merged, %llu undone, unwritten reads %llu colour %llu depth) bits %llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu; feedback draws %llu barriers %llu restarts %llu layouts %llu; targets%s",
            (unsigned long long)frame, (unsigned long long)f->submits,
            (unsigned long long)f->passes, (unsigned long long)f->draws, (unsigned long long)f->draws_seen,
            (unsigned long long)f->clears, (unsigned long long)f->copies, (unsigned long long)f->dispatches,
            p ? (const void *)p->mem : NULL, p ? p->d.width : 0, p ? p->d.height : 0, p ? (uint32_t)p->d.format : 0,
-           hit, (unsigned long long)f->pass_end_rt, (unsigned long long)f->pass_end_barrier, (unsigned long long)f->barrier_merged, (unsigned long long)f->barrier_undone, (unsigned long long)f->barrier_bit[0], (unsigned long long)f->barrier_bit[1], (unsigned long long)f->barrier_bit[2], (unsigned long long)f->barrier_bit[3], (unsigned long long)f->barrier_bit[4], (unsigned long long)f->barrier_bit[5], (unsigned long long)f->barrier_bit[6], (unsigned long long)f->barrier_bit[7], (unsigned long long)f->fb_draws, (unsigned long long)f->fb_barriers, (unsigned long long)f->fb_restarts,
+           hit, (unsigned long long)f->pass_end_rt, (unsigned long long)f->pass_end_barrier, (unsigned long long)f->barrier_merged, (unsigned long long)f->barrier_undone, (unsigned long long)f->undone_color, (unsigned long long)f->undone_depth, (unsigned long long)f->barrier_bit[0], (unsigned long long)f->barrier_bit[1], (unsigned long long)f->barrier_bit[2], (unsigned long long)f->barrier_bit[3], (unsigned long long)f->barrier_bit[4], (unsigned long long)f->barrier_bit[5], (unsigned long long)f->barrier_bit[6], (unsigned long long)f->barrier_bit[7], (unsigned long long)f->fb_draws, (unsigned long long)f->fb_barriers, (unsigned long long)f->fb_restarts,
            (unsigned long long)f->fb_layouts, list);
     memset(f, 0, sizeof *f);
     nfw = 0;
