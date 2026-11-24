@@ -27,6 +27,8 @@
 #include "vk.h"
 #include "platform/platform.h"
 
+int swkbd_sdl_event(const SDL_Event *e);   // swkbd_sdl.c: the text entry window's events
+
 static SDL_Window *g_win;
 static uint32_t g_ev_base;               // SDL_RegisterEvents: the user events below
 enum { EV_RUN, EV_SETTINGS, EV_CLOSE, EV_COUNT };
@@ -158,6 +160,7 @@ static void handle(const SDL_Event *e) {
     }
     if (e->type == g_ev_base + EV_CLOSE) gfx_window_closed();
     if (!g_win) return;
+    if (swkbd_sdl_event(e)) return;
     input_sdl_event(e);
     menu_sdl_event(e);
     switch (e->type) {
