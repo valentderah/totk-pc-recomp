@@ -220,15 +220,17 @@
 # gpu_name = NVIDIA
 # Game resolution: the size the game draws its picture and interface in (1280x720 to 7680x4320). Above 1920x1080 the
 # game's texture heap and memory pool grow with it. Another shape than 16:9, such as 3440x1440 on a 21:9 monitor or
-# the Steam Deck's 1280x800 (16:10), gives the camera's view that shape and lays the HUD out for it. The installer
-# prepares the UI layout for fifteen sizes: 2560x1080, 3440x1440, 3840x1600, 5120x2160 (21:9), 3840x1080, 5120x1440
-# (32:9), 1280x800, 1680x1050, 1920x1200, 2560x1600 (16:10), 1920x1280, 2160x1440, 2256x1504, 2880x1920 and 3000x2000
-# (3:2). For any other size, or a source build that has not made the layout, the game draws the largest 16:9 size that
-# fits inside it (3440x1080 gives 1920x1080) and the present adds bars; build the layout with
-# tools/make_romfs_patches.py --aspect WxH to use the full shape. Read at start. Default: 1920x1080, or on a primary
-# display of one of those shapes the smallest of its sizes at least 1080 high that fits the display (1920x1280 on a 3:2
-# laptop, 2560x1080 on a 21:9 monitor), so the picture fills the screen without black bars, with prompts = xbox or pc
-# too (on an install by an older setup, which built the Xbox prompts for 16:9 only, prompts = xbox keeps 1920x1080).
+# the Steam Deck's 1280x800 (16:10), gives the camera's view that shape and lays the HUD out for it. Any shape from 4:3
+# to 32:9 works: 21:9 and 32:9 monitors, 16:10 and 3:2 screens, 4:3 (1440x1080, 2048x1536 on an iPad) and phone
+# screens streamed to (2340x1080 or 3120x1440 at 19.5:9, 2400x1080 at 20:9). The installer makes the UI layout for the
+# shapes of the connected displays and of this setting; at a shape it has none for, the game draws the largest 16:9
+# size that fits inside it with bars and makes the layout in the background for the next start (a source build: make
+# it with tools/make_romfs_patches.py --aspect WxH). A shape narrower than 16:9 keeps the game's vertical view, so it
+# shows less at the sides; fov widens it. Portrait shapes and shapes outside 4:3..32:9 draw 16:9 with bars. Read at
+# start. Default: 1920x1080, or on a primary display of 21:9, 32:9, 16:10, 3:2 or 4:3 the smallest size of that shape
+# at least 1080 high that fits the display (1920x1280 on a 3:2 laptop, 2560x1080 on a 21:9 monitor), so the picture
+# fills the screen without black bars, with prompts = xbox or pc too (on an install by an older setup, which built the
+# Xbox prompts for 16:9 only, prompts = xbox keeps 1920x1080).
 # output_res = 1920x1080
 # HUD width on a game resolution wider than 16:9: full, the default, puts the HUD at the screen's left and right edges;
 # 21:9 keeps it within the middle 21:9 of the screen and 16:9 within the middle 16:9 (the game's own HUD), so the

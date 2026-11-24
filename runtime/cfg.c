@@ -410,12 +410,21 @@ static const unsigned SHAPED[][2] = {
     {3840, 1080}, {5120, 1440},                                         // 32:9
     {1280, 800}, {1680, 1050}, {1920, 1200}, {2560, 1600},              // 16:10
     {1920, 1280}, {2160, 1440}, {2256, 1504}, {2880, 1920}, {3000, 2000}, // 3:2
+    {1440, 1080}, {1600, 1200}, {2048, 1536}, {2732, 2048},             // 4:3 (CRT monitors, iPads)
+    {2340, 1080}, {3120, 1440}, {2400, 1080}, {3200, 1440},             // 19.5:9 and 20:9 (phones, streamed)
 };
+
+// The shapes a UI layout can be made for (tools/ultrawide_layout.py works on any aspect ratio between these): from 4:3
+// to 32:9, 1% either side. A shape between them that SHAPED does not list takes a folder of its own exact size.
+#define SHAPE_MIN (4.0 / 3.0 * 0.99)
+#define SHAPE_MAX (32.0 / 9.0 * 1.01)
 
 // The folder size of w x h's shape: of SHAPED within 1% of its aspect ratio, the closest, the first of equal ones
 // (5120x2160 takes 2560x1080). The UI layout depends on the aspect ratio alone (tools/ultrawide_layout.py apply), so
 // the setup writes one romfs-patches-<w>x<h> per shape, named after this size (installer/screens.py shape_size, the
-// same rule), and romfs.c overlay_init looks for it. 0 for 16:9 and for a shape without a layout.
+// same rule), and romfs.c overlay_init looks for it. A shape SHAPED does not list but within SHAPE_MIN..SHAPE_MAX (a
+// phone's 13:6 screen streamed to, say) is its own folder, w x h itself, which the setup and the game's background
+// generator make as they make the listed ones. 0 for 16:9 and outside that range (portrait screens).
 int cfg_shape_size(unsigned w, unsigned h, unsigned out[2]) {
     if (!w || !h) return 0;
     double r = (double)w / h, err = 0;
@@ -425,8 +434,12 @@ int cfg_shape_size(unsigned w, unsigned h, unsigned out[2]) {
         double e = fabs((double)SHAPED[i][0] / SHAPED[i][1] / r - 1);
         if (e <= 0.01 && (best < 0 || e < err)) best = i, err = e;
     }
-    if (best < 0) return 0;
-    out[0] = SHAPED[best][0], out[1] = SHAPED[best][1];
+    if (best >= 0) {
+        out[0] = SHAPED[best][0], out[1] = SHAPED[best][1];
+        return 1;
+    }
+    if (r < SHAPE_MIN || r > SHAPE_MAX) return 0;
+    out[0] = w, out[1] = h;
     return 1;
 }
 
