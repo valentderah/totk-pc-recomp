@@ -49,7 +49,7 @@ VkImageView vk_lightfull_swap_view;
 static struct {
     int tried, on, ok, init_tried, logged, fresh;
     unsigned cfg_ver;
-    uint64_t frame, gb_frame;           // presents so far; the frame whose G-buffer was seen last
+    uint64_t frame, pass_frame;         // presents so far; the frame of the last pass seen
     PFN_vkCmdPushDescriptorSetKHR push;
     VkDescriptorSetLayout dsl;
     VkPipelineLayout layout;
@@ -59,7 +59,7 @@ static struct {
     int nold;
     uint32_t w, h, hw, hh;              // the G-buffer's size; the game's
     const VkTexImage *gdepth, *gnormal; // this frame's G-buffer linear depth and normals
-    int armed;                          // the frame's main half-size lighting pass ran: the next depth pass is the
+    int armed;                          // this frame's main half-size lighting pass ran: the next depth pass is the
                                         // light pass's (an earlier one also writes the half-size linear depth)
     int depth_done;                     // the light pass's depth pass was drawn at full size, into ours
     const VkTexImage *game_light, *game_occl;   // the last light pass's game targets
@@ -308,8 +308,8 @@ static void all_barrier(VkCommandBuffer cb) {
     vkCmdPipelineBarrier2(cb, &di);
 }
 
-// Before a pass opens (no pass is open): a new frame's G-buffer forgets the last one's; our images are made usable, and
-// before the light pass ours are cleared, so they hold the lights alone.
+// Before a pass opens (no pass is open): the first pass of a new frame forgets the last frame's lighting passes; our
+// images are made usable, and before the light pass ours are cleared, so they hold the lights alone.
 static void merge(VkExec *ex);
 
 void vk_lightfull_pass_begin(VkExec *ex) {
@@ -319,11 +319,19 @@ void vk_lightfull_pass_begin(VkExec *ex) {
         return;
     }
     if (F.pending && ex->pass_lightfull != 2) merge(ex);
+    // A new frame disarms here, not at its G-buffer: in some shrines the first pass with the G-buffer's R32F target
+    // comes after the early pass that writes the half-size linear depth, and the depth pass before the light pass has
+    // no colour target, so nothing else disarms. A lighting pass of the last frame then made that early pass the
+    // light pass's depth pass, drawn into ours, and the game's half-size linear depth kept an old frame's contents.
+    // Present and passes run in order on the replay thread, so the count changes between two frames' passes.
+    uint64_t f = __atomic_load_n(&F.frame, __ATOMIC_RELAXED);
+    if (f != F.pass_frame) {
+        F.pass_frame = f, F.armed = F.depth_done = 0;
+        swap_off(ex);
+    }
     const VkTexImage *n, *d;
     if (gbuffer(ex, &n, &d)) {
-        uint64_t f = __atomic_load_n(&F.frame, __ATOMIC_RELAXED);
-        if (f != F.gb_frame || !F.gdepth) swap_off(ex), F.armed = F.depth_done = 0;
-        F.gb_frame = f, F.gnormal = n, F.gdepth = d;
+        F.gnormal = n, F.gdepth = d;
         return;
     }
     if (!ex->pass_lightfull) return;
