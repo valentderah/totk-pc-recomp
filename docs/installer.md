@@ -27,6 +27,8 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
   totk.exe, SDL3.dll, libopus-0.dll, totk_xlate.exe
   nvngx_dlss.dll                 NVIDIA DLSS, downloaded by the setup's DLSS step when the player keeps it ticked
   amd_fidelityfx_*_vk.dll        AMD FSR 4 (loader and upscaler), downloaded by the setup's FSR step likewise
+  openxr_loader.dll              Khronos's OpenXR loader for VR, downloaded by the setup's VR step (Windows)
+  TotK VR.lnk / TotK VR.desktop  the VR shortcut (totk --vr), made by the VR step; its presence keeps VR set up
   totk.ini                       language; the other keys as commented defaults (totk.ini.example)
   exefs/, romfs/                 extracted from the player's files
   shared-fonts/                  the Switch system fonts, with Chinese, Korean or Traditional Chinese text
@@ -134,7 +136,15 @@ loads the saves 1.4.3 wrote.
    downloaded and matched. `scene_upscaler = fsr4` loads them from the folder of totk.exe and runs FSR 4 where they
    offer it for the GPU. Libraries already in the folder are kept; a failed download warns, the game runs without FSR
    4, and the next run tries again.
-11. **Clean up** the temp folder, except the generated C and the objects (about 1.3 GB), and write
+11. **VR** (the window's tick box "Set up VR", off by default and ticked again for a folder with a VR shortcut; or
+   `--vr`): a "TotK VR" shortcut that starts `totk --vr` (Linux: `TotK VR.desktop` in the install folder and
+   `totk-vr.desktop` in `$XDG_DATA_HOME/applications`; Windows: `TotK VR.lnk` in the Start menu, on the desktop and
+   in the install folder, made through PowerShell's WScript.Shell). On Windows it also downloads Khronos's NuGet package
+   of the OpenXR loader from the OpenXR SDK's release (github.com/KhronosGroup/OpenXR-SDK-Source, `release-1.1.65`,
+   Apache-2.0), checks its size and SHA-256 and puts `openxr_loader.dll` from it next to totk.exe; one already there is
+   kept. Linux uses the system's `libopenxr_loader.so.1`. With VR set up the Shapes step also writes the 2048x2048
+   layouts VR draws with. A failure only warns; the next run tries again (`steps.py`, `Vr`; docs/vr.md).
+12. **Clean up** the temp folder, except the generated C and the objects (about 1.3 GB), and write
    `build-cache/rebuild.txt` in the install folder.
 
 A cancelled or failed setup resumes from the last finished step (`totk-install.json`).

@@ -32,6 +32,9 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - Other screen shapes from 4:3 to 32:9, each with the camera and the interface in that shape: 16:10 (Steam Deck,
   handhelds), 3:2 (Surface, Framework), 4:3 (iPads, CRT monitors) and phones (19.5:9, 20:9) for streaming; on shapes
   narrower than 16:9 the view can keep the 16:9 width (`vert_plus`, off by default)
+- VR in SteamVR headsets (OpenXR, Linux and Windows): third person, true stereo 3D drawn by the game for each eye,
+  head-tracked, with the HUD on a floating panel; tick "Set up VR" in the setup or start with `--vr`
+  ([docs/vr.md](docs/vr.md); VR problems go to the VR fork named there)
 - Anisotropic texture filtering up to 16x, for sharp ground into the distance
 - In-game settings menu (F1) and performance overlay (F10)
 - Play time across runs on the Game tab of the settings menu, kept in `playtime.txt` next to the saves
