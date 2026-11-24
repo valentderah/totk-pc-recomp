@@ -355,6 +355,16 @@ void vk_lightfull_pass_begin(VkExec *ex) {
                          .dstOffsets = {{0, 0, 0}, {(int32_t)F.w, (int32_t)F.h, 1}}};
         vkCmdBlitImage(cb, F.game_depth->image, VK_IMAGE_LAYOUT_GENERAL, F.img[I_DEPTH].img, VK_IMAGE_LAYOUT_GENERAL, 1,
                        &r, VK_FILTER_NEAREST);
+        if (F.back_ldepth) {   // and its linear depth, which write_back gives the game: where the pass draws nothing,
+                               // the game's comes back unchanged
+            VkImageBlit l = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, F.back_layer[1], 1},
+                             .srcOffsets = {{0, 0, 0}, {(int32_t)F.back_ldepth->width, (int32_t)F.back_ldepth->height, 1}},
+                             .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                             .dstOffsets = {{0, 0, 0}, {(int32_t)F.w, (int32_t)F.h, 1}}};
+            vkCmdBlitImage(cb, F.back_ldepth->image, VK_IMAGE_LAYOUT_GENERAL, F.img[I_LDEPTH].img,
+                           VK_IMAGE_LAYOUT_GENERAL, 1, &l, VK_FILTER_NEAREST);
+            ex->recorded++;
+        }
         all_barrier(cb);
         ex->recorded += 2;
     }
