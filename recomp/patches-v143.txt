@@ -232,7 +232,7 @@ site zstd   main 5f574c 97e912a5 94d3aa25   # bl ZSTD_decompress_usingDDict -> p
 site zstd   main bdc910 97d17634 94bc0db4   # bl ZSTD_decompress_usingDDict -> page+0xfe0
 site zstd   main 1852314 979f9fb3 948a3733  # bl ZSTD_decompress_usingDDict -> page+0xfe0
 
-# Armor sets (runtime/armor_sets.c; menu Game modifications > Armor sets, off by default and switched while the game
+# Armor sets (runtime/armor_sets.c; menu Game > Armor sets, off by default and switched while the game
 # runs): armour pieces are registered to nine sets from the inventory's item window, and the weapon / shield / bow
 # shortcut strip shows the sets on right stick up. Host functions on the patch page +0xe60..+0xef0. The item window's
 # ten rows come from tools/item_window_layout.py.

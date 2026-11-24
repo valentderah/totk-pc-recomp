@@ -88,8 +88,8 @@ typedef enum {
     UI_MENU_PLAY_TIME, UI_MENU_PLAY_TIME_DESC,
     UI_MENU_PLAY_TIME_HM,        // hours and minutes: "%llu h %02u min" (unsigned long long hours, unsigned minutes)
     UI_MENU_PLAY_TIME_SESSION,   // note under the total: "this run: %s" (the hours and minutes above)
-    // the Game modifications tab: changes to how the game plays, all off by default
-    UI_MENU_TAB_GAMEMODS, UI_MENU_ARMOR_SETS, UI_MENU_ARMOR_SETS_DESC,
+    // Armor sets on the Game tab (armor_sets.c), off by default
+    UI_MENU_ARMOR_SETS, UI_MENU_ARMOR_SETS_DESC,
 
     // Mods: the port's own patches and the player's mods folder (mods.c)
     UI_MENU_MODS_BUILTIN, UI_MENU_MODS_INSTALLED,

@@ -692,7 +692,6 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_ARMOR_CLEAR_YES] = "Yes, clear all sets",
     [UI_ARMOR_SET_FMT] = "Set %d",
     [UI_ARMOR_STRIP_FMT] = "Armor Set %d",
-    [UI_MENU_TAB_GAMEMODS] = "Game modifications",
     [UI_MENU_ARMOR_SETS] = "Armor sets",
     [UI_MENU_ARMOR_SETS_DESC] = "On, an armor piece in the inventory gets \"Register to armor set\", which adds it to one of "
         "nine sets. While the weapon, shield or bow shortcut is held, push the right stick up to see your sets and down to "
@@ -1355,7 +1354,6 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_ARMOR_CLEAR_YES] = "Да, очистить все",
     [UI_ARMOR_SET_FMT] = "Комплект %d",
     [UI_ARMOR_STRIP_FMT] = "Комплект брони %d",
-    [UI_MENU_TAB_GAMEMODS] = "Модификации игры",
     [UI_MENU_ARMOR_SETS] = "Комплекты брони",
     [UI_MENU_ARMOR_SETS_DESC] = "Включено: у брони в инвентаре появляется пункт «Добавить в комплект», который сохраняет её в "
         "один из девяти комплектов. Пока удерживается быстрый выбор оружия, щита или лука, наклоните правый стик вверх, "
@@ -2056,7 +2054,6 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_ARMOR_CLEAR_YES] = "Sim, limpar todos",
     [UI_ARMOR_SET_FMT] = "Conjunto %d",
     [UI_ARMOR_STRIP_FMT] = "Conjunto de armadura %d",
-    [UI_MENU_TAB_GAMEMODS] = "Modificações do jogo",
     [UI_MENU_ARMOR_SETS] = "Conjuntos de armadura",
     [UI_MENU_ARMOR_SETS_DESC] = "Ligado, uma peça de armadura no inventário ganha \"Registrar em conjunto\", que a adiciona a "
         "um de nove conjuntos. Enquanto o atalho de arma, escudo ou arco estiver pressionado, mova o analógico direito "
@@ -2806,7 +2803,6 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_ARMOR_CLEAR_YES] = "是，全部清除",
     [UI_ARMOR_SET_FMT] = "套装 %d",
     [UI_ARMOR_STRIP_FMT] = "防具套装 %d",
-    [UI_MENU_TAB_GAMEMODS] = "游戏修改",
     [UI_MENU_ARMOR_SETS] = "防具套装",
     [UI_MENU_ARMOR_SETS_DESC] = "开启后，背包中的防具会多出“登记到防具套装”选项，可将其加入九套套装之一。按住武器、盾牌或弓的快捷栏时，"
         "将右摇杆向上推可查看套装，向下推可返回；在某一套装上松开即可穿上。关闭（默认）时，游戏保持原样。",
@@ -3718,7 +3714,6 @@ static const char *const text_de[UI_TEXT_COUNT] = {
     [UI_ARMOR_CLEAR_YES] = "Ja, alle löschen",
     [UI_ARMOR_SET_FMT] = "Set %d",
     [UI_ARMOR_STRIP_FMT] = "Rüstungsset %d",
-    [UI_MENU_TAB_GAMEMODS] = "Spielmodifikationen",
     [UI_MENU_ARMOR_SETS] = "Rüstungssets",
     [UI_MENU_ARMOR_SETS_DESC] = "Ein: Ein Rüstungsteil im Inventar bekommt „Zu Rüstungsset hinzufügen“, das es einem von neun Sets "
         "hinzufügt. Während die Schnellauswahl für Waffen, Schilde oder Bögen gehalten wird, drücke den "
@@ -4654,7 +4649,6 @@ static const char *const text_fr[UI_TEXT_COUNT] = {
     [UI_ARMOR_CLEAR_YES] = "Oui, tout effacer",
     [UI_ARMOR_SET_FMT] = "Tenue %d",
     [UI_ARMOR_STRIP_FMT] = "Tenue %d",
-    [UI_MENU_TAB_GAMEMODS] = "Modifications du jeu",
     [UI_MENU_ARMOR_SETS] = "Tenues d'armure",
     [UI_MENU_ARMOR_SETS_DESC] = "Activé, une pièce d'armure de l'inventaire reçoit « Ajouter à une tenue », qui l'ajoute à l'une de "
         "neuf tenues. Pendant que le raccourci des armes, boucliers ou arcs est maintenu, poussez le stick "
@@ -5573,7 +5567,6 @@ static const char *const text_es[UI_TEXT_COUNT] = {
     [UI_ARMOR_CLEAR_YES] = "Sí, borrar todo",
     [UI_ARMOR_SET_FMT] = "Conjunto %d",
     [UI_ARMOR_STRIP_FMT] = "Conjunto %d",
-    [UI_MENU_TAB_GAMEMODS] = "Modificaciones del juego",
     [UI_MENU_ARMOR_SETS] = "Conjuntos de armadura",
     [UI_MENU_ARMOR_SETS_DESC] = "Activado, una pieza de armadura del inventario tiene «Añadir a un conjunto», que la añade a uno de "
         "nueve conjuntos. Mientras mantienes el atajo de armas, escudos o arcos, mueve el stick derecho hacia "
@@ -6495,7 +6488,6 @@ static const char *const text_it[UI_TEXT_COUNT] = {
     [UI_ARMOR_CLEAR_YES] = "Sì, cancella tutto",
     [UI_ARMOR_SET_FMT] = "Set %d",
     [UI_ARMOR_STRIP_FMT] = "Set di armature %d",
-    [UI_MENU_TAB_GAMEMODS] = "Modifiche al gioco",
     [UI_MENU_ARMOR_SETS] = "Set di armature",
     [UI_MENU_ARMOR_SETS_DESC] = "Attivo: un pezzo di armatura nell'inventario ottiene «Aggiungi a un set», che lo aggiunge a uno di "
         "nove set. Mentre tieni premuta la scorciatoia di armi, scudi o archi, spingi lo stick destro in alto "
@@ -7399,7 +7391,6 @@ static const char *const text_nl[UI_TEXT_COUNT] = {
     [UI_ARMOR_CLEAR_YES] = "Ja, alles wissen",
     [UI_ARMOR_SET_FMT] = "Set %d",
     [UI_ARMOR_STRIP_FMT] = "Pantserset %d",
-    [UI_MENU_TAB_GAMEMODS] = "Spelaanpassingen",
     [UI_MENU_ARMOR_SETS] = "Pantsersets",
     [UI_MENU_ARMOR_SETS_DESC] = "Aan: een pantserstuk in de inventaris krijgt 'Aan pantserset toevoegen', dat het aan een van negen "
         "sets toevoegt. Terwijl de snelkeuze voor wapens, schilden of bogen ingedrukt is, duw je de "
@@ -8159,7 +8150,6 @@ static const char *const text_ja[UI_TEXT_COUNT] = {
     [UI_ARMOR_CLEAR_YES] = "はい、すべて消去",
     [UI_ARMOR_SET_FMT] = "セット%d",
     [UI_ARMOR_STRIP_FMT] = "防具セット%d",
-    [UI_MENU_TAB_GAMEMODS] = "ゲームの変更",
     [UI_MENU_ARMOR_SETS] = "防具セット",
     [UI_MENU_ARMOR_SETS_DESC] = "オンにすると、ポーチの防具に「防具セットに登録」が加わり、9つのセットのどれかに登録できます。武器・盾・弓のショートカットを押している間に右スティックを上に倒すとセットが表示され、下に倒すと戻ります。セットの上で離すとそのセットを装備します。オフ（初期設定）ではゲームは変わりません。",
 };
@@ -8917,7 +8907,6 @@ static const char *const text_ko[UI_TEXT_COUNT] = {
     [UI_ARMOR_CLEAR_YES] = "네, 모두 삭제",
     [UI_ARMOR_SET_FMT] = "세트 %d",
     [UI_ARMOR_STRIP_FMT] = "방어구 세트 %d",
-    [UI_MENU_TAB_GAMEMODS] = "게임 수정",
     [UI_MENU_ARMOR_SETS] = "방어구 세트",
     [UI_MENU_ARMOR_SETS_DESC] = "켜면 인벤토리의 방어구에 '방어구 세트에 등록'이 생겨 9개 세트 중 하나에 추가할 수 있습니다. 무기, 방패 또는 활 단축키를 누르고 있는 동안 오른쪽 스틱을 위로 밀면 세트가 "
         "보이고 아래로 밀면 돌아갑니다. 세트 위에서 놓으면 그 세트를 착용합니다. 끄면(기본값) 게임은 바뀌지 않습니다.",
@@ -9546,7 +9535,6 @@ static const char *const text_vi[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_OVERRIDES_DATA] = "%u byte thay đổi dữ liệu game của nó thay của %s, mod thấp hơn trong danh sách.",
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u vị trí vá mã của nó bị %s ghi đè, mod cao hơn trong danh sách.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Nó ghi đè %u vị trí vá mã của %s, mod thấp hơn trong danh sách.",
-    [UI_MENU_TAB_GAMEMODS] = "Sửa đổi game",
     [UI_MENU_ARMOR_SETS] = "Bộ giáp",
     [UI_MENU_ARMOR_SETS_DESC] = "Bật: trong túi đồ, mỗi món giáp có thêm một mục để thêm nó vào một trong chín bộ giáp. Khi đang giữ "
         "phím tắt vũ khí, khiên hoặc cung, đẩy cần analog phải lên để xem các bộ và xuống để quay lại; thả ra "

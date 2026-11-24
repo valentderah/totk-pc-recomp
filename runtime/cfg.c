@@ -174,7 +174,7 @@ static const CfgMeta metas[] = {
     {"LANG", "", "ja|en-US|fr|de|it|es|zh-CN|ko|nl|pt|ru|zh-TW|en-GB|fr-CA|es-419|zh-Hans|zh-Hant|pt-BR", RESTART},
     {"OPERATION_MODE", "docked", "docked|handheld", RESTART},
     {"ASSUME_FOCUS", "1", "0|1", LIVE},   // read on every focus change (ov_system.c)
-    // Game modifications
+    // Game tab: Armor sets
     {"ARMOR_SETS", "0", "0|1", LIVE},   // patch set armor (runtime/armor_sets.c), switched live
     // Sound, Controls, Menu
     {"VOLUME", "100", "0..100", LIVE}, {"VOLUME_MUSIC", "100", "0..100", LIVE}, {"VOLUME_SFX", "100", "0..100", LIVE}, {"VOLUME_VOICE", "100", "0..100", LIVE}, {"AUDIO_CHANNELS", "stereo", "auto|stereo|5.1", RESTART},

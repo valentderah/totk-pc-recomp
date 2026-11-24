@@ -1,4 +1,4 @@
-// Armor sets for TotK 1.4.3 (TOTK_ARMOR_SETS, menu: Game modifications > Armor sets; off by default, switched live).
+// Armor sets for TotK 1.4.3 (TOTK_ARMOR_SETS, menu: Game > Armor sets; off by default, switched live).
 //
 // In the inventory an armour piece's item window gets a third row, "Register to armor set", which turns the same window
 // into Set 1..9 + Cancel; the piece is saved to the chosen set under its part (head, upper or lower). A fourth row,
@@ -14,6 +14,7 @@
 //   main+0xb9e5fc  the sead main loop (0xb9e5e8), once a frame between frames: all work that calls the game's data
 //                  code runs here, on the game's main thread
 //   main+0x21786cc/0x2178708..14  the armour branch of the item window filler (0x21782b4): four rows, Register and Clear
+//                  (the game's own two rows when the layout has fewer than ten, as under a UI mod's Common archive)
 //   main+0x2179c28  the window's choice to the game's command handler 0x2173d18 (its switch ends at 0x1c; ours are 0x40+)
 //   main+0x20c7158/0x20c71c4  the strip's tile filler 0x20c7108: in sets mode a set is drawn with the armour tile
 //                  0x2094b08 on the shield path
@@ -387,6 +388,20 @@ static void host_rows(Cpu *c) {
     uint64_t win = LD64(c->x[20] + 0x1f0);
     atomic_store(&reg_item, (int)(uint32_t)c->x[21]);
     rt_call(c, G(0x2113874), 3, win, (uint64_t)0, (uint64_t)1);
+    // [win+0x48] is the number of button rows the window found in its layout at setup (setButton caps the row with it).
+    // A UI mod that replaces the Common archive brings the game's four: the set picker would not fit, so the window
+    // stays the game's own (Equip/Remove + Cancel).
+    uint32_t rows = LD32(win + 0x48);
+    if (rows < PICK_ROWS) {
+        static _Atomic int told;
+        if (!atomic_exchange(&told, 1))
+            rt_log("armor sets: the item window has %u rows, not %d (a UI mod replaced its layout?): "
+                 "no Register row", rows, PICK_ROWS);
+        rt_call(c, G(0x2113774), 2, win, (uint64_t)0);   // the Pattern frame of two rows
+        row_set(c, win, 1, 0, 0);                         // Cancel
+        memcpy(c->x, keep, sizeof keep);
+        return;
+    }
     row_set(c, win, 1, CMD_REGISTER, msg_make(row_text[0], 48, &row_msg[0], ui_text(UI_ARMOR_REGISTER)));
     row_set(c, win, 2, CMD_CLEAR, msg_make(row_text[1], 48, &row_msg[1], ui_text(UI_ARMOR_CLEAR)));
     row_set(c, win, 3, 0, 0);   // Cancel

@@ -393,7 +393,7 @@ extern "C" void menu_vk_release(void) {
 // TOTK_MENU_TEST_SET=<frame>:<key>=<value>[,<key>=<value>...][;<frame>:...]: cfg_set of each key (TOTK_ prefix
 // optional) at that presented frame; changes live settings with no input, menu open or not. totk.ini is written only by
 // the pseudo-key SAVE=1 (cfg_save, as a row change does; a failed write shows the menu's save note).
-enum { TAB_SCREEN, TAB_GAME, TAB_GAMEMODS, TAB_SOUND, TAB_CONTROLS, TAB_AMIIBO, TAB_MENU, TAB_ADVANCED, TAB_MODS, TAB_CHEATS, TAB_COUNT };
+enum { TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_AMIIBO, TAB_MENU, TAB_ADVANCED, TAB_MODS, TAB_CHEATS, TAB_COUNT };
 enum { TEST_PAGE_FRAMES = 30, TEST_SETS = 16 };
 struct TestSet { uint64_t frame; char key[64], value[64]; };
 static struct {
@@ -884,6 +884,7 @@ static void tab_game(float scale) {
     static const UiTextId mode[] = {UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD};
     opt_choice("TOTK_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_OPERATION_MODE_DESC);
     opt_toggle("TOTK_ASSUME_FOCUS", UI_MENU_ASSUME_FOCUS, UI_MENU_ASSUME_FOCUS_DESC);
+    opt_toggle("TOTK_ARMOR_SETS", UI_MENU_ARMOR_SETS, UI_MENU_ARMOR_SETS_DESC);
     row_play_time();
     opt_end();
 }
@@ -913,12 +914,6 @@ static void row_audio_device(void) {
     int cur = strcmp(cfg_value("TOTK_AUDIO_DEVICE"), "default") ? -1 : 0;   // "default" in totk.ini is the first row
     opt_choice_list("TOTK_AUDIO_DEVICE", UI_MENU_AUDIO_DEVICE, vals, names, g_audio_n + 1, UI_MENU_AUDIO_DEVICE_DESC,
                     cur);
-}
-
-static void tab_gamemods(float scale) {
-    opt_begin("##gamemods", scale);
-    opt_toggle("TOTK_ARMOR_SETS", UI_MENU_ARMOR_SETS, UI_MENU_ARMOR_SETS_DESC);
-    opt_end();
 }
 
 static void tab_sound(float scale) {
@@ -1382,7 +1377,7 @@ static void tab_advanced(float scale) {
     }
 }
 
-static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN,   UI_MENU_TAB_GAME,   UI_MENU_TAB_GAMEMODS, UI_MENU_TAB_SOUND,
+static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN,   UI_MENU_TAB_GAME,   UI_MENU_TAB_SOUND,
                                               UI_MENU_TAB_CONTROLS, UI_MENU_TAB_AMIIBO, UI_MENU_TAB_MENU,
                                               UI_MENU_TAB_ADVANCED, UI_MENU_TAB_MODS,   UI_MENU_TAB_CHEATS};
 static int g_tab;               // the tab shown
@@ -1582,7 +1577,6 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
             switch (k) {
             case TAB_SCREEN: tab_screen(scale); break;
             case TAB_GAME: tab_game(scale); break;
-            case TAB_GAMEMODS: tab_gamemods(scale); break;
             case TAB_MODS: tab_mods(scale); break;
             case TAB_SOUND: tab_sound(scale); break;
             case TAB_CONTROLS: tab_controls(scale); break;
