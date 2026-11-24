@@ -1141,6 +1141,17 @@ def plugins_status(ctx):
     return ctx.dest / 'build-cache' / 'plugins.status'
 
 
+def plugins_stale(ctx):
+    """True when the game listed a plugin whose start differed from the build (build-cache/plugins.stale, runtime/mods.c
+    mods_plugin_off): the plugin's record comes from the lift's service run and the exe's patch sets from the compile,
+    so both are out of date, while their keys, made of the files the steps read, are unchanged. Only Lift.run clears
+    the file."""
+    try:
+        return bool((ctx.dest / 'build-cache' / 'plugins.stale').read_text(encoding='utf-8', errors='replace').strip())
+    except OSError:
+        return False
+
+
 def built_plugins(status, files, mods):
     """The files of the plugins the status file lists as built (kind `plugin`), in the order of files. The key is
     FNV-1a 32 of "<mod folder>/<path in the mod>", as tools/exefs_plugins.py and runtime/mods.c compute it."""
@@ -1194,7 +1205,8 @@ class Lift(Step):
     def current(self, ctx, record):
         gen = ctx.temp / 'gen'
         stamp = gen / STAMP
-        return (gen / 'layout.json').is_file() and stamp.is_file() and stamp.read_text().strip() == ctx.keys['lift']
+        return ((gen / 'layout.json').is_file() and stamp.is_file() and stamp.read_text().strip() == ctx.keys['lift']
+                and not plugins_stale(ctx))
 
     def run(self, ctx):
         # gen/ of the last run stays: gen.py lifts again only the chunks whose inputs changed
@@ -1368,6 +1380,8 @@ class Compile(Step):
     def current(self, ctx, record):
         exe = ctx.dest / ('totk' + EXE)
         if not exe.is_file() or not (ctx.dest / 'romfs-index.bin').is_file():
+            return False
+        if plugins_stale(ctx):   # the lift runs (Lift.current), and a transient step runs only with the step after it
             return False
         if not all((ctx.dest / d.name).is_file() for d in ctx.layout.dlls):
             return False

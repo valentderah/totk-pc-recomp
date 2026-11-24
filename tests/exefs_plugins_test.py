@@ -9,6 +9,8 @@ Run with .venv (lz4 and numpy, as recomp/): python tests/exefs_plugins_test.py
 """
 import hashlib
 import json
+import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -588,6 +590,27 @@ class Lines(unittest.TestCase):
         self.assertIn(f'site mod_x main {SITE_OFF:x} 94000010 {new:08x}', out)
         self.assertFalse(any(x.startswith(('orig', 'stub')) for x in out))
 
+    def test_data_word_matches_by_place(self):
+        # Zonai Fieldworks' Self Recall takes its storage off a pool size in main's .bss (1.4.3 main+0x3ad6eb8): the
+        # service run recorded 84800000 -> 7f1c0000, a start whose resolution grew the texture heap has
+        # 87a00000 -> 823c0000 there. The word shapes no lifted code, so its expect line takes any value.
+        rec = record(writes=[{'module': 'main', 'offset': 0x3ad6eb8, 'old': 0x84800000, 'new': 0x7F1C0000}])
+        rec['modules'][0]['size'] = 0x3adf000
+        out = self.lines(rec)
+        self.assertIn('expect mod_x main 3ad6eb8 * *', out)
+        self.assertFalse(any('84800000' in x or '7f1c0000' in x for x in out), out)
+
+    def test_pointer_swap_keeps_its_words(self):
+        # a table entry that now points at a plugin function is a seed of the lift: both its words stay exact
+        new = PLUGIN + THUNK_OFF
+        w = [{'module': 'main', 'offset': 0x180010, 'old': 0x00001000, 'new': new & 0xFFFFFFFF},
+             {'module': 'main', 'offset': 0x180014, 'old': 0, 'new': new >> 32},
+             {'module': 'main', 'offset': 0x180020, 'old': 5, 'new': 6}]
+        out = self.lines(record(writes=w))
+        self.assertIn(f'expect mod_x main 180010 00001000 {new & 0xFFFFFFFF:08x}', out)
+        self.assertIn(f'expect mod_x main 180014 00000000 {new >> 32:08x}', out)
+        self.assertIn('expect mod_x main 180020 * *', out)
+
 
 # ---- one service run per plugin
 class PerPlugin(unittest.TestCase):
@@ -691,6 +714,10 @@ def code_nso(words_at, size_text=0x5000):
 
 
 FN = 0x100   # the hooked main function: mov x19, x0; mov x0, x19; ret
+MSYS_BIN = Path(r'C:\msys64\ucrt64\bin')   # clang for the start-up lookup below, as tests/flags_check.py
+CC = (str(MSYS_BIN / 'clang.exe') if os.name == 'nt' and (MSYS_BIN / 'clang.exe').exists() else
+      os.environ.get('CC') or shutil.which('clang'))
+CC_ENV = dict(os.environ, PATH=str(MSYS_BIN) + os.pathsep + os.environ.get('PATH', '')) if os.name == 'nt' else None
 
 
 class Generator(unittest.TestCase):
@@ -767,8 +794,21 @@ class Generator(unittest.TestCase):
         self.assertIn(f'void f_{stub:x}(Cpu *c);', c)
         h = patches.header_text(t, 'MARK')
         self.assertIn('#define RT_PLUGIN_COUNT 1', h)
-        self.assertIn(f'X(0, "main", {FN:#x}, 0xaa0003f3u, 0x14000000u)', h)
+        self.assertIn(f'X(0, "main", {FN:#x}, 0xaa0003f3u, 0x14000000u, 0)', h)
         self.assertIn('X("plugin0", 0x4100) X("plugin0", 0x4200)', h)
+
+    def test_any_value_expect_line(self):
+        # `*` for both words: runtime/plugin_init.c check_writes matches the word by place only
+        t = self.table(f'site mod_x main {FN:x} aa0003f3 @call:plugin0+4000 aa0003f3',
+                       ['stub plugin0 4000', 'expect mod_x main 3ad6eb8 * *'])
+        self.assertIn(('main', 0x3ad6eb8, None, None), t.plugins['plugin0']['expect'])
+        h = patches.header_text(t, 'MARK')
+        self.assertIn('X(0, "main", 0x3ad6eb8, 0x00000000u, 0x00000000u, 1)', h)
+        self.assertIn(f'X(0, "main", {FN:#x}, 0xaa0003f3u, 0x14000000u, 0)', h)
+        for half in ('* 7f1c0000', '84800000 *'):
+            with self.subTest(half=half), self.assertRaises(patches.PatchError):
+                self.table(f'site mod_x main {FN:x} aa0003f3 @call:plugin0+4000 aa0003f3',
+                           ['stub plugin0 4000', f'expect mod_x main 3ad6eb8 {half}'])
 
     # exlaunch's hook impl saves no NZCV: flags pass from the site to the callback and back (recomp/flags.py)
     def code(self, main_words, plugin_words=None):
@@ -881,6 +921,34 @@ class Generator(unittest.TestCase):
                               str(self.plugin_file), '--patches', str(self.d / 'p.txt'), '--jobs', '1'],
                              capture_output=True, text=True, timeout=30)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
+    @unittest.skipUnless(CC, 'no clang')
+    def test_start_matches_the_record(self):
+        # runtime/plugin_writes.h plugin_write_find on this table's patches.h, as runtime/plugin_init.c check_writes
+        # looks up each word an init changed: Self Recall's pool size at main+0x3ad6eb8, recorded by the service run as
+        # 84800000 -> 7f1c0000 and written at a start with a grown texture heap as 87a00000 -> 823c0000
+        site = f'site mod_x main {FN:x} aa0003f3 @call:plugin0+4000 aa0003f3'
+        cases = [(FN, 0xAA0003F3, 0x14000000, 0), (FN, 0xAA0003F3, 0x14000001, -1),
+                 (0x3AD6EB8, 0x84800000, 0x7F1C0000, 1), (0x3AD6EB8, 0x87A00000, 0x823C0000, 1),
+                 (0x3AD6EBC, 0x87A00000, 0x823C0000, -1)]
+        main = ['#include "patches.h"', '#include "plugin_writes.h"',
+                'static const PluginWrite tab[] = {RT_PLUGIN_WRITES(PLUGIN_WRITE)};',
+                'int main(void) {', '    int n = sizeof tab / sizeof *tab, bad = 0;']
+        for i, (off, old, new, want) in enumerate(cases):
+            main.append(f'    bad |= (plugin_write_find(tab, n, 0, "main", {off:#x}, {old:#x}u, {new:#x}u) != {want}) '
+                        f'<< {i};')
+        main += ['    return bad;', '}']
+        (self.d / 'start.c').write_text('\n'.join(main) + '\n')
+        exe = self.d / 'start.exe'
+        for record, failed in (('expect mod_x main 3ad6eb8 84800000 7f1c0000', 1 << 3),
+                               ('expect mod_x main 3ad6eb8 * *', 0)):
+            with self.subTest(record=record):
+                (self.d / 'patches.h').write_text(patches.header_text(self.table(site, ['stub plugin0 4000', record]),
+                                                                      'MARK'))
+                subprocess.run([CC, '-std=gnu11', '-Wall', '-Werror', '-I', str(self.d), '-I', str(ROOT / 'runtime'),
+                                str(self.d / 'start.c'), '-o', str(exe)], check=True, env=CC_ENV, timeout=60)
+                # the exact record misses only the play-time write
+                self.assertEqual(subprocess.run([str(exe)], env=CC_ENV, timeout=60).returncode, failed)
 
     def test_image_must_match_its_hash(self):
         t = self.table(f'site mod_x main {FN:x} aa0003f3 @call:plugin0+4000 aa0003f3', ['stub plugin0 4000'])

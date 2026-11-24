@@ -62,6 +62,7 @@
 #include "kernel.h"
 #include "mods.h"
 #include "platform/platform.h"
+#include "plugin_writes.h"
 
 #if __has_include("patches.h")
 #include "patches.h"
@@ -523,11 +524,7 @@ static const struct { const char *module; int set; const char *sha256; } plugin_
     RT_PLUGINS(X)
 #undef X
 };
-static const struct { int plugin; const char *module; uint64_t off; uint32_t old, now; } write_tab[] = {
-#define X(p, mod, off, old, now) {p, mod, off, old, now},
-    RT_PLUGIN_WRITES(X)
-#undef X
-};
+static const PluginWrite write_tab[] = {RT_PLUGIN_WRITES(PLUGIN_WRITE)};
 #define NWRITES ((int)(sizeof write_tab / sizeof *write_tab))
 #ifdef RT_PLUGIN_ROOTS
 static const struct { const char *module; uint64_t off; } root_tab[] = {
@@ -590,7 +587,9 @@ static void restore_page(const RtLoaded *m, uint64_t off, const uint8_t *was) {
 }
 
 // After plugin i's init: what it wrote into the game modules, word by word, against the record of the build (its
-// entries of RT_PLUGIN_WRITES). The first difference goes into why (unless a reason is there already). Then the game
+// entries of RT_PLUGIN_WRITES, plugin_writes.h plugin_write_find). A recorded word the init did not change counts as
+// missing, unless the record takes any value there (the init may have written the value the word held). The first
+// difference goes into why (unless a reason is there already). Then the game
 // modules are made what they were before the init: the sealed part (.text, .rodata) gets the game's bytes back, a
 // write elsewhere stays and goes into pre, so the next plugin's init is compared only with what it writes itself.
 // The aliases this init mapped (from first_alias on) are flushed first; an earlier init's were flushed after it.
@@ -612,12 +611,8 @@ static void check_writes(int plugin, int first_alias, char *why, size_t cap) {
                 memcpy(&a, pre[i] + w, 4);
                 memcpy(&b, now + w, 4);
                 if (a == b) continue;
-                int k = 0;
-                while (k < NWRITES && !(write_tab[k].plugin == plugin && write_tab[k].off == w &&
-                                        !strcmp(write_tab[k].module, m->name) && write_tab[k].old == a &&
-                                        write_tab[k].now == b))
-                    k++;
-                if (k < NWRITES) {
+                int k = plugin_write_find(write_tab, NWRITES, plugin, m->name, w, a, b);
+                if (k >= 0) {
                     seen[k] = 1;
                 } else if (!unexpected++) {
                     snprintf(first, sizeof first, "%s+%#llx %08x -> %08x", m->name, (unsigned long long)w, a, b);
@@ -627,7 +622,7 @@ static void check_writes(int plugin, int first_alias, char *why, size_t cap) {
             else memcpy(pre[i] + off, now + off, PAGE);
         }
     }
-    for (int k = 0; k < NWRITES; k++) missing += write_tab[k].plugin == plugin && !seen[k];
+    for (int k = 0; k < NWRITES; k++) missing += write_tab[k].plugin == plugin && !seen[k] && !write_tab[k].any;
     if (why[0]) return;
     if (unexpected)
         snprintf(why, cap, "its init wrote %d words the build did not record (first %s)", unexpected, first);

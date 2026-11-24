@@ -370,6 +370,45 @@ class LiftKeyTest(unittest.TestCase):
         self.assertEqual(self.key(), before)
 
 
+class PluginsStaleTest(unittest.TestCase):
+    """A plugin the game found stale (build-cache/plugins.stale, runtime/mods.c mods_plugin_off) plans the lift and the
+    compile of the game's rebuild: the plugin's service run is in the lift, and only Lift.run clears the file."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        dest, temp = base / 'install', base / 'temp'
+        (temp / 'gen').mkdir(parents=True)
+        (temp / 'gen' / 'layout.json').write_text('[]')
+        (temp / 'gen' / steps.STAMP).write_text('L\n')
+        (dest / 'build-cache').mkdir(parents=True)
+        (dest / ('totk' + steps.EXE)).write_bytes(b'MZ')
+        (dest / 'romfs-index.bin').write_bytes(b'')
+        layout = SimpleNamespace(release='1.0', dlls=[])
+        records = {'lift': {'key': 'L'}, 'compile': {'key': 'C', 'exe_sha256': steps.file_sha256(dest / ('totk' + steps.EXE))}}
+        self.ctx = runner.Context(layout, dest, temp, Reporter(out=io.StringIO()), SimpleNamespace(),
+                                  state={'release': '1.0', 'steps': records})
+        self.addCleanup(self.ctx.reporter.close)
+        self.ctx.steps = [steps.Lift(), steps.Compile()]
+        self.ctx.keys = {'lift': 'L', 'compile': 'C'}
+        self.stale = dest / 'build-cache' / 'plugins.stale'
+
+    def planned(self):
+        self.ctx.plan()
+        return [s.id for s in self.ctx.steps if self.ctx.will_run(s.id)]
+
+    def test_stale_plugin_runs_the_lift_and_the_compile(self):
+        self.assertEqual(self.planned(), [])
+        self.stale.write_text('A89F6A7C\t74492AD5\tits init wrote 1 words the build did not record '
+                              '(first main+0x3ad6eb8 87a00000 -> 823c0000)\n')
+        self.assertEqual(self.planned(), ['lift', 'compile'])
+
+    def test_empty_stale_file_keeps_the_build(self):
+        self.stale.write_text('')
+        self.assertEqual(self.planned(), [])
+
+
 class LiftRunTest(unittest.TestCase):
     """Lift.run with fake tools: the ExeFS patch stage writes the status and data files, the lift lists the bytes it
     read, and the data writes are checked against that list after it; a failed lift or check drops both files."""
