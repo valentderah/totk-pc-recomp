@@ -1771,6 +1771,15 @@ static uint32_t find_root(uint32_t *par, uint32_t a) {
     return a;
 }
 
+// The slot of a welding key among 2^(64 - shift) open-addressing slots: the top bits of 64-bit multiplicative hashes.
+// The low bits of a product keep the key's trailing zeros, and a position decoded from half floats or 16-bit integers
+// has at least 13 of them: with the low bits every vertex of such a decal took slot 0 and each insert probed past all
+// the vertices before it, and at the Lanayru sky sphere these draws held a quarter of the replay threads' time.
+static inline uint32_t weld_slot(uint32_t a, uint32_t b, uint32_t c, int shift) {
+    return (uint32_t)(((uint64_t)a * 0x9E3779B97F4A7C15ull ^ (uint64_t)b * 0xC2B2AE3D27D4EB4Full ^
+                       (uint64_t)c * 0x165667B19E3779F9ull) >> shift);
+}
+
 static inline uint32_t read_index(const void *ib, int itype, uint32_t i) {
     return itype == NVN_INDEX_TYPE_UNSIGNED_BYTE    ? ((const uint8_t *)ib)[i]
            : itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? ((const uint16_t *)ib)[i]
@@ -1782,6 +1791,7 @@ static inline uint32_t read_index(const void *ib, int itype, uint32_t i) {
 static uint32_t connected_runs(const void *ib, int itype, uint32_t ntri, uint32_t *end) {
     uint32_t n = 3 * ntri, hn = 1;
     while (hn < 2 * n) hn <<= 1;
+    int shift = 64 - __builtin_ctz(hn);
     uint32_t *key = malloc(sizeof *key * hn), *node = malloc(sizeof *node * hn), *par = malloc(sizeof *par * n),
              *tri = malloc(sizeof *tri * n);
     if (!key || !node || !par || !tri) rt_fatal("vk: out of memory");
@@ -1789,7 +1799,7 @@ static uint32_t connected_runs(const void *ib, int itype, uint32_t ntri, uint32_
     uint32_t nodes = 0;
     for (uint32_t i = 0; i < n; i++) {   // vertex index -> union-find node, by open addressing
         uint32_t v = read_index(ib, itype, i);
-        uint32_t h = (v * 0x9E3779B1u) & (hn - 1);
+        uint32_t h = weld_slot(v, 0, 0, shift);
         while (node[h] != UINT32_MAX && key[h] != v) h = (h + 1) & (hn - 1);
         if (node[h] == UINT32_MAX) key[h] = v, node[h] = nodes, par[nodes] = nodes, nodes++;
         tri[i] = node[h];
@@ -1897,6 +1907,7 @@ static uint32_t split_by_pos(const VkExec *ex, const p_draw_idx *d, uint32_t ntr
     }
     uint32_t hn = 1;
     while (hn < 2 * n) hn <<= 1;
+    int shift = 64 - __builtin_ctz(hn);
     uint32_t *pkey = malloc(sizeof *pkey * 3 * hn), *pnode = malloc(sizeof *pnode * hn),
              *par = malloc(sizeof *par * n), *tri = malloc(sizeof *tri * n);
     if (!pkey || !pnode || !par || !tri) rt_fatal("vk: out of memory");
@@ -1905,7 +1916,7 @@ static uint32_t split_by_pos(const VkExec *ex, const p_draw_idx *d, uint32_t ntr
     for (uint32_t i = 0; i < n; i++) {
         uint32_t k[3];
         memcpy(k, pts[i], 12);
-        uint32_t h = ((k[0] * 0x9E3779B1u) ^ (k[1] * 0x85EBCA77u) ^ (k[2] * 0xC2B2AE3Du)) & (hn - 1);
+        uint32_t h = weld_slot(k[0], k[1], k[2], shift);
         while (pnode[h] != UINT32_MAX &&
                !(pkey[3 * h] == k[0] && pkey[3 * h + 1] == k[1] && pkey[3 * h + 2] == k[2]))
             h = (h + 1) & (hn - 1);
