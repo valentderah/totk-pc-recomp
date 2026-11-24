@@ -59,7 +59,7 @@ MacNativeGames cannot run on x86-64 as is: its CPU path executes ARM64 code nati
 - Settings and menu: every key with its default is in one table (`cfg.c`), read from `totk.ini` and `TOTK_*`
   variables and written back when the in-game menu changes it. The menu and the performance overlay are Dear ImGui,
   drawn into the swapchain image (`runtime/ui/`); their text is in `ui_text.c` (English, Russian, Brazilian Portuguese,
-  Simplified Chinese, German, French, Spanish, Italian, Dutch, Japanese, Korean,
+  Simplified Chinese, Traditional Chinese, German, French, Spanish, Italian, Dutch, Japanese, Korean,
   Vietnamese). The Chinese, Japanese and Korean glyphs
   come from a system font (`plat_font_path`) merged into the font atlas.
 - Loading window (`loadwin.c`, `loadwin_win.c`). A game run shows a panel in the middle of the screen from the start

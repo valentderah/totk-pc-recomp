@@ -1193,7 +1193,8 @@ static void tab_controls(float scale) {
 static void tab_menu(float scale) {
     opt_begin("##menu", scale);
     static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU,
-                                     UI_MENU_LANGNAME_PT_BR, UI_MENU_LANGNAME_ZH_HANS, UI_MENU_LANGNAME_DE,
+                                     UI_MENU_LANGNAME_PT_BR, UI_MENU_LANGNAME_ZH_HANS, UI_MENU_LANGNAME_ZH_HANT,
+                                     UI_MENU_LANGNAME_DE,
                                      UI_MENU_LANGNAME_FR, UI_MENU_LANGNAME_ES, UI_MENU_LANGNAME_IT,
                                      UI_MENU_LANGNAME_NL, UI_MENU_LANGNAME_JA, UI_MENU_LANGNAME_KO,
                                      UI_MENU_LANGNAME_VI};

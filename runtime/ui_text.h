@@ -343,7 +343,7 @@ const char *ui_text_lang(const char *switch_code);
 typedef struct { const char *code; UiTextId name; } UiGameLang;
 int ui_text_game_langs(int game_version, UiGameLang *out, int max);
 
-// Menu text: ui_text_in(menu language, id). The menu language is TOTK_MENU_LANG ("en", "ru", "pt-BR", "zh-Hans", "de",
-// "fr", "es", "it", "nl", "ja", "ko"); unset, the system UI language when the catalog has menu text for it, Simplified
-// Chinese for Traditional Chinese, else English. Follows a live change of the setting.
+// Menu text: ui_text_in(menu language, id). The menu language is TOTK_MENU_LANG ("en", "ru", "pt-BR", "zh-Hans",
+// "zh-Hant", "de", "fr", "es", "it", "nl", "ja", "ko", "vi"); unset, the system UI language when the catalog has menu
+// text for it, else English. Follows a live change of the setting.
 const char *menu_text(UiTextId id);
