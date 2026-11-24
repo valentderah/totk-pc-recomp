@@ -25,7 +25,9 @@ of the 2 MiB-aligned module slot free); the runtime commits it and owns its cont
 +0..15 the frame-rate step (runtime/frame_rate.c), +16..55 the output, swapchain and scene sizes
 (runtime/resolution.c res_init), +56..59 the camera's aspect ratio (runtime/resolution.c res_init, set aspect), +60..63
 the field-of-view factor (runtime/resolution.c res_fov_live, set fov), +92..95 the sun shadow map size
-(runtime/resolution.c shadow_init, set shadow). A new set takes words outside these.
+(runtime/resolution.c shadow_init, set shadow), +96..99 the UI capture filters' extra reduce levels
+(runtime/resolution.c res_ui_reduce, set uireduce), +100..103 the UI dissolve masks' size divisor (the same function,
+set uimask). A new set takes words outside these.
 
 The replacement words are lifted at the site's address in place of the original instruction, and the generated C reads
 `if (rt_patch_on[<set>]) { replacement } else { original }`: one byte load and a branch per executed site. Several
