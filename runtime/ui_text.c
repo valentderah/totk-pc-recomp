@@ -2,7 +2,8 @@
 // string gets an id in ui_text.h and an entry in every language that has one (a missing entry falls back to English).
 // The software keyboard has every language; the menu has every game language except Portugal's Portuguese and
 // Traditional Chinese (English, Russian, Brazilian Portuguese, Simplified Chinese, German, French, Spanish, Italian,
-// Dutch, Japanese, Korean), and Vietnamese.
+// Dutch, Japanese, Korean), and Vietnamese. Canadian French (fr-CA) holds only the strings that differ from French and
+// reads the fr row for the rest (Row.parent); en-GB and es-419 read the en and es rows.
 #include <stdatomic.h>
 #include <string.h>
 
@@ -11,7 +12,9 @@
 #include "platform/platform.h"
 #include "ui_text.h"
 
-typedef struct { const char *lang; const char *const *text; } Row;
+// parent: the row a regional row falls back to for the ids it has no text of its own for (fr-CA reads fr), before
+// English; NULL for the others.
+typedef struct { const char *lang; const char *const *text; const char *parent; } Row;
 
 // The language names are the same in every row.
 #define LANG_NAMES \
@@ -4739,6 +4742,130 @@ static const char *const text_fr[UI_TEXT_COUNT] = {
                                      "placé plus haut dans la liste.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Il remplace %u emplacements de correctifs de code de %s, placé plus bas dans la "
                                     "liste.",
+};
+
+// Canadian French: only the entries that differ from text_fr (no space before ! ? ;, bogue); every other id
+// reads the fr row (Row.parent).
+static const char *const text_fr_ca[UI_TEXT_COUNT] = {
+    [UI_MENU_FULLSCREEN_DESC] = "Le jeu remplit l'écran; F11 bascule.",
+    [UI_MENU_OUTPUT_RES_DESC] = "La taille dans laquelle le jeu dessine son image et son interface. Au-delà de 1920 x "
+                                "1080, le jeu demande plus de mémoire vidéo et de temps GPU. Un format plus large "
+                                "(21:9) élargit le champ de la caméra et place le HUD dans les coins de l'écran; un "
+                                "format plus haut (16:10, Steam Deck) le place sur les bords haut et bas.",
+    [UI_MENU_HUD_WIDTH_DESC] = "Sur un écran plus large que 16:9, l'écart entre les côtés gauche et droit du HUD. "
+                               "Plein écran les place aux bords de l'écran; 21:9 ou 16:9 garde le HUD au milieu de "
+                               "l'écran, dans une zone de cette forme. Une disposition manquante est créée en "
+                               "arrière-plan et utilisée après un redémarrage.",
+    [UI_MENU_RENDER_SCALE_DESC] = "Taille de la scène 3D par rapport à la résolution du jeu; le FSR du jeu la met à "
+                                  "cette taille. Au-delà de 100 %, les bords crénelés sont lissés "
+                                  "(suréchantillonnage) au prix d'un coût GPU élevé.",
+    [UI_MENU_SHADOW_RES_DESC] = "Taille de la carte d'ombres du soleil. La taille du jeu change avec la vue, jusqu'à "
+                                "environ 400 près du sol, si bien que les ombres des feuilles paraissent pixelisées "
+                                "et sautent; une taille fixe les garde stables et plus nettes. Au-delà de 1024, les "
+                                "ombres coûtent plus de temps GPU et de mémoire vidéo.",
+    [UI_MENU_SHARPNESS_DESC] = "Accentuation après la mise à l'échelle FSR; 0 la désactive.",
+    [UI_MENU_COLOR_PRESET_DESC] = "Règle les quatre valeurs ci-dessous. Vif : plus de contraste et de saturation, "
+                                  "ombres un peu éclaircies (pour les écrans OLED). Clarté : un peu plus de "
+                                  "contraste, de saturation et de luminosité. Modifier une valeur passe le profil en "
+                                  "Personnalisé. Le HUD change avec l'image; ce menu, non.",
+    [UI_MENU_COLOR_BRIGHTNESS_DESC] = "Ajoutée à chaque couleur; 0 la laisse inchangée.",
+    [UI_MENU_COLOR_CONTRAST_DESC] = "Éloigne les couleurs du gris moyen (au-delà de 100 %) ou les en rapproche; 100 "
+                                    "% les laisse inchangées.",
+    [UI_MENU_COLOR_SATURATION_DESC] = "Intensité des couleurs par rapport au gris; 100 % la laisse inchangée.",
+    [UI_MENU_COLOR_GAMMA_DESC] = "En dessous de 1, éclaircit les tons sombres et moyens, au-dessus de 1, les "
+                                 "assombrit; 1 les laisse inchangés.",
+    [UI_MENU_HDR_DESC] = "Hautes lumières éclatantes sur un écran HDR. Demande le HDR activé dans Windows (« Utiliser "
+                         "le HDR ») ou un compositeur Wayland avec gestion des couleurs; sinon l'image reste en SDR. "
+                         "S'applique après un redémarrage. Le profil de couleur ci-dessus est pour le SDR et n'est "
+                         "pas utilisé en HDR.",
+    [UI_MENU_HDR_PEAK_DESC] = "Le pic de votre écran en nits; les hautes lumières les plus vives s'arrêtent là.",
+    [UI_MENU_HDR_GAME_DESC] = "Nits du blanc de l'image (blanc papier). 203 est la référence HDR; augmentez-la dans "
+                              "une pièce lumineuse.",
+    [UI_MENU_HDR_HUE_DESC] = "Les couleurs vives comme le feu et les étincelles tirent vers le blanc comme dans "
+                             "l'image SDR du jeu, en accord avec la lumière qu'elles projettent; 0 les garde "
+                             "entièrement saturées.",
+    [UI_MENU_GRASS_RANGE_DESC] = "Jusqu'où l'herbe pousse autour de la caméra (dans le jeu : 62,5 m). Plus haut garde "
+                                 "l'herbe des prairies plus loin au lieu de la faire pousser juste devant vous; plus "
+                                 "bas en dessine moins. Prend effet au prochain démarrage.",
+    [UI_MENU_DLSS_DESC] = "Natif lisse les bords de la scène 3D en pleine résolution. Qualité, Équilibré, Performance "
+                          "et Ultra Performance la dessinent à 67, 58, 50 et 33 % avant de laisser l'upscaler (DLSS "
+                          "ou FSR 3.1) l'agrandir, ce qui économise du temps GPU; ils remplacent l'échelle du rendu "
+                          "3D. S'applique immédiatement.",
+    [UI_MENU_FXAA_DESC] = "Le lissage des bords FXAA du jeu. Il floute un peu les détails fins; avec DLAA, il n'est "
+                          "pas nécessaire.",
+    [UI_MENU_REFLEX_DESC] = "Réduit la latence du système. Activé utilise NVIDIA Reflex (VK_NV_low_latency2); Activé + Boost maintient aussi les fréquences du GPU NVIDIA élevées dans les scènes limitées par le CPU. Automatique utilise Reflex sur NVIDIA et AMD Anti-Lag 2 (VK_AMD_anti_lag) sur AMD. S'applique après un redémarrage.",
+    [UI_MENU_SCENE_UPSCALER_DESC] = "Un upscaler temporel pour la scène 3D : des bords plus lisses et moins de "
+                                    "scintillement, et dans un mode en dessous de Natif, il dessine la scène plus "
+                                    "petite puis l'agrandit, ce qui économise du temps GPU. NVIDIA DLSS demande un "
+                                    "GPU NVIDIA RTX et " DLSS_FILE " à côté de " EXE_FILE "; AMD FSR 3.1 fonctionne "
+                                    "sur tout GPU. Désactivé garde la mise à l'échelle du jeu et son FXAA. Le HUD "
+                                    "n'est pas touché; la mise à l'échelle vers la fenêtre et la netteté ci-dessus "
+                                    "adaptent toujours l'image du jeu à la fenêtre. S'applique après un redémarrage.",
+    [UI_MENU_FSR_SHARPNESS_DESC] = "Netteté de la scène 3D après AMD FSR 3.1 ou FSR 4; 0 la désactive.",
+    [UI_MENU_ASSUME_FOCUS_DESC] = "Activé (par défaut), le jeu continue pendant que vous êtes dans une autre fenêtre, "
+                                  "et le clavier reste muet jusqu'au retour de la fenêtre au premier plan. Désactivé, "
+                                  "il se met en pause quand sa fenêtre perd le focus, comme sur la Switch quand on "
+                                  "appuie sur Home; un chargement interrompu ainsi peut se bloquer définitivement.",
+    [UI_MENU_MODS_EXEFS_LATER] = "Ce mod modifie le code du jeu (exefs). Le jeu intègre les correctifs à son prochain "
+                                 "démarrage (une reconstruction de quelques minutes); d'ici là, tout le mod reste "
+                                 "désactivé.",
+    [UI_MENU_OUTPUT_RES_PREPARING] = "disposition en cours de création en arrière-plan; utilisée au prochain "
+                                     "démarrage",
+    [UI_MENU_PROMPTS_PREPARING] = "fichiers d'icônes en cours de création en arrière-plan; utilisés au prochain "
+                                  "démarrage",
+    [UI_MENU_PREPARE_RETRY_DESC] = "Relance les outils de l'installation pour créer en arrière-plan la disposition "
+                                   "d'interface ou les fichiers d'icônes des boutons manquants. Le jeu continue de "
+                                   "tourner; il les utilise dès son prochain démarrage.",
+    [UI_MENU_RESTART_CONFIRM] = "Redémarrer le jeu maintenant? La progression depuis votre dernière sauvegarde est "
+                                "perdue.",
+    [UI_MENU_MOUSE_MODE_DESC] = "Direct : la caméra tourne selon le déplacement de la souris, comme dans un jeu PC, "
+                                "sans zone morte ni courbe de stick (jeux 1.4.3 et 1.2.1; 1.1.0 utilise l'émulation "
+                                "du stick). Émulation du stick : la souris agit comme le stick droit.",
+    [UI_MENU_QUICKSAVE_KEY_DESC] = "La touche qui lance la sauvegarde rapide ou le chargement rapide; F6 et F7 par "
+                                   "défaut, comme dans Half-Life. Sélectionnez la case et appuyez sur une touche ou "
+                                   "un bouton de souris; Suppr laisse celle-ci sans touche. Tant que la sauvegarde "
+                                   "rapide est activée, les deux touches ne font rien d'autre (une note s'affiche "
+                                   "quand une attribution utilise aussi la touche). totk.ini accepte tout nom de "
+                                   "touche des attributions (quicksave_key, quickload_key).",
+    [UI_BINDS_HELP] = "Sélectionnez une case et appuyez sur A ou Entrée, puis sur la touche, le bouton de souris ou "
+                      "le bouton de manette. Suppr ou X vide une case. Une touche déjà utilisée est déplacée ici; un "
+                      "bouton de manette s'échange avec celui qu'il remplace.",
+    [UI_MENU_REPLAY_WORKERS_DESC] = "Enregistre les grandes images pour le GPU sur plusieurs threads à la fois. Utile "
+                                    "quand le CPU limite la fréquence d'images; demande au moins 8 processeurs "
+                                    "logiques. Désactivé enregistre sur un seul thread.",
+    [UI_MENU_LIB_PREBUILD_THREADS_DESC] = "Threads utilisés pour la préconstruction; Automatique choisit un nombre "
+                                          "selon votre CPU.",
+    [UI_MENU_PREWARM_XLATE_DESC] = "Threads qui traduisent les shaders connus au démarrage; Automatique prend la "
+                                   "moitié des threads du CPU, 16 au plus.",
+    [UI_MENU_GPL_DESC] = "Utilise l'extension Vulkan de bibliothèque de pipelines; désactivez-la si votre pilote "
+                         "fonctionne mal avec.",
+    [UI_MENU_ASTC_BC_DESC] = "Avec le décodeur GPU : réencode les textures ASTC décodées en BC3, un quart de la "
+                             "mémoire vidéo. Pour les GPU de 4 Go ou moins; les textures paraissent un peu plus "
+                             "pixelisées.",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Avec DLAA, le brouillard, la poussière et les autres particules sont "
+                                        "dessinés par-dessus l'image déjà lissée par DLSS, comme le jeu les dessine "
+                                        "sans DLSS : les petites particules dans le brouillard (sanctuaires) ne "
+                                        "disparaissent plus et ne laissent plus de traînées. Désactivé : DLSS traite "
+                                        "aussi ces effets, comme avant. Mode DLAA uniquement; les modes DLSS avec "
+                                        "mise à l'échelle les traitent toujours. S'applique immédiatement.",
+    [UI_MENU_SPLIT_DRAWS_DESC] = "Envoie le travail GPU par parties tous les N draws entre les passes pour que le GPU "
+                                 "commence plus tôt; 0 le désactive.",
+    [UI_MENU_VK_DYN_VERTEX_DESC] = "Force l'entrée de sommets dynamique en activé ou désactivé; la valeur par défaut "
+                                   "dépend du GPU.",
+    [UI_MENU_INPUT_RECORD_DESC] = "Écrit vos entrées dans un fichier pour les rapports de bogue.",
+    [UI_MENU_RESET_CONFIRM] = "Rétablir chaque paramètre à sa valeur par défaut?",
+    [UI_MENU_CHEATS_REBUILD_DESC] = "Certains codes modifient le code du jeu et n'y sont pas intégrés : ils sont "
+                                    "nouveaux ou modifiés, ou leur dernière reconstruction a échoué ou a été annulée. "
+                                    "Ferme le jeu; l'installation les intègre (quelques minutes) et relance le jeu. "
+                                    "La progression depuis votre dernière sauvegarde est perdue.",
+    [UI_MENU_MODS_WITHOUT_CODE_DESC] = "Le mod ci-dessus apporte du code que le portage ne peut pas exécuter : son "
+                                       "propre code de jeu (un plugin subsdk ou un main remplacé) ou des correctifs "
+                                       "de code (exefs) que le portage ne peut pas appliquer. Désactivé : tout le mod "
+                                       "reste désactivé. Activé : ce code est laissé de côté et le reste du mod est "
+                                       "utilisé : ses fichiers RomFS, ses codes de triche et les correctifs de code "
+                                       "qui fonctionnent. Ses fichiers peuvent avoir besoin du code manquant; "
+                                       "désactivez-le de nouveau si le jeu se comporte mal. S'applique au prochain "
+                                       "démarrage.",
 };
 
 // Spanish
@@ -9623,12 +9750,12 @@ SWKBD_ONLY(text_zh_hant, "文字輸入", "請輸入名字", "馬兒", "確定", 
 static const Row rows[] = {
     {"en", text_en}, {"ja", text_ja}, {"fr", text_fr}, {"de", text_de}, {"it", text_it}, {"es", text_es},
     {"nl", text_nl}, {"pt", text_pt}, {"ru", text_ru}, {"zh-Hans", text_zh_hans}, {"zh-Hant", text_zh_hant},
-    {"ko", text_ko}, {"pt-BR", text_pt_br}, {"vi", text_vi},
+    {"ko", text_ko}, {"pt-BR", text_pt_br}, {"vi", text_vi}, {"fr-CA", text_fr_ca, "fr"},
 };
 
 const char *ui_text_lang(const char *code) {
     static const struct { const char *code, *lang; } map[] = {
-        {"en-US", "en"}, {"en-GB", "en"}, {"fr-CA", "fr"}, {"es-419", "es"},
+        {"en-US", "en"}, {"en-GB", "en"}, {"es-419", "es"},
         {"zh-CN", "zh-Hans"}, {"zh-TW", "zh-Hant"},
     };
     for (size_t i = 0; i < sizeof map / sizeof *map; i++)
@@ -9658,14 +9785,23 @@ static const Row *find_row(const char *lang) {
     return NULL;
 }
 
+// The text of id in row r, else in its parent row (a regional row's fallback); NULL when neither has one.
+static const char *row_text(const Row *r, UiTextId id) {
+    for (int depth = 0; r && depth < 4; depth++) {
+        if (r->text[id] && *r->text[id]) return r->text[id];
+        r = r->parent ? find_row(r->parent) : NULL;
+    }
+    return NULL;
+}
+
 int ui_text_defined(const char *lang, UiTextId id) {
-    const Row *r = find_row(lang);
-    return (unsigned)id < UI_TEXT_COUNT && r && r->text[id] && *r->text[id];
+    return (unsigned)id < UI_TEXT_COUNT && row_text(find_row(lang), id) != NULL;
 }
 
 const char *ui_text_in(const char *lang, UiTextId id) {
     if ((unsigned)id >= UI_TEXT_COUNT) return "";
-    return ui_text_defined(lang, id) ? find_row(lang)->text[id] : rows[0].text[id];
+    const char *s = row_text(find_row(lang), id);
+    return s ? s : rows[0].text[id];
 }
 
 const char *ui_text(UiTextId id) { return ui_text_in(ui_text_lang(ov_language()), id); }
@@ -9675,8 +9811,9 @@ const char *ui_text(UiTextId id) { return ui_text_in(ui_text_lang(ov_language())
 void ui_text_visit(const char *lang, void (*visit)(void *ctx, const char *text), void *ctx) {
     const Row *r = find_row(lang);
     if (!r) return;
+    const char *s;
     for (int id = 0; id < (int)UI_TEXT_COUNT; id++)
-        if (r->text[id] && *r->text[id]) visit(ctx, r->text[id]);
+        if ((s = row_text(r, (UiTextId)id))) visit(ctx, s);
 }
 
 // The menu language, re-read when cfg_version changes. TOTK_MENU_LANG names a catalog language ("en", "ru", "pt-BR",

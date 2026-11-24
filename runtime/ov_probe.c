@@ -1017,8 +1017,8 @@ static void probe_fonts(void) {
 // overlay formats, the software keyboard keeps its game-language rows, and menu_text follows TOTK_MENU_LANG.
 static void probe_menu_text(void) {
     static const char *const langs[] = {"en", "ja", "fr", "de", "it", "es", "nl", "pt", "ru", "zh-Hans", "zh-Hant", "ko",
-                                        "pt-BR", "vi"};
-    static const char *const menu_langs[] = {"de", "fr", "es", "it", "nl", "ja", "ko", "vi"};
+                                        "pt-BR", "vi", "fr-CA"};
+    static const char *const menu_langs[] = {"de", "fr", "fr-CA", "es", "it", "nl", "ja", "ko", "vi"};
     for (int id = UI_MENU_FIRST; id <= UI_MENU_LAST_ID; id++) {
         CHECK(ui_text_defined("en", (UiTextId)id) && ui_text_defined("ru", (UiTextId)id) &&
               ui_text_defined("pt-BR", (UiTextId)id) && ui_text_defined("vi", (UiTextId)id),
@@ -1093,6 +1093,18 @@ static void probe_menu_text(void) {
     CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("ja", UI_MENU_TITLE), "menu_text ignores MENU_LANG=ja");
     cfg_set("TOTK_MENU_LANG", "de-DE");
     CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("de", UI_MENU_TITLE), "menu_text ignores MENU_LANG=de-DE");
+    // Canadian French: its own text where it differs (no space before ; ? !), the fr row's elsewhere, never English
+    cfg_set("TOTK_MENU_LANG", "fr-CA");
+    CHECK(menu_text(UI_MENU_FULLSCREEN_DESC) == ui_text_in("fr-CA", UI_MENU_FULLSCREEN_DESC) &&
+              strcmp(ui_text_in("fr-CA", UI_MENU_FULLSCREEN_DESC), ui_text_in("fr", UI_MENU_FULLSCREEN_DESC)),
+          "fr-CA does not get its own text");
+    CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("fr", UI_MENU_TITLE), "fr-CA does not fall back to the fr row");
+    CHECK(!strstr(ui_text_in("fr-CA", UI_MENU_FULLSCREEN_DESC), " ;"), "fr-CA keeps a space before a semicolon");
+    CHECK(ui_text_in("fr-CA", UI_SWKBD_CANCEL) == ui_text_in("fr", UI_SWKBD_CANCEL) &&
+              ui_text_in(ui_text_lang("fr-CA"), UI_SWKBD_OK) == ui_text_in("fr", UI_SWKBD_OK),
+          "the fr-CA game language lost the French keyboard text");
+    cfg_set("TOTK_MENU_LANG", "fr-BE");
+    CHECK(menu_text(UI_MENU_FULLSCREEN_DESC) == ui_text_in("fr", UI_MENU_FULLSCREEN_DESC), "fr-BE does not get fr");
     // Traditional Chinese (zh-TW, zh-HK) reads the Simplified Chinese menu
     cfg_set("TOTK_MENU_LANG", "zh-TW");
     CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("zh-Hans", UI_MENU_TITLE), "zh-TW does not get the zh-Hans menu");
