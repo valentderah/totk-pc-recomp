@@ -1,5 +1,5 @@
 """Command line: python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR [--firmware DIR]
-                                     [--root DIR] [--temp DIR] [--verify] [--dlss] [--fsr]
+                                     [--root DIR] [--temp DIR] [--verify] [--dlss] [--fsr] [--vr]
 
 A first install needs every option. --firmware names the Switch firmware folder (an unpacked firmware or an emulator's
 Contents/registered); the setup extracts the system shared fonts from it when the language is Chinese, Korean or
@@ -11,7 +11,9 @@ line, 3 cancelled (Ctrl+C or Ctrl+Break).
 --dlss downloads NVIDIA's DLSS library (nvngx_dlss.dll) from NVIDIA's DLSS SDK repository into the install folder on
 Windows with an NVIDIA RTX GPU (steps.py, Dlss). --fsr downloads AMD's FSR loader and upscaler
 (amd_fidelityfx_loader_vk.dll, amd_fidelityfx_upscaler_vk.dll) from AMD's FSR SDK repository into the install folder on
-Windows, for scene_upscaler = fsr4; the libraries decide which GPUs get FSR 4 (steps.py, Fsr).
+Windows, for scene_upscaler = fsr4; the libraries decide which GPUs get FSR 4 (steps.py, Fsr). --vr sets the install up
+for VR (docs/vr.md): a "TotK VR" shortcut that starts the game with --vr, the square HUD layouts VR draws with and, on
+Windows, Khronos's OpenXR loader (openxr_loader.dll) from the OpenXR SDK's release (steps.py, Vr).
 """
 import argparse
 import signal
@@ -55,6 +57,9 @@ def main(argv=None):
                                                       'to the game, for dlaa and the DLSS modes')
     ap.add_argument('--fsr', action='store_true', help="download AMD's FSR loader and upscaler DLLs (AMD FSR SDK "
                                                      'license) next to the game, for scene_upscaler = fsr4')
+    ap.add_argument('--vr', action='store_true', help='set up VR (SteamVR headsets): a "TotK VR" shortcut that starts '
+                                                    "the game with --vr; on Windows also Khronos's OpenXR loader "
+                                                    '(Apache-2.0) next to the game')
     args = ap.parse_args(argv)
 
     # The window cancels with Ctrl+Break to the installer's process group (CREATE_NEW_PROCESS_GROUP), which also reaches

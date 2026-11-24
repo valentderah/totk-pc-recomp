@@ -445,6 +445,12 @@ class App:
         fsr = ttk.Checkbutton(content, variable=self.fsr_var)
         self.bind_text(fsr, 'text', 'ui.fsr')
         fsr.pack(anchor='w', pady=(dpi.px(4), 0))
+        # Off by default; ticked again for an install already set up for VR (refresh_form, screens.vr_set_up)
+        self.vr_var = tk.BooleanVar(value=False)
+        self.vr_touched = False
+        vr = ttk.Checkbutton(content, variable=self.vr_var, command=lambda: setattr(self, 'vr_touched', True))
+        self.bind_text(vr, 'text', 'ui.vr')
+        vr.pack(anchor='w', pady=(dpi.px(4), 0))
         # The explanations stay out of the way until asked for: a link opens them under it
         self.details_toggle = ttk.Label(content, style='Link.TLabel', cursor='hand2', takefocus=True)
         self.bind_text(self.details_toggle, 'text', 'ui.more_details')
@@ -453,7 +459,7 @@ class App:
         self.details_toggle.pack(anchor='w', pady=(dpi.px(8), 0))
         self.details = ttk.Frame(content)   # packed after the link when open; no holder frame, as an emptied Tk frame keeps
         # the height its last child gave it
-        for id in ('ui.dlss_help', 'ui.fsr_help', 'ui.formats_help', 'ui.compressed_help', 'ui.firmware_help',
+        for id in ('ui.dlss_help', 'ui.fsr_help', 'ui.vr_help', 'ui.formats_help', 'ui.compressed_help', 'ui.firmware_help',
                    'ui.keys_private'):
             self.label(self.details, id, style='Muted.TLabel', wraplength=WRAP - dpi.px(16),
                        justify='left').pack(anchor='w', pady=(dpi.px(6), 0))
@@ -536,7 +542,7 @@ class App:
     def form(self):
         return Form(base=self.vars['base'].get(), update=self.vars['update'].get(), keys=self.vars['keys'].get(),
                     firmware=self.vars['firmware'].get(), lang=self.selected_lang(), dest=self.vars['dest'].get(),
-                    dlss=self.dlss_var.get(), fsr=self.fsr_var.get())
+                    dlss=self.dlss_var.get(), fsr=self.fsr_var.get(), vr=self.vr_var.get())
 
     def set_prefill(self, name, value):
         self.programmatic = True
@@ -567,6 +573,8 @@ class App:
         form = self.form()
         state = form.installed_state()
         self.match_prefill(state)
+        if hasattr(self, 'vr_var') and not self.vr_touched:
+            self.vr_var.set(screens.vr_set_up(form.dest.strip()) if form.dest.strip() else False)
         if state is not None:
             self.update_hint.configure(text=self.cat('ui.update_mode'))
             recorded = ini.canonical_language(state.get('lang'))
@@ -812,7 +820,7 @@ class App:
 # ---- self test ---------------------------------------------------------------------------------------------------
 
 SAMPLE_START = {'type': 'start', 'release': 'selftest', 'mode': 'install', 'dest': 'Z:/selftest/TotK', 'log': 'D:\\log.txt',
-                'steps': ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss', 'fsr', 'cleanup']}
+                'steps': ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss', 'fsr', 'vr', 'cleanup']}
 SAMPLE_RUN = [
     SAMPLE_START,
     {'type': 'plan', 'run': ['check', 'fonts', 'extract'], 'skip': {}},
