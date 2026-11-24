@@ -98,14 +98,16 @@
 # the CPU threads).
 # lib_prebuild = 1
 # lib_prebuild_threads = 4
-# Experimental: 1 keeps a render pass open through the game's own Barrier calls (ORDER_FRAGMENTS | INVALIDATE_TEXTURE) when
-# none of the pass's draws can write a storage buffer or image, making the writes visible to the next draw with a by-region
-# barrier instead of ending the pass. Scenes where the game issues about a thousand such barriers a frame (the water in
-# the Nachoyah Shrine, terrain decals) go from about 1200 passes and 10000 layout changes to about 130 passes and 150;
-# the GPU time there fell from 24.5 to 7.8 ms a frame. The game's barrier orders every pixel, the one inside the pass only
-# the pixel a draw writes: a driver that runs it per screen tile can show flicker or squares at the edges of water, decals
-# or particles (report any). Needs the feedback layout (the default). Read at start. Default: 0.
-# barrier_merge = 0
+# 1 keeps a render pass open through the game's own Barrier calls (ORDER_FRAGMENTS | INVALIDATE_TEXTURE) when none of the
+# pass's draws can write a storage buffer or image, making the writes visible to the next draw with a by-region barrier
+# instead of ending the pass. A draw that samples a target written in the pass without writing it itself still ends the
+# pass. Scenes where the game issues about a thousand such barriers a frame (the water in the Nachoyah Shrine, terrain
+# decals) go from about 1200 passes and 10000 layout changes to about 130 passes and 150; the GPU time there fell from
+# 24.5 to 7.8 ms a frame on Linux (RADV). The game's barrier orders every pixel, the one inside the pass only the pixel a
+# draw writes: a driver that runs it per screen tile could show flicker or squares at the edges of water, decals or
+# particles; 0 brings back a full barrier each time (report it). Needs the feedback layout (the default). Read at start.
+# Default: 1.
+# barrier_merge = 1
 # Build known pipelines ahead of time.
 # pipe_prebuild = 1
 # Threads that translate known shaders at start (1 to 64; default: half the CPU threads, at most 16).
