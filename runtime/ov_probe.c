@@ -1047,8 +1047,11 @@ static void probe_menu_text(void) {
         CHECK(strstr(ui_text_in(menu_langs[i], UI_MENU_OV_GAME_PCT), "%.0f%%"), "%s overlay format lost its conversion",
               menu_langs[i]);
     }
-    CHECK(!strcmp(ui_text_in("zh-Hant", UI_MENU_CONTINUE), ui_text_in("en", UI_MENU_CONTINUE)),
-          "zh-Hant menu text is not English");
+    CHECK(ui_text_defined("zh-Hant", UI_MENU_CONTINUE) &&
+              strcmp(ui_text_in("zh-Hant", UI_MENU_CONTINUE), ui_text_in("en", UI_MENU_CONTINUE)) &&
+              strcmp(ui_text_in("zh-Hant", UI_MENU_CONTINUE), ui_text_in("zh-Hans", UI_MENU_CONTINUE)),
+          "zh-Hant menu text falls back to English or Simplified Chinese");
+    CHECK(strstr(ui_text_in("zh-Hant", UI_MENU_OV_GAME_PCT), "%.0f%%"), "zh-Hant overlay format lost its conversion");
     CHECK(!strcmp(ui_text_in("ru", UI_SWKBD_OK), "ОК") && !strcmp(ui_text_in("de", UI_SWKBD_CANCEL), "Abbrechen") &&
           !strcmp(ui_text_in("en", UI_SWKBD_OK), "OK"), "keyboard texts changed");
     // language names: the same string in every row
