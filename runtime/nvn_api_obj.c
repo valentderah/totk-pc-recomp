@@ -667,6 +667,8 @@ static void sleep_until(uint64_t deadline) {
     }
 }
 
+int vk_xr_frame_clock(uint64_t *wake, uint64_t *period, int *every);   // vk_xr.c
+
 // NVNwindowAcquireTextureResult nvnWindowAcquireTexture(NVNwindow *w, NVNsync *s, int *index): blocks here, not in the
 // present, until the image is free (the game often presents with a lock held). Without the frame queue that is the
 // image's previous present plus one period, when the next frame goes to the display, so a frame gets exactly one period
@@ -717,11 +719,25 @@ NVN_API(nvnQueuePresentTexture) {
     vk_reflex_marker(1, vk_reflex_frame());   // VK_LATENCY_MARKER_SIMULATION_END_NV
     const tex_t *t = (const tex_t *)o->tex[idx];
     uint64_t period = present_period(o), now = kern_now_ns();
-    uint64_t slot = now + pace(&o->pace, now, period);
+    uint64_t slot, vw, vp;
+    int vk, vr_paced = 0;
+    if (frame_step_realtime() && vk_xr_frame_clock(&vw, &vp, &vk)) {
+        vr_paced = 1;   // the image is free at its slot (as with the frame queue): the game draws the next frame meanwhile
+        // VR: the slot is the first headset frame wake (less a margin, so the pair is queued before the
+        // headset's copy) at least a game period after the last slot and not before now: one frame per headset frame.
+        { int vr_pairs(void), vk_xr_pair_rate(void); if (vr_pairs() && vk_xr_pair_rate()) vp /= 2; }   // stereo pairs (vr_camera.c): two game frames, one per eye, a headset frame (only while the game draws its scene)
+        uint64_t margin = 3000000, lo = now, base = vw - margin;
+        if (o->pace && o->pace + period - vp / 4 > lo) lo = o->pace + period - vp / 4;
+        slot = base + (lo > base ? (lo - base + vp - 1) / vp : 0) * vp;
+        o->pace = slot;
+        static unsigned n;
+        if (!n++) rt_log("vr: the game presents on the headset's frame clock (%.2f Hz, a game frame every %d)", 1e9 / (double)vp, vk);
+    } else slot = now + pace(&o->pace, now, period);
     nvn_sync_ahead_present();
     gfx_backend()->present(t, o->crop, slot);
     o->ticket[idx] = o->presents;
-    o->avail[idx] = cfg_bool("TOTK_FRAME_QUEUE") ? slot : slot + period;
+    o->avail[idx] = vr_paced || cfg_bool("TOTK_FRAME_QUEUE") ? slot : slot + period;
+    { void vr_pair_presented(void); vr_pair_presented(); }   // vr_camera.c: the frame's eye (VR stereo pairs) ends here
     frame_step_present(slot, o->interval);   // frame_rate.c: the real-time step follows the display times
     rt_frame_presented(t, o->presents);
 }

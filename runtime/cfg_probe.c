@@ -384,6 +384,7 @@ int probe_cfg(void) {
     CHECK(!cfg_shape_size(1920, 1080, sz) && !cfg_shape_size(2560, 1440, sz) && !cfg_shape_size(1280, 1024, sz) &&
               !cfg_shape_size(1080, 1920, sz) && !cfg_shape_size(7680, 1440, sz),
           "shape: none for 16:9, narrower than 4:3, portrait and wider than 32:9");
+    CHECK(cfg_shape_size(2160, 2160, sz) && sz[0] == 2048 && sz[1] == 2048, "shape: a square VR output takes 2048x2048's folder");
     // romfs.c shaped_name: the exact size's folder (an older setup wrote every size) wins, else the shape's
     {
         char dir[1100], f[1200];

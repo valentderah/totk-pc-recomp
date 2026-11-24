@@ -222,7 +222,13 @@ static void hw_fix(cmd_t *o, size_t bytes) {
 }
 
 // A zeroed payload of one record.
+static __thread cmd_t *last_rec_cmd;   // the command buffer this thread last recorded into (nvn_view_mark)
+static __thread int pend_n;            // begin markers waiting for this thread's next command (nvn_view_mark)
+static __thread struct { int kind; uint64_t site, arg; float view[96]; } pend[8];
+static void put_marks(cmd_t *o);
 static void *rec(cmd_t *o, uint32_t op, size_t payload) {
+    if (pend_n && op != OP_VIEW_MARK) put_marks(o);
+    last_rec_cmd = o;
     uint32_t sz = (uint32_t)((8 + payload + 7) & ~(size_t)7);
     uint8_t *p = cmd_alloc(o, sz);
     put_hdr(p, op, sz);
@@ -1389,8 +1395,38 @@ const char *nvn_op_name(uint32_t op) {
         "BIND_VSTREAM", "BIND_VBUF", "BIND_UBO", "BIND_SSBO", "BIND_TEX", "BIND_SAMP", "STENCIL", "POLY_OFFSET", "DRAW",
         "DRAW_IDX", "DISPATCH", "BARRIER", "SET_TEX_POOL", "SET_SAMP_POOL", "COPY_B2T", "COPY_STRIDE", "BLEND_COLOR",
         "COPY_T2B", "BIND_IMG", "COPY_T2T", "RESET_COUNTER", "CLEAR_TEX", "DEPTH_CLAMP", "RENDER_ENABLE",
-        "RASTER_DISCARD", "RENDER_COND", "PRIM_RESTART", "DRAW_IDX_IND", "DISPATCH_IND", "CLEAR_BUF", "FENCE_SYNC",
+        "RASTER_DISCARD", "RENDER_COND", "PRIM_RESTART", "DRAW_IDX_IND", "DISPATCH_IND", "CLEAR_BUF", "FENCE_SYNC", "VIEW_MARK",
     };
     _Static_assert(sizeof names / sizeof *names == OP_COUNT_, "one name per op");
     return op < OP_COUNT_ ? names[op] : "?";
+}
+
+// VR: a marker (OP_VIEW_MARK) in the command buffer this thread last recorded into, for the replay to see
+// where a game render stage begins and ends. Costs nothing in the game's command memory accounting.
+// A begin marker (odd kind) goes in front of the next command this thread records, so it lands in the command buffer
+// the stage records into; an end marker (even kind) goes into the buffer the stage recorded into last. A stage that
+// records nothing leaves its begin pending until its end, which drops both.
+static void put_one(cmd_t *o, int kind, uint64_t site, uint64_t arg, const float *view) {
+    p_view_mark *m = REC(o, OP_VIEW_MARK, p_view_mark);
+    m->kind = kind, m->site = site, m->arg = arg;
+    if (view) memcpy(m->view, view, sizeof m->view);
+    hw_fix(o, 0);
+}
+static void put_marks(cmd_t *o) {
+    int n = pend_n;
+    pend_n = 0;
+    for (int i = 0; i < n; i++) put_one(o, pend[i].kind, pend[i].site, pend[i].arg, pend[i].view);
+}
+void nvn_view_mark(int kind, uint64_t site, uint64_t arg, const float *view) {
+    if (kind & 1) {
+        if (pend_n < 8) {
+            pend[pend_n].kind = kind, pend[pend_n].site = site, pend[pend_n].arg = arg;
+            if (view) memcpy(pend[pend_n].view, view, sizeof pend[pend_n].view);
+            else memset(pend[pend_n].view, 0, sizeof pend[pend_n].view);
+            pend_n++;
+        }
+        return;
+    }
+    if (pend_n && pend[pend_n - 1].kind == kind - 1 && pend[pend_n - 1].site == site) { pend_n--; return; }   // empty stage
+    if (last_rec_cmd) put_one(last_rec_cmd, kind, site, arg, NULL);
 }

@@ -13,6 +13,7 @@
 // full barrier before each pass), the scissor clip and attachment clears follow LAS Recomp
 // runtime/nvn/vulkan/exec.c:855-1149, 3553-3778 (https://github.com/peiikai/LASRecomp @
 // da35b83a9611d046a9a681aae668d7085954d37f, MIT, Copyright (c) 2026 Peiikai).
+#include <unistd.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -20,6 +21,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include <sys/stat.h>
 #include "host.h"
 #include "nvn_api.h"
 #include "nvn_tex.h"
@@ -322,11 +324,16 @@ enum { HOLD_TEX, HOLD_DLSS, HOLD_WRITES, HOLD_N };
 static void scan_hold(int why);
 
 // scan: the state scan's resolution, which creates nothing and leaves out a texture without an image yet.
+static __thread const VkTexImage *(*walk2_target_hook)(const VkTexImage *img);   // set while the HUD replay runs
+static __thread const VkTexImage *stereo_hud_img;
+static __thread int hud_mode;   // the HUD replay runs
+static __thread VkCommandBuffer sr_cb;   // the command buffer the HUD replay records into
 static void resolve_target(const tex_t *t, const view_t *v, int has_v, int depth_slot, VkExecTarget *o, const VkExec *scan) {
     memset(o, 0, sizeof *o);
     o->tex = t;
     if (!t) return;
     const VkTexImage *img = scan ? vk_texture_revive(t, scan->pos) : vk_texture_get(t);
+    if (img && !scan && walk2_target_hook) img = walk2_target_hook(img);   // the HUD replay: its layer
     if (scan && !img) {
         if (t->mem) scan_hold(HOLD_TEX);
         return;
@@ -376,6 +383,7 @@ static void resolve_target(const tex_t *t, const view_t *v, int has_v, int depth
         else warn_once(W_VIEW_FORMAT, "render target view format %#x of a format %#x texture: texture format used",
                        v->format, t->d.format);
     }
+    if (stereo_hud_img && img == stereo_hud_img) fmt = img->format, nvn_fmt = NVN_FORMAT_RGBA16F;
     o->image = img->image;
     o->img = img;
     o->scale = img->scale ? img->scale : 1;
@@ -849,6 +857,9 @@ void vk_exec_pass_end(VkExec *ex) {
         if (ex->color[i].image && ex->color[i].img && ex->color[i].img->image != ex->color[i].image)
             bc_copy_back(ex, &ex->color[i]);
     if (vk_dump_armed) vk_dump_pass_end(ex);
+    // The VR HUD replay drew into its layers, not into these textures: noting them as written would make them the newest
+    // writers of their (aliased, pooled) storage.
+    if (vk_exec_walk2()) return;
     uint64_t stamp = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
     for (int i = 0; i < 8; i++)
         if (ex->color[i].image) vk_texture_gpu_written(ex->color[i].tex), tfr_note(&ex->color[i], stamp);
@@ -887,12 +898,16 @@ VkBuffer vk_exec_inline_buffer(VkDeviceSize size) {
     return t->b;
 }
 
+__thread int vk_exec_dry_draw;   // the next draw is prepared but draws nothing (empty scissor; stereo pairs' panel HUD, walk)
 VkRect2D vk_exec_scissor(const VkExec *ex) {
+    if (vk_exec_dry_draw) return (VkRect2D){{0, 0}, {0, 0}};
     int64_t w = ex->pass_w, h = ex->pass_h;
     if (!ex->has_scissor) return (VkRect2D){{0, 0}, {(uint32_t)w, (uint32_t)h}};
     int64_t k = ex->pass_scale > 1 ? ex->pass_scale : 1;
     int64_t x0 = ex->scissor.x * k, y0 = ex->scissor.y * k;
     int64_t x1 = x0 + (int64_t)ex->scissor.w * k, y1 = y0 + (int64_t)ex->scissor.h * k;
+    float sdx, sdy;
+    if (vk_exec_hud_shift(ex, &sdx, &sdy)) x0 += (int64_t)sdx, x1 += (int64_t)sdx, y0 += (int64_t)sdy, y1 += (int64_t)sdy;   // the stamina wheel moved
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
     if (x1 > w) x1 = w;
@@ -1162,6 +1177,464 @@ static void run_job(VkExec *ex) {
 // The ops that may make the GPU write a uniform range the submission's snapshot copied (vk_usnap_drop_at).
 static int drop_op(uint32_t op) { return op == OP_UPDATE_UB || op == OP_COPY_B2B || op == OP_COPY_T2B || op == OP_CLEAR_BUF; }
 
+// ---- VR: the frame's scene image and HUD, found in the recorded commands.
+// With VR the game draws one frame per eye (vr_camera.c, stereo pairs). Its scene is bracketed by OP_VIEW_MARK
+// (vr_camera.c host_stage): kind 3/4 = the scene pipeline, kind 1/2 at site 0xf05a8 = its shadow stage. Inside the
+// scope (scene begin up to the finished image after the game's effects and final composite), commands are cut into
+// segments at each OP_SET_RT; the last output-sized image is the frame's eye picture (vk_xr_pair_scene), and the HUD
+// drawn over it afterwards is replayed onto layers of its own (below).
+static struct {
+    int on, scope, skip, after_end, shadow;
+    const op_hdr *seg;
+    uint32_t seg_draws;
+    int seg_out;
+    uint64_t scope_id;
+    unsigned ow, oh;
+    VkExecTarget out;   // the output target of the scope's last segment
+    unsigned scopes, seg_index;
+} SR;
+// ---- VR HUD layers (TOTK_VR_HUD, default on). The game draws the HUD over the frame's finished picture after the
+// scene. Every segment after the scope's end that draws into that output target and nothing else is walked a second
+// time onto a transparent RGBA16F image (vk_texture_hud), with blended draws made to add up their coverage in alpha
+// (vk_exec_draw.c hud_blend), so the image holds the HUD premultiplied by its coverage; vk_xr.c shows it as a panel
+// in front of the player. The reticle, world markers and stamina wheel go to layers of their own by layout (kind 7
+// markers). The second walk leaves side effects out (vk_exec_walk2).
+static struct {
+    int on, phase, cleared, mode;      // on: -1 not decided yet; phase: from the scope's end to the next scene
+    const VkTexImage *out, *img, *alt;   // the output target, its HUD layer; alt: the HUD's own screen-sized image (no scene)
+    uint32_t ow, oh;                     // out's size when it was taken (hud_is_out)
+    const op_hdr *seg;
+    uint32_t seg_draws;
+    unsigned segs, skipped, frames;
+    // aim reticle (layout Pointer_00, marked by kind 7 markers from vr_camera.c host_layout): its draws go to their
+    // own layer (vk_texture_reticle), placed in the world along the game camera's aim by vk_xr.c
+    int ptr_now, snap_ptr, walk_ptr, filter, rcleared, wcleared;
+    uint32_t seg_ptr_draws, seg_wm_draws, seg_st_draws;   // reticle (Pointer_00) / world-marker / stamina wheel layouts' draws in the segment
+    int scleared;
+    uint32_t seg_strip_draws, seg_cls[8];   // quick-select strip layouts' draws in the segment (class 5)
+    int scene_seen;             // a scene began since the HUD frame started (pairs: the present counter can move on before its HUD opens)
+    int menu_cur, menu_prev;    // a full-screen menu background (marker 9) was drawn in this / the last HUD frame (pairs: menus keep their HUD in the picture)
+    int noscene;                // this HUD frame had no scene (quick-select strips: the HUD goes through a screen-sized image of its own)
+    uint64_t fr_seen;           // presented frame count at the last scene end / HUD frame start (frames without a scene)
+    unsigned rsegs;
+} HUD = {.on = -1};
+static VkExec HUD_snap;
+// The HUD's output target: the same texture record AND the size it had when the HUD took it. Targets share
+// pooled memory and their records are reused: between the HUD and the next scene the game draws small per-frame maps
+// (the grass interaction map, 256x256: Link's footprints, scrolled and faded every frame) into a record that can compare
+// equal to HUD.out; dry-drawn, Link's trail would never fade. TOTK_VR_HUDOUTSIZE=0: the record alone.
+static int hud_is_out(const VkTexImage *img, uint32_t w, uint32_t h) {
+    static int sz = -1;
+    if (sz < 0) { const char *e = cfg_get("TOTK_VR_HUDOUTSIZE"); sz = !(e && *e == '0'); }
+    return img && img == HUD.out && (!sz || (w == HUD.ow && h == HUD.oh));
+}
+int vk_exec_hud_replay(void) { return hud_mode; }
+
+static VkExec SR_save;
+static int SR_cond = 1;   // render conditions from the frame's own walk (walk2_cond_apply)
+static __thread int walk2;   // a second walk (vk_exec_walk2)
+static float SR_view[12];
+static int SR_hudcut = 1;
+static int SR_frame_end_seen = 1, SR_force_end, SR_end_pending, SR_end_keep;   // kind 5 markers (the HUD start) arrive; the scope end now
+static float SR_cand[8][12];   // the scene marker's cameras (newest first)
+// The scene's game camera and its head camera (the frame's own pose, vr_camera.c vr_head_for): the pose's serial labels
+// the frame's picture for the headset (vk_xr.c), and both cameras are the aim tracker's (vk_contact.c).
+int vr_camera_replay(void);
+unsigned vr_head_for(const float G[12], float H[12], int pose);
+void vr_game_yaw_cam(const float G[12], float *yaw, float cam[3]);
+void vk_xr_replay_label(unsigned serial, float yaw, const float cam[3]);
+static float SR_G[12], SR_H[12];
+static int SR_hok;
+static unsigned SR_hser;
+// A view at the world origin or an axis-aligned one close to it is a local view, not the game camera (identity
+// matrices reach the marker's candidates).
+static int stereo_local_view(const float *V) {
+    if (fabsf(V[3]) + fabsf(V[7]) + fabsf(V[11]) < 0.5f) return 1;
+    float p[3];
+    for (int k = 0; k < 3; k++) p[k] = -(V[k] * V[3] + V[4 + k] * V[7] + V[8 + k] * V[11]);
+    if (fabsf(p[0]) + fabsf(p[1]) + fabsf(p[2]) > 50) return 0;
+    for (int i = 0; i < 3; i++)
+        for (int k = 0; k < 3; k++) {
+            float a = fabsf(V[i * 4 + k]);
+            if (a > 1e-5f && fabsf(a - 1) > 1e-5f) return 0;
+        }
+    return 1;
+}
+static void stereo_head_pairs(void) {
+    SR_hok = 0;
+    if (!vr_camera_replay()) return;
+    for (int k = 0; k < 8; k++) {   // the newest marker camera that is a game camera
+        const float *G = SR_cand[k];
+        if ((G[0] == 0 && G[1] == 0 && G[2] == 0) || stereo_local_view(G)) continue;
+        unsigned ser = vr_head_for(G, SR_H, 1);
+        if (!ser) return;
+        memcpy(SR_G, G, 48), SR_hser = ser, SR_hok = 1;
+        return;
+    }
+}
+// The aim tracker (vk_contact.c): the scope's game camera and its head camera; 0 when there is none.
+int vk_exec_aim_cams(float G[12], float HL[12]) {
+    if (!vr_camera_replay() || !SR_hok || walk2 || hud_mode || !SR.scope) return 0;
+    memcpy(G, SR_G, 48), memcpy(HL, SR_H, 48);
+    return 1;
+}
+// The pair's label: the scene's game camera with the frame's head pose (vk_xr.c).
+int vr_pairs(void);   // vr_camera.c: stereo pairs (a game frame per eye)
+int vk_xr_serial_eye(unsigned serial);
+void vk_xr_pair_scene(VkCommandBuffer cb, VkImage img, uint32_t w, uint32_t h, VkFormat fmt, int eye);
+static unsigned SR_label_ser;   // the serial stereo_label_pair labelled the pair with (0 none)
+// Stereo pairs, HUD: the frame's eye (from its scene end), for its HUD. World-anchored layouts (class 2:
+// names, health bars, balloons, lock-on, markers) are drawn by the game into the output for that eye and reach the
+// headset with the picture (taken at the present); every other HUD draw into the output is left out of it and goes to
+// the HUD panel only, from left-eye frames (the panel, the stamina box and the reticle then stop switching eyes).
+// TOTK_VR_PAIRHUD (bits, default 31): 1 picture at the present, 2 panel draws left out of it, 4 panel from left frames
+// only, 8 no separate world-marker layer, 16 HUD draws outside any layout left out of the picture too, 32 world-marker
+// layouts left out of it as well (off: the game draws them into each eye).
+int vk_exec_draw_samples_screen(VkExec *ex);   // vk_exec_draw.c
+extern unsigned long long vk_exec_draw_ss_vs, vk_exec_draw_ss_fs;
+extern int vk_exec_draw_ss_tex, vk_exec_draw_ss_fmt, vk_exec_draw_ss_w, vk_exec_draw_ss_h;
+unsigned long long vk_exec_draw_prog_hash(VkExec *ex);
+int vk_exec_draw_samples_small(VkExec *ex);   // vk_exec_draw.c
+unsigned long long vk_exec_draw_prog_hash(VkExec *ex);
+extern unsigned long long vk_exec_draw_ss_vs, vk_exec_draw_ss_fs;
+// A draw under a fade layout's class that is really HUD (drop-shadow pastes, see vk_exec_draw_samples_small): left out of
+// the picture like panel HUD. TOTK_VR_FADEHUD=0 keeps every fade-class draw.
+static int pair_hud_in_fade(VkExec *ex) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_VR_FADEHUD"); on = !(e && *e == '0'); }
+    int r = on && vk_exec_draw_samples_small(ex);
+    return r;
+}
+static int pr_eye = -1;
+// The frame's finished output (scene + the world markers the game drew into it), copied to its eye when the next
+// frame's scene begins (the presented image itself can't be read at the present)
+static struct { VkImage image; uint32_t w, h; VkFormat fmt; int eye; unsigned hud0; } PO = {.eye = -1};
+static unsigned HUD_open_n;   // HUD segments opened so far
+static int pairhud_bits(void) { static int v = -1; if (v < 0) { const char *e = cfg_get("TOTK_VR_PAIRHUD"); v = e ? atoi(e) : 31; } return vr_pairs() ? v : 0; }
+static void stereo_label_pair(void) {
+    SR_label_ser = 0;
+    if (!vr_camera_replay() || !SR_hok) return;
+    float yaw, cam[3];
+    vr_game_yaw_cam(SR_G, &yaw, cam);
+    vk_xr_replay_label(SR_hser, yaw, cam);
+    SR_label_ser = SR_hser;
+}
+static int SR_view_ok;
+// walk2: a second walk of ops the frame has already run (the HUD layer replay, hud_replay_pass), so draw-side code
+// leaves out what must happen once (storage writes, uploads) and builds every descriptor set afresh.
+int vk_exec_walk2(void) { return walk2; }
+int vk_exec_vr_scene_on(void) { return SR.on; }
+static void copy_state(VkExec *dst, const VkExec *src);
+static int draw_op(uint32_t op);
+static int walk(VkExec *ex, const op_hdr *h, int depth, const op_hdr *stop);
+// A texture clear during the HUD layer replay (vk_exec_xfer.c clear_tex): a clear of the output goes to the layer, other
+// clears are left out (they happened in the frame already).
+const VkTexImage *vk_exec_walk2_clear_target(const VkTexImage *img) {
+    if (hud_mode) return img && hud_is_out(img, img->width, img->height) ? HUD.img : NULL;
+    return img;
+}
+// ---- The stamina wheel's place on the HUD panel. The game draws the wheel
+// (layout PlayerStatus3D_00, class 3 from vr_camera.c host_layout) beside Link, where the game camera sees him; on the
+// panel it goes to a fixed spot at the bottom right. Its draws are replayed alone onto a layer of their own
+// (vk_texture_stamina), shrunk to STM_W and read back STM_LAG frames later; the panel's pass then draws them with the
+// viewport and scissor moved so the wheel's box ends at TOTK_VR_STAMINA_POS ("x,y": its right and bottom edge as
+// fractions of the panel, default 0.725,0.94: left of the clock and temperature, live as control "stamina=x,y").
+#define STM_W 512
+#define STM_RING 4
+#define STM_LAG 3
+static struct {
+    int ready, have;
+    VkImage small; VmaAllocation small_alloc;
+    VkBuffer buf[STM_RING]; VmaAllocation alloc[STM_RING]; const uint16_t *map[STM_RING];
+    int filled[STM_RING];
+    float x1, y1, tx, ty;   // the measured box's right/bottom edge, the target (fractions of the panel)
+} STM = {.tx = 0.725f, .ty = 0.94f};
+static int stm_init(VkExec *ex) {
+    VkCtx *c = vk_ctx();
+    const char *e = cfg_get("TOTK_VR_STAMINA_POS");
+    if (e && *e) sscanf(e, "%f,%f", &STM.tx, &STM.ty);
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_R16G16B16A16_SFLOAT,
+                            .extent = {STM_W, STM_W, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+    VmaAllocationCreateInfo ia = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    if (vmaCreateImage(c->vma, &ii, &ia, &STM.small, &STM.small_alloc, NULL) != VK_SUCCESS) return 0;
+    VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                .dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                                .newLayout = VK_IMAGE_LAYOUT_GENERAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = STM.small,
+                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &ib};
+    vkCmdPipelineBarrier2(ex->cb, &di);
+    for (int r = 0; r < STM_RING; r++) {
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = STM_W * STM_W * 8, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                                      .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                      .requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
+        VmaAllocationInfo info;
+        if (vmaCreateBuffer(c->vma, &bi, &ai, &STM.buf[r], &STM.alloc[r], &info) != VK_SUCCESS) return 0;
+        STM.map[r] = info.pMappedData;
+    }
+    rt_log("vr: stamina wheel moved on the HUD panel, its box ending at %.3f, %.3f", STM.tx, STM.ty);
+    return 1;
+}
+static int stm_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_VR_STAMINA_MOVE"); on = !(e && *e == '0'); }
+    return on;
+}
+// A new HUD frame: the box the wheel had STM_LAG frames ago (none drawn: the last one stays).
+static void stm_frame(void) {
+    if (STM.ready <= 0) return;
+    unsigned n = HUD.frames + 1;   // this frame's number once its HUD layer is cleared (stm_measure's slot)
+    int r = (int)(n % STM_RING);
+    if (n >= STM_LAG && STM.filled[(n - STM_LAG) % STM_RING]) {
+        const uint16_t *m = STM.map[(n - STM_LAG) % STM_RING];
+        int x1 = -1, y1 = -1, x0 = STM_W, y0 = STM_W;
+        for (int y = 0; y < STM_W; y++)
+            for (int x = 0; x < STM_W; x++)
+                if ((m[(y * STM_W + x) * 4 + 3] & 0x7fff) > 0x2520 && !(m[(y * STM_W + x) * 4 + 3] & 0x8000)) {   // alpha > 0.02
+                    if (x > x1) x1 = x;
+                    if (y > y1) y1 = y;
+                    if (x < x0) x0 = x;
+                    if (y < y0) y0 = y;
+                }
+        if (x1 >= 0) {
+            STM.x1 = (x1 + 1) / (float)STM_W, STM.y1 = (y1 + 1) / (float)STM_W;
+            if (!STM.have) rt_log("vr: stamina wheel found at %d..%d, %d..%d of %d", x0, x1, y0, y1, STM_W);
+            STM.have = 1;
+        }
+    }
+    STM.filled[r] = 0;
+}
+// The panel pass is drawing the wheel: how far to move it, in the target's pixels.
+int vk_exec_hud_shift(const VkExec *ex, float *dx, float *dy) {
+    if (!hud_mode || HUD.filter != 1 || HUD.walk_ptr != 3 || !STM.have) return 0;
+    *dx = (STM.tx - STM.x1) * (float)ex->pass_w, *dy = (STM.ty - STM.y1) * (float)ex->pass_h;
+    return 1;
+}
+static void stm_measure(VkExec *ex, const VkTexImage *si) {
+    int r = (int)(HUD.frames % STM_RING);
+    vk_exec_barrier(ex);
+    VkImageBlit bl = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .srcOffsets = {{0, 0, 0}, {(int32_t)si->width, (int32_t)si->height, 1}},
+                      .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstOffsets = {{0, 0, 0}, {STM_W, STM_W, 1}}};
+    vkCmdBlitImage(ex->cb, si->image, VK_IMAGE_LAYOUT_GENERAL, STM.small, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_LINEAR);
+    vk_exec_barrier(ex);
+    VkBufferImageCopy rc = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {STM_W, STM_W, 1}};
+    vkCmdCopyImageToBuffer(ex->cb, STM.small, VK_IMAGE_LAYOUT_GENERAL, STM.buf[r], 1, &rc);
+    vk_exec_barrier(ex);
+    ex->recorded += 2;
+    STM.filled[r] = 1;
+}
+static const VkTexImage *hud_target(const VkTexImage *img) { return (img && hud_is_out(img, img->width, img->height)) || (img && img == HUD.alt) ? HUD.img : img; }
+void vk_xr_reticle_drawn(VkImage img, uint32_t w, uint32_t h);   // vk_xr.c
+void vk_xr_worldhud_drawn(VkImage img, uint32_t w, uint32_t h);   // vk_xr.c
+void vk_xr_strip_drawn(void);   // vk_xr.c
+// One pass of a HUD segment onto a layer: filter 1 = everything but the aim reticle's draws (the HUD panel), 2 = only
+// those (the reticle layer).
+static void hud_replay_pass(VkExec *ex, const op_hdr *from, const op_hdr *to, const VkTexImage *li, int filter) {
+    copy_state(&SR_save, ex);
+    copy_state(ex, &HUD_snap);
+    ex->rt_resolved = 0;
+    ex->oq_counting = 0;
+    walk2 = 1, hud_mode = 1, sr_cb = ex->cb;
+    HUD.filter = filter, HUD.walk_ptr = HUD.snap_ptr;
+    HUD.img = li;
+    vk_exec_draw_forget(ex);
+    vk_exec_hud_state(ex);
+    walk2_target_hook = hud_target, stereo_hud_img = li;
+    walk(ex, from, 0, to);
+    vk_exec_pass_end(ex);
+    walk2 = 0, hud_mode = 0, HUD.filter = 0;
+    vk_exec_draw_forget(ex);
+    walk2_target_hook = NULL, stereo_hud_img = NULL;
+    copy_state(ex, &SR_save);
+    ex->rt_resolved = 0;
+}
+static void hud_clear(VkExec *ex, const VkTexImage *li) {
+    vk_exec_barrier(ex);
+    VkClearColorValue zero = {{0, 0, 0, 0}};
+    VkImageSubresourceRange rg = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdClearColorImage(ex->cb, li->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
+    vk_exec_barrier(ex);
+}
+static void hud_replay(VkExec *ex, const op_hdr *from, const op_hdr *to) {
+    if ((pairhud_bits() & 4) && pr_eye == 1 && !HUD.noscene) return;   // stereo pairs: the panel from left-eye frames only (frames without a scene, e.g. a quick-select strip over the frozen game, keep no eye: pr_eye is the last scene's)
+    vk_exec_pass_end(ex);
+    const VkTexImage *hi = vk_texture_hud(HUD.out, ex->cb);
+    if (!hi || !hi->image) return;
+    if (!HUD.cleared) hud_clear(ex, hi), HUD.cleared = 1, HUD.frames++;   // the frame's first HUD segment: transparent
+    if (HUD.seg_draws > HUD.seg_ptr_draws + HUD.seg_wm_draws || !(HUD.seg_ptr_draws + HUD.seg_wm_draws)) hud_replay_pass(ex, from, to, hi, 1);
+    HUD.segs++;
+    vk_xr_hud_drawn(hi->image, hi->width, hi->height);
+    if (HUD.seg_ptr_draws) {   // the aim reticle's draws onto their own layer
+        const VkTexImage *ri = vk_texture_reticle(HUD.out, ex->cb);
+        if (ri && ri->image) {
+            if (!HUD.rcleared) hud_clear(ex, ri), HUD.rcleared = 1;
+            hud_replay_pass(ex, from, to, ri, 2);
+            HUD.rsegs++;
+            vk_xr_reticle_drawn(ri->image, ri->width, ri->height);
+        }
+    }
+    if (HUD.seg_strip_draws) vk_xr_strip_drawn();
+    if (HUD.seg_st_draws && stm_on()) {   // the stamina wheel alone, to find where it is (STM)
+        if (!STM.ready) STM.ready = stm_init(ex) ? 1 : -1;
+        const VkTexImage *si = STM.ready > 0 ? vk_texture_stamina(HUD.out, ex->cb) : NULL;
+        if (si && si->image) {
+            if (!HUD.scleared) hud_clear(ex, si), HUD.scleared = 1;
+            hud_replay_pass(ex, from, to, si, 4);
+            stm_measure(ex, si);
+        }
+    }
+    if (HUD.seg_wm_draws && !(pairhud_bits() & 8)) {   // world markers (health bars, labels, balloons, lock-on) onto theirs, shown over the 3D view
+        const VkTexImage *wi = vk_texture_worldhud(HUD.out, ex->cb);
+        if (wi && wi->image) {
+            if (!HUD.wcleared) hud_clear(ex, wi), HUD.wcleared = 1;
+            hud_replay_pass(ex, from, to, wi, 3);
+            vk_xr_worldhud_drawn(wi->image, wi->width, wi->height);
+        }
+    }
+    HUD.img = hi;
+}
+static void hud_seg_open(VkExec *ex, const op_hdr *h) {
+    if (!HUD.phase) return;
+    HUD_open_n++;
+    // A frame without a scene (the quick-select strips freeze the 3D view): a new presented frame starts the HUD
+    // layers afresh, and draws before its first layout (the frozen picture of the game) are left out (class -1).
+    uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    if (f != HUD.fr_seen && HUD.scene_seen) {   // the scene's own HUD, opened after the present counter moved on: the
+        HUD.fr_seen = f, HUD.scene_seen = 0;    // same frame, with its scene (not a frame without one)
+    } else if (f != HUD.fr_seen) {
+        HUD.fr_seen = f, HUD.cleared = 0, HUD.rcleared = 0, HUD.wcleared = 0, HUD.scleared = 0, HUD.ptr_now = -1, HUD.noscene = 1;
+        HUD.menu_prev = HUD.menu_cur, HUD.menu_cur = 0;
+        stm_frame();
+        if (PO.eye >= 0) {   // stereo pairs: an eye copy still pending from the last scene belongs to that frame;
+            static unsigned nl;   // taken in this frame without a scene it copied what this frame drew there (the map in one eye)
+            if (nl < 20) nl++, rt_log("vr: stereo pairs: eye %d's picture dropped (its frame's HUD never came; a frame without a scene followed)", PO.eye);
+            PO.eye = -1;
+        }
+    }
+    HUD.seg = h, HUD.seg_draws = 0, HUD.seg_ptr_draws = 0, HUD.seg_wm_draws = 0, HUD.seg_st_draws = 0, HUD.seg_strip_draws = 0, HUD.snap_ptr = HUD.ptr_now, memset(HUD.seg_cls, 0, sizeof HUD.seg_cls), HUD.snap_ptr = HUD.ptr_now;
+    copy_state(&HUD_snap, ex);
+}
+static void hud_seg_close(VkExec *ex, const op_hdr *h) {
+    int own = HUD.noscene && HUD.out && ex->color[0].img && ex->color[0].width == HUD.ow && ex->color[0].height == HUD.oh;
+    HUD.alt = own ? ex->color[0].img : NULL;
+    if (HUD.seg && HUD.seg_draws && HUD.out && (hud_is_out(ex->color[0].img, ex->color[0].width, ex->color[0].height) || own)) {
+        int only = !ex->depth.image;
+        for (int i = 1; i < 8; i++) only &= !ex->color[i].image;
+        if (only) hud_replay(ex, HUD.seg, h);
+        else if (++HUD.skipped <= 10) rt_log("vr: a HUD segment of %u draws also draws into other targets: not on the HUD layer", HUD.seg_draws);
+    }
+    HUD.seg = NULL;
+}
+static void stereo_seg_open(VkExec *ex, const op_hdr *h) {
+    if (!SR.scope || SR.skip) return;
+    SR.seg = h, SR.seg_draws = 0, SR.seg_out = 0;
+}
+static void stereo_seg_close(VkExec *ex, const op_hdr *h) {
+    (void)h;
+    if (SR.seg && SR.shadow && !ex->color[0].image && ex->depth.image) { SR.seg = NULL; return; }   // a shadow map
+    // A small colour-only pass (ambient occlusion, fog, the glow chain at 1/4 .. 1/16 of the output) is never the frame's
+    // finished image.
+    if (SR.seg && ex->color[0].image && !ex->depth.image && SR.ow &&
+        (uint64_t)ex->color[0].width * ex->color[0].height * 16 < (uint64_t)SR.ow * SR.oh) {
+        SR.seg_index++;
+        SR.seg = NULL;
+        return;
+    }
+    if (SR.seg && SR.seg_draws && !SR.skip) SR.seg_index++;
+    // The scope ends at the HUD start marker (kind 5): the headset gets the image after the game's effects, bloom and
+    // final composite (ending at the first output-sized pass after the scene gave an unfinished image, without fog and
+    // anti-aliasing). Without that marker: the first output-sized segment after the scene.
+    if (SR.after_end && (SR_frame_end_seen ? SR_force_end && SR.out.img : SR.seg_out && SR.seg_draws)) {
+        if (vk_xr_active() && SR.out.image && SR.out.img && vr_pairs()) {   // this frame's image goes to its eye
+            stereo_label_pair();
+            int eye = vk_xr_serial_eye(SR_label_ser);
+            static unsigned long nl;
+            if (eye < 0 && nl++ < 20) rt_log("vr: stereo pairs: a scene without its frame's eye (label serial %u)", SR_label_ser);
+            pr_eye = eye;
+            if (eye >= 0 && (pairhud_bits() & 1))   // the picture once the frame's HUD is drawn (at the next scene's start)
+                PO.image = SR.out.image, PO.w = SR.out.width, PO.h = SR.out.height, PO.fmt = SR.out.img->format, PO.eye = eye, PO.hud0 = HUD_open_n;
+            else if (eye >= 0) vk_exec_pass_end(ex), vk_xr_pair_scene(ex->cb, SR.out.image, SR.out.width, SR.out.height, SR.out.img->format, eye);
+        }
+        SR.scope = 0, SR.after_end = 0;
+        if (HUD.on < 0) {
+            const char *v = cfg_get("TOTK_VR_HUD");
+            HUD.on = vk_xr_active() && !(v && *v && !strcmp(v, "0"));
+            rt_log("vr: HUD %s", HUD.on ? "on its own panel (the HUD's draws replayed onto a transparent layer)" : "left out of the world view");
+        }
+        if (HUD.on > 0 && SR.out.img) HUD.menu_prev = HUD.menu_cur, HUD.menu_cur = 0;
+        if (HUD.on > 0 && SR.out.img) HUD.scene_seen = 1;
+        if (HUD.on > 0 && SR.out.img) HUD.phase = 1, HUD.cleared = 0, HUD.rcleared = 0, HUD.wcleared = 0, HUD.scleared = 0, HUD.out = SR.out.img, HUD.ow = SR.out.width, HUD.oh = SR.out.height, HUD.seg = NULL, stm_frame(),
+                                       HUD.fr_seen = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), HUD.noscene = 0;
+        SR.scopes++;
+    }
+    SR.seg = NULL;
+}
+static void stereo_mark(VkExec *ex, const op_hdr *h, const p_view_mark *m) {
+    if (m->kind == 3) {
+        if (PO.eye >= 0) PO.eye = -1;   // (not taken: no HUD came after its scene)
+        if (SR.scope && SR.after_end && SR.out.img && SR_frame_end_seen)   // a frame without the HUD's start (HUD hidden):
+            SR_force_end = 1, stereo_seg_close(ex, h), SR_force_end = 0;     // its pair is the last output-sized image
+        memcpy(SR_cand, m->view, sizeof SR_cand);
+        memcpy(SR_view, m->view, sizeof SR_view);
+        { void vr_vo_set_scope(uint64_t serial); vr_vo_set_scope(m->arg); }
+        stereo_head_pairs();
+        if (vr_camera_replay()) vk_exec_draw_forget(ex);
+        SR_end_pending = 0;
+        SR_view_ok = SR_view[0] != 0 || SR_view[1] != 0 || SR_view[2] != 0;
+        static int told;
+        if (told < 2 && SR.scope_id > 300) told++, rt_log("vr: scope camera %s (row0 %.3f %.3f %.3f %.1f)", SR_view_ok ? "known" : "missing", SR_view[0], SR_view[1], SR_view[2], SR_view[3]);
+        stereo_seg_close(ex, h);
+        SR.scope = 1, SR.skip = 0, SR.after_end = 0, SR.scope_id++, SR.seg_index = 0;
+        HUD.phase = 0, HUD.seg = NULL, HUD.ptr_now = 0;
+        memset(&SR.out, 0, sizeof SR.out);
+        stereo_seg_open(ex, h);
+    } else if (m->kind == 4) {
+        SR.after_end = 1;
+    } else if (m->kind == 5) {   // the HUD is about to be drawn: the finished image (after the final composite) is there
+        SR_frame_end_seen = 1;
+        if (SR.scope && SR.after_end) SR_end_pending = 1;   // ends at the HUD's render target (next SET_RT): that image
+    } else if (m->site == 0xf05a8 && SR.scope) {   // the shadow stage: its depth-only passes (shadow maps, the output's
+        // size in VR) are never the scene image
+        if (m->kind == 1) {
+            stereo_seg_close(ex, h);
+            SR.shadow = 1, stereo_seg_open(ex, h);
+        } else {
+            if (SR.shadow) stereo_seg_close(ex, h), SR.shadow = 0;
+            SR.skip = 0, stereo_seg_open(ex, h);
+        }
+    }
+}
+// Ops the second walk (the HUD replay) leaves out: effects outside the images (they happened in the first walk), and
+// texture copies, which look textures up directly and would overwrite the frame's images again.
+// Conditional rendering (OP_RENDER_COND: the game's draw-if on a report value) inside the replayed passes: the second
+// walk can't evaluate the condition again (the reports it reads may have moved on, and a chunked replay's condition
+// list is indexed by position), so each first-walk outcome is kept by op address and the second walk's replay of the
+// same op applies it.
+
+#define SC_N 1024
+static struct { const op_hdr *h; int disabled, has; p_render_cond rc; } SCOND[SC_N];
+static unsigned long SC_applied, SC_missed;
+static void walk2_cond_note(const VkExec *ex, const op_hdr *h) {
+    unsigned k = (unsigned)(((uintptr_t)h >> 3) * 0x9E3779B97F4A7C15ull >> 54) % SC_N;
+    SCOND[k].h = h, SCOND[k].disabled = ex->render_disabled, SCOND[k].has = ex->has_render_cond, SCOND[k].rc = ex->render_cond;
+}
+static void walk2_cond_apply(VkExec *ex, const op_hdr *h) {
+    unsigned k = (unsigned)(((uintptr_t)h >> 3) * 0x9E3779B97F4A7C15ull >> 54) % SC_N;
+    if (SCOND[k].h != h) {
+        if (++SC_missed % 1000 == 1) rt_log("vr: the HUD replay met a render condition the frame's walk didn't record (%lu)", SC_missed);
+        return;
+    }
+    ex->render_disabled = SCOND[k].disabled, ex->has_render_cond = SCOND[k].has, ex->render_cond = SCOND[k].rc;
+    if (++SC_applied % 100000 == 1) rt_log("vr: the HUD replay took %lu render conditions from the frame's walk", SC_applied);
+}
+static int walk2_skips(uint32_t op) {
+    return op == OP_SIGNAL_EVENT || op == OP_REPORT_COUNTER || op == OP_RESET_COUNTER || op == OP_COPY_T2B ||
+           op == OP_COPY_B2B || op == OP_CLEAR_BUF || op == OP_DISPATCH || op == OP_DISPATCH_IND || op == OP_RENDER_COND ||
+           op == OP_COPY_T2T || op == OP_COPY_B2T;   // texture clears: vk_exec_walk2_clear_target
+}
+
 static int walk(VkExec *ex, const op_hdr *h, int depth, const op_hdr *stop) {
     for (;;) {
         if (h->size < sizeof *h || (h->size & 7) || h->op >= OP_COUNT_)
@@ -1179,9 +1652,42 @@ static int walk(VkExec *ex, const op_hdr *h, int depth, const op_hdr *stop) {
         case OP_JUMP: h = (const op_hdr *)(uintptr_t)((const p_jump *)a)->target; continue;
         case OP_CALL:
             if (depth >= CALL_DEPTH) rt_fatal("vk: command buffer calls nested deeper than %d", CALL_DEPTH);
-            walk(ex, nvn_op_first(((const p_jump *)a)->target), depth + 1, NULL);
+            if (walk(ex, nvn_op_first(((const p_jump *)a)->target), depth + 1, stop)) return 1;   // a stop inside the call
             break;
-        case OP_SET_RT: set_rt(ex, a); break;
+        case OP_SET_RT:
+            if (SR.scope && SR.after_end && !walk2 && !SR_end_pending && SR.out.img) {
+                // The first pass after the scene into a target of another format than the scene's image (and the particles'
+                // RGBA16F) starts the HUD (its icon renders, 8-bit): the image the final composite left is the finished
+                // 3D picture (markers on the HUD's calls landed before the scene or after the HUD in the replay).
+                const p_set_rt *p = a;
+                const VkTexImage *ci = p->n > 0 ? vk_texture_get(p->color[0]) : NULL;
+                // Not tiny or 32-bit float targets (in some view directions the game's exposure steps, a 1x1
+                // RGBA32F and a 64x64 R8 pass, came after the scene and ended the scope before the exposure was applied:
+                // the headset picture went blown out the moment the camera turned past some angle). TOTK_VR_CUTSMALL=1 turns it off.
+                if (ci && ((uint64_t)ci->width * ci->height <= 64 * 64 || ci->format == VK_FORMAT_R32G32B32A32_SFLOAT)) ci = NULL;
+                if (ci && ci->format != SR.out.img->format && ci->format != VK_FORMAT_R16G16B16A16_SFLOAT) {
+                    SR_frame_end_seen = 1, SR_end_pending = 1, SR_end_keep = 1;
+                    static int told;
+                    if (told++ < 3) rt_log("vr: scene image finished before a %ux%u format %d pass (the HUD)", ci->width, ci->height, (int)ci->format);
+                }
+            }
+            if (SR_end_pending && SR.scope && !walk2) {   // the HUD's target: the finished 3D image, the scope ends
+                const p_set_rt *p = a;
+                stereo_seg_close(ex, h);
+                const VkTexImage *img = SR_end_keep ? SR.out.img : p->n > 0 ? vk_texture_get(p->color[0]) : NULL;   // keep: the last output-sized target
+                SR_end_keep = 0;
+                if (img && img->image && img->width == SR.ow && img->height == SR.oh) {
+                    memset(&SR.out, 0, sizeof SR.out);
+                    SR.out.img = img, SR.out.image = img->image, SR.out.width = img->width, SR.out.height = img->height;
+                } else memset(&SR.out, 0, sizeof SR.out);
+                SR_end_pending = 0;
+                SR_force_end = 1, stereo_seg_close(ex, h), SR_force_end = 0;
+                if (SR.scope) SR.scope = 0, SR.after_end = 0;   // no usable target: the frame goes without a pair
+            }
+            if (SR.scope && !walk2) stereo_seg_close(ex, h), stereo_seg_open(ex, h);
+            if (HUD.phase && !walk2) hud_seg_close(ex, h), hud_seg_open(ex, h);
+            set_rt(ex, a);
+            break;
         case OP_CLEAR_COLOR: clear_color(ex, a); break;
         case OP_CLEAR_DS: clear_ds(ex, a); break;
         case OP_BARRIER:
@@ -1195,19 +1701,114 @@ static int walk(VkExec *ex, const op_hdr *h, int depth, const op_hdr *stop) {
                 for (int i = 0; i < 8; i++) ex->fr.barrier_bit[i] += (uint32_t)((const p_barrier *)a)->bits >> i & 1;
             vk_exec_barrier(ex);
             break;
+        case OP_VIEW_MARK:   // render stage markers
+            if (((const p_view_mark *)a)->kind == 9 && !hud_mode && !walk2) { HUD.menu_cur = 1; void vk_xr_menu_layout(void); vk_xr_menu_layout(); }
+            if (((const p_view_mark *)a)->kind == 9 && !hud_mode && !walk2 && PO.eye >= 0) {   // a full-screen menu layout (vr_camera.c)
+                static unsigned nl;
+                if (nl < 20) nl++, rt_log("vr: stereo pairs: eye %d's picture dropped (a full-screen menu is drawn before it was copied)", PO.eye);
+                PO.eye = -1;
+            }
+            if (((const p_view_mark *)a)->kind == 7) {   // a HUD layout starts drawing: is it the aim reticle's (Pointer_00)?
+                if (hud_mode) HUD.walk_ptr = (int)((const p_view_mark *)a)->arg, ex->dirty |= VK_EXEC_DIRTY_VIEWPORT | VK_EXEC_DIRTY_SCISSOR;   // (the wheel's shift)
+                else if (!walk2) HUD.ptr_now = (int)((const p_view_mark *)a)->arg;
+                // A HUD layout drawn straight into the finished 3D image, in the final composite's own pass (the stamina
+                // wheel, PlayerStatus3D_00, sometimes is), or whose marker comes before the HUD's own pass begins: any HUD
+                // layout after the scene ends the scope, before its draws, with the last output-sized image (the finished
+                // composite) as the picture; the layout goes on the HUD layer instead of being baked into the eyes.
+                if (SR_hudcut && !hud_mode && !walk2 && SR.scope && SR.after_end && SR.out.img && SR.out.image) {
+                    static unsigned nl;
+                    if (nl++ < 5) rt_log("vr: a HUD layout draws into the finished 3D image: the headset image is taken before it");
+                    SR_force_end = 1, stereo_seg_close(ex, h), SR_force_end = 0;
+                    if (SR.scope) SR.scope = 0, SR.after_end = 0;
+                    SR_end_pending = 0;
+                    if (HUD.phase) hud_seg_open(ex, h);
+                }
+                break;
+            }
+            if (!walk2) {
+                if (SR.on) stereo_mark(ex, h, a);
+            }
+            break;
         case OP_DRAW: case OP_DRAW_IDX: case OP_DISPATCH: case OP_UPDATE_UB: case OP_DRAW_IDX_IND: case OP_DISPATCH_IND:
             if (h->op == OP_DRAW || h->op == OP_DRAW_IDX || h->op == OP_DRAW_IDX_IND) ex->fr.draws_seen++, ex->split_draws++;
             if (h->op == OP_DISPATCH || h->op == OP_DISPATCH_IND) ex->fr.dispatches++, ex->split_draws++;
         case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
         case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG:
+            if (walk2 && walk2_skips(h->op)) break;
+            if (hud_mode && HUD.filter && draw_op(h->op) && HUD.walk_ptr + 1 != HUD.filter && !(HUD.filter == 1 && (HUD.walk_ptr == 3 || HUD.walk_ptr == 5 || (HUD.walk_ptr == 6 && !(pairhud_bits() & 2))))) break;
+            // The walk's HUD rules below test ex->color[] (is the draw into the HUD's output?), but a SET_RT only stores the new
+            // targets: they are resolved at the next draw's pass begin, so the first draw after every target change would be
+            // judged by the previous pass's target (after the HUD, the first draw of each small per-frame pass would count
+            // as a panel HUD draw: the grass interaction map's fade, terrain tile bakes). Resolved here first.
+            // TOTK_VR_RTEARLY=0: not.
+            if (!hud_mode && !walk2 && HUD.phase && draw_op(h->op) && !ex->rt_resolved) {
+                static int early = -1;
+                if (early < 0) { const char *e = cfg_get("TOTK_VR_RTEARLY"); early = !(e && *e == '0'); }
+                if (early) resolve_rt(ex);
+            }
+            if (!hud_mode && !walk2 && HUD.phase && !HUD.noscene && draw_op(h->op) && (HUD.ptr_now >= 0 || (pairhud_bits() & 16)) && (HUD.ptr_now != 2 || (pairhud_bits() & 32)) && (HUD.ptr_now != 6 || pair_hud_in_fade(ex)) && hud_is_out(ex->color[0].img, ex->color[0].width, ex->color[0].height) && HUD.out && (pairhud_bits() & 2) && !HUD.menu_cur && !HUD.menu_prev) {   // (a menu's own layouts stay: the panel shows this image during menus)
+                // A HUD-phase draw with a depth target is a 3D render into the output (the game draws a new
+                // weapon's model there and copies it into the item icon; dry, the icon held the scene). It draws.
+                static int drydepth = -1;
+                if (drydepth < 0) { const char *e = cfg_get("TOTK_VR_DRYDEPTH"); drydepth = !(e && *e == '0'); }
+                int is3d = drydepth && ex->depth.img;
+                {   // The game's plain image copy (vs input b6ad5318d0efeaae / fs input e97b32874f12a0cb) always draws: with a
+                    // new item it puts the item's picture into the output and copies that region into the item icon; dry,
+                    // the icon held the scene. TOTK_VR_DRYBLIT=0: dry like the rest.
+                    static int dryblit = -1;
+                    if (dryblit < 0) { const char *e = cfg_get("TOTK_VR_DRYBLIT"); dryblit = !(e && *e == '0'); }
+                    if (dryblit && !is3d) {
+                        extern unsigned long long vk_exec_draw_prog_hash(VkExec *ex);
+                        vk_exec_draw_prog_hash(ex);
+                        if (vk_exec_draw_ss_vs == 0xb6ad5318d0efeaaeull && vk_exec_draw_ss_fs == 0xe97b32874f12a0cbull) {
+                            is3d = 1;
+                            static unsigned nb;
+                            if (nb < 8) nb++, rt_log("vr: HUD-phase image copy (class %d) drawn, not left out (item icon picture)", HUD.ptr_now);
+                        }
+                    }
+                }
+                if (is3d) {
+                    static unsigned nl;
+                    if (nl < 8) nl++, rt_log("vr: HUD-phase draw with a depth target (%ux%u, class %d): drawn, not left out (a 3D render: item icon)", ex->depth.width, ex->depth.height, HUD.ptr_now);
+                }
+                if (!is3d && !vk_exec_draw_samples_screen(ex)) {
+                    // A dry draw: prepared in full (its buffer data uploaded) but with an empty scissor, so it
+                    // draws nothing here. The HUD panel replays it in the second-eye mode, which uploads nothing and relies
+                    // on this draw having done it: left out entirely, draws whose data changes every frame (the stamina
+                    // wheel) came out empty on the panel. Still counted for its HUD segment (the panel and STM go by them).
+                    vk_exec_dry_draw = 1, ex->dirty |= VK_EXEC_DIRTY_SCISSOR;
+                    vk_exec_op_draw(ex, h->op, a);
+                    vk_exec_dry_draw = 0, ex->dirty |= VK_EXEC_DIRTY_SCISSOR;
+                    if (HUD.seg) HUD.seg_draws++, HUD.seg_ptr_draws += HUD.ptr_now == 1, HUD.seg_wm_draws += HUD.ptr_now == 2, HUD.seg_st_draws += HUD.ptr_now == 3, HUD.seg_strip_draws += HUD.ptr_now == 5, HUD.seg_cls[(HUD.ptr_now + 1) & 7]++;
+                    break;
+                }
+                static unsigned long long seen[32]; static unsigned nls;
+                int known = 0;
+                unsigned long long key = vk_exec_draw_ss_fs ^ vk_exec_draw_ss_vs * 31 ^ (unsigned)HUD.ptr_now ^ ((unsigned long long)vk_exec_draw_ss_fmt << 40) ^ ((unsigned long long)vk_exec_draw_ss_w << 20) ^ ((unsigned long long)HUD.walk_ptr << 56);
+                for (unsigned i = 0; i < nls; i++) known |= seen[i] == key;
+                if (!known && nls < 32) seen[nls++] = key, rt_log("vr: stereo pairs: HUD draw of class %d (layout %d) samples a picture of the game: kept in the picture (pass %ux%u, vs %016llx fs %016llx, tex %d %dx%d format %d, present %llu)", HUD.ptr_now, HUD.walk_ptr, ex->pass_w, ex->pass_h, vk_exec_draw_ss_vs, vk_exec_draw_ss_fs, vk_exec_draw_ss_tex, vk_exec_draw_ss_w, vk_exec_draw_ss_h, vk_exec_draw_ss_fmt, (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED));
+            }   // stereo pairs: the panel's HUD stays out of the headset picture (it goes to the panel)
             vk_exec_op_draw(ex, h->op, a);
+            if (HUD.seg && !walk2 && draw_op(h->op)) HUD.seg_draws++, HUD.seg_ptr_draws += HUD.ptr_now == 1, HUD.seg_wm_draws += HUD.ptr_now == 2, HUD.seg_st_draws += HUD.ptr_now == 3, HUD.seg_strip_draws += HUD.ptr_now == 5, HUD.seg_cls[(HUD.ptr_now + 1) & 7]++;
+            if (SR.seg && !walk2 && draw_op(h->op)) {
+                SR.seg_draws++;
+                if (ex->pass_w == SR.ow && ex->pass_h == SR.oh) SR.seg_out = 1, SR.out = ex->color[0];
+            }
             break;
         case OP_COPY_B2B: case OP_COPY_B2T: case OP_COPY_T2B: case OP_COPY_T2T: case OP_CLEAR_TEX:
+            if (walk2 && walk2_skips(h->op)) break;
             if (h->op != OP_CLEAR_TEX) ex->fr.copies++;
             if (vk_dump_armed) vk_dump_copy(ex, h->op, a);
             // fall through
         case OP_SIGNAL_EVENT: case OP_REPORT_COUNTER: case OP_RESET_COUNTER: case OP_RENDER_ENABLE: case OP_RENDER_COND:
         case OP_CLEAR_BUF:
+            if (h->op == OP_RENDER_COND && SR.on > 0 && SR_cond) {   // the second walk takes the first walk's outcome
+                if (walk2) { walk2_cond_apply(ex, h); break; }
+                vk_exec_op_xfer(ex, h->op, a);
+                walk2_cond_note(ex, h);
+                break;
+            }
+            if (walk2 && walk2_skips(h->op)) break;
             vk_exec_op_xfer(ex, h->op, a);
             break;
         default:
@@ -1881,7 +2482,27 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
         record_chunks(ex, handles, n, &cnt);
     } else {
         if (n) vk_mem_mirror_begin(), vk_usnap_begin(handles, n, fence);
-        for (int i = 0; i < n; i++) walk(ex, nvn_op_first(handles[i]), 0, NULL);
+        if (!SR.on && vk_xr_wanted()) {
+            unsigned out[2];
+            res_wanted(out);
+            SR.on = 1, SR.ow = out[0], SR.oh = out[1];
+            rt_log("vr: frame scopes on (output %ux%u)", SR.ow, SR.oh);
+        }
+        for (int i = 0; i < n; i++) {
+            if (SR.scope && !SR.seg) stereo_seg_open(ex, nvn_op_first(handles[i]));
+            if (HUD.phase && !HUD.seg) hud_seg_open(ex, nvn_op_first(handles[i]));
+            walk(ex, nvn_op_first(handles[i]), 0, NULL);
+            if (SR.seg) stereo_seg_close(ex, NULL);   // a segment ends with its list
+            if (HUD.seg) hud_seg_close(ex, NULL);
+        }
+    }
+    if (PO.eye >= 0 && PO.image && HUD_open_n != PO.hud0 && HUD.noscene) { static unsigned nl; if (nl < 20) nl++, rt_log("vr: stereo pairs: eye %d's picture taken in a frame without a scene", PO.eye); }
+    if (PO.eye >= 0 && PO.image && HUD_open_n != PO.hud0 && (HUD.menu_cur || HUD.menu_prev)) PO.eye = -1;   // a menu frame: its HUD is in the picture
+    if (PO.eye >= 0 && PO.image && HUD_open_n != PO.hud0) {   // stereo pairs: the frame's output, with its world markers, to its eye
+        vk_exec_pass_end(ex);   // (at the end of the submission its HUD was drawn in: the output's memory is reused later)
+        vk_xr_pair_scene(ex->cb, PO.image, PO.w, PO.h, PO.fmt, PO.eye);
+        ex->recorded++;
+        PO.eye = -1;
     }
     vk_exec_pass_end(ex);
     if (vk_dlaa_fg_on) vk_dlaa_sub_end(ex);   // frame generation after the frame's window texture (vk_dlaa.c)

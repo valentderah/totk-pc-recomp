@@ -63,11 +63,12 @@ site realtime main 2906dc0 34000108 34000188   # cbz w8, 0x2906de0 -> 0x2906df0 
 # rendered frame. 1.4.3 inlines it in two actor paths, where the factor was just stored to the ratio slot: the
 # replacement stores measured ratio * factor there and computes measured seconds * factor. Two other callers share the
 # out-of-line update (main+0x2a0e40), whose s2 (seconds) and s3 (ratio) are scaled by the measured ratio; its third
-# caller already passes measured time and stays. x8 and s4 are free at all four sites.
-site cloth main 246eac 1e200940 @page:x8 bd400100 1e200940 bd0367e0 bd400500 1e200940   # fmul s0, s10, s0
-site cloth main 345904 1e210801 @page:x8 bd400101 1e210801 bd0117e1 bd400501 1e210801   # fmul s1, s0, s1
-site cloth main 24944c 94015e7d @page:x8 bd400104 1e240842 1e240863 94015e7d   # bl 0x2a0e40
-site cloth main 28bc98 9400546a @page:x8 bd400104 1e240842 1e240863 9400546a   # bl 0x2a0e40
+# caller already passes measured time and stays. x8 and s4 are free at all four sites. Local: the clock is read from
+# page +0x18/+0x1c (frame_rate.c cloth_store: the game step, the even step in VR stereo pairs).
+site cloth main 246eac 1e200940 @page:x8 bd401900 1e200940 bd0367e0 bd401d00 1e200940   # fmul s0, s10, s0
+site cloth main 345904 1e210801 @page:x8 bd401901 1e210801 bd0117e1 bd401d01 1e210801   # fmul s1, s0, s1
+site cloth main 24944c 94015e7d @page:x8 bd401904 1e240842 1e240863 94015e7d   # bl 0x2a0e40
+site cloth main 28bc98 9400546a @page:x8 bd401904 1e240842 1e240863 9400546a   # bl 0x2a0e40
 
 # Trampolines: the contact code scales the bounce vector by 0.1 when time object +0x28 (30 / (ratio * time scale)) is
 # over 100; compare +0x28 * +0x38 (30 / time scale) instead, the same value at 30 Hz and independent of the frame rate.
@@ -125,8 +126,8 @@ site aspect main 253fbb0 1e211800 f81f0fea @page:x10 bd403940 f84107ea  # fdiv s
 # loads the angle as before and multiplies it by the factor on the page; s8 holds the factor because the next
 # instruction (fmul s8, s0, s1) overwrites it. Zooms the game makes itself (the bow, the scope) scale with it.
 set fov      TOTK_FOV_PATCH      0
-site fov    main 628c3c bd413e60 f81f0fea @page:x10 bd413e60 bd403d48 1e280800 f84107ea   # ldr s0, [x19, #0x13c] (camera update)
-site fov    main b4342c bd4066c0 f81f0fea @page:x10 bd4066c0 bd403d48 1e280800 f84107ea   # ldr s0, [x22, #0x64] (camera setup)
+site fov    main 628c3c bd413e60 f81f0fea @page:x10 bd413e60 bd403d48 1e280800 bd405548 1e282800 f84107ea   # ldr s0, [x19, #0x13c] (camera update)
+site fov    main b4342c bd4066c0 f81f0fea @page:x10 bd4066c0 bd403d48 1e280800 bd405548 1e282800 f84107ea   # ldr s0, [x22, #0x64] (camera setup)
 
 # The camera input update, after its stick dead zone, unit-radius clamp and StickExponent. The host callback
 # performs the displaced store and adds raw mouse counts to s9/s10 (runtime/mouse_direct.c camera_input).
@@ -1133,7 +1134,6 @@ site cascade main 683740 bc2ed9b0 @page:x16 bd404212 1e269013 1e331a52 1e320a12 
 set climb    TOTK_CLIMB_FIX      1
 site climb main 1f497f4 1e201001 @page:x8 bd400104 1e286884 52946dc8 72a7e528 1e270102 1e241842 52828248 72a7dfe8 1e270103 1e232842 529573e8 72a7b5a8 1e270103 1f040862 1e2a3883 2f00e404 1e246863 1e261004 1f048862 1e241004 1e247842 1e226800 1e201001 1e226821   # fmov s1, #2.0 -> s2 = g(u); s0 = max(s0, s2); s1 = max(2.0, s2)
 
-
 # Grass range (runtime/resolution.c res_grass_range switches the set on). Grass blades grow from the near grass map, a
 # square texture the game draws around the camera (GrassShader.sharcb). Its constructor (main+0xa38e58) gives it a
 # 62.5 m extent, a 3.90625 m step (1/16 of it) and 256x256 and 128x128 textures; main+0x206340c later sets the extent
@@ -1145,7 +1145,6 @@ site grass  main a38e94 52802002 @page:x2 b9408842   # mov w2, #0x100     -> ldr
 site grass  main a38ef4 52801002 @page:x2 b9408c42   # mov w2, #0x80      -> ldr w2, [page+140]
 site grass  main 2063454 52a84f48 @page:x8 b9408108  # mov w8, #62.5      -> ldr w8, [page+128]
 site grass  main 2063460 52a83f48 @page:x8 b9409108  # mov w8, #31.25     -> ldr w8, [page+144]
-
 
 # Optional reference with an invalid value (#1005). main+0x1bd0138 reads an optional reference at object +0x6b0 (null or
 # a holder whose first word is the target, bit 0 a tag) and checks it only for null: ldr x8, [x19, #0x6b0]; cbz x8;
@@ -1279,3 +1278,37 @@ site lightning main 62b3d8 bd4ccd09 bd4ccd09 f001a52a f943e54a f940654a bd403942
 site lightning main 62b51c bd4ccd01 bd4ccd01 f001a52a f943e54a f940654a bd403942 1e2e1003 1e237842 1e220821   # ldr s1, [x8, #0xccc] (0.01)
 #   each: the game's load; adrp x10, main+0x3ad2000; ldr x10, [x10, #0x7c8]; ldr x10, [x10, #0xc8];
 #   ldr s3 (s2), [x10, #0x38] (ratio); fmov s4 (s3), #1.0; fminnm (ratio, 1.0); fmul (chance * ratio)
+
+# VR (runtime/vr_camera.c, vk_xr.c; only with TOTK_VR / --vr): hooks on the game's camera update, the render camera
+# build, setView, the render records and the HUD's per-layout draw, so the renderer draws each eye from the headset while
+# the game keeps its own camera; the scene pipeline's stages are marked in the command stream for the HUD replay.
+# With VR off every site runs the game's code.
+set vr TOTK_VR 0
+site vr main 7af390 9400063a 94ccc28c   # bl 0x7b0c78 (render camera build) -> page+0xdc0: build, then shift for the eye
+site vr main 627dc8 940001a6 94d2e052   # bl 0x628460 (camera update) -> page+0xf10 (VR world mode)
+site vr main 18e480 94002027 94e54630   # bl 0x19651c (player camera: the Chase calculation, Normal* modes) -> page+0xd40 (game camera mode)
+site vr main 67e4a0 94000b9c 94d186a8   # bl 0x681310 (renderer reads the camera object) -> page+0xf40 (VR world mode)
+site vr main 67e4ac 94000f91 94d186a1   # bl 0x6822f0 (renderer reads the camera object) -> page+0xf30 (VR world mode)
+site vr main 98540 94015f29 94e91dfc   # bl 0xf01e4 (the scene pipeline) -> page+0xd30 (view marks, whole scene)
+site vr main 10c71b4 940015a7 94a862f7   # bl 0x10cc850 in the HUD's per-layout draw 0x10c7188 -> page+0xd90 (which layout draws: the aim reticle Pointer_00)
+site vr main cd2a04 f9003d2b 94b834df   # str x11, [x9, #0x78] (viewport record's camera) -> page+0xd80 (render camera record: the head copy)
+site vr main 581354 f8008ec0 94d57a87   # str x0, [x22, #8]! (layer record's camera) -> page+0xd70 (render camera record: the head copy)
+site vr main f05a8 9400144b 94e7bde2   # bl 0xf56d4 (the shadow stage) -> page+0xd30 (view marks: its depth-only passes are no scene image)
+site vr main b3440 94165aa4 94e8b2b0   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
+site vr main 1b22bc 94125f05 94e4b711   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
+site vr main 5b272c 94025de9 94d4b5f5   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
+site vr main 5e59ac 94019149 94d3e955   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
+site vr main 63e208 94002f32 94d2873e   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
+site vr main 63e394 94002ecf 94d286db   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
+site vr main 63e6c8 94002e02 94d2860e   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
+site vr main 63e8a4 94002d8b 94d28597   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
+site vr main 65aab4 97ffbd07 94d21513   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
+site vr main 684f98 97ff13ce 94d16bda   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
+site vr main 6c83e0 97fe06bc 94d05ec8   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
+site vr main 76c158 97fb775e 94cdcf6a   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
+site vr main 875140 97f75364 94c9ab70   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
+site vr main 198f408 97b2eab2 948542be   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
+site vr main 213d9f0 97943138 94668944   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
+site vr main 282af98 97787bce 944ad3da   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
+site vr main 282b088 97787b92 944ad39e   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
+site vr main 2850e84 9777e413 944a3c1f   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)

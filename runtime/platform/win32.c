@@ -1023,7 +1023,12 @@ void plat_exit(int code) {
 
 // _putenv_s, not SetEnvironmentVariableA: getenv reads the C runtime's copy of the environment, which only the CRT's
 // own calls update. An empty value removes the variable.
-int plat_setenv(const char *name, const char *value) { return _putenv_s(name, value ? value : "") == 0; }
+void cfg_env_changed(void);   // cfg.c: empties the settings lookup cache
+int plat_setenv(const char *name, const char *value) {
+    int ok = _putenv_s(name, value ? value : "") == 0;
+    cfg_env_changed();
+    return ok;
+}
 
 uint32_t plat_process_id(void) { return GetCurrentProcessId(); }
 
@@ -2009,4 +2014,9 @@ int plat_restart_wait(uint32_t timeout_ms) {
     int r = process_created(h) != created ? 0 : WaitForSingleObject(h, timeout_ms) == WAIT_OBJECT_0 ? 1 : -1;
     CloseHandle(h);
     return r;
+}
+
+int plat_mem_poke(uint64_t addr, const void *in, size_t n) {
+    SIZE_T put = 0;
+    return WriteProcessMemory(GetCurrentProcess(), (void *)(uintptr_t)addr, in, n, &put) && put == n;
 }

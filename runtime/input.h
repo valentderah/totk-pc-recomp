@@ -141,6 +141,12 @@ int input_cursor_released(void);   // Esc or a non-client activation released th
 // Rumble: SDL_RumbleGamepad on the open gamepad, low (heavy, left) and high (light, right) motor 0..65535 for ms
 // milliseconds. 1 if a gamepad with rumble took it. Callable from any thread.
 int input_rumble(uint16_t low, uint16_t high, uint32_t ms);
+// the VR controllers (vk_xr.c, an OpenXR session): buttons OR'd into pd[PAD_*], axes = sticks lx ly rx ry
+// (SDL range, y up) + triggers (0..32767); 1 while fresh. Motion in the Switch frame (acc in G, gyro rad/s). Rumble.
+int vk_xr_pad(uint8_t pd[], int32_t ax[6]);
+int vk_xr_motion(double acc[3], double gyro[3]);
+void vk_xr_rumble(uint16_t low, uint16_t high, uint32_t ms);
+int vk_xr_wanted(void);
 // Motor value for a normalised amplitude: pow(a, curve) * strength, saturated to 0..65535. Pure.
 uint16_t rumble_motor(float a, float curve, float strength);
 // TOTK_RUMBLE_TRIGGERS=1: input_rumble also drives the impulse triggers (Xbox) with the high motor's value.

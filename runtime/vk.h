@@ -186,6 +186,20 @@ void vk_hdr_support(float out[4]);
 // vk_contact.c: screen-space contact shadows on the game's composed scene colour (TOTK_CONTACT_SHADOWS)
 int vk_contact_strength(void);   // percent, 0 = off
 void vk_contact_release(void);   // before the device goes away
+// vk_xr.c: VR through OpenXR (SteamVR), with --vr / TOTK_VR=1
+int vk_xr_wanted(void);
+void vk_xr_instance_exts(const char **ext, uint32_t *n, uint32_t cap);
+VkPhysicalDevice vk_xr_physical(VkInstance instance);
+void vk_xr_device_exts(const char **ext, uint32_t *n, uint32_t cap);
+void vk_xr_start(void);
+void vk_xr_shutdown(void);   // before the process ends
+int vk_xr_active(void);
+int vk_xr_eye_view(int eye, float pos[3], float rot[9], float *dx);
+void vk_xr_note_game(int eye, float yaw, const float cam[3], float scale);
+void vk_xr_capture(VkCommandBuffer cb, VkImage src, VkFormat fmt, const int crop[4]);   // at the present: menus, HUD, the pair to the headset
+int vk_xr_replay_stereo(void);
+void vk_xr_hud_drawn(VkImage hud, uint32_t w, uint32_t h);   // the HUD layer (RGBA16F, premultiplied) has this frame's HUD
+int vk_xr_frame_clock(uint64_t *wake, uint64_t *period, int *every);   // headset frame clock for the pacer (0: not pacing to it)
 void vk_present_flip(void);
 // Every submission to ctx->gfx_queue (and xfer_queue when shared) takes this lock; vk_present_image and the swapchain
 // rebuild do. Recursive.
@@ -513,6 +527,11 @@ void vk_hdr_image_gone(VkImage image);
 #define VK_EXEC_NULL_ATTACH_FMT VK_FORMAT_R8_UNORM
 void vk_exec_null_attach_release(void);   // vk_device.c, before the device goes: frees the dummy attachments
 const VkTexImage *vk_texture_get(const tex_t *t);   // created and made current; NULL for BUFFER or unmapped formats
+// VR: the HUD layers (vk_texture.c), made on first use
+const VkTexImage *vk_texture_hud(const VkTexImage *img, VkCommandBuffer cb);       // VR HUD layer, made on first use
+const VkTexImage *vk_texture_reticle(const VkTexImage *img, VkCommandBuffer cb);   // VR aim reticle layer (Pointer_00), made on first use
+const VkTexImage *vk_texture_worldhud(const VkTexImage *img, VkCommandBuffer cb);   // VR world markers layer (health bars, labels), made on first use
+const VkTexImage *vk_texture_stamina(const VkTexImage *img, VkCommandBuffer cb);    // VR: the stamina wheel alone (PlayerStatus3D_00), measured to move it on the panel
 const VkTexImage *vk_texture_revive(const tex_t *t, uint32_t pos);  // the entry vk_texture_get would return if it exists, made live at op pos
 // A texture slot; a slot whose texture was finalized follows the live texture at the same storage (hle_nvn.c).
 const VkTexImage *vk_texture_by_id(int id, view_t *view, int *has_view);

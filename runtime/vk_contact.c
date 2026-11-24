@@ -226,7 +226,237 @@ void vk_contact_exec(VkExec *ex, const VkExecJob *j) {
 }
 
 // The sequential replay's hooks; a chunk leaves the marches to the scan.
+// ---- aim tracker: where the game's aim ray hits the scene, for the 3D reticle.
+// The ray runs from the game camera along its forward axis (the game aims through its view's centre; the head is not
+// in the game camera). When the G-buffer pass ends, AIM_N points along the ray, projected into the frame's head
+// camera, are copied from the G-buffer's linear depth into a host buffer; AIM_RING frames later the first point that lies
+// behind the scene there gives the hit distance (vk_xr.c places the reticle layer at it).
+#define AIM_N 64
+#define AIM_RING 4
+int vk_exec_aim_cams(float G[12], float HL[12]);
+float vr_far_plane(void);
+void vk_xr_game_tan(float *th, float *tv);
+void vk_xr_set_reticle_dist(float d);
+int vr_orbit_target(float t[3]);   // vr_camera.c
+int vr_player_pos(float xyz[3]);   // frame_rate.c: Link's position (his feet)
+int vr_aim_ray(float o[3], float f[3]);   // vr_camera.c: the game's aim ray while head aim holds the camera
+// Link as a vertical capsule around his position (body, gear, the drawn bow): the aim never stops on him (aiming
+// past Link would put the bow / throw reticle on his back). March points inside it are skipped, and a sample
+// where the eye sees Link himself says nothing about the ray (it is hidden behind him there).
+#define LINK_R 0.6f
+#define LINK_Y0 (-0.2f)
+#define LINK_Y1 2.1f
+static int in_link(const float lp[3], const float P[3]) {
+    float dx = P[0] - lp[0], dz = P[2] - lp[2], dy = P[1] - lp[1];
+    return dx * dx + dz * dz < LINK_R * LINK_R && dy > LINK_Y0 && dy < LINK_Y1;
+}
+static struct {
+    VkExecTarget depth;
+    int pending, ok, slot;
+    VkBuffer buf[AIM_RING];
+    VmaAllocation al[AIM_RING];
+    const float *map[AIM_RING];
+    float t[AIM_RING][AIM_N], z[AIM_RING][AIM_N];   // ray distance and the point's depth in front of the eye
+    float P[AIM_RING][AIM_N][3], eye[AIM_RING][3], link[AIM_RING][3];   // the points, the eye, Link (when have_link)
+    int have_link[AIM_RING];
+    int n[AIM_RING], used[AIM_RING];
+    float far[AIM_RING];
+    unsigned long hits, misses;
+} AIM;
+// A coarse grid of the same linear depth (DG_N x DG_N points over the frame's view), copied with the aim points: the
+// world markers' depths (vk_xr.c places each marker at the depth of what it floats over). Normalised view coordinates.
+#define DG_N 48
+static struct { VkBuffer buf[AIM_RING]; VmaAllocation al[AIM_RING]; const float *map[AIM_RING]; int used[AIM_RING]; float far[AIM_RING];
+                float H[AIM_RING][12], th[AIM_RING], tv[AIM_RING], lp[AIM_RING][3]; int hl[AIM_RING]; } DG;
+static float DG_m[DG_N * DG_N], DG_a[DG_N * DG_N];   // metres (0: no data / sky); DG_a without Link
+static int DG_ok;
+// The nearest depth (m) over the grid cells inside [u0,u1] x [v0,v1]; 0 when the grid has none there.
+static float dg_min(const float *grid, float u0, float v0, float u1, float v1);
+float vk_contact_depth_min(float u0, float v0, float u1, float v1) { return dg_min(DG_m, u0, v0, u1, v1); }
+// Same without Link (the bow / Ultrahand reticle's depth).
+float vk_contact_depth_min_aim(float u0, float v0, float u1, float v1) { return dg_min(DG_a, u0, v0, u1, v1); }
+static float dg_min(const float *grid, float u0, float v0, float u1, float v1) {
+    if (!__atomic_load_n(&DG_ok, __ATOMIC_ACQUIRE)) return 0;
+    int x0 = (int)(u0 * DG_N), x1 = (int)(u1 * DG_N), y0 = (int)(v0 * DG_N), y1 = (int)(v1 * DG_N);
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > DG_N - 1) x1 = DG_N - 1;
+    if (y1 > DG_N - 1) y1 = DG_N - 1;
+    float m = 0;
+    for (int y = y0; y <= y1; y++)
+        for (int x = x0; x <= x1; x++) {
+            float d = grid[y * DG_N + x];
+            if (d > 0.05f && (m == 0 || d < m)) m = d;
+        }
+    return m;
+}
+static void dg_read(int s) {
+    if (!DG.used[s] || !DG.map[s]) return;
+    DG.used[s] = 0;
+    for (int i = 0; i < DG_N * DG_N; i++) {
+        float v = DG.map[s][i];
+        DG_m[i] = v > 0 && v < 0.999f ? v * DG.far[s] : 0;
+        DG_a[i] = DG_m[i];
+        if (DG.hl[s] && DG_m[i] > 0.05f) {   // the surface point of this cell inside Link: not a target for the reticle
+            int x = i % DG_N, y = i / DG_N;
+            float z = DG_m[i], u = (x + 0.5f) / DG_N, v2 = (y + 0.5f) / DG_N, vx = (2 * u - 1) * DG.th[s] * z, vy = -(2 * v2 - 1) * DG.tv[s] * z;
+            const float *H = DG.H[s];
+            float S[3];
+            for (int k = 0; k < 3; k++) S[k] = -(H[k] * H[3] + H[4 + k] * H[7] + H[8 + k] * H[11]) + H[k] * vx + H[4 + k] * vy - H[8 + k] * z;
+            if (in_link(DG.lp[s], S)) DG_a[i] = 0;
+        }
+    }
+    __atomic_store_n(&DG_ok, 1, __ATOMIC_RELEASE);
+}
+static void dg_sample(VkExec *ex, int s, const float H[12], float th, float tv, const float lp[3], int hl) {
+    dg_read(s);
+    if (!DG.buf[s]) {
+        VkCtx *c = vk_ctx();
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = DG_N * DG_N * 4, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST, .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                      .requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
+        VmaAllocationInfo info;
+        if (vmaCreateBuffer(c->vma, &bi, &ai, &DG.buf[s], &DG.al[s], &info) != VK_SUCCESS) { DG.buf[s] = VK_NULL_HANDLE; return; }
+        DG.map[s] = info.pMappedData;
+    }
+    static VkBufferImageCopy rc[DG_N * DG_N];
+    uint32_t W = AIM.depth.width, Hh = AIM.depth.height;
+    for (int y = 0; y < DG_N; y++)
+        for (int x = 0; x < DG_N; x++)
+            rc[y * DG_N + x] = (VkBufferImageCopy){.bufferOffset = (VkDeviceSize)(y * DG_N + x) * 4, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                                   .imageOffset = {(int32_t)((x + 0.5f) * W / DG_N), (int32_t)((y + 0.5f) * Hh / DG_N), 0}, .imageExtent = {1, 1, 1}};
+    vk_exec_barrier(ex);
+    vkCmdCopyImageToBuffer(ex->cb, AIM.depth.image, VK_IMAGE_LAYOUT_GENERAL, DG.buf[s], DG_N * DG_N, rc);
+    vk_exec_barrier(ex);
+    ex->recorded += 3;
+    DG.used[s] = 1, DG.far[s] = vr_far_plane();
+    memcpy(DG.H[s], H, 48), DG.th[s] = th, DG.tv[s] = tv, DG.hl[s] = hl;
+    if (hl) memcpy(DG.lp[s], lp, 12);
+}
+static float aim_t(int k) { return 0.4f * powf(1.12f, (float)k); }   // 0.4 m .. ~570 m
+static void aim_read(int s) {
+    if (!AIM.used[s] || !AIM.map[s]) return;
+    AIM.used[s] = 0;
+    // A hit is where the ray crosses a surface: one sample in front of what is seen there, the next behind it (the ray
+    // passes right behind Link as the VR camera sees him, so its first samples lie behind his back). Samples that start
+    // out behind a surface (hidden by Link, a ledge) are skipped until the ray comes out in front of the scene again.
+    float prev_t = 0, prev_gap = -1;
+    int seen_front = 0;
+    for (int i = 0; i < AIM.n[s]; i++) {
+        float scene = AIM.map[s][i] * AIM.far[s];
+        float gap = AIM.z[s][i] - scene;   // > 0: the ray point is behind the surface seen there
+        float tol = 0.02f * AIM.z[s][i] + 0.05f;
+        if (!(scene > 0.05f)) continue;
+        if (AIM.have_link[s]) {   // the surface seen here: along the eye's ray through the point, at the scene's depth
+            float k = scene / AIM.z[s][i], S[3];
+            for (int c = 0; c < 3; c++) S[c] = AIM.eye[s][c] + (AIM.P[s][i][c] - AIM.eye[s][c]) * k;
+            if (in_link(AIM.link[s], S)) continue;   // Link covers the ray here: unknown, keep the last sample's state
+        }
+        if (gap <= tol) {   // in front of (or on) the surface seen here
+            if (gap > -tol && seen_front) {   // on it
+                vk_xr_set_reticle_dist(AIM.t[s][i]);
+                AIM.hits++;
+                return;
+            }
+            seen_front = 1, prev_t = AIM.t[s][i], prev_gap = gap;
+            continue;
+        }
+        if (seen_front && prev_gap <= tol) {   // crossed it between the last sample and this one
+            float th = AIM.t[s][i];
+            if (prev_gap < 0) th = prev_t + (AIM.t[s][i] - prev_t) * (-prev_gap) / (gap - prev_gap);
+            vk_xr_set_reticle_dist(th);
+            AIM.hits++;
+            return;
+        }
+        prev_gap = gap;   // behind something nearer: hidden, go on
+    }
+    vk_xr_set_reticle_dist(150);   // nothing hit (sky): far away
+    AIM.misses++;
+}
+static void aim_sample(VkExec *ex) {
+    float G[12], H[12], th, tv;
+    if (!vk_exec_aim_cams(G, H) || !AIM.depth.image) return;
+    vk_xr_game_tan(&th, &tv);
+    if (!(th > 0.1f) || !(tv > 0.1f)) return;
+    VkCtx *c = vk_ctx();
+    int s = AIM.slot;
+    AIM.slot = (AIM.slot + 1) % AIM_RING;
+    aim_read(s);   // this slot's copy is AIM_RING frames old: done
+    if (!AIM.buf[s]) {
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = AIM_N * 4, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST, .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                      .requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
+        VmaAllocationInfo info;
+        if (vmaCreateBuffer(c->vma, &bi, &ai, &AIM.buf[s], &AIM.al[s], &info) != VK_SUCCESS) { AIM.buf[s] = VK_NULL_HANDLE; return; }
+        AIM.map[s] = info.pMappedData;
+    }
+    float cam[3], fwd[3] = {-G[8], -G[9], -G[10]};
+    for (int k = 0; k < 3; k++) cam[k] = -(G[k] * G[3] + G[4 + k] * G[7] + G[8 + k] * G[11]);
+    float ro[3], rf[3];
+    if (vr_aim_ray(ro, rf)) memcpy(cam, ro, 12), memcpy(fwd, rf, 12);   // head aim: the ray the game aims along, not the un-turned camera's
+    // the ray from Link on: seen from the VR camera, ~5 m behind Link, Link stands in front of the ray's
+    // first metres (the game camera is ~1 m behind him while aiming), so every frame "hit" Link (6.8 m, a sample point).
+    // The arrow flies from Link to where this ray meets the scene: the march starts 0.6 m past the look-at point.
+    float tgt[3], t_min = 0;
+    if (vr_orbit_target(tgt)) {
+        float a = (tgt[0] - cam[0]) * fwd[0] + (tgt[1] - cam[1]) * fwd[1] + (tgt[2] - cam[2]) * fwd[2];
+        if (a > 0 && a < 8) t_min = a + 0.6f;
+    }
+    float lp[3];
+    int hl = vr_player_pos(lp);
+    dg_sample(ex, s, H, th, tv, lp, hl);
+    AIM.have_link[s] = hl;
+    if (hl) memcpy(AIM.link[s], lp, 12);
+    for (int k = 0; k < 3; k++) AIM.eye[s][k] = -(H[k] * H[3] + H[4 + k] * H[7] + H[8 + k] * H[11]);
+    VkBufferImageCopy rc[AIM_N];
+    int n = 0;
+    float W = (float)AIM.depth.width, Hh = (float)AIM.depth.height;
+    for (int k = 0; k < AIM_N; k++) {
+        float t = aim_t(k), P[3] = {cam[0] + fwd[0] * t, cam[1] + fwd[1] * t, cam[2] + fwd[2] * t};
+        if (t < t_min) continue;
+        if (hl && in_link(lp, P)) continue;
+        float vx = H[0] * P[0] + H[1] * P[1] + H[2] * P[2] + H[3];
+        float vy = H[4] * P[0] + H[5] * P[1] + H[6] * P[2] + H[7];
+        float vz = H[8] * P[0] + H[9] * P[1] + H[10] * P[2] + H[11];
+        float z = -vz;
+        if (!(z > 0.05f)) continue;
+        float u = (vx / z / th + 1) * 0.5f, v = (-vy / z / tv + 1) * 0.5f;
+        if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
+        rc[n] = (VkBufferImageCopy){.bufferOffset = (VkDeviceSize)n * 4, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                     .imageOffset = {(int32_t)(u * W), (int32_t)(v * Hh), 0}, .imageExtent = {1, 1, 1}};
+        AIM.t[s][n] = t, AIM.z[s][n] = z, memcpy(AIM.P[s][n], P, 12), n++;
+    }
+    if (!n) return;
+    vk_exec_barrier(ex);
+    vkCmdCopyImageToBuffer(ex->cb, AIM.depth.image, VK_IMAGE_LAYOUT_GENERAL, AIM.buf[s], (uint32_t)n, rc);
+    vk_exec_barrier(ex);
+    ex->recorded += 3;
+    AIM.n[s] = n, AIM.used[s] = 1, AIM.far[s] = vr_far_plane();
+    static unsigned long nlog;
+    if (++nlog % 3600 == 1) rt_log("vr: aim tracker: %lu hits, %lu misses (G-buffer linear depth %ux%u, far %.0f)", AIM.hits, AIM.misses, AIM.depth.width, AIM.depth.height, AIM.far[s]);
+}
+static int aim_gbuffer(const VkExec *ex, const VkExecTarget **depth) {   // is_gbuffer without its storage condition
+    const VkExecTarget *scene = NULL;
+    *depth = NULL;
+    if (ex->pass_noatt || ex->pass_w < 640 || ex->depth.format != VK_FORMAT_D32_SFLOAT || ex->depth.level) return 0;
+    for (uint32_t i = 0; i < ex->pass_ncolor && i < 8; i++) {
+        const VkExecTarget *t = &ex->color[i];
+        if (!t->image || t->level || t->width != ex->pass_w || t->height != ex->pass_h) continue;
+        if (t->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 && !scene) scene = t;
+        if (t->format == VK_FORMAT_R32_SFLOAT && !*depth) *depth = t;
+    }
+    return scene && *depth;
+}
+static void aim_pass(VkExec *ex) {
+    if (vk_exec_walk2() || vk_exec_hud_replay()) return;   // the frame's own passes only, not the HUD replay
+    const VkExecTarget *depth;
+    int gb = aim_gbuffer(ex, &depth);
+    if (AIM.pending && !gb) AIM.pending = 0, aim_sample(ex);   // the G-buffer pass has ended
+    if (gb) AIM.depth = *depth, AIM.pending = 1;
+}
+
 void vk_contact_pass_begin(VkExec *ex) {
+    aim_pass(ex);
     VkExecJob j;
     if (!ex->chunked && vk_contact_plan(ex, 1, &j)) vk_contact_exec(ex, &j);
 }

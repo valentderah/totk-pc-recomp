@@ -666,6 +666,9 @@ static void clear_tex(VkExec *ex, const p_clear_tex *p) {
     Sub s;
     if (!sub_resolve(t, &p->view, p->has_view, &p->r, 1, &s)) return;
     const VkTexImage *img = s.img;
+    int walk2 = vk_exec_walk2();   // the VR HUD replay: a clear of the output goes to the HUD layer, others are left out
+    if (walk2) img = vk_exec_walk2_clear_target(img);
+    if (walk2 && (!img || img == s.img)) return;
     int is3d = img->type == VK_IMAGE_TYPE_3D;
     uint32_t lw = max1(img->width >> s.level), lh = max1(img->height >> s.level);
     int reformat = p->has_view && p->view.set_format && p->view.format != t->d.format;
@@ -697,7 +700,7 @@ static void clear_tex(VkExec *ex, const p_clear_tex *p) {
         vkCmdClearDepthStencilImage(ex->cb, img->image, VK_IMAGE_LAYOUT_GENERAL, &dv, 1, &rng);
     }
     ex->recorded++;
-    vk_texture_gpu_written(t);
+    if (!walk2) vk_texture_gpu_written(t);
 }
 
 void vk_exec_op_xfer(VkExec *ex, uint32_t op, const void *payload) {

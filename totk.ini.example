@@ -414,6 +414,19 @@
 # The key of the application's uploaded art asset shown as the status's large image.
 # discord_image = totk_512x512
 
+[vr]
+# VR in a SteamVR headset (docs/vr.md). 1 = on, the same as starting with --vr: the game then draws each eye at a
+# square 2048x2048 picture with the HUD laid out for it, over this file's output_res, hud_width, hdr and
+# render_scale. Restart to apply. Without a headset the game plays flat and the log says why.
+# vr = 0
+# render_scale in VR (the flat one above stays for flat play): 200 draws 4096x4096 per eye.
+# vr_render_scale = 200
+# Metres added to the height of the camera behind Link. F1 > VR, live.
+# vr_cam_height = 0
+# The bow, throws, the camera and the scope aim where you look while in use. 0 = aim with the right stick. F1 > VR.
+# vr_head_aim = 1
+# The other VR settings and the troubleshooting switches: docs/settings.md, "VR".
+
 [audio]
 # none mixes without opening an audio device.
 # audio = default

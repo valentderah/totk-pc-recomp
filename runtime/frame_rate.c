@@ -64,6 +64,19 @@
 static _Atomic uint64_t *step_word;   // patch page +0: ratio (low float), seconds (high float)
 static double step_now = STEP_FIRST_S;   // the step the patch page holds: what the game steps each frame
 static _Atomic uint32_t *step_interval;   // patch page +8: seconds * 60 (patches-v143.txt realtime)
+// patch page +0x18: the hair/cloth clock (set cloth), ratio (low float), seconds (high float). The game step, except in
+// VR stereo pairs: there a left frame steps the pair's time and a right frame the shortest step, and the cloth solver
+// (velocity kept as position minus last position) went wild with steps changing ~10x every frame (Zora
+// ears, glider ribbons); it gets the even step instead (half the pair's time on every frame).
+static _Atomic uint64_t *cloth_word;
+static void cloth_store(float seconds) {
+    if (!cloth_word) return;
+    float ratio = seconds * 30.0f;
+    uint32_t lo, hi;
+    memcpy(&lo, &ratio, 4);
+    memcpy(&hi, &seconds, 4);
+    atomic_store_explicit(cloth_word, (uint64_t)lo | (uint64_t)hi << 32, memory_order_release);
+}
 static uint64_t last_ns;
 static double samples[STEP_SAMPLES];
 static unsigned sample_count, sample_next;
@@ -77,6 +90,7 @@ static void step_store(float seconds) {
     memcpy(&iv, &interval, 4);
     atomic_store_explicit(step_word, (uint64_t)lo | (uint64_t)hi << 32, memory_order_release);
     atomic_store_explicit(step_interval, iv, memory_order_release);
+    cloth_store(seconds);
 }
 
 static void frame_limit_live(void);
@@ -99,6 +113,7 @@ void frame_step_init(void) {
     if (rt_patch_enabled(realtime)) {
         step_word = (_Atomic uint64_t *)rt_patch_page();
         step_interval = (_Atomic uint32_t *)((uint8_t *)rt_patch_page() + 8);
+        cloth_word = (_Atomic uint64_t *)((uint8_t *)rt_patch_page() + 0x18);
         step_store((float)STEP_FIRST_S);
     }
     frame_limit_live();   // TOTK_FPS_LIMIT decides the set fps60 from the start
@@ -155,8 +170,15 @@ static void frame_limit_live(void) {
     else rt_log("frame rate: limit at the monitor's refresh rate (60 until the window measures it)");
 }
 
+int vk_xr_frame_clock(uint64_t *wake, uint64_t *period, int *every);   // vk_xr.c
 uint64_t frame_step_cap_ns(void) {
     frame_limit_live();
+    {   // VR: the headset's frame rate is the limit (the step must be allowed down to its period)
+        uint64_t w, p;
+        int k;
+        int vr_pairs(void), vk_xr_pair_rate(void);   // stereo pairs (vr_camera.c): two game frames, one per eye, each headset frame
+        if (frame_step_realtime() && vk_xr_frame_clock(&w, &p, &k)) return p * (uint64_t)k / (vr_pairs() && vk_xr_pair_rate() ? 2 : 1);
+    }
     double hz = limit_hz ? limit_hz : gfx_window_refresh_hz();
     if (hz < LIMIT_MIN_HZ) hz = 60;   // display rate unknown (no window yet)
     if (hz > LIMIT_MAX_HZ) hz = LIMIT_MAX_HZ;
@@ -214,6 +236,8 @@ static int player_pos(float xyz[3]) {
     }
     return 0;
 }
+
+int vr_player_pos(float xyz[3]) { return player_pos(xyz); }   // (vr_camera.c anchors the level lock on Link)
 
 static void speed_report(uint64_t now, double step, int interval) {
     if (!win_t0) {
@@ -290,7 +314,20 @@ void frame_step_present(uint64_t display_ns, int interval) {
             for (unsigned i = 0; i < sample_count; i++) sum += samples[i];
             step = sum / sample_count;
             if (step < STEP_MIN_S) step = STEP_MIN_S;
-            step_store((float)step);
+            {   // VR stereo pairs: a left frame the pair's time, a right one the shortest step
+                double vr_pair_frame_step(double step, double min);
+                double vs = vr_pair_frame_step(step, STEP_MIN_S);
+                step_store((float)vs);
+                if (vs != step) {
+                    // Pair mode runs ~100-144 game frames/s. Hair is solved with position constraints each step: gravity
+                    // moves it by dt^2, the bend constraints pull it fully back to its rest shape, so at such short steps
+                    // the rest shape wins (Yona's head fin stood out sideways and flapped instead of hanging
+                    // like in the flat game at 60). The cloth clock never goes below TOTK_VR_CLOTHMIN (s, default 1/60).
+                    static double cmin = -1;
+                    if (cmin < 0) { const char *e = cfg_get("TOTK_VR_CLOTHMIN"); cmin = e ? atof(e) : 1.0 / 60.0; }
+                    cloth_store((float)(step > cmin ? step : cmin));
+                }
+            }
         }
     }
     last_ns = display_ns;

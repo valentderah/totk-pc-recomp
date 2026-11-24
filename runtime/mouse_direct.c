@@ -262,6 +262,70 @@ static uint32_t player_state(void) {
     return f;
 }
 
+// The player's 5 action verbs (slot order, -1 unreadable); 0 when the player is not found. Used by VR (vr_camera.c).
+int player_verbs(int32_t out[5]) {
+    for (int i = 0; i < 5; i++) out[i] = -1;
+    if (!mouse_layout()->player_root_slot) return 0;
+    uint64_t slot = MOD_MAIN_BASE + mouse_layout()->player_root_slot;
+    if (!readable(slot, 8)) return 0;
+    uint64_t var = guest_pointer(slot);
+    if (!readable(var, 8)) return 0;
+    uint64_t root = guest_pointer(var);
+    if (!readable(root, 0x38)) return 0;
+    uint64_t link = root + 0x20, unit = guest_pointer(link + 8);
+    int32_t id = guest_s32(link + 0x10);
+    if (id == -1 || !readable(unit, 0x50) || guest_s32(unit + 0x48) != id) return 0;
+    uint64_t proc = guest_pointer(unit + 0x40);
+    if (!game_object(proc, 0x230) || (uint32_t)(guest_s32(proc + 0x24) - 7) < 5) return 0;
+    uint64_t comps = guest_pointer(proc + 0x228);
+    if (!readable(comps, 0x160)) return 0;
+    uint64_t as = guest_pointer(comps + 0x158);
+    if (!game_object(as, 0x1f0 + 5 * 8)) return 0;
+    for (int i = 0; i < 5; i++) {
+        uint64_t s = guest_pointer(as + 0x1f0 + 8ull * i);
+        if (!readable(s, 0x50)) continue;
+        int32_t v = guest_s32(s + 0x28);
+        out[i] = v == VERB_INVALID ? guest_s32(s + 0x4c) : v;
+    }
+    return 1;
+}
+
+// Link is a ragdoll: bit 10 of his physics ragdoll controller's flags (the controller list of the player actor's physics
+// component; the game's own ragdoll query 0x1be004c reads the same word for actors with a ragdoll reaction). Set while
+// he rolls on the ground after a heavy hit or a lightning strike (action verb SlippingDown), clear when he starts to
+// stand up. 1.4.3 only (main+0x3969918's chain); every pointer is checked. 0 when nothing can be read.
+int player_ragdoll(void) {
+    if (!mouse_layout()->player_root_slot) return 0;
+    uint64_t slot = MOD_MAIN_BASE + mouse_layout()->player_root_slot;
+    if (!readable(slot, 8)) return 0;
+    uint64_t var = guest_pointer(slot);
+    if (!readable(var, 8)) return 0;
+    uint64_t root = guest_pointer(var);
+    if (!readable(root, 0x38)) return 0;
+    uint64_t link = root + 0x20, unit = guest_pointer(link + 8);
+    int32_t id = guest_s32(link + 0x10);
+    if (id == -1 || !readable(unit, 0x50) || guest_s32(unit + 0x48) != id) return 0;
+    uint64_t actor = guest_pointer(unit + 0x40);
+    if (!game_object(actor, 0x230) || (uint32_t)(guest_s32(actor + 0x24) - 7) < 5) return 0;
+    uint64_t p = guest_pointer(actor + 0x228);   // components
+    if (!readable(p, 0x58)) return 0;
+    p = guest_pointer(p + 0x50);   // physics
+    if (!readable(p, 0x28)) return 0;
+    p = guest_pointer(p + 0x20);
+    if (!readable(p, 0x160)) return 0;
+    p = guest_pointer(p + 0x158);   // ragdoll controllers
+    if (!readable(p, 0xe0) || guest_s32(p + 0xd0) < 1) return 0;
+    p = guest_pointer(p + 0xd8);
+    if (!readable(p, 8)) return 0;
+    p = guest_pointer(p);
+    if (!readable(p, 8)) return 0;
+    p = guest_pointer(p);
+    if (!readable(p, 0x100)) return 0;
+    p = guest_pointer(p + 0xf8);
+    if (!readable(p, 0x70)) return 0;
+    return (int)(guest_pointer(p + 0x68) >> 10 & 1);
+}
+
 // The player's state for this camera step, read again every 50 ms (each read costs memory queries), and its changes in
 // the log (the first reads, then each change, 40 lines)
 static uint32_t player_state_logged(void) {

@@ -194,7 +194,7 @@ static double dlss_share(const char *m) {
 static void shape_fallback(void) {
     const char *own = cfg_get("TOTK_ROMFS_PATCHES");
     unsigned out[2] = {R.ow, R.oh};
-    if (own || !res_wants_wide_overlay(out) || romfs_shaped_ready(R.ow, R.oh)) return;
+    if (own || vk_xr_world() || !res_wants_wide_overlay(out) || romfs_shaped_ready(R.ow, R.oh)) return;   // VR: its own shape
     unsigned h = R.oh, w = R.ow;
     if ((uint64_t)w * 9 <= (uint64_t)h * 16) h = (unsigned)((uint64_t)w * 9 / 16) & ~1u;
     w = (unsigned)((uint64_t)h * 16 / 9) & ~1u;
@@ -698,6 +698,7 @@ static void vert_plus_init(double ratio_over_16x9) {
 
 void res_fov_live(void) {
     static int set = -2, shown = 100, shown_vp = 0;   // the game's own view: nothing to write until one changes
+    if (vk_xr_world()) return;   // VR sets the view angle itself (vk_xr.c publish_views)
     if (set == -2) set = rt_patch_set("fov");
     int pct = cfg_int("TOTK_FOV");
     pct = pct < FOV_MIN ? FOV_MIN : pct > FOV_MAX ? FOV_MAX : pct;

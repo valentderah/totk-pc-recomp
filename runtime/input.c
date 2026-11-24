@@ -549,6 +549,16 @@ static void scan_pads(void) {
     for (int pass = 0; pass < 2 && !pad; pass++)
         for (int i = 0; ids && i < n && !pad; i++)
             if (steam_hidden_id(ids[i]) == pass) {
+                // VR: Steam Input mirrors the Steam Frame's controllers as an ordinary gamepad. In a SteamVR session the
+                // game reads them through OpenXR already (vk_xr.c), and the mirror, opened first, kept any gamepad
+                // connected later (a DualSense) from ever being used: skipped, so the next real pad is opened (the scan
+                // repeats while none is open). TOTK_VR_FRAMEPAD=1 opens it anyway.
+                const char *nm = SDL_GetGamepadNameForID(ids[i]);
+                if (vk_xr_wanted() && nm && strstr(nm, "Steam Frame") && !cfg_bool("TOTK_VR_FRAMEPAD")) {
+                    static int told;
+                    if (!told++) rt_log("input: \"%s\" left aside in VR (the Frame controllers are read through OpenXR); another gamepad is used when connected", nm);
+                    continue;
+                }
                 // The controller motion_source holds for its sensors serves as the pad too: one open handle
                 if (motion_extra && SDL_GetGamepadID(motion_extra) == ids[i]) { pad = motion_extra; motion_extra = NULL; }
                 else pad = SDL_OpenGamepad(ids[i]);
@@ -827,21 +837,61 @@ static int pad_physical(uint8_t pd[PAD_COUNT]) {
 #define PAD_GUIDE PAD_COUNT
 static uint8_t pad_seen[PAD_COUNT + 1];
 static int16_t trigger_seen[2];
-
+static uint64_t xr_used_ns, sdl_used_ns;   // when each was last moved (pad_read)
+static int xr_last_used;                    // under lock: the VR controllers moved more recently than the SDL pad
 static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     uint8_t pd[PAD_COUNT] = {0};
-    if (!pad_physical(pd)) {
+    int have = state == 1 && pad_physical(pd);   // SDL's pad; the VR controllers below also without SDL
+    if (have) {
+        memcpy(pad_seen, pd, sizeof pd);
+        pad_seen[PAD_GUIDE] = SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_GUIDE);
+        trigger_seen[0] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+        trigger_seen[1] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
+    } else {
         memset(pad_seen, 0, sizeof pad_seen);
         memset(trigger_seen, 0, sizeof trigger_seen);
-        return 0;
     }
-    memcpy(pad_seen, pd, sizeof pd);
-    pad_seen[PAD_GUIDE] = SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_GUIDE);
-    trigger_seen[0] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
-    trigger_seen[1] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
+    // the VR controllers in a SteamVR session (vk_xr.c) are a second pad, read by position like this one.
+    // Whichever of the two was used last gets the rumble and (the SDL pad when it has sensors) the six-axis sensor
+    // (xr_last_used); a poll where both move counts for the VR controllers (Steam Input can mirror them as an SDL pad).
+    uint8_t xd[PAD_COUNT] = {0};
+    int32_t xa[6];
+    int xr = vk_xr_pad(xd, xa);
+    if (!have && !xr) return 0;
+    int sdl_act = 0, xr_act = 0;
+    for (int p = 1; p < PAD_COUNT; p++) sdl_act |= pd[p], xr_act |= xd[p];
+    if (have) {
+        int32_t a[4] = {SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX), SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY),
+                        SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX), SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY)};
+        for (int i = 0; i < 4; i++) sdl_act |= abs(a[i]) > STICK_DIR;
+    }
+    if (xr) {
+        if (xa[4] > TRIGGER_ON) xd[PAD_ZL] = 1;
+        if (xa[5] > TRIGGER_ON) xd[PAD_ZR] = 1;
+        for (int i = 0; i < 4; i++) xr_act |= abs(xa[i]) > STICK_DIR;
+        xr_act |= xd[PAD_ZL] | xd[PAD_ZR];
+        for (int p = 1; p < PAD_COUNT; p++) pd[p] |= xd[p];
+    }
+    uint64_t now = plat_now_ns();
+    if (xr_act) {
+        if (!xr_last_used) rt_log("input: the VR controllers are in use (rumble and motion follow them)");
+        __atomic_store_n(&xr_used_ns, now, __ATOMIC_RELAXED), xr_last_used = 1;
+    } else if (sdl_act && have) {
+        if (xr_last_used) rt_log("input: the gamepad is in use (rumble and motion follow it)");
+        __atomic_store_n(&sdl_used_ns, now, __ATOMIC_RELAXED), xr_last_used = 0;
+    }
     *b |= input_map_pad_buttons(pd, pad_layout_get());
-    stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, stick_dead_get(0), sl);
-    stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY, stick_dead_get(1), sr);
+    if (have) {
+        stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, stick_dead_get(0), sl);
+        stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY, stick_dead_get(1), sr);
+    }
+    if (xr) {   // the stick pushed further wins
+        int32_t t[2];
+        input_pad_stick(xa[0], xa[1], stick_dead_get(0), t);
+        if ((int64_t)t[0] * t[0] + (int64_t)t[1] * t[1] > (int64_t)sl[0] * sl[0] + (int64_t)sl[1] * sl[1]) sl[0] = t[0], sl[1] = t[1];
+        input_pad_stick(xa[2], xa[3], stick_dead_get(1), t);
+        if ((int64_t)t[0] * t[0] + (int64_t)t[1] * t[1] > (int64_t)sr[0] * sr[0] + (int64_t)sr[1] * sr[1]) sr[0] = t[0], sr[1] = t[1];
+    }
     return 1;
 }
 
@@ -987,9 +1037,10 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
     int32_t sl[2] = {0, 0}, sr[2] = {0, 0};
     plat_mutex_lock(&lock);
     if (!state) start();
+    if (state < 0) binds_refresh(), pad_read(&b, sl, sr);   // TOTK_INPUT=none: only the VR controllers, when a SteamVR session reads them
     if (state > 0) {
         binds_refresh();
-        if (state == 1) pad_read(&b, sl, sr);
+        pad_read(&b, sl, sr);
         int pad_used = b || abs(sl[0]) > PAD_USED || abs(sl[1]) > PAD_USED || abs(sr[0]) > PAD_USED ||
                        abs(sr[1]) > PAD_USED, kbm_used = 0;
         if (ikb_foreground()) {
@@ -1263,7 +1314,9 @@ static void rumble_write(uint16_t low, uint16_t high, uint32_t ms) {
     SDL_Gamepad *g = NULL;
     int triggers = input_rumble_triggers_enabled();
     plat_mutex_lock(&lock);
-    if (state == 1 && pad && pad_rumble) g = SDL_OpenGamepad(SDL_GetGamepadID(pad));
+    // VR: the VR controllers (only while a SteamVR session reads them) when they were used last, else the pad
+    if (xr_last_used || !(state == 1 && pad && pad_rumble)) vk_xr_rumble(low, high, ms);
+    if (!xr_last_used && state == 1 && pad && pad_rumble) g = SDL_OpenGamepad(SDL_GetGamepadID(pad));
     plat_mutex_unlock(&lock);
     if (!g) return;
     SDL_RumbleGamepad(g, low, high, ms);
@@ -1481,6 +1534,15 @@ static void motion_main(void *arg) {
                    SDL_GetGamepadSensorData(src, SDL_SENSOR_GYRO, g, 3);
         }
         plat_mutex_unlock(&lock);
+        {   // the right VR controller's motion (vk_xr.c) wins over every other source while it is fresh
+            double xacc[3], xgyro[3];
+            // ... unless the SDL pad, with sensors of its own, was used more recently
+            uint64_t xu = __atomic_load_n(&xr_used_ns, __ATOMIC_RELAXED), su = __atomic_load_n(&sdl_used_ns, __ATOMIC_RELAXED);
+            if (!(have && su > xu) && vk_xr_motion(xacc, xgyro)) {
+                if (input_motion_enabled()) motion_feed(motion_global(), xacc, xgyro, kern_now_ns());
+                continue;
+            }
+        }
         if (!have || !input_motion_enabled()) continue;
         double acc[3], gyro[3];
         input_motion_axes(a, g, acc, gyro);

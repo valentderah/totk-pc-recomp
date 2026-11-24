@@ -86,6 +86,7 @@ static MovieGuest G;
 static volatile int32_t g_ready;
 static PlatMutex g_init = PLAT_MUTEX_INIT;
 static Movie *g_movies[MAX_MOVIES];
+static uint64_t g_last_out_ns;                  // when a movie last handed the game a frame (movie_playing)
 static volatile int32_t g_count;                // live host decoders: movie_tick returns at once when 0
 static PlatMutex g_lock = PLAT_MUTEX_INIT;        // lock order: g_lock, then Movie.mu
 static uint64_t (*g_clock)(void) = kern_now_ns;
@@ -554,6 +555,7 @@ static void release_due(Movie *m, uint64_t now) {
         m->st.handed += m->ndecoded;
         m->ndecoded = 0;
         m->owed |= 1u << MOVIE_EV_OUTPUT;
+        __atomic_store_n(&g_last_out_ns, kern_now_ns(), __ATOMIC_RELAXED);
         return;
     }
     while (m->ndecoded > 1 && m->t0 && !(m->decoded[0].flags & MOVIE_FLAG_EOS) &&
@@ -577,8 +579,14 @@ static void release_due(Movie *m, uint64_t now) {
     m->ready[m->nready++] = d;
     m->st.handed++;
     m->owed |= 1u << MOVIE_EV_OUTPUT;
+    __atomic_store_n(&g_last_out_ns, kern_now_ns(), __ATOMIC_RELAXED);
 }
 
+// A movie is playing: it handed the game a frame in the last half second (vk_xr.c shows it on a screen in VR).
+int movie_playing(void) {
+    uint64_t t = __atomic_load_n(&g_last_out_ns, __ATOMIC_RELAXED);
+    return t && kern_now_ns() - t < 500000000ull;
+}
 void movie_tick(Cpu *c) {
     if (!g_count) return;
     Signals s = {0};
@@ -782,7 +790,10 @@ static void ov_start(Cpu *c) {
             m->fit = NULL;
             unsigned out[2];
             res_wanted(out);
-            if (strcmp(cfg_value("TOTK_MOVIE_ASPECT"), "stretch")) {
+            // VR: the game's screens are laid out at 16:9 and stretched over the square output, and the VR panel shows
+            // them at 16:9 again, so a movie fills the output (kept in shape there it came out squashed on the panel)
+            int vk_xr_world(void);
+            if (strcmp(cfg_value("TOTK_MOVIE_ASPECT"), "stretch") && !vk_xr_world()) {
                 m->fit = movie_fit_new(m->w, m->h, out[0], out[1]);
                 if (m->fit)
                     rt_log("movie: %dx%d picture kept in shape on the %ux%u output (%dx%d inside the frame)", m->w,
