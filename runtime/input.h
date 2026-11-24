@@ -6,6 +6,9 @@
 // Down=15) and the stick directions (StickLLeft..Down 16-19, StickRLeft..Down 20-23, derived from the sticks).
 // Sticks are -32767..32767, up is +y. TOTK_INPUT=none reports no input. Callable from any thread.
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
+// armor_sets.c: while a weapon, shield or bow shortcut strip is open, takes the right stick's up and down (it switches
+// the strip to the armour sets and back). The game's pad poll (ov_input.c) calls it after input_poll.
+void armor_sets_filter(uint64_t *buttons, int32_t *ry);
 // 1 when keyboard and mouse are the device the player used last, 0 when the gamepad is: what is shown for pointing
 // (menu_cursor.c shows the pointer in the game's menus only for the keyboard and mouse)
 int input_kbm_last(void);

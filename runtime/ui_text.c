@@ -687,6 +687,16 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                     "list.",
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u of its code patch sites are overridden by %s, which is higher in the list.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "It overrides %u code patch sites of %s, which is lower in the list.",
+    [UI_ARMOR_REGISTER] = "Register to armor set",
+    [UI_ARMOR_CLEAR] = "Clear all armor sets",
+    [UI_ARMOR_CLEAR_YES] = "Yes, clear all sets",
+    [UI_ARMOR_SET_FMT] = "Set %d",
+    [UI_ARMOR_STRIP_FMT] = "Armor Set %d",
+    [UI_MENU_TAB_GAMEMODS] = "Game modifications",
+    [UI_MENU_ARMOR_SETS] = "Armor sets",
+    [UI_MENU_ARMOR_SETS_DESC] = "On, an armor piece in the inventory gets \"Register to armor set\", which adds it to one of "
+        "nine sets. While the weapon, shield or bow shortcut is held, push the right stick up to see your sets and down to "
+        "go back; let go on a set to put it on. Off (the default), the game is unchanged.",
 };
 
 static const char *const text_ru[UI_TEXT_COUNT] = {
@@ -1340,6 +1350,17 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_OVERRIDES_DATA] = "%u байт его изменений данных игры заменяют изменения мода %s, он ниже в списке.",
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u мест его патчей кода перекрыты модом %s, он выше в списке.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Он перекрывает %u мест патчей кода мода %s, он ниже в списке.",
+    [UI_ARMOR_REGISTER] = "Добавить в комплект",
+    [UI_ARMOR_CLEAR] = "Очистить все комплекты",
+    [UI_ARMOR_CLEAR_YES] = "Да, очистить все",
+    [UI_ARMOR_SET_FMT] = "Комплект %d",
+    [UI_ARMOR_STRIP_FMT] = "Комплект брони %d",
+    [UI_MENU_TAB_GAMEMODS] = "Модификации игры",
+    [UI_MENU_ARMOR_SETS] = "Комплекты брони",
+    [UI_MENU_ARMOR_SETS_DESC] = "Включено: у брони в инвентаре появляется пункт «Добавить в комплект», который сохраняет её в "
+        "один из девяти комплектов. Пока удерживается быстрый выбор оружия, щита или лука, наклоните правый стик вверх, "
+        "чтобы увидеть комплекты, и вниз, чтобы вернуться; отпустите на комплекте, чтобы надеть его. Выключено (по "
+        "умолчанию): игра без изменений.",
 };
 
 static const char *const text_pt_br[UI_TEXT_COUNT] = {
@@ -2030,6 +2051,17 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u pontos dos seus patches de código são sobrepostos por %s, que está acima na "
                                      "lista.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Ele sobrepõe %u pontos dos patches de código de %s, que está abaixo na lista.",
+    [UI_ARMOR_REGISTER] = "Registrar em conjunto",
+    [UI_ARMOR_CLEAR] = "Limpar todos os conjuntos",
+    [UI_ARMOR_CLEAR_YES] = "Sim, limpar todos",
+    [UI_ARMOR_SET_FMT] = "Conjunto %d",
+    [UI_ARMOR_STRIP_FMT] = "Conjunto de armadura %d",
+    [UI_MENU_TAB_GAMEMODS] = "Modificações do jogo",
+    [UI_MENU_ARMOR_SETS] = "Conjuntos de armadura",
+    [UI_MENU_ARMOR_SETS_DESC] = "Ligado, uma peça de armadura no inventário ganha \"Registrar em conjunto\", que a adiciona a "
+        "um de nove conjuntos. Enquanto o atalho de arma, escudo ou arco estiver pressionado, mova o analógico direito "
+        "para cima para ver seus conjuntos e para baixo para voltar; solte em um conjunto para vesti-lo. Desligado (o "
+        "padrão), o jogo não muda.",
 };
 
 // Simplified Chinese: this row covers the software keyboard and the whole menu, so the menu and the overlay read Chinese
@@ -2769,6 +2801,15 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_OVERRIDES_DATA] = "它对游戏数据的修改中有 %u 字节取代了列表中更靠下的 %s 的修改。",
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "它有 %u 处代码补丁位置被列表中更靠上的 %s 覆盖。",
     [UI_MENU_MODS_OVERRIDES_CODE] = "它覆盖了 %u 处代码补丁位置，这些位置原属于列表中更靠下的 %s。",
+    [UI_ARMOR_REGISTER] = "登记到防具套装",
+    [UI_ARMOR_CLEAR] = "清除全部防具套装",
+    [UI_ARMOR_CLEAR_YES] = "是，全部清除",
+    [UI_ARMOR_SET_FMT] = "套装 %d",
+    [UI_ARMOR_STRIP_FMT] = "防具套装 %d",
+    [UI_MENU_TAB_GAMEMODS] = "游戏修改",
+    [UI_MENU_ARMOR_SETS] = "防具套装",
+    [UI_MENU_ARMOR_SETS_DESC] = "开启后，背包中的防具会多出“登记到防具套装”选项，可将其加入九套套装之一。按住武器、盾牌或弓的快捷栏时，"
+        "将右摇杆向上推可查看套装，向下推可返回；在某一套装上松开即可穿上。关闭（默认）时，游戏保持原样。",
 };
 
 // German
@@ -3672,6 +3713,17 @@ static const char *const text_de[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u seiner Codepatch-Stellen werden von %s überschrieben, das weiter oben in der "
                                      "Liste steht.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Er überschreibt %u Codepatch-Stellen von %s, das weiter unten in der Liste steht.",
+    [UI_ARMOR_REGISTER] = "Zu Rüstungsset hinzufügen",
+    [UI_ARMOR_CLEAR] = "Alle Rüstungssets löschen",
+    [UI_ARMOR_CLEAR_YES] = "Ja, alle löschen",
+    [UI_ARMOR_SET_FMT] = "Set %d",
+    [UI_ARMOR_STRIP_FMT] = "Rüstungsset %d",
+    [UI_MENU_TAB_GAMEMODS] = "Spielmodifikationen",
+    [UI_MENU_ARMOR_SETS] = "Rüstungssets",
+    [UI_MENU_ARMOR_SETS_DESC] = "Ein: Ein Rüstungsteil im Inventar bekommt „Zu Rüstungsset hinzufügen“, das es einem von neun Sets "
+        "hinzufügt. Während die Schnellauswahl für Waffen, Schilde oder Bögen gehalten wird, drücke den "
+        "rechten Stick nach oben, um deine Sets zu sehen, und nach unten, um zurückzugehen; lass auf einem "
+        "Set los, um es anzulegen. Aus (Standard): Das Spiel bleibt unverändert.",
 };
 
 // French
@@ -4597,6 +4649,17 @@ static const char *const text_fr[UI_TEXT_COUNT] = {
                                      "placé plus haut dans la liste.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Il remplace %u emplacements de correctifs de code de %s, placé plus bas dans la "
                                     "liste.",
+    [UI_ARMOR_REGISTER] = "Ajouter à une tenue",
+    [UI_ARMOR_CLEAR] = "Effacer toutes les tenues",
+    [UI_ARMOR_CLEAR_YES] = "Oui, tout effacer",
+    [UI_ARMOR_SET_FMT] = "Tenue %d",
+    [UI_ARMOR_STRIP_FMT] = "Tenue %d",
+    [UI_MENU_TAB_GAMEMODS] = "Modifications du jeu",
+    [UI_MENU_ARMOR_SETS] = "Tenues d'armure",
+    [UI_MENU_ARMOR_SETS_DESC] = "Activé, une pièce d'armure de l'inventaire reçoit « Ajouter à une tenue », qui l'ajoute à l'une de "
+        "neuf tenues. Pendant que le raccourci des armes, boucliers ou arcs est maintenu, poussez le stick "
+        "droit vers le haut pour voir vos tenues et vers le bas pour revenir ; relâchez sur une tenue pour la "
+        "porter. Désactivé (par défaut), le jeu n'est pas modifié.",
 };
 
 // Spanish
@@ -5505,6 +5568,17 @@ static const char *const text_es[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u de sus puntos de parche de código quedan anulados por %s, que está más "
                                      "arriba en la lista.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Anula %u puntos de parche de código de %s, que está más abajo en la lista.",
+    [UI_ARMOR_REGISTER] = "Añadir a un conjunto",
+    [UI_ARMOR_CLEAR] = "Borrar todos los conjuntos",
+    [UI_ARMOR_CLEAR_YES] = "Sí, borrar todo",
+    [UI_ARMOR_SET_FMT] = "Conjunto %d",
+    [UI_ARMOR_STRIP_FMT] = "Conjunto %d",
+    [UI_MENU_TAB_GAMEMODS] = "Modificaciones del juego",
+    [UI_MENU_ARMOR_SETS] = "Conjuntos de armadura",
+    [UI_MENU_ARMOR_SETS_DESC] = "Activado, una pieza de armadura del inventario tiene «Añadir a un conjunto», que la añade a uno de "
+        "nueve conjuntos. Mientras mantienes el atajo de armas, escudos o arcos, mueve el stick derecho hacia "
+        "arriba para ver tus conjuntos y hacia abajo para volver; suelta sobre un conjunto para ponértelo. "
+        "Desactivado (por defecto), el juego no cambia.",
 };
 
 // Italian
@@ -6416,6 +6490,17 @@ static const char *const text_it[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u dei suoi punti di patch del codice sono sostituiti da %s, che è più in alto "
                                      "nell'elenco.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Sostituisce %u punti di patch del codice di %s, che è più in basso nell'elenco.",
+    [UI_ARMOR_REGISTER] = "Aggiungi a un set",
+    [UI_ARMOR_CLEAR] = "Cancella tutti i set",
+    [UI_ARMOR_CLEAR_YES] = "Sì, cancella tutto",
+    [UI_ARMOR_SET_FMT] = "Set %d",
+    [UI_ARMOR_STRIP_FMT] = "Set di armature %d",
+    [UI_MENU_TAB_GAMEMODS] = "Modifiche al gioco",
+    [UI_MENU_ARMOR_SETS] = "Set di armature",
+    [UI_MENU_ARMOR_SETS_DESC] = "Attivo: un pezzo di armatura nell'inventario ottiene «Aggiungi a un set», che lo aggiunge a uno di "
+        "nove set. Mentre tieni premuta la scorciatoia di armi, scudi o archi, spingi lo stick destro in alto "
+        "per vedere i tuoi set e in basso per tornare indietro; rilascia su un set per indossarlo. Disattivo "
+        "(predefinito): il gioco resta invariato.",
 };
 
 // Dutch
@@ -7309,6 +7394,17 @@ static const char *const text_nl[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u van zijn codepatchplaatsen worden overschreven door %s, dat hoger in de "
                                      "lijst staat.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Hij overschrijft %u codepatchplaatsen van %s, dat lager in de lijst staat.",
+    [UI_ARMOR_REGISTER] = "Aan pantserset toevoegen",
+    [UI_ARMOR_CLEAR] = "Alle pantsersets wissen",
+    [UI_ARMOR_CLEAR_YES] = "Ja, alles wissen",
+    [UI_ARMOR_SET_FMT] = "Set %d",
+    [UI_ARMOR_STRIP_FMT] = "Pantserset %d",
+    [UI_MENU_TAB_GAMEMODS] = "Spelaanpassingen",
+    [UI_MENU_ARMOR_SETS] = "Pantsersets",
+    [UI_MENU_ARMOR_SETS_DESC] = "Aan: een pantserstuk in de inventaris krijgt 'Aan pantserset toevoegen', dat het aan een van negen "
+        "sets toevoegt. Terwijl de snelkeuze voor wapens, schilden of bogen ingedrukt is, duw je de "
+        "rechterstick omhoog om je sets te zien en omlaag om terug te gaan; laat los op een set om het aan te "
+        "trekken. Uit (standaard): het spel blijft ongewijzigd.",
 };
 
 // Japanese
@@ -8058,6 +8154,14 @@ static const char *const text_ja[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_OVERRIDES_DATA] = "ゲームデータの変更のうち %u バイトが、リストでより下にある %s のものを置き換えます。",
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "コードパッチ箇所のうち %u 個は、リストでより上にある %s のものが優先されます。",
     [UI_MENU_MODS_OVERRIDES_CODE] = "%u 個のコードパッチ箇所で、リストでより下にある %s より優先されます。",
+    [UI_ARMOR_REGISTER] = "防具セットに登録",
+    [UI_ARMOR_CLEAR] = "防具セットをすべて消去",
+    [UI_ARMOR_CLEAR_YES] = "はい、すべて消去",
+    [UI_ARMOR_SET_FMT] = "セット%d",
+    [UI_ARMOR_STRIP_FMT] = "防具セット%d",
+    [UI_MENU_TAB_GAMEMODS] = "ゲームの変更",
+    [UI_MENU_ARMOR_SETS] = "防具セット",
+    [UI_MENU_ARMOR_SETS_DESC] = "オンにすると、ポーチの防具に「防具セットに登録」が加わり、9つのセットのどれかに登録できます。武器・盾・弓のショートカットを押している間に右スティックを上に倒すとセットが表示され、下に倒すと戻ります。セットの上で離すとそのセットを装備します。オフ（初期設定）ではゲームは変わりません。",
 };
 
 // Korean
@@ -8808,6 +8912,15 @@ static const char *const text_ko[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_OVERRIDES_DATA] = "게임 데이터 변경 %u바이트가 목록에서 더 아래에 있는 %s의 변경을 대체합니다.",
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "코드 패치 위치 %u곳은 목록에서 더 위에 있는 %s의 패치가 우선합니다.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "코드 패치 위치 %u곳에서 목록에서 더 아래에 있는 %s의 패치보다 우선합니다.",
+    [UI_ARMOR_REGISTER] = "방어구 세트에 등록",
+    [UI_ARMOR_CLEAR] = "방어구 세트 모두 삭제",
+    [UI_ARMOR_CLEAR_YES] = "네, 모두 삭제",
+    [UI_ARMOR_SET_FMT] = "세트 %d",
+    [UI_ARMOR_STRIP_FMT] = "방어구 세트 %d",
+    [UI_MENU_TAB_GAMEMODS] = "게임 수정",
+    [UI_MENU_ARMOR_SETS] = "방어구 세트",
+    [UI_MENU_ARMOR_SETS_DESC] = "켜면 인벤토리의 방어구에 '방어구 세트에 등록'이 생겨 9개 세트 중 하나에 추가할 수 있습니다. 무기, 방패 또는 활 단축키를 누르고 있는 동안 오른쪽 스틱을 위로 밀면 세트가 "
+        "보이고 아래로 밀면 돌아갑니다. 세트 위에서 놓으면 그 세트를 착용합니다. 끄면(기본값) 게임은 바뀌지 않습니다.",
 };
 
 // Vietnamese: the software keyboard and the whole menu, so the menu and the overlay read Vietnamese when the menu
@@ -9433,11 +9546,21 @@ static const char *const text_vi[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_OVERRIDES_DATA] = "%u byte thay đổi dữ liệu game của nó thay của %s, mod thấp hơn trong danh sách.",
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u vị trí vá mã của nó bị %s ghi đè, mod cao hơn trong danh sách.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Nó ghi đè %u vị trí vá mã của %s, mod thấp hơn trong danh sách.",
+    [UI_MENU_TAB_GAMEMODS] = "Sửa đổi game",
+    [UI_MENU_ARMOR_SETS] = "Bộ giáp",
+    [UI_MENU_ARMOR_SETS_DESC] = "Bật: trong túi đồ, mỗi món giáp có thêm một mục để thêm nó vào một trong chín bộ giáp. Khi đang giữ "
+        "phím tắt vũ khí, khiên hoặc cung, đẩy cần analog phải lên để xem các bộ và xuống để quay lại; thả ra "
+        "trên một bộ để mặc nó. Tắt (mặc định): game không thay đổi.",
 };
 
-#define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}
-SWKBD_ONLY(text_pt, "Inserir texto", "Introduz um nome", "Cavalo", "OK", "Cancelar", "Comando: A = OK, B = Cancelar");
-SWKBD_ONLY(text_zh_hant, "文字輸入", "請輸入名字", "馬兒", "確定", "取消", "手把：A 確定，B 取消");
+// The armour sets' game labels follow the game's language (armor_sets.c), so every game language has them.
+#define ARMOR(reg, clear, yes, set, strip) [UI_ARMOR_REGISTER] = reg, [UI_ARMOR_CLEAR] = clear, \
+    [UI_ARMOR_CLEAR_YES] = yes, [UI_ARMOR_SET_FMT] = set, [UI_ARMOR_STRIP_FMT] = strip
+#define SWKBD_ONLY(name, armor, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__), armor}
+SWKBD_ONLY(text_pt, ARMOR("Adicionar a um conjunto", "Limpar todos os conjuntos", "Sim, limpar todos", "Conjunto %d", "Conjunto %d"),
+           "Inserir texto", "Introduz um nome", "Cavalo", "OK", "Cancelar", "Comando: A = OK, B = Cancelar");
+SWKBD_ONLY(text_zh_hant, ARMOR("登記到防具套裝", "清除全部防具套裝", "是，全部清除", "套裝 %d", "防具套裝 %d"),
+           "文字輸入", "請輸入名字", "馬兒", "確定", "取消", "手把：A 確定，B 取消");
 
 static const Row rows[] = {
     {"en", text_en}, {"ja", text_ja}, {"fr", text_fr}, {"de", text_de}, {"it", text_it}, {"es", text_es},
