@@ -75,6 +75,7 @@ TESTS = {
     'cursor_art_check':         ('.venv', 'cc', ['--cc', '<cc>'], 'compiles the cursor with zero and pattern stack initialization'),
     'romfs_shapes_check':       ('.venv', 'cc', ['--cc', '<cc>'], 'compiles the production overlay selection helpers'),
     'frame_world_check':        ('.venv', 'cc', ['--cc', '<cc>'], 'compiles the production world-clock player walk'),
+    'ipc_probe_check':          ('.venv', 'cc', ['--cc', '<cc>'], 'compiles the IPC probe helpers with forced kernel failures'),
     'sync_ahead_check':         ('.venv', 'cc', ['--cc', '<cc>'], 'compiles the production sync-ahead wait selection'),
     'patches_v110_check':       ('.venv', 'cc', [], 'compiles synthetic patch contracts for comparison with Unicorn'),
     'patches_v110_highfps_check': ('.venv', 'cc', [], 'compiles synthetic high-fps contracts for comparison with Unicorn'),
