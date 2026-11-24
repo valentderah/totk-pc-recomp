@@ -4533,6 +4533,7 @@ static void skip_cs_read(void *arg) {
         if (!*p) break;
         unsigned long long id = 0;
         int digits = 0;
+        const char *entry = p;
         for (; *p && *p != ',' && *p != ' ' && *p != '\t'; p++) {
             int c = (unsigned char)*p, h = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10
                                                                               : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
@@ -4544,7 +4545,9 @@ static void skip_cs_read(void *arg) {
             id = id << 4 | (unsigned)h, digits++;
         }
         if (digits <= 0) {
-            rt_log("vk: skip_cs: an entry of \"%s\" is not 1 to 16 hex digits; ignored", v);
+            int len = 0;
+            while (entry[len] && entry[len] != ',' && entry[len] != ' ' && entry[len] != '\t') len++;
+            rt_log("vk: skip_cs: \"%.*s\" is not 1 to 16 hex digits; ignored", len, entry);
             continue;
         }
         if (n_skip_cs == SKIP_CS_MAX) {
