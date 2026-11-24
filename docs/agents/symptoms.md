@@ -68,7 +68,8 @@ GPU semantics behind the graphics rows: [maxwell.md](../maxwell.md). The method 
 |---|---|---|
 | device lost a few frames in, GPU writes to address 0 (older NVIDIA) | present from another thread or queue | every submit and present on one queue under one lock |
 | device lost or garbage on one AMD generation | views the driver branch mishandles (BC block views of 3D textures) | `vk: pass marks`, validation; the formats in the pass |
-| device lost on one scene, every run, one vendor | a shader or pass that driver cannot run | pass marks name the pass; skip shaders by hash to bisect |
+| device lost on one scene, every run, one vendor | a shader or pass that driver cannot run | pass marks name the pass; `skip_cs = <id>` (docs/settings.md) leaves out the dispatch the marks name, to bisect |
+| freeze on "Nintendo presents", then device lost, every run, Intel GPU (Windows driver and Mesa ANV), game 1.2.1 only; 1.4.3 boots (#994, #1402) | on ANV the pass marks put it in one compute dispatch of 1.2.1 after the startup logo (`dispatch 10 of submission 430`, `cs 75be3722f62cb67e`, absent from a 1.4.3 shader cache); the Windows driver has no pass marks, so the same dispatch there is a guess; the shader and why it hangs are not found yet | pass marks; `skip_cs = 75be3722f62cb67e`; game 1.4.3 |
 | GPU timeout after 1-2 min, single frames over 2 s | first-time shader stalls or a huge one-shot submission on a slow GPU | prepared shaders; submission sizes at boot |
 | GPU hang at boot with pipeline libraries | point lists without a point size | the shader writes point size or the device clamps it |
 | black window after a driver update | caches from another driver | the log line `vk_pipeline: ... written by another device or driver`; delete the caches next to `totk.exe` |
