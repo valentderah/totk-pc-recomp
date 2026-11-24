@@ -28,7 +28,8 @@ UI_LANGUAGES = ('en', 'ru', 'pt-BR', 'zh-Hans', 'de', 'fr', 'fr-CA', 'es', 'it',
 # what the language switch in the window's corner shows for each
 UI_LANGUAGE_LABELS = {'en': 'English', 'ru': 'Русский', 'pt-BR': 'Português (Brasil)', 'zh-Hans': '简体中文',
                       'de': 'Deutsch', 'fr': 'Français', 'fr-CA': 'Français (Canada)', 'es': 'Español',
-                      'it': 'Italiano', 'nl': 'Nederlands', 'ja': '日本語', 'ko': '한국어', 'vi': 'Tiếng Việt'}
+                      'it': 'Italiano', 'nl': 'Nederlands', 'ja': '日本語', 'ko': '한국어',
+                      'vi': 'Tiếng Việt'}
 STEP_ORDER = ('check', 'kit', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss',
               'fsr', 'cleanup')
 # message parameter -> catalog id prefix of the names that replace its raw values
