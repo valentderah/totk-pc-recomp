@@ -377,7 +377,8 @@ def check_record(rec, impls, game=frozenset()):
             # words as it left them here (runtime/plugin_init.c check_writes keeps data pages, compared word by word
             # with the expect lines). .rodata holds what the lift read as constants (the jump tables), so no write
             # goes there. A word that makes a pointer into a plugin's .text (a table entry swapped for a plugin
-            # function: Zonai Fieldworks, Material Columns) names a function start of that plugin's lift.
+            # function: Zonai Fieldworks, Material Columns) names a function start of that plugin's lift; any other
+            # word is compared by place only (plugin_lines).
             if w['offset'] < main['data_off']:
                 reasons.append(f"a write into main's .rodata: {where} {w['old']:#010x} -> {w['new']:#010x}")
                 continue
@@ -633,10 +634,20 @@ def plugin_lines(rec, hooks, name, record_dir, module):
     text_sha = hashlib.sha256(img[:p['text_end']]).hexdigest()
     image = json.dumps((Path(record_dir) / p['image']).resolve().as_posix(), ensure_ascii=False)
     lines.append(f'plugin {name} {p["name"]} {text_sha} {image}')
-    own = {int(h['site'].split('+')[1], 16) for h in hooks}
+    own = {int(h['site'].split('+')[1], 16): h for h in hooks}
+    # A word of main's .data or .bss that is no pointer into a plugin's .text (a data hook without a target, and not
+    # the upper half of one with a target) shapes no lifted code, and the game may hold another value there at play
+    # than in the service run: Self Recall of Zonai Fieldworks takes its storage off a pool size that grows with the
+    # resolution's texture heap. Its expect line says `* *`: the start matches it by place only
+    # (runtime/plugin_init.c check_writes), and the word keeps what the init wrote at play.
+    pointers = {o for o, h in own.items() if h['kind'] == 'data' and h.get('target')}
     for w in rec['writes']:
         if w['module'] == 'main' and w['offset'] in own:
-            lines.append(f'expect {name} {w["module"]} {w["offset"]:x} {w["old"]:08x} {w["new"]:08x}')
+            h, o = own[w['offset']], w['offset']
+            if h['kind'] == 'data' and o not in pointers and o - 4 not in pointers:
+                lines.append(f'expect {name} {w["module"]} {o:x} * *')
+            else:
+                lines.append(f'expect {name} {w["module"]} {o:x} {w["old"]:08x} {w["new"]:08x}')
     seeds, stubs = {}, {}
 
     def at(ref):

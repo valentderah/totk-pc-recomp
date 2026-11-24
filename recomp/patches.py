@@ -60,7 +60,8 @@ run's record; the design follows #845 by itaskaev2):
     sha256> is that .text's hash: the runtime compares it with the .text its own run of the init leaves, and keeps the
     set off when they differ.
   - `expect`: one word the init writes into a game module (the hook branches into main's .text); the runtime compares
-    the words its run of the init wrote with these, all or nothing per plugin.
+    the words its run of the init wrote with these, all or nothing per plugin. `*` for <old> and <new> matches the word
+    by place only: a word of main's .data or .bss that shapes no lifted code and may differ at play.
   - `stub`: an exlaunch inline-hook entry stub (stur x30; bl impl; ldur x30; b trampoline; .quad callback). Its fourth
     word is lifted as a `ret`: the generated site calls the stub and runs its own original instruction after it
     (`@call` below), so the trampoline (the original relocated, b site+4) never runs.
@@ -119,7 +120,8 @@ class Table:
         self.spins = spins or {}   # {module: {back-edge offset: head offset}}
         self.hooks = hooks or {}   # {module: {function offset}}; empty: FN_ENTER in every function
         self.ordered = set(ordered)
-        # {module: {'set', 'sha256', 'image', 'expect': [(module, offset, old, new)], 'stubs': {offset},
+        # {module: {'set', 'sha256', 'image', 'expect': [(module, offset, old, new)] (old and new None for `* *`),
+        #  'stubs': {offset},
         #  'seeds': {offset}, 'origs': {trampoline offset: (function module, function offset)}}}; empty without
         # plugin lines
         self.plugins = plugins or {}
@@ -296,7 +298,10 @@ def plugin_line(f, where, index, bases, plugins):
         owner = [p for p in plugins.values() if p['set'] == index[f[1]]]
         if not owner:
             raise PatchError(f'{where}: set {f[1]} owns no plugin')
-        owner[0]['expect'].append((f[2], int(f[3], 16), int(f[4], 16), int(f[5], 16)))
+        if (f[4] == '*') != (f[5] == '*'):
+            raise PatchError(f'{where}: `*` for one of old and new only')
+        words = (None, None) if f[4] == '*' else (int(f[4], 16), int(f[5], 16))
+        owner[0]['expect'].append((f[2], int(f[3], 16), *words))
     elif f[0] == 'stub' and len(f) == 3:
         plugin(f[1])['stubs'].add(int(f[2], 16))
     elif f[0] == 'seed' and len(f) >= 3:
@@ -345,14 +350,16 @@ def header_text(table, marker):
                                                     enumerate(table.sets)), '']
     if table.plugins:   # none: the header is what it was before plugins
         names = sorted(table.plugins)
-        writes = [f'X({i}, "{m}", {o:#x}, {old:#010x}u, {new:#010x}u)' for i, n in enumerate(names)
-                  for m, o, old, new in sorted(table.plugins[n]['expect'])]
+        writes = [f'X({i}, "{m}", {o:#x}, {old or 0:#010x}u, {new or 0:#010x}u, {int(old is None)})'
+                  for i, n in enumerate(names)
+                  for m, o, old, new in sorted(table.plugins[n]['expect'], key=lambda e: e[:2])]
         lines += [f'#define RT_PLUGIN_COUNT {len(names)}',
                   '// X(index, module, its set, SHA-256 of its .text after the init)',
                   '#define RT_PLUGINS(X) ' + ' '.join(f'X({i}, "{n}", {table.plugins[n]["set"]}, '
                                                      f'"{table.plugins[n]["sha256"]}")' for i, n in enumerate(names)),
                   f'#define RT_PLUGIN_WRITE_COUNT {len(writes)}',
-                  '// X(plugin index, module, offset, old word, new word): what the init writes into game modules',
+                  '// X(plugin index, module, offset, old word, new word, 1: any words, matched by place only): what '
+                  'the init writes into game modules',
                   '#define RT_PLUGIN_WRITES(X) ' + ' '.join(writes),
                   '// X(module, offset): the hook entries (seed lines) TOTK_PLUGIN_TRACE counts (runtime/plugin_init.c)',
                   '#define RT_PLUGIN_ROOTS(X) ' + ' '.join(f'X("{n}", {o:#x})' for n in names
