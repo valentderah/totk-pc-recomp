@@ -4513,6 +4513,74 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
 
 // ---- dispatch and uniform buffer updates
 
+// skip_cs (TOTK_SKIP_CS): compute shaders whose dispatches are left out, named by the id the pass marks print for a
+// dispatch ("cs 75be3722f62cb67e": the first 8 bytes of the shader's input id, vk_crumbs.c shader_id). Up to
+// SKIP_CS_MAX ids of 1 to 16 hex digits, separated by commas or spaces; an id shorter than 16 digits matches every
+// shader whose id starts with it. When the pass marks put a GPU hang in one dispatch, as on Intel GPUs on game 1.2.1
+// after the startup logo (#1402), this takes that dispatch out: the device survives if the shader was the cause, at the
+// cost of whatever the shader would have written. A bisecting tool and a stopgap, not a fix.
+#define SKIP_CS_MAX 16
+static struct { unsigned long long id, mask; } skip_cs[SKIP_CS_MAX];
+static int n_skip_cs;
+static PlatOnce skip_cs_once = PLAT_ONCE_INIT;
+
+static void skip_cs_read(void *arg) {
+    (void)arg;
+    const char *v = cfg_get("TOTK_SKIP_CS");
+    if (!v) return;
+    for (const char *p = v; *p;) {
+        while (*p == ',' || *p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        unsigned long long id = 0;
+        int digits = 0;
+        const char *entry = p;
+        for (; *p && *p != ',' && *p != ' ' && *p != '\t'; p++) {
+            int c = (unsigned char)*p, h = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                                                                              : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+            if (h < 0 || digits == 16) {   // not an id: skip the rest of this entry
+                digits = -1;
+                while (*p && *p != ',' && *p != ' ' && *p != '\t') p++;
+                break;
+            }
+            id = id << 4 | (unsigned)h, digits++;
+        }
+        if (digits <= 0) {
+            int len = 0;
+            while (entry[len] && entry[len] != ',' && entry[len] != ' ' && entry[len] != '\t') len++;
+            rt_log("vk: skip_cs: \"%.*s\" is not 1 to 16 hex digits; ignored", len, entry);
+            continue;
+        }
+        if (n_skip_cs == SKIP_CS_MAX) {
+            rt_log("vk: skip_cs: more than %d ids; the rest are ignored", SKIP_CS_MAX);
+            break;
+        }
+        int shift = 4 * (16 - digits);   // 0..60: digits is 1..16
+        skip_cs[n_skip_cs].id = id << shift;
+        skip_cs[n_skip_cs].mask = ~0ull << shift;
+        n_skip_cs++;
+    }
+    for (int i = 0; i < n_skip_cs; i++)
+        rt_log("vk: skip_cs: dispatches of compute shaders whose id starts with %0*llx are skipped (TOTK_SKIP_CS)",
+               16 - __builtin_ctzll(skip_cs[i].mask) / 4, skip_cs[i].id >> __builtin_ctzll(skip_cs[i].mask));
+}
+
+// 1 when skip_cs names cs; logs the first skipped dispatch of each listed id.
+static int cs_skipped(const GfxShader *cs) {
+    plat_once(&skip_cs_once, skip_cs_read, NULL);
+    if (!n_skip_cs) return 0;
+    const uint8_t *iid = gfx_shader_input_id(cs);
+    unsigned long long v = 0;
+    for (int i = 0; i < 8; i++) v = v << 8 | iid[i];
+    static uint32_t logged;   // bit i: entry i was logged
+    for (int i = 0; i < n_skip_cs; i++) {
+        if ((v & skip_cs[i].mask) != skip_cs[i].id) continue;
+        if (!(__atomic_fetch_or(&logged, 1u << i, __ATOMIC_RELAXED) & 1u << i))
+            rt_log("vk: skip_cs: skipped a dispatch of cs %016llx (TOTK_SKIP_CS); later ones are not logged", v);
+        return 1;
+    }
+    return 0;
+}
+
 static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     VkExecDraw *D = ex->draw;
     if (d->x <= 0 || d->y <= 0 || d->z <= 0) return;
@@ -4522,7 +4590,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     dummies_init();
     int present;
     const GfxShader *cs = shader_for(ex, NVN_STAGE_CS, &present, NULL, 0);   // synchronous: a skipped dispatch changes results
-    if (!cs) return;
+    if (!cs || cs_skipped(cs)) return;
     const VkPipeInfo *info = NULL;
     VkPipeline p = vk_pipeline_compute(cs, &info);
     if (!p || !info) return warn_once(W_PIPELINE, "a compute pipeline could not be created: dispatches with it are skipped");
@@ -4551,7 +4619,7 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
     dummies_init();
     int present;
     const GfxShader *cs = shader_for(ex, NVN_STAGE_CS, &present, NULL, 0);
-    if (!cs) return;
+    if (!cs || cs_skipped(cs)) return;
     const VkPipeInfo *info = NULL;
     VkPipeline p = vk_pipeline_compute(cs, &info);
     if (!p || !info) return warn_once(W_PIPELINE, "a compute pipeline could not be created: dispatches with it are skipped");
