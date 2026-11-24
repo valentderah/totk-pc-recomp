@@ -1018,7 +1018,7 @@ static void probe_fonts(void) {
 static void probe_menu_text(void) {
     static const char *const langs[] = {"en", "ja", "fr", "de", "it", "es", "nl", "pt", "ru", "zh-Hans", "zh-Hant", "ko",
                                         "pt-BR", "vi"};
-    static const char *const menu_langs[] = {"de", "fr", "es", "it", "nl", "ja", "ko", "vi"};
+    static const char *const menu_langs[] = {"de", "fr", "es", "es-419", "it", "nl", "ja", "ko", "vi"};
     for (int id = UI_MENU_FIRST; id <= UI_MENU_LAST_ID; id++) {
         CHECK(ui_text_defined("en", (UiTextId)id) && ui_text_defined("ru", (UiTextId)id) &&
               ui_text_defined("pt-BR", (UiTextId)id) && ui_text_defined("vi", (UiTextId)id),
@@ -1093,6 +1093,13 @@ static void probe_menu_text(void) {
     CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("ja", UI_MENU_TITLE), "menu_text ignores MENU_LANG=ja");
     cfg_set("TOTK_MENU_LANG", "de-DE");
     CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("de", UI_MENU_TITLE), "menu_text ignores MENU_LANG=de-DE");
+    // Spanish: Spain reads es, every other region the Latin American row
+    cfg_set("TOTK_MENU_LANG", "es-MX");
+    CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("es-419", UI_MENU_CONTINUE), "es-MX does not get the es-419 menu");
+    cfg_set("TOTK_MENU_LANG", "es-ES");
+    CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("es", UI_MENU_CONTINUE), "es-ES does not get the es menu");
+    CHECK(strcmp(ui_text_in("es-419", UI_MENU_RUMBLE_STRENGTH_DESC), ui_text_in("es", UI_MENU_RUMBLE_STRENGTH_DESC)),
+          "es-419 shows the Spain Spanish text");
     // Traditional Chinese (zh-TW, zh-HK) reads the Simplified Chinese menu
     cfg_set("TOTK_MENU_LANG", "zh-TW");
     CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("zh-Hans", UI_MENU_TITLE), "zh-TW does not get the zh-Hans menu");
