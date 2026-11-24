@@ -65,6 +65,8 @@ static struct {
     const VkTexImage *game_light, *game_occl;   // the last light pass's game targets
     const VkTexImage *game_depth;       // the depth pass's game D32F: ours starts as it, enlarged (the pass may draw
                                         // only part of it; the rest holds what an earlier pass of the frame wrote)
+    const VkTexImage *back_depth, *back_ldepth;   // the game's D32F and R32F targets of the pass just drawn into ours,
+    uint32_t back_layer[2];                       // and their layers; they get ours reduced at its end (write_back)
     int pending;                        // a light pass was drawn: the merge is due before the next other pass (the
                                         // executor can split one game pass in several; they all add to ours)
 } F;
@@ -252,6 +254,8 @@ int vk_lightfull_retarget(VkExec *ex) {
     VkCtx *vc = vk_ctx();
     if (!F.init_tried) init(vc);
     if (!F.ok || !ensure_images(vc, F.gdepth->width, F.gdepth->height, d->img->width, d->img->height)) return 0;
+    F.back_depth = d->img, F.back_ldepth = mode == 1 ? c[0].img : NULL;
+    F.back_layer[0] = d->base_layer, F.back_layer[1] = c[0].base_layer;
     if (mode == 2) {
         F.game_light = c[0].img, F.game_occl = c[2].img;
         put(&c[0], &F.img[I_LIGHT], F.img[I_LIGHT].img, 0);
@@ -418,11 +422,38 @@ static void merge(VkExec *ex) {
     vk_lightfull_swap_img = F.game_light, vk_lightfull_swap_view = F.img[I_LIGHT].view;
 }
 
+// After a pass drawn into ours: the game's own depth targets get what it drew, reduced to their size, as if the game
+// had drawn it there, so the half-size passes later in the frame that test against that depth, or read the linear
+// depth, see this pass's writes. Without it, at a lake whirlpool on 1.4.3 the whirlpool's funnel showed above the water
+// and the scene was misted over. Ours starts as the game's depth enlarged with nearest sampling, so a nearest reduction
+// gives the parts the pass did not draw back unchanged. Rendering has ended, so the blits record outside any pass.
+static void write_back(VkExec *ex) {
+    const VkTexImage *t[2] = {F.back_depth, F.back_ldepth};
+    VkImage src[2] = {F.img[I_DEPTH].img, F.img[I_LDEPTH].img};
+    VkImageAspectFlags asp[2] = {VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_ASPECT_COLOR_BIT};
+    F.back_depth = F.back_ldepth = NULL;
+    if (!t[0] && !t[1]) return;
+    VkCommandBuffer cb = ex->cb;
+    all_barrier(cb);
+    for (int k = 0; k < 2; k++) {
+        if (!t[k]) continue;
+        VkImageBlit r = {.srcSubresource = {asp[k], 0, 0, 1},
+                         .srcOffsets = {{0, 0, 0}, {(int32_t)F.w, (int32_t)F.h, 1}},
+                         .dstSubresource = {asp[k], 0, F.back_layer[k], 1},
+                         .dstOffsets = {{0, 0, 0}, {(int32_t)t[k]->width, (int32_t)t[k]->height, 1}}};
+        vkCmdBlitImage(cb, src[k], VK_IMAGE_LAYOUT_GENERAL, t[k]->image, VK_IMAGE_LAYOUT_GENERAL, 1, &r,
+                       VK_FILTER_NEAREST);
+        ex->recorded++;
+    }
+    all_barrier(cb);
+    ex->recorded += 2;
+}
+
 // After a pass: the light pass leaves the merge pending; any other write to the game's light image makes ours out of
 // date.
 void vk_lightfull_pass_end(VkExec *ex) {
     if (!F.on) return;
-    if (ex->pass_lightfull) vk_exec_draw_new_cb(ex);   // its draws' descriptors held the swapped textures
+    if (ex->pass_lightfull) write_back(ex), vk_exec_draw_new_cb(ex);   // its draws' descriptors held the swapped textures
     if (ex->pass_lightfull == 1) F.depth_done = 1, F.armed = 0;
     if (ex->pass_lightfull == 2) {
         F.pending = 1;
