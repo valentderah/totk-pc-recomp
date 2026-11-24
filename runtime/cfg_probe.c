@@ -364,7 +364,8 @@ int probe_cfg(void) {
     CHECK(cfg_shape_size(3440, 1440, sz) && sz[0] == 3440 && sz[1] == 1440, "shape: 3440x1440 keeps its own (0.8% off 2560x1080)");
     CHECK(cfg_shape_size(1920, 800, sz) && sz[0] == 3840 && sz[1] == 1600, "shape: 1920x800 takes 3840x1600's folder");
     CHECK(cfg_shape_size(2560, 1600, sz) && sz[0] == 1280 && sz[1] == 800 && cfg_shape_size(3000, 2000, sz) &&
-              sz[0] == 1920 && sz[1] == 1280 && cfg_shape_size(5120, 1440, sz) && sz[0] == 3840 && sz[1] == 1080,
+              sz[0] == 1920 && sz[1] == 1280 && cfg_shape_size(5120, 1440, sz) && sz[0] == 3840 && sz[1] == 1080 &&
+              cfg_shape_size(7680, 2160, sz) && sz[0] == 3840 && sz[1] == 1080,
           "shape: 16:10, 3:2 and 32:9 take their first size");
     CHECK(cfg_shape_size(1024, 768, sz) && sz[0] == 1440 && sz[1] == 1080 && cfg_shape_size(2048, 1536, sz) &&
               sz[0] == 1440 && sz[1] == 1080 && cfg_shape_size(3120, 1440, sz) && sz[0] == 2340 && sz[1] == 1080,

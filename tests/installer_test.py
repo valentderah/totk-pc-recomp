@@ -1052,9 +1052,9 @@ class ShapesTest(unittest.TestCase):
     def test_shape_rule(self):
         self.assertEqual([screens.shape_size(*s) for s in ((5120, 2160), (3440, 1440), (1920, 800), (2560, 1600),
                                                            (1920, 1080), (1024, 768), (3120, 1440), (2560, 1200),
-                                                           (1280, 1024), (1080, 1920), (7680, 1440))],
+                                                           (1280, 1024), (1080, 1920), (7680, 1440), (7680, 2160))],
                          ['2560x1080', '3440x1440', '3840x1600', '1280x800', None, '1440x1080', '2340x1080',
-                          '2560x1200', None, None, None])
+                          '2560x1200', None, None, None, '3840x1080'])
         self.assertIsNone(screens.shape_size(2560, 1200, listed=True))   # a display of an unlisted shape
         self.assertEqual(screens.default_size(3440, 1440), '2560x1080')   # runtime/cfg.c screen_default
         self.assertEqual(screens.default_size(1280, 800), '1280x800')

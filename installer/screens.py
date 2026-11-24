@@ -18,7 +18,7 @@ from pathlib import Path
 # runtime/cfg.c SHAPED: 21:9 and 32:9 monitors, 16:10 screens (the Steam Deck's 1280x800, handhelds and laptops) and 3:2
 # screens (Surface and Framework laptops and tablets), 4:3 screens (CRT monitors, iPads) and 19.5:9 and 20:9 phone screens
 # (streamed to a phone)
-ASPECT_SIZES = ('2560x1080', '3440x1440', '3840x1600', '5120x2160', '3840x1080', '5120x1440',
+ASPECT_SIZES = ('2560x1080', '3440x1440', '3840x1600', '5120x2160', '3840x1080', '5120x1440', '7680x2160',
                 '1280x800', '1680x1050', '1920x1200', '2560x1600',
                 '1920x1280', '2160x1440', '2256x1504', '2880x1920', '3000x2000',
                 '1440x1080', '1600x1200', '2048x1536', '2732x2048',
