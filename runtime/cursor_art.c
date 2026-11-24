@@ -62,6 +62,7 @@ static float sample(V p, float *r, float *g, float *b) {
         float a = ds < -0.8f ? 1 : (0.8f - ds) / 1.6f;
         return 0.38f * a;
     }
+    *r = *g = *b = 0;
     return 0;
 }
 

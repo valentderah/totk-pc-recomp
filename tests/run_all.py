@@ -72,6 +72,7 @@ TESTS = {
     'settings_doc_check':       ('.venv', None, [], ''),
     'mouse_direct_check':       ('.venv', 'cc', ['--cc', '<cc>'], 'compiles its checks with clang'),
     'cheats_vm_check':          ('.venv', 'cc', ['--cc', '<cc>'], 'compiles runtime/cheats.c into a harness with clang'),
+    'cursor_art_check':         ('.venv', 'cc', ['--cc', '<cc>'], 'compiles the cursor with zero and pattern stack initialization'),
     'romfs_shapes_check':       ('.venv', 'cc', ['--cc', '<cc>'], 'compiles the production overlay selection helpers'),
     'frame_world_check':        ('.venv', 'cc', ['--cc', '<cc>'], 'compiles the production world-clock player walk'),
     'sync_ahead_check':         ('.venv', 'cc', ['--cc', '<cc>'], 'compiles the production sync-ahead wait selection'),
