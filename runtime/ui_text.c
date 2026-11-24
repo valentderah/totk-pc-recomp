@@ -558,12 +558,13 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FIX_C0_DESC] = "Fills the driver-reserved constant bank c0 (storage sizes, dispatch size, point size, base instance) instead of reading zeros.",
     [UI_MENU_FIX_ZERO] = "Zero new GPU memory",
     [UI_MENU_FIX_ZERO_DESC] = "New GPU memory pools start zero-filled, as Switch memory does.",
-    [UI_MENU_DLAA_EFFECTS_AFTER] = "Fog and particles after DLAA",
-    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "With DLAA, fog, dust and other particles are drawn over the picture DLSS has"
-                                        " already smoothed, as the game draws them without DLSS: small particles in "
-                                        "fog (shrines) no longer vanish or leave trails. Off: DLSS also processes "
-                                        "these effects, as before. DLAA mode only; the upscaling DLSS modes always "
-                                        "process them. Applies at once.",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "Particles after DLAA",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "With DLAA, dust and other particles are drawn over the picture DLSS has "
+                                        "already smoothed, as the game draws them without DLSS: small particles in "
+                                        "fog (shrines) no longer vanish or leave trails. The fog and the clouds still "
+                                        "go through DLSS, so distant edges against the sky stay clean. Off: DLSS also "
+                                        "processes the particles, as before. DLAA mode only; the upscaling DLSS modes "
+                                        "always process them. Applies at once.",
     [UI_MENU_DLSS_FIXED_EXPOSURE] = "Fixed DLSS exposure",
     [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS takes the brightness of the game's picture as it is instead of "
                                          "estimating the exposure from each frame: in dark scenes (the Depths) large "
@@ -1211,12 +1212,13 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_FIX_C0_DESC] = "Заполняет зарезервированный драйвером банк констант c0 (размеры хранилищ, размер запуска, размер точки, базовый экземпляр) вместо чтения нулей.",
     [UI_MENU_FIX_ZERO] = "Обнулять новую память GPU",
     [UI_MENU_FIX_ZERO_DESC] = "Новые пулы памяти GPU заполняются нулями, как память Switch.",
-    [UI_MENU_DLAA_EFFECTS_AFTER] = "Туман и частицы после DLAA",
-    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "С DLAA туман, пыль и другие частицы рисуются поверх картинки, уже сглаженной"
-                                        " DLSS, как игра рисует их без DLSS: мелкие частицы в тумане (святилища) "
-                                        "больше не пропадают и не оставляют шлейфов. Выкл.: DLSS обрабатывает и эти "
-                                        "эффекты, как раньше. Только в режиме DLAA; режимы DLSS с повышением "
-                                        "разрешения обрабатывают их всегда. Применяется сразу.",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "Частицы после DLAA",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "С DLAA пыль и другие частицы рисуются поверх картинки, уже сглаженной DLSS, "
+                                        "как игра рисует их без DLSS: мелкие частицы в тумане (святилища) больше не "
+                                        "пропадают и не оставляют шлейфов. Туман и облака по-прежнему проходят через "
+                                        "DLSS, поэтому далёкие края на фоне неба остаются чистыми. Выкл.: DLSS "
+                                        "обрабатывает и частицы, как раньше. Только в режиме DLAA; режимы DLSS с "
+                                        "повышением разрешения обрабатывают их всегда. Применяется сразу.",
     [UI_MENU_DLSS_FIXED_EXPOSURE] = "Фиксированная экспозиция DLSS",
     [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS берёт яркость картинки игры как есть, а не оценивает экспозицию по "
                                          "каждому кадру: в тёмных сценах (Глубины) большие участки в тумане больше не "
@@ -1666,12 +1668,14 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_FIX_C0_DESC] = "Preenche o banco de constantes c0 reservado ao driver (tamanhos de armazenamento, tamanho do dispatch, tamanho do ponto, instância base) em vez de ler zeros.",
     [UI_MENU_FIX_ZERO] = "Zerar memória nova da GPU",
     [UI_MENU_FIX_ZERO_DESC] = "Novos pools de memória da GPU começam zerados, como a memória do Switch.",
-    [UI_MENU_DLAA_EFFECTS_AFTER] = "Névoa e partículas após o DLAA",
-    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Com DLAA, a névoa, a poeira e outras partículas são desenhadas sobre a "
-                                        "imagem já suavizada pelo DLSS, como o jogo as desenha sem DLSS: partículas "
-                                        "pequenas na névoa (santuários) não somem mais nem deixam rastros. Desligado:"
-                                        " o DLSS também processa esses efeitos, como antes. Só no modo DLAA; os modos"
-                                        " de DLSS que aumentam a resolução sempre os processam. Aplica-se na hora.",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "Partículas após o DLAA",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Com DLAA, a poeira e outras partículas são desenhadas sobre a imagem já "
+                                        "suavizada pelo DLSS, como o jogo as desenha sem DLSS: partículas pequenas na "
+                                        "névoa (santuários) não somem mais nem deixam rastros. A névoa e as nuvens "
+                                        "continuam passando pelo DLSS, então as bordas distantes contra o céu ficam "
+                                        "limpas. Desligado: o DLSS também processa as partículas, como antes. Só no "
+                                        "modo DLAA; os modos de DLSS que aumentam a resolução sempre as processam. "
+                                        "Aplica-se na hora.",
     [UI_MENU_DLSS_FIXED_EXPOSURE] = "Exposição fixa do DLSS",
     [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "O DLSS usa o brilho da imagem do jogo como ele é, em vez de estimar a "
                                          "exposição a cada quadro: em cenas escuras (as Profundezas), grandes áreas com "
@@ -2467,10 +2471,10 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                             "基础实例），而不是读取零值。",
     [UI_MENU_FIX_ZERO] = "清零新的 GPU 内存",
     [UI_MENU_FIX_ZERO_DESC] = "新的 GPU 内存池初始内容为零，与 Switch 内存一致。",
-    [UI_MENU_DLAA_EFFECTS_AFTER] = "DLAA 之后绘制雾和粒子",
-    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "开启 DLAA 时，雾、灰尘和其他粒子绘制在 DLSS 已平滑的画面之上，与游戏不用 DLSS 时的"
-                                        "绘制方式相同：雾中的细小粒子（神庙中）不再消失，也不再留下拖影。关闭：DLSS 也处理这些效果，与以"
-                                        "前相同。仅用于 DLAA 模式；提升分辨率的 DLSS 模式始终处理它们。立即生效。",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "DLAA 之后绘制粒子",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "开启 DLAA 时，灰尘和其他粒子绘制在 DLSS 已平滑的画面之上，与游戏不用 DLSS "
+                                        "时的绘制方式相同：雾中的细小粒子（神庙中）不再消失，也不再留下拖影。雾和云仍由 DLSS 处理，因此远处与天空相接的边缘保持干净。关闭：DLSS "
+                                        "也处理这些粒子，与以前相同。仅用于 DLAA 模式；提升分辨率的 DLSS 模式始终处理它们。立即生效。",
     [UI_MENU_DLSS_FIXED_EXPOSURE] = "固定 DLSS 曝光",
     [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS 直接使用游戏画面的亮度，而不是逐帧自行估算曝光：在暗场景（地底）中，"
                                          "镜头移动时大片雾中区域不再忽暗忽亮一帧。关闭：DLSS 自行估算曝光，与以前相同。立即生效。",
@@ -3503,13 +3507,14 @@ static const char *const text_de[UI_TEXT_COUNT] = {
                             "Punktgröße, Basisinstanz), statt Nullen zu lesen.",
     [UI_MENU_FIX_ZERO] = "Neuen GPU-Speicher nullen",
     [UI_MENU_FIX_ZERO_DESC] = "Neue GPU-Speicherpools beginnen mit Nullen gefüllt, wie Switch-Speicher.",
-    [UI_MENU_DLAA_EFFECTS_AFTER] = "Nebel und Partikel nach DLAA",
-    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Mit DLAA werden Nebel, Staub und andere Partikel über das bereits von DLSS "
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "Partikel nach DLAA",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Mit DLAA werden Staub und andere Partikel über das bereits von DLSS "
                                         "geglättete Bild gezeichnet, so wie das Spiel sie ohne DLSS zeichnet: Kleine "
                                         "Partikel im Nebel (Schreine) verschwinden nicht mehr und ziehen keine Spuren "
-                                        "mehr. Aus: DLSS verarbeitet auch diese Effekte, wie bisher. Nur im "
-                                        "DLAA-Modus; die hochskalierenden DLSS-Modi verarbeiten sie immer. Wirkt "
-                                        "sofort.",
+                                        "mehr. Nebel und Wolken gehen weiterhin durch DLSS, sodass ferne Kanten vor "
+                                        "dem Himmel sauber bleiben. Aus: DLSS verarbeitet auch die Partikel, wie "
+                                        "bisher. Nur im DLAA-Modus; die hochskalierenden DLSS-Modi verarbeiten sie "
+                                        "immer. Wirkt sofort.",
     [UI_MENU_DLSS_FIXED_EXPOSURE] = "Feste DLSS-Belichtung",
     [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS nimmt die Helligkeit des Spielbilds, wie sie ist, statt die Belichtung "
                                          "aus jedem Bild zu schätzen: In dunklen Szenen (Untergrund) werden große "
@@ -4425,13 +4430,15 @@ static const char *const text_fr[UI_TEXT_COUNT] = {
     [UI_MENU_FIX_ZERO] = "Remettre à zéro la nouvelle mémoire GPU",
     [UI_MENU_FIX_ZERO_DESC] = "Les nouveaux pools de mémoire GPU commencent remplis de zéros, comme la mémoire de la "
                               "Switch.",
-    [UI_MENU_DLAA_EFFECTS_AFTER] = "Brouillard et particules après DLAA",
-    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Avec DLAA, le brouillard, la poussière et les autres particules sont "
-                                        "dessinés par-dessus l'image déjà lissée par DLSS, comme le jeu les dessine "
-                                        "sans DLSS : les petites particules dans le brouillard (sanctuaires) ne "
-                                        "disparaissent plus et ne laissent plus de traînées. Désactivé : DLSS traite "
-                                        "aussi ces effets, comme avant. Mode DLAA uniquement ; les modes DLSS avec "
-                                        "mise à l'échelle les traitent toujours. S'applique immédiatement.",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "Particules après DLAA",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Avec DLAA, la poussière et les autres particules sont dessinées par-dessus "
+                                        "l'image déjà lissée par DLSS, comme le jeu les dessine sans DLSS : les "
+                                        "petites particules dans le brouillard (sanctuaires) ne disparaissent plus et "
+                                        "ne laissent plus de traînées. Le brouillard et les nuages passent toujours "
+                                        "par DLSS, donc les bords lointains sur le ciel restent nets. Désactivé : "
+                                        "DLSS traite aussi les particules, comme avant. Mode DLAA uniquement ; les "
+                                        "modes DLSS avec mise à l'échelle les traitent toujours. S'applique "
+                                        "immédiatement.",
     [UI_MENU_DLSS_FIXED_EXPOSURE] = "Exposition DLSS fixe",
     [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS prend la luminosité de l'image du jeu telle quelle au lieu d'estimer "
                                          "l'exposition à chaque image : dans les scènes sombres (les Profondeurs), "
@@ -5336,12 +5343,14 @@ static const char *const text_es[UI_TEXT_COUNT] = {
                             "tamaño de dispatch, tamaño de punto, instancia base) en lugar de leer ceros.",
     [UI_MENU_FIX_ZERO] = "Poner a cero la memoria GPU nueva",
     [UI_MENU_FIX_ZERO_DESC] = "Los nuevos bloques de memoria GPU empiezan llenos de ceros, como la memoria de Switch.",
-    [UI_MENU_DLAA_EFFECTS_AFTER] = "Niebla y partículas tras DLAA",
-    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Con DLAA, la niebla, el polvo y otras partículas se dibujan sobre la imagen "
-                                        "que DLSS ya ha suavizado, como las dibuja el juego sin DLSS: las partículas "
-                                        "pequeñas en la niebla (santuarios) ya no desaparecen ni dejan estelas. No: "
-                                        "DLSS también procesa estos efectos, como antes. Solo en el modo DLAA; los "
-                                        "modos DLSS con escalado siempre los procesan. Se aplica al momento.",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "Partículas tras DLAA",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Con DLAA, el polvo y otras partículas se dibujan sobre la imagen que DLSS ya "
+                                        "ha suavizado, como las dibuja el juego sin DLSS: las partículas pequeñas en "
+                                        "la niebla (santuarios) ya no desaparecen ni dejan estelas. La niebla y las "
+                                        "nubes siguen pasando por DLSS, así que los bordes lejanos contra el cielo "
+                                        "quedan limpios. No: DLSS también procesa las partículas, como antes. Solo en "
+                                        "el modo DLAA; los modos DLSS con escalado siempre los procesan. Se aplica al "
+                                        "momento.",
     [UI_MENU_DLSS_FIXED_EXPOSURE] = "Exposición fija de DLSS",
     [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS toma el brillo de la imagen del juego tal cual en lugar de estimar la "
                                          "exposición en cada fotograma: en escenas oscuras (el Subsuelo) las grandes "
@@ -6248,12 +6257,13 @@ static const char *const text_it[UI_TEXT_COUNT] = {
                             "del dispatch, dimensione dei punti, istanza base) invece di leggere zeri.",
     [UI_MENU_FIX_ZERO] = "Azzera la nuova memoria GPU",
     [UI_MENU_FIX_ZERO_DESC] = "I nuovi pool di memoria GPU partono riempiti di zeri, come la memoria di Switch.",
-    [UI_MENU_DLAA_EFFECTS_AFTER] = "Nebbia e particelle dopo DLAA",
-    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Con DLAA, nebbia, polvere e altre particelle vengono disegnate sopra "
-                                        "l'immagine già levigata da DLSS, come le disegna il gioco senza DLSS: le "
-                                        "piccole particelle nella nebbia (sacrari) non spariscono più né lasciano "
-                                        "scie. No: DLSS elabora anche questi effetti, come prima. Solo in modalità "
-                                        "DLAA; le modalità DLSS con upscaling li elaborano sempre. Si applica subito.",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "Particelle dopo DLAA",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Con DLAA, polvere e altre particelle vengono disegnate sopra l'immagine già "
+                                        "levigata da DLSS, come le disegna il gioco senza DLSS: le piccole particelle "
+                                        "nella nebbia (sacrari) non spariscono più né lasciano scie. Nebbia e nuvole "
+                                        "passano ancora per DLSS, così i bordi lontani contro il cielo restano "
+                                        "puliti. No: DLSS elabora anche le particelle, come prima. Solo in modalità "
+                                        "DLAA; le modalità DLSS con upscaling le elaborano sempre. Si applica subito.",
     [UI_MENU_DLSS_FIXED_EXPOSURE] = "Esposizione DLSS fissa",
     [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS prende la luminosità dell'immagine del gioco così com'è invece di "
                                          "stimare l'esposizione da ogni fotogramma: nelle scene buie (il Sottosuolo) "
@@ -7140,12 +7150,14 @@ static const char *const text_nl[UI_TEXT_COUNT] = {
                             "dispatchgrootte, puntgrootte, basisinstantie) in plaats van nullen te lezen.",
     [UI_MENU_FIX_ZERO] = "Nieuw GPU-geheugen op nul zetten",
     [UI_MENU_FIX_ZERO_DESC] = "Nieuwe GPU-geheugenpools beginnen gevuld met nullen, zoals Switch-geheugen.",
-    [UI_MENU_DLAA_EFFECTS_AFTER] = "Mist en deeltjes na DLAA",
-    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Met DLAA worden mist, stof en andere deeltjes over het beeld getekend dat "
-                                        "DLSS al heeft gladgestreken, zoals het spel ze zonder DLSS tekent: kleine "
-                                        "deeltjes in mist (heiligdommen) verdwijnen niet meer en laten geen sporen "
-                                        "meer achter. Uit: DLSS verwerkt deze effecten ook, zoals voorheen. Alleen in "
-                                        "DLAA-modus; de upscalingmodi van DLSS verwerken ze altijd. Werkt meteen.",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "Deeltjes na DLAA",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Met DLAA worden stof en andere deeltjes over het beeld getekend dat DLSS al "
+                                        "heeft gladgestreken, zoals het spel ze zonder DLSS tekent: kleine deeltjes "
+                                        "in mist (heiligdommen) verdwijnen niet meer en laten geen sporen meer "
+                                        "achter. Mist en wolken gaan nog steeds door DLSS, zodat verre randen tegen "
+                                        "de lucht schoon blijven. Uit: DLSS verwerkt ook de deeltjes, zoals voorheen. "
+                                        "Alleen in DLAA-modus; de upscalingmodi van DLSS verwerken ze altijd. Werkt "
+                                        "meteen.",
     [UI_MENU_DLSS_FIXED_EXPOSURE] = "Vaste DLSS-belichting",
     [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS neemt de helderheid van het spelbeeld zoals ze is, in plaats van de "
                                          "belichting per beeld te schatten: in donkere scènes (de Diepten) worden "
@@ -7915,9 +7927,10 @@ static const char *const text_ja[UI_TEXT_COUNT] = {
     [UI_MENU_FIX_C0_DESC] = "ドライバー予約の定数バンク c0 (ストレージサイズ、ディスパッチサイズ、ポイントサイズ、ベースインスタンス) を、ゼロを読む代わりに埋めます。",
     [UI_MENU_FIX_ZERO] = "新しい GPU メモリをゼロで埋める",
     [UI_MENU_FIX_ZERO_DESC] = "Switch のメモリと同じく、新しい GPU メモリプールをゼロで埋めた状態から始めます。",
-    [UI_MENU_DLAA_EFFECTS_AFTER] = "DLAA の後に霧とパーティクル",
-    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "DLAA 使用時、霧、ちり、その他のパーティクルを、DLSS が滑らかにした後の映像の上に描きます。DLSS なしでゲームが描くのと同じです: "
-                                        "霧の中の小さなパーティクル (祠) が消えたり残像を残したりしなくなります。オフ: これまでどおり DLSS がこれらのエフェクトも処理します。DLAA "
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "DLAA の後にパーティクル",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "DLAA 使用時、ちりやその他のパーティクルを、DLSS が滑らかにした後の映像の上に描きます。DLSS なしでゲームが描くのと同じです: "
+                                        "霧の中の小さなパーティクル (祠) が消えたり残像を残したりしなくなります。霧と雲は引き続き DLSS "
+                                        "を通るため、空を背にした遠くの輪郭はきれいなままです。オフ: これまでどおり DLSS がパーティクルも処理します。DLAA "
                                         "モードのみ。アップスケーリングする DLSS モードでは常に処理されます。すぐに反映されます。",
     [UI_MENU_DLSS_FIXED_EXPOSURE] = "DLSS の露出を固定",
     [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS が各フレームから露出を推定せず、ゲームの映像の明るさをそのまま使います: 暗い場面 (地底) "
@@ -8666,10 +8679,11 @@ static const char *const text_ko[UI_TEXT_COUNT] = {
     [UI_MENU_FIX_C0_DESC] = "드라이버 예약 상수 뱅크 c0(저장소 크기, 디스패치 크기, 포인트 크기, 기본 인스턴스)을 0을 읽는 대신 채웁니다.",
     [UI_MENU_FIX_ZERO] = "새 GPU 메모리를 0으로 채우기",
     [UI_MENU_FIX_ZERO_DESC] = "Switch 메모리처럼 새 GPU 메모리 풀을 0으로 채운 상태에서 시작합니다.",
-    [UI_MENU_DLAA_EFFECTS_AFTER] = "DLAA 후 안개와 파티클",
-    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "DLAA 사용 시 안개, 먼지 등 파티클을 DLSS가 이미 부드럽게 한 영상 위에 그립니다. DLSS 없이 게임이 그리는 방식과 "
-                                        "같습니다. 안개 속의 작은 파티클(사당)이 더 이상 사라지거나 잔상을 남기지 않습니다. 끄기: 예전처럼 DLSS가 이 효과도 처리합니다. "
-                                        "DLAA 모드 전용이며, 업스케일링 DLSS 모드는 항상 이 효과를 처리합니다. 즉시 적용됩니다.",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "DLAA 후 파티클",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "DLAA 사용 시 먼지 등 파티클을 DLSS가 이미 부드럽게 한 영상 위에 그립니다. DLSS 없이 게임이 그리는 방식과 같습니다. 안개 "
+                                        "속의 작은 파티클(사당)이 더 이상 사라지거나 잔상을 남기지 않습니다. 안개와 구름은 계속 DLSS를 거치므로 하늘을 배경으로 한 먼 "
+                                        "윤곽이 깨끗하게 유지됩니다. 끄기: 예전처럼 DLSS가 파티클도 처리합니다. DLAA 모드 전용이며, 업스케일링 DLSS 모드는 항상 이 "
+                                        "효과를 처리합니다. 즉시 적용됩니다.",
     [UI_MENU_DLSS_FIXED_EXPOSURE] = "DLSS 노출 고정",
     [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS가 프레임마다 노출을 추정하지 않고 게임 영상의 밝기를 그대로 사용합니다. 어두운 장면(지저)에서 안개 낀 넓은 영역이 카메라가 "
                                          "움직일 때 한 프레임 동안 어두워지거나 밝아지지 않습니다. 끄기: 예전처럼 DLSS가 노출을 직접 추정합니다. 즉시 적용됩니다.",
@@ -9314,11 +9328,12 @@ static const char *const text_vi[UI_TEXT_COUNT] = {
     [UI_MENU_FIX_C0_DESC] = "Điền bảng hằng số c0 mà trình điều khiển dành riêng (kích thước vùng lưu trữ, kích thước điều phối, kích thước điểm, thực thể gốc) thay vì đọc ra số không.",
     [UI_MENU_FIX_ZERO] = "Xóa sạch bộ nhớ GPU mới",
     [UI_MENU_FIX_ZERO_DESC] = "Các vùng nhớ GPU mới bắt đầu với toàn số không, như bộ nhớ Switch.",
-    [UI_MENU_DLAA_EFFECTS_AFTER] = "Sương mù và hạt sau DLAA",
-    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Với DLAA, sương mù, bụi và các hạt khác được vẽ đè lên hình DLSS đã làm mịn, như game "
-                                        "vẽ chúng khi không có DLSS: các hạt nhỏ trong sương mù (đền thờ) không còn biến mất "
-                                        "hay để lại vệt. Tắt: DLSS cũng xử lý các hiệu ứng này, như trước. Chỉ ở chế độ "
-                                        "DLAA; các chế độ phóng to DLSS luôn xử lý chúng. Áp dụng ngay.",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "Hạt sau DLAA",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Với DLAA, bụi và các hạt khác được vẽ đè lên hình DLSS đã làm mịn, như game "
+                                        "vẽ chúng khi không có DLSS: các hạt nhỏ trong sương mù (đền thờ) không còn "
+                                        "biến mất hay để lại vệt. Sương mù và mây vẫn đi qua DLSS, nên các cạnh ở xa "
+                                        "trên nền trời vẫn sạch. Tắt: DLSS cũng xử lý các hạt này, như trước. Chỉ ở "
+                                        "chế độ DLAA; các chế độ phóng to DLSS luôn xử lý chúng. Áp dụng ngay.",
     [UI_MENU_DLSS_FIXED_EXPOSURE] = "Phơi sáng DLSS cố định",
     [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS lấy độ sáng của hình game như nó vốn có thay vì ước lượng phơi sáng từ từng "
                                          "khung hình: trong cảnh tối (Depths) các vùng sương lớn không còn tối hoặc sáng đi "
