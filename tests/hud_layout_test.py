@@ -156,10 +156,12 @@ class RealArchiveTest(unittest.TestCase):
             ui.apply(full, members, width, height)
             expected = bytearray(original)
             baseline['apply'](expected, members, width, height)
-            # The map, the Purah Pad's frame and the loading screen changed on purpose after it (the map and the
-            # loading map fill the screen, the frame keeps its width); every other layout is still byte for byte.
-            for name in ('AppMap_00', 'AppMenuOverlay_00', 'LoadingFade_00'):
-                lo, hi = members[f'blyt/{name}.bflyt']
+            # The map (its layout and the minimap animation's width keys), the Purah Pad's frame and the loading screen
+            # changed on purpose after it (the maps fill the screen, the frame keeps its width); the rest is byte for byte.
+            for member in ('blyt/AppMap_00.bflyt', 'blyt/AppMenuOverlay_00.bflyt', 'blyt/LoadingFade_00.bflyt',
+                           'anim/AppMap_00_MiniMap.bflan', 'anim/LoadingFade_00_BarIn.bflan',
+                           'anim/LoadingFade_00_BarOut.bflan'):
+                lo, hi = members[member]
                 expected[lo:hi] = full[lo:hi]
             self.assertEqual(full, expected)
         for cap, extension in ((16 / 9, 0), (21 / 9, 300)):
