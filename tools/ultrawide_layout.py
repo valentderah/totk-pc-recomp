@@ -15,9 +15,10 @@ and every pane field and animation key holds the value the edit expects before i
 import math
 import struct
 
-# BFLYT pane sections (pan1, pic1, txt1, ...): name at +12 (24 bytes), translate x / y at +44 / +48, scale x / y at +68 / +72.
+# BFLYT pane sections (pan1, pic1, txt1, ...): name at +12 (24 bytes), translate x / y at +44 / +48, scale x / y at +68 / +72,
+# size (width) at +76.
 PANE_MAGICS = (b'pan1', b'pic1', b'txt1', b'wnd1', b'bnd1', b'prt1', b'ali1', b'scr1')
-FIELD = {'x': 44, 'y': 48, 'scale_x': 68, 'scale_y': 72}
+FIELD = {'x': 44, 'y': 48, 'scale_x': 68, 'scale_y': 72, 'w': 76}
 
 # Full-screen layouts whose root pane stays as wide as the canvas.
 KEEP_ROOT = {'AppMenuBG_00', 'PauseMenuBG_00', 'ShopMenuParasailBG_00', 'ShortCutBG_00', 'TitleMenuBG_00', 'EventFade_00',
@@ -72,6 +73,12 @@ def edits(k, hud_aspect):
         ('AppAlbum_00', 'N_FadeInOut_00', 'scale_x', k), ('AppAlbum_00', 'N_Open_01', 'scale_x', wide),
         *[('AppMap_00', f'N_BlurInOut_0{i}', 'scale_x', wide) for i in range(4)],
         ('AppMap_00', 'N_MiniMap_00', 'x', -270 * (1 - k)),
+        # The map: the panes that cut it out and its black backing are 2250 wide, so under the 16:9 root the world map
+        # ended short of the screen's sides and black bars showed there. They take the screen's width in the root's
+        # units instead (a size, not a scale: the map inside keeps its proportions and more of it shows), and so do the
+        # icon area and the shadow frame over it.
+        *[('AppMap_00', pane, 'w', 2250 / k) for pane in ('N_Cut_00', 'N_Capture_00', 'Black8_01', 'N_Cut_01',
+                                                          'P_MapCapture_00', 'N_Cut_02', 'N_IconArea_00', 'W_Shadow_00')],
         ('AppMenuOverlay_00', 'N_FadeInOut_00', 'scale_x', k), ('AppMenuOverlay_00', 'N_FadeInOut_01', 'scale_x', k),
         ('AppMenuOverlay_00', 'N_Icon_00', 'scale_x', k), ('AppMenuOverlay_00', 'N_TitleOne_01', 'scale_x', k),
         ('AppOpenDemoWindow_00', 'P_BG_00', 'scale_x', wide), ('AutoBuilder_00', 'N_BG_00', 'scale_x', wide),
@@ -83,12 +90,17 @@ def edits(k, hud_aspect):
         ('CameraSystemWindow_00', 'T_Text_00', 'scale_x', k),
         ('ChallengeLog_00', 'C_CaptureUp_00', 'x', OFF), ('ChallengeLog_00', 'C_CaptureUp_01', 'x', OFF),
         ('GameOver_00', 'P_BG_00', 'scale_x', wide),
-        ('LoadingFade_00', 'N_Base_00', 'scale_x', wide), ('LoadingFade_00', 'N_Logo_00', 'x', w),
+        # The loading screen: the map on the left runs from the screen's left edge to under the side panel, which stays
+        # at the right edge at its own width. The map's capture panes and their pictures get the wider size (1470 at
+        # 16:9: the screen's 1920 less 450), so more of the map shows instead of a stretched one; the backgrounds and
+        # the bar span the screen.
+        ('LoadingFade_00', 'N_Logo_00', 'x', w),
         ('LoadingFade_00', 'N_Status_00', 'x', w), ('LoadingFade_00', 'N_Tips_00', 'x', -w),
-        ('LoadingFade_00', 'P_BG_00', 'scale_x', wide), ('LoadingFade_00', 'P_SideBGDeco_00', 'scale_x', k),
-        ('LoadingFade_00', 'Pa_IconPlayer_00', 'scale_x', k), ('LoadingFade_00', 'Pa_LargeDungeonMap_00', 'scale_x', k),
-        ('LoadingFade_00', 'Pa_LargeDungeonMap_01', 'scale_x', k), ('LoadingFade_00', 'Pa_Map_00', 'scale_x', k),
-        ('LoadingFade_00', 'Pa_Map_01', 'scale_x', k),
+        ('LoadingFade_00', 'P_BG_00', 'scale_x', wide), ('LoadingFade_00', 'P_BG_01', 'scale_x', wide),
+        ('LoadingFade_00', 'P_Grid_00', 'scale_x', wide), ('LoadingFade_00', 'P_Bar_00', 'scale_x', wide),
+        *[('LoadingFade_00', pane, 'w', 1920 / k - 450) for pane in ('C_CaptureMap_00', 'C_CaptureMap_01',
+                                                                       'P_CaptureMap_00', 'P_CaptureMap_01')],
+        ('LoadingFade_00', 'W_SideBGDeco_00', 'x', 960 / k), ('LoadingFade_00', 'P_SideBGDeco_00', 'x', 960 / k),
         ('MessageLog_01', 'P_Capture_00', 'scale_x', wide), ('OwnedHorseList_00', 'N_BG_00', 'scale_x', wide),
         ('PaCommonBtnTitle_00', 'B_Hit_00', 'x', OFF), ('PaCommonBtnTitle_00', 'N_Cursor_00', 'x', OFF),
         ('PaLargeDungeonMap_00', 'P_BG_00', 'scale_x', wide), ('PaMessageBtn_00', 'B_Hit_00', 'x', OFF),
@@ -99,6 +111,13 @@ def edits(k, hud_aspect):
         *[e for pane, x, _ in BALLOON_PART for e in (('PaBalloonMessage_00', pane, 'scale_x', k),
                                                       ('PaBalloonMessage_00', pane, 'x', x * k))],
     ]
+    # The Purah Pad's frame (map, album, ...): AppMenuOverlay_00 keeps a root as wide as the screen, so the stone and
+    # light pieces at its left and right edges (x = -960 / 960, anchored at their outer side) were stretched with it.
+    # They keep their own width at the edges.
+    out += [('AppMenuOverlay_00', f'P_Frame{side}{part}', 'scale_x', k) for side in 'LR'
+            for part in ('Core_00', 'AlbNrm_00', 'Light_00', 'EdgeFast_00', 'EdgeSlow_00', 'EdgeFastGlow_00',
+                         'EdgeSlowGlow_00')]
+    out += [('AppMenuOverlay_00', f'P_Frame{side}Dent_0{i}', 'scale_x', k) for side in 'LR' for i in (0, 1)]
     # Menus framed by two side decorations, a header and a background: the frame stays at the screen's edges.
     for layout, deco in (('PauseMenuOverlay_00', 'P_Deco{}_00'), ('SystemLoadList_00', 'P_Deco{}_00'),
                          ('SystemOption_00', 'P_Deco{}_00'), ('SystemSaveLoad_00', 'P_Deco{}_00')):
