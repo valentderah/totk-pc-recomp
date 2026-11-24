@@ -66,7 +66,7 @@ static const char *const known[] = {
     "SHADER_MEMO", "SHADOW", "SHADOW_DEFER", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHADOW_SNAP", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR", "SHUTTER_FIX",
     "SHOTS_FULL", "SKIP_CS", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_US", "STICK_DEADZONE", "STICK_SENS",
     "SWKBD_ANSWER", "SYNC_AHEAD",
-    "SWKBD_TEST", "TEST_OOM", "TEST_PAD", "TEST_PAD_RUMBLE_MS", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_BLOCK_MIB", "TEX_HEAP_EXTRA_MB", "TEX_MEMO", "TEX_RELEASED_MIB", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UB_OVERLAY", "UB_OVERLAY_OUT", "UPSCALER", "VB_USED", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64", "VK_NO_HOST_IMPORT",
+    "SWKBD_TEST", "TEST_OOM", "TEST_PAD", "TEST_PAD_RUMBLE_MS", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_BLOCK_MIB", "TEX_HEAP_EXTRA_MB", "TEX_MEMO", "TEX_RELEASED_MIB", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UB_OVERLAY", "UB_OVERLAY_OUT", "UPSCALER", "VB_USED", "VERT_PLUS", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64", "VK_NO_HOST_IMPORT",
     "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VMA_BLOCK_MIB", "VOLUME", "VOLUME_MASK_BIAS", "VOLUME_MUSIC", "VOLUME_SFX", "VOLUME_VOICE", "VRAM_HEADROOM", "VRAM_LIMIT_MIB", "VS_OUTS",
     "WALK_KEY", "WALK_SCALE", "WB_EAGER", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
     "ZSTD_CHECK", "ZSTD_NATIVE",
@@ -81,7 +81,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"FULLSCREEN", "display"}, {"WINDOW_SIZE", "display"}, {"PERF_OVERLAY", "display"}, {"VK_PRESENT", "display"},
     {"GPU_INDEX", "display"}, {"OUTPUT_RES", "display"}, {"RENDER_SCALE", "display"}, {"UPSCALER", "display"},
     {"HUD_WIDTH", "display"},
-    {"SHARPNESS", "display"}, {"DYNAMIC_RES", "display"}, {"ASPECT", "display"}, {"MOVIE_ASPECT", "display"}, {"FOV", "display"}, {"ANISO", "display"},
+    {"SHARPNESS", "display"}, {"DYNAMIC_RES", "display"}, {"ASPECT", "display"}, {"MOVIE_ASPECT", "display"}, {"FOV", "display"}, {"VERT_PLUS", "display"}, {"ANISO", "display"},
     {"LOD_STEADY", "display"}, {"COLOR_PRESET", "display"},
     {"COLOR_BRIGHTNESS", "display"}, {"COLOR_CONTRAST", "display"}, {"COLOR_SATURATION", "display"},
     {"COLOR_GAMMA", "display"}, {"HDR", "display"}, {"HDR_PEAK_NITS", "display"}, {"HDR_GAME_NITS", "display"},
@@ -149,6 +149,7 @@ static const CfgMeta metas[] = {
     {"DLSS_CHAR_MASK", "65", "0|35|65|100", LIVE}, {"REFLEX", "off", "off|auto|on|boost", RESTART}, {"FXAA", "1", "0|1", LIVE},
     {"LOD_STEADY", "0", "0|1", RESTART},   // sets steady
     {"ASPECT", "fit", "fit|stretch", LIVE}, {"MOVIE_ASPECT", "keep", "keep|stretch", LIVE}, {"FOV", "100", "70..140", LIVE},
+    {"VERT_PLUS", "1", "0|1", LIVE},   // resolution.c res_fov_live
     {"ANISO", "game", "game|2|4|8|16", RESTART},   // vk_texture.c sampler_features
     // colour adjustment (vk_color.c); the preset is the menu's, the four values are what the present uses
     {"COLOR_PRESET", "default", "default|vivid|clarity|custom", LIVE}, {"COLOR_BRIGHTNESS", "0", "-30..30", LIVE},
