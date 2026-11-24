@@ -128,6 +128,9 @@ static int import_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
     r->import_lo = addr & ~(al - 1);
     r->import_hi = (addr + size + al - 1) & ~(al - 1);
     uint64_t n = r->import_hi - r->import_lo;
+    // TOTK_HEAP_LAZY: the caller's mem_thaw committed the pool's own chunks; an alignment above 4 KiB can widen the
+    // import into a neighbouring chunk the game never touched, and the driver refuses reserved pages.
+    mem_heap_commit(r->import_lo, n);
     VkMemoryHostPointerPropertiesEXT hp = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
     VkResult res = p_host_props ? p_host_props(c->device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
                                                (void *)(uintptr_t)r->import_lo, &hp)
@@ -582,6 +585,13 @@ void vk_mem_census(uint64_t frame) {
     rt_log("mem: commit at frame %llu: this process %.0f MB, the system %.0f of %.0f MB; room for device memory %s%.0f MiB",
            (unsigned long long)frame, proc, used, limit, room == UINT64_MAX ? "not counted " : "",
            room == UINT64_MAX ? 0.0 : room / 1048576.0);
+    if (mem_heap_lazy()) {   // what the heap's first-use commits (memory.c heap_fault) cost and saved so far
+        uint64_t nf, ns, hc, hs;
+        mem_heap_lazy_stats(&nf, &ns, &hc, &hs);
+        rt_log("mem: heap at frame %llu: %llu of %llu MiB committed, %llu first-use faults, %.1f ms in all",
+               (unsigned long long)frame, (unsigned long long)(hc >> 20), (unsigned long long)(hs >> 20),
+               (unsigned long long)nf, ns / 1e6);
+    }
     // Per heap, what VMA holds (blocks, and the allocations inside them) beside what the driver counts for the process:
     // usage above VMA's blocks is the driver's own memory (pipelines, command buffers, descriptor pools).
     VkCtx *vc = vk_ctx();
@@ -643,6 +653,10 @@ uint64_t vk_mem_host_room(void) {
     if (at && now - at < 250) return __atomic_load_n(&room_cached, __ATOMIC_RELAXED);   // a query costs a system call
     uint64_t commit, phys;
     plat_mem_room(&commit, &phys);
+    // The game's heap commits on first use (memory.c, heap_fault): the part it has not touched yet is commit it can
+    // still claim, which an eagerly committed heap had already taken. Its physical memory was never taken either way.
+    uint64_t later = mem_heap_uncommitted();
+    if (commit != UINT64_MAX) commit = commit > later ? commit - later : 0;
     uint64_t r = host_backed == HB_UMA && phys < commit ? phys : commit;
     r = r == UINT64_MAX ? r : r > room_reserve ? r - room_reserve : 0;
     __atomic_store_n(&room_cached, r, __ATOMIC_RELAXED);
