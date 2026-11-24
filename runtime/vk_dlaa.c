@@ -327,6 +327,7 @@ static struct {
     VkImage light_z;             // this frame: the D16 depth the lighting draws into the light target with
     int fx_on;                   // dlaa_effects_after, read at each present while DLSS runs
     int fx_seen, fx_open, fx_bad;   // this frame: the point found / the scene not ended since / drawn on after it
+    int fx_comp;                 // this frame: a full-size pass into the light target without depth after the lighting
     uint32_t fx_steady;          // DLSS frames in a row with the point found and nothing of the scene after it
     // jitter (vk_dlaa_viewport)
     VkImage jdepth;              // the scene depth of the last frame DLAA ran on: passes drawing with it are jittered
@@ -1617,9 +1618,25 @@ static void gbuf_light(const VkExec *ex) {
 // breaks it puts DLSS back at the bloom until it holds again, so a frame the rule does not fit changes the picture at
 // most once a second instead of from frame to frame.
 // dlaa_effects_after = 0 (the Screen tab, read each frame): DLSS at the bloom, effects included.
+// With FSR the point waits for the first full-size pass into the light target without depth (the composite of the
+// half-size clouds outdoors, of the volumetric fog in shrines, of the field's effects in the yard) and runs before the
+// next pass with a depth, the particles or the dust. The fog layer and those composites are drawn over the whole
+// picture and decide per pixel from the scene depth whether a pixel is sky or a surface; over the upscaler's picture
+// that depth is still this frame's jittered one while the picture is not, so on a silhouette against clouds or fog a
+// pixel the picture shows as sky took the surface's side of the test in some frames: no clouds or fog there that
+// frame, a brighter dot along distant ridges at night and at dawn, flickering with the jitter's phase and never
+// resolved, since it came after the upscaler. Measured at 2560x1440 with FSR 4 (frame dumps, a ridge against the
+// night sky): a ridge pixel brighter than the sky and the mountain beside it in 34 % of the columns with the point
+// before the fog layer, 6-7 % (as with the upscaler off) with it after the composite. These layers are smooth and
+// follow the scene, so the upscaler takes them with the scene's motion; the particles still go over its picture.
+// A frame without such a composite before the bloom runs the upscaler at the bloom, and the FX_STEADY count holds the
+// point back as for any frame the rule does not fit. TOTK_DLAA_FX_COMPOSITE=0 (test) puts the point back at the first
+// pass after the lighting; =1 also moves it with DLSS, where it is off by default until measured on NVIDIA hardware.
 #define FX_STEADY 60u
 
 static int effects_point(const VkExec *ex) {
+    static int after_comp = -1;
+    if (after_comp < 0) after_comp = rt_knob("DLAA_FX_COMPOSITE", D.fsr ? "1" : "0");
     const VkExecTarget *c = &ex->color[0], *z = &ex->depth;
     if (!D.fx_on || D.fx_bad || !D.glight || D.ended || ex->pass_ncolor != 1 || c->image != D.glight || c->level) return 0;
     if (!D.light_z) {
@@ -1630,6 +1647,8 @@ static int effects_point(const VkExec *ex) {
     unsigned o[2], s[2];
     res_sizes(o, s);
     if (c->width < o[0] || !scene_shaped(c) || !scene_large(c)) return 0;
+    if (after_comp && !z->image) D.fx_comp = 1;   // asked again at the same pass: the same answer
+    if (after_comp && (!D.fx_comp || !z->image)) return 0;
     D.fx_seen = D.fx_open = 1;
     return D.fx_steady >= FX_STEADY;
 }
@@ -1948,7 +1967,7 @@ void vk_dlaa_frame(void) {
         D.on = on, D.fg = vk_dlaa_fg_on = fg, D.fsr = fsr;
         // either way the next DLAA frame starts a new history from an unjittered frame
         D.reset = 1, D.cam_prev_ok = 0, D.jit_ok = D.jit_used = D.armed = D.done = D.gbuf = D.ended = D.up = 0;
-        D.fx_seen = D.fx_open = D.fx_bad = 0, D.fx_steady = 0;
+        D.fx_seen = D.fx_open = D.fx_bad = D.fx_comp = 0, D.fx_steady = 0;
         D.nodepth = D.glight = D.light_z = VK_NULL_HANDLE;
         D.hold = 0;
         return;
@@ -1957,7 +1976,7 @@ void vk_dlaa_frame(void) {
     D.fx_on = dl_active() && cfg_bool("TOTK_DLAA_EFFECTS_AFTER");   // DLSS's point alone
     if (!D.done) D.frames_missed++;
     else D.fx_steady = D.fx_seen ? D.fx_steady + (D.fx_steady < FX_STEADY) : 0;
-    D.fx_seen = D.fx_open = D.fx_bad = 0;
+    D.fx_seen = D.fx_open = D.fx_bad = D.fx_comp = 0;
     if (D.jit_used && !D.done) D.hold = 60, D.holds++;   // jittered but not resolved: that frame shook
     else if (D.hold) D.hold--;
     if (!D.done) D.jit_ok = 0;
