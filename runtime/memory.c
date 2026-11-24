@@ -210,8 +210,8 @@ static void commit(uint64_t a, uint64_t n, const char *what) {
 // SetHeapSize adds stays reserved: the first read or write of a reserved page faults, and heap_fault commits its
 // LAZY_CHUNK and retries. Freshly committed pages read as zero, as the Switch's heap does. Access by the kernel or the GPU
 // driver does not fault: a file read into the heap, a save written from it and a Vulkan import of it would fail on a
-// reserved page. All of them call mem_thaw first, so mem_thaw commits the reserved chunks of its range too
-// (heap_commit_range). Linux backs mprotect'ed pages on first use by itself and keeps committing eagerly.
+// reserved page. File reads and Vulkan imports call mem_thaw first, so mem_thaw commits the reserved chunks of its
+// range too (heap_commit_range); save writes only need the pages to exist and call mem_heap_commit. Linux backs mprotect'ed pages on first use by itself and keeps committing eagerly.
 //
 // lazy_map holds one byte per chunk, set once the chunk is committed, so neither path asks the OS for the page state:
 // a VirtualQuery costs tens of microseconds here, and the write faults of frozen pool regions (thaw_fault) come through
