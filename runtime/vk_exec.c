@@ -90,12 +90,12 @@ void vk_exec_frame_log(const tex_t *p, uint64_t frame) {
                                   fw[i].h, fw[i].fmt, fw[i].n);
     }
     rt_log("frame %llu: submits %llu passes %llu draws %llu/%llu clears %llu copies %llu dispatches %llu; present %p "
-           "%ux%u/%#x written %d; pass ends: targets %llu barrier %llu (%llu merged, %llu undone) bits %llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu; feedback draws %llu barriers %llu restarts %llu layouts %llu; targets%s",
+           "%ux%u/%#x written %d; pass ends: targets %llu barrier %llu (%llu merged, %llu undone, unwritten reads %llu colour %llu depth) bits %llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu; feedback draws %llu barriers %llu restarts %llu layouts %llu; targets%s",
            (unsigned long long)frame, (unsigned long long)f->submits,
            (unsigned long long)f->passes, (unsigned long long)f->draws, (unsigned long long)f->draws_seen,
            (unsigned long long)f->clears, (unsigned long long)f->copies, (unsigned long long)f->dispatches,
            p ? (const void *)p->mem : NULL, p ? p->d.width : 0, p ? p->d.height : 0, p ? (uint32_t)p->d.format : 0,
-           hit, (unsigned long long)f->pass_end_rt, (unsigned long long)f->pass_end_barrier, (unsigned long long)f->barrier_merged, (unsigned long long)f->barrier_undone, (unsigned long long)f->barrier_bit[0], (unsigned long long)f->barrier_bit[1], (unsigned long long)f->barrier_bit[2], (unsigned long long)f->barrier_bit[3], (unsigned long long)f->barrier_bit[4], (unsigned long long)f->barrier_bit[5], (unsigned long long)f->barrier_bit[6], (unsigned long long)f->barrier_bit[7], (unsigned long long)f->fb_draws, (unsigned long long)f->fb_barriers, (unsigned long long)f->fb_restarts,
+           hit, (unsigned long long)f->pass_end_rt, (unsigned long long)f->pass_end_barrier, (unsigned long long)f->barrier_merged, (unsigned long long)f->barrier_undone, (unsigned long long)f->undone_color, (unsigned long long)f->undone_depth, (unsigned long long)f->barrier_bit[0], (unsigned long long)f->barrier_bit[1], (unsigned long long)f->barrier_bit[2], (unsigned long long)f->barrier_bit[3], (unsigned long long)f->barrier_bit[4], (unsigned long long)f->barrier_bit[5], (unsigned long long)f->barrier_bit[6], (unsigned long long)f->barrier_bit[7], (unsigned long long)f->fb_draws, (unsigned long long)f->fb_barriers, (unsigned long long)f->fb_restarts,
            (unsigned long long)f->fb_layouts, list);
     memset(f, 0, sizeof *f);
     nfw = 0;
@@ -984,7 +984,7 @@ static void clear_ds(VkExec *ex, const p_clear_ds *c) {
 
 // ---- the op loop
 
-// barrier_merge (TOTK_BARRIER_MERGE, off by default): TotK calls Barrier(ORDER_FRAGMENTS | INVALIDATE_TEXTURE) about
+// barrier_merge (TOTK_BARRIER_MERGE, on by default): TotK calls Barrier(ORDER_FRAGMENTS | INVALIDATE_TEXTURE) about
 // 1200 times a frame in some scenes (water, decals): the next draw reads the render targets the last one wrote. A full
 // barrier there ends the Vulkan pass and flips every target's layout. What such a barrier asks for, an attachment write
 // made visible to a later fragment shader read of the open pass, feedback_prepare / feedback_barrier already do before the
@@ -992,10 +992,14 @@ static void clear_ds(VkExec *ex, const p_clear_ds *c) {
 // that may write a storage buffer or image (pass_storage), which only a full barrier makes visible, or the barrier asks for
 // more than those two bits, or the feedback layout is not in use, or a target is a 3D BC stand-in (its texture gets the
 // pass's writes only at the pass end, bc_copy_back). The reads the by-region barrier does not cover end the pass at the
-// draw that makes them (vk_exec_draw.c merge_guard). The by-region barrier orders only reads of the pixel a fragment
-// writes; NVN's ORDER_FRAGMENTS orders every pixel (ORDER_FRAGMENTS_TILED is the per-region one), so a draw that reads a
-// neighbouring pixel of a target written in the pass relies on the driver running the barrier for the whole target, as
-// RADV does; hence experimental.
+// draw that makes them (vk_exec_draw.c merge_guard), and so do reads of a target the draw does not write itself
+// (vk_exec_draw.c merge_unwritten_reads): the by-region barrier orders only reads of the pixel a fragment writes, while
+// NVN's ORDER_FRAGMENTS orders every pixel (ORDER_FRAGMENTS_TILED is the per-region one). What stays merged is a draw
+// that samples a target it also writes, which Savage Wind runs the same way on every GPU. If such a draw read a
+// neighbouring pixel, it would rely on the driver running the barrier for the whole target, as RADV and the desktop
+// drivers do. On 1.4.3 every read after a merged Barrier in the shrine, the town and the field is of that kind. Passes
+// a frame in the shrine: 581 -> 128 on an RDNA2 iGPU with no GPU time change on AMD's Windows driver; the waterfall
+// on RADV: 1105 -> 117, GPU 8.3 -> 4.1 ms.
 int vk_exec_barrier_merge_on(void) {
     static int on = -1;
     if (on < 0) on = cfg_bool("TOTK_BARRIER_MERGE");
