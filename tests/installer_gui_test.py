@@ -316,6 +316,7 @@ class CatalogTest(unittest.TestCase):
 
     def test_codes_become_names(self):
         for lang, korean in (('en', 'Korean'), ('ru', 'Корейский'), ('pt-BR', 'Coreano'), ('zh-Hans', '韩语'),
+                             ('zh-Hant', '韓語'),
                              ('de', 'Koreanisch'), ('fr', 'Coréen'), ('es', 'Coreano'), ('it', 'Coreano'),
                              ('nl', 'Koreaans'), ('ja', '韓国語'), ('ko', '한국어')):
             cat = Catalog(lang)
@@ -351,7 +352,7 @@ class CatalogTest(unittest.TestCase):
     def test_windows_langid_picks_the_window_language(self):
         for langid, lang in ((0x0419, 'ru'), (0x0819, 'ru'), (0x0416, 'pt-BR'), (0x0816, 'en'),
                              (0x0804, 'zh-Hans'), (0x1004, 'zh-Hans'),
-                             (0x0404, 'zh-Hans'), (0x0c04, 'zh-Hans'), (0x1404, 'zh-Hans'), (0x0409, 'en'),
+                             (0x0404, 'zh-Hant'), (0x0c04, 'zh-Hant'), (0x1404, 'zh-Hant'), (0x0409, 'en'),
                              (0x0407, 'de'), (0x0c07, 'de'), (0x040c, 'fr'), (0x0c0c, 'fr'), (0x0c0a, 'es'),
                              (0x080a, 'es'), (0x0410, 'it'), (0x0413, 'nl'), (0x0813, 'nl'), (0x0411, 'ja'),
                              (0x0412, 'ko'), (0x041d, 'en')):
@@ -359,6 +360,7 @@ class CatalogTest(unittest.TestCase):
 
     def test_chinese_window_starts_with_a_game_language_that_needs_no_shared_fonts(self):
         self.assertEqual(default_game_language('zh-Hans'), 'en-US')
+        self.assertEqual(default_game_language('zh-Hant'), 'en-US')
         self.assertEqual(default_game_language('ru'), 'ru')
         self.assertEqual(default_game_language('ja'), 'ja')
         for ui in ('ko', 'pt-BR'):
@@ -366,7 +368,8 @@ class CatalogTest(unittest.TestCase):
 
     def test_posix_locale_picks_the_window_language(self):
         for loc, lang in (('ru_RU.UTF-8', 'ru'), ('pt_BR.UTF-8', 'pt-BR'), ('pt_PT.UTF-8', 'en'),
-                          ('zh_CN.UTF-8', 'zh-Hans'), ('zh_TW.UTF-8', 'zh-Hans'), ('zh_HK', 'zh-Hans'),
+                          ('zh_CN.UTF-8', 'zh-Hans'), ('zh_TW.UTF-8', 'zh-Hant'), ('zh_HK', 'zh-Hant'),
+                          ('zh_MO.UTF-8', 'zh-Hant'), ('zh_SG.UTF-8', 'zh-Hans'), ('zh_Hant_TW', 'zh-Hant'),
                           ('de_AT.UTF-8', 'de'), ('fr_CA', 'fr'), ('ja_JP.UTF-8', 'ja'), ('ko_KR.UTF-8', 'ko'),
                           ('nl', 'nl'), ('C.UTF-8', 'en'), ('', 'en'), ('sv_SE.UTF-8', 'en')):
             self.assertEqual(ui_language_for_locale(loc), lang, loc)

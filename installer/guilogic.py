@@ -24,9 +24,10 @@ from . import state as statefile
 from .events import render
 
 TEXT = Path(__file__).resolve().parent / 'text'
-UI_LANGUAGES = ('en', 'ru', 'pt-BR', 'zh-Hans', 'de', 'fr', 'es', 'it', 'nl', 'ja', 'ko', 'vi')
+UI_LANGUAGES = ('en', 'ru', 'pt-BR', 'zh-Hans', 'zh-Hant', 'de', 'fr', 'es', 'it', 'nl', 'ja', 'ko', 'vi')
 # what the language switch in the window's corner shows for each
 UI_LANGUAGE_LABELS = {'en': 'English', 'ru': 'Русский', 'pt-BR': 'Português (Brasil)', 'zh-Hans': '简体中文',
+                      'zh-Hant': '繁體中文',
                       'de': 'Deutsch', 'fr': 'Français', 'es': 'Español', 'it': 'Italiano', 'nl': 'Nederlands',
                       'ja': '日本語', 'ko': '한국어', 'vi': 'Tiếng Việt'}
 STEP_ORDER = ('check', 'kit', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss',
@@ -34,8 +35,10 @@ STEP_ORDER = ('check', 'kit', 'fonts', 'extract', 'lift', 'compile', 'prepare', 
 # message parameter -> catalog id prefix of the names that replace its raw values
 PARAM_NAMES = {'lang': 'lang.', 'known': 'lang.', 'step': 'step.', 'input': 'param.input.'}
 LANG_PT_BR = 0x0416   # Portuguese (Brazil), the whole LANGID: Portugal's Portuguese stays English
+# Chinese of Taiwan, Hong Kong and Macau (whole LANGIDs) reads Traditional Chinese; the other Chinese LANGIDs (China,
+# Singapore) take PRIMARY_LANGS' Simplified Chinese.
+LANG_ZH_HANT = (0x0404, 0x0c04, 0x1404)
 # primary language id in a Windows LANGID -> window language, for the languages whose every region gets the same text.
-# Every Chinese gets Simplified Chinese: the setup has no Traditional Chinese text, as the in-game menu has none.
 PRIMARY_LANGS = {0x04: 'zh-Hans', 0x19: 'ru', 0x07: 'de', 0x0c: 'fr', 0x0a: 'es', 0x10: 'it', 0x13: 'nl', 0x11: 'ja',
                  0x12: 'ko', 0x2a: 'vi'}
 # window language -> the game language the form starts with (default_game_language)
@@ -101,21 +104,25 @@ def windows_ui_language():
 
 def ui_language_for_locale(loc):
     """The window language for a POSIX locale such as 'de_AT.UTF-8': its language, Brazilian Portuguese only for
-    pt_BR, Simplified Chinese for every Chinese, else English."""
+    pt_BR, Traditional Chinese for zh_TW, zh_HK, zh_MO and zh_Hant, Simplified Chinese for other Chinese, else
+    English."""
     loc = loc.lower().replace('-', '_')
     if loc.startswith('pt_br'):
         return 'pt-BR'
     lang = loc.split('_')[0].split('.')[0]
     if lang == 'zh':
-        return 'zh-Hans'
+        region = loc.split('.')[0].split('@')[0].split('_')[1:]
+        return 'zh-Hant' if set(region) & {'tw', 'hk', 'mo', 'hant'} else 'zh-Hans'
     return lang if lang in PRIMARY_LANGS.values() else 'en'
 
 
 def ui_language_for_langid(langid):
     """The window language for a Windows LANGID: by its primary language (PRIMARY_LANGS), Brazilian Portuguese only
-    for pt-BR (Portugal's stays English), else 'en'."""
+    for pt-BR (Portugal's stays English), Traditional Chinese for Taiwan, Hong Kong and Macau, else 'en'."""
     if langid == LANG_PT_BR:
         return 'pt-BR'
+    if langid in LANG_ZH_HANT:
+        return 'zh-Hant'
     return PRIMARY_LANGS.get(langid & 0x3ff, 'en')
 
 
