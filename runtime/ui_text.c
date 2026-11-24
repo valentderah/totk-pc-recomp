@@ -10435,7 +10435,7 @@ static const char *resolve_menu_lang(void) {
     return "en";
 }
 
-const char *menu_text(UiTextId id) {
+const char *menu_text_lang(void) {
     static _Atomic(const char *) lang = "en";
     static _Atomic unsigned seen = ~0u;
     unsigned v = cfg_version();
@@ -10443,5 +10443,7 @@ const char *menu_text(UiTextId id) {
         atomic_store_explicit(&lang, resolve_menu_lang(), memory_order_relaxed);
         atomic_store_explicit(&seen, v, memory_order_relaxed);
     }
-    return ui_text_in(atomic_load_explicit(&lang, memory_order_relaxed), id);
+    return atomic_load_explicit(&lang, memory_order_relaxed);
 }
+
+const char *menu_text(UiTextId id) { return ui_text_in(menu_text_lang(), id); }

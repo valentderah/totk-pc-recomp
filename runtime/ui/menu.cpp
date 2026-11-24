@@ -192,6 +192,7 @@ static int g_failed_flag() { return g_failed.load(std::memory_order_relaxed); }
 static int g_vk_ok;               // back end initialised for g_vk_fmt
 static VkFormat g_vk_fmt;
 static float g_font_scale;        // the scale of the uploaded font atlas; 0 when none is uploaded
+static int g_font_first = -2;     // the kCjk entry merged first into that atlas (font_first); -2 before the first one
 static float g_style_scale;       // the scale the style was last sized for
 static ImGuiStyle g_base_style;   // the menu's style at 1080 lines
 static uint64_t g_last_ns;
@@ -326,6 +327,18 @@ extern "C" int menu_font_check(void) {
     return ok;
 }
 
+// The kCjk entry of the menu language, -1 when it is not a CJK one. Its font is merged first: with merged fonts the
+// first one that has a glyph draws it, and Japanese, Chinese and Korean share most Han code points with different
+// glyph shapes per region (Han unification). Merged in kCjk order alone, a Traditional Chinese menu drew every character
+// it shares with Japanese from the Japanese font and only the rest from the Traditional Chinese one, in two styles and
+// sizes side by side (全螢幕: 全 from one font, 螢幕 from the other).
+static int font_first(void) {
+    const char *lang = menu_text_lang();
+    for (int i = 0; i < (int)(sizeof kCjk / sizeof *kCjk); i++)
+        if (!strcmp(lang, kCjk[i].lang)) return i;
+    return -1;
+}
+
 // The glyphs of every string of a catalog row (ui_text_visit), for the font that draws that language.
 static void add_row_glyphs(void *ctx, const char *text) {
     static_cast<ImFontGlyphRangesBuilder *>(ctx)->AddText(text);
@@ -340,8 +353,12 @@ static int fonts_up(float scale) {
     fa->AddFontFromMemoryTTF((void *)roboto_ttf, (int)sizeof roboto_ttf, 26.0f * scale, &fc, kRanges);
     uint8_t *data[N] = {};
     ImVector<ImWchar> ranges[N];
-    int merged = 0;
-    for (int i = 0; i < N; i++) {
+    int merged = 0, first = font_first(), order[N], n = 0;
+    if (first >= 0) order[n++] = first;   // the menu language's font draws all of its glyphs (font_first)
+    for (int i = 0; i < N; i++)
+        if (i != first) order[n++] = i;
+    for (int o = 0; o < N; o++) {
+        int i = order[o];
         char path[512];
         uint64_t size = 0;
         if (!plat_font_path(kCjk[i].lang, path, sizeof path) || !(data[i] = plat_file_read(path, &size))) continue;
@@ -377,8 +394,10 @@ static int fonts_up(float scale) {
     fa->ClearInputData();   // the glyphs are in the texture: the font files and the pixels are not needed again
     fa->ClearTexData();
     for (uint8_t *d : data) free(d);
-    rt_log("menu: font atlas at %.1f px, language names from %d of %d system fonts", 26.0f * scale, merged, (int)N);
+    rt_log("menu: font atlas at %.1f px, language names from %d of %d system fonts%s%s", 26.0f * scale, merged, (int)N,
+           first >= 0 ? ", first " : "", first >= 0 ? kCjk[first].lang : "");
     g_font_scale = ok ? scale : 0;
+    g_font_first = first;
     return ok;
 }
 
@@ -1998,7 +2017,9 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     float scale = menu_scale(t->height);
     // Check if amiibo page requested font rebuild (e.g., after refreshing directory with new files)
     bool amiibo_rebuild = amiibo_check_font_rebuild();
-    if (!vk_up(t) || (g_font_scale != scale && !fonts_up(scale)) || (amiibo_rebuild && !fonts_up(scale))) {
+    // a new menu language whose CJK font should come first (font_first) rebuilds the atlas too
+    bool lang_rebuild = g_font_scale == scale && g_font_first != font_first();
+    if (!vk_up(t) || (g_font_scale != scale && !fonts_up(scale)) || ((amiibo_rebuild || lang_rebuild) && !fonts_up(scale))) {
         rt_log("menu: Dear ImGui Vulkan back end set-up failed; the menu stays closed");
         g_failed.store(1);
         set_open(0);

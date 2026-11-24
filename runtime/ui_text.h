@@ -347,3 +347,6 @@ int ui_text_game_langs(int game_version, UiGameLang *out, int max);
 // "zh-Hant", "de", "fr", "es", "it", "nl", "ja", "ko", "vi"); unset, the system UI language when the catalog has menu
 // text for it, else English. Follows a live change of the setting.
 const char *menu_text(UiTextId id);
+// The catalog language menu_text reads now ("en", "zh-Hant", ...): the font atlas puts that language's CJK font first
+// (ui/menu.cpp fonts_up).
+const char *menu_text_lang(void);
