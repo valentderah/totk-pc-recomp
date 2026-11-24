@@ -193,7 +193,8 @@ static const CfgMeta metas[] = {
     {"POINTER_IMAGE", "0", "0|1", LIVE},    // input_win.c / input_sdl.c: the game window's own pointer (cursor_art.c)
     // input.c: a connected gamepad takes the mouse away from the camera, which then reads nothing in the game at all; the
     // screens keep it (a game menu, the map, the Purah Pad's camera, a dialogue box), where moving it gives it their
-    // pointer. On by default: a player with a pad in hand is not reaching for the mouse mid-fight.
+    // pointer. Off by default: a pad that is merely connected must not cost a keyboard and mouse player the mouse
+    // camera, so the switch is opt-in.
     {"MOUSE_MENU_ONLY", "0", "0|1", LIVE},
     {"QUICKSAVE", "0", "0|1", LIVE},        // quicksave.c: one key saves (an autosave), another loads it
     {"QUICKSAVE_KEY", "f6", NULL, LIVE}, {"QUICKLOAD_KEY", "f7", NULL, LIVE},   // Half-Life's keys; a key name or none
