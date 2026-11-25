@@ -563,7 +563,9 @@ class StalePluginTest(unittest.TestCase):
         self.bed = Bed(Path(tmp.name))
         self.bed.run()   # a finished install: a second run skips lift and compile
 
-    def planned(self, plugin=True, stale_lines=('A1B2C3D4\t00000000\tits init wrote 1 words the build did not record',)):
+    STALE = ('A1B2C3D4\t00000000\tits init wrote 1 words the build did not record',)
+
+    def planned(self, plugin=True, stale_lines=STALE):
         dest = self.bed.dest
         if plugin:
             (dest / 'mods' / 'SQ' / 'exefs').mkdir(parents=True, exist_ok=True)
