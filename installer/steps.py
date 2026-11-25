@@ -492,6 +492,7 @@ class Check(Step):
         self.host(ctx)
         rep.progress('check', 'verify', force=True)
         ctx.verify_kept('check')
+        self.relift_stale(ctx)
         ncas = 0
         if ctx.will_run('extract'):
             rep.progress('check', 'inputs', force=True)
@@ -501,6 +502,18 @@ class Check(Step):
             rep.progress('check', 'versions', force=True)
             self.versions(ctx)
         return {}
+
+    def relift_stale(self, ctx):
+        """Plans the lift and the compile when the game listed plugins whose start differed from the build
+        (build-cache/plugins.stale, runtime/mods.c mods_plugin_off). Such a mod stays off until a lift runs the
+        plugin's service run again and drops the list. Nothing the lift key fingerprints changed (the player changed
+        a setting the init depends on, such as render_scale), so without this the rebuild the game starts for it
+        finds the lift current, leaves the list in place, and the game gives up on the next start (issue #1437)."""
+        stale = stale_plugins(ctx)
+        if stale and not (ctx.will_run('lift') and ctx.will_run('compile')):
+            ctx.reporter.log(f'check: build-cache/plugins.stale lists {stale} plugin start(s) that differed from the '
+                             'build: lift and compile again')
+            ctx.plan(ctx.forced | {'lift', 'compile'})
 
     def host(self, ctx):
         """Builds and runs the host check once per run: key() asks first and run() reports, so a failure is kept on
@@ -1158,6 +1171,15 @@ def built_plugins(status, files, mods):
     return [f for f in files if key(f) in built]
 
 
+def stale_plugins(ctx):
+    """The number of lines of build-cache/plugins.stale, the game's list of plugins whose start differed from the
+    build (runtime/mods.c mods_plugin_off), while the mods folder has plugins; 0 otherwise."""
+    stale = ctx.dest / 'build-cache' / 'plugins.stale'
+    if not stale.is_file() or not plugin_files(ctx):
+        return 0
+    return sum(1 for line in stale.read_text(encoding='utf-8', errors='replace').splitlines() if line.strip())
+
+
 def exefs_status(ctx):
     """The build's ExeFS patch status file (tools/exefs_patches.py --status), which runtime/mods.c reads."""
     return ctx.dest / 'build-cache' / 'exefs.status'
@@ -1263,11 +1285,24 @@ class Lift(Step):
                         replace_file(dll, ctx.temp / 'build' / dll.name)
                     entries_file = ctx.temp / 'plugin-entries.txt'
                     entries_file.unlink(missing_ok=True)
-                    code, log = run_tool(ctx, 'lift', layout.tools / 'exefs_plugins.py', [
-                        '--exe', ctx.temp / 'build' / ('totk' + EXE), '--out', ctx.temp / 'plugins', '--mods',
-                        ctx.dest / 'mods', '--exefs', ctx.dest / 'exefs', '--patches', lift_patches,
-                        '--patches-out', ctx.temp / 'patches-plugins.txt', '--status', plugins_status(ctx),
-                        '--entries-out', entries_file])
+                    # ... and its settings, the player's totk.ini (cfg.c reads the one beside the exe): the memory
+                    # pool and the heap the init sees grow with the resolution settings and a mod's texture heap
+                    # (memory.c mem_init), and an init that sizes its storage from them (Zonai Fieldworks' Self
+                    # Recall) writes another word at play than in a service run with the defaults, so its start
+                    # differed at every start (issue #1437). exefs_plugins.py points the run at the mods folder.
+                    ini_copy = ctx.temp / 'build' / 'totk.ini'
+                    if (ctx.dest / 'totk.ini').is_file():
+                        replace_file(ctx.dest / 'totk.ini', ini_copy)
+                    else:
+                        ini_copy.unlink(missing_ok=True)
+                    try:
+                        code, log = run_tool(ctx, 'lift', layout.tools / 'exefs_plugins.py', [
+                            '--exe', ctx.temp / 'build' / ('totk' + EXE), '--out', ctx.temp / 'plugins', '--mods',
+                            ctx.dest / 'mods', '--exefs', ctx.dest / 'exefs', '--patches', lift_patches,
+                            '--patches-out', ctx.temp / 'patches-plugins.txt', '--status', plugins_status(ctx),
+                            '--entries-out', entries_file])
+                    finally:
+                        ini_copy.unlink(missing_ok=True)
                     # exit 1 with a status file: refused plugins, their reasons in it; the rest goes on
                     if plugins_status(ctx).is_file() and (ctx.temp / 'patches-plugins.txt').is_file():
                         code = 0

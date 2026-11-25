@@ -43,7 +43,11 @@
 //     after its hooks are in.
 //   - SetHeapSize grows the process heap past the size the game's nninitStartup set before the init runs (Zonai
 //     Fieldworks keeps a pool in the tail). The heap base is fixed and the game asked its size the same way at every
-//     start, so the init gets the same answer each time.
+//     start, so the init gets the same answer each time with the same settings. The pool and the heap grow with the
+//     resolution settings and a mod's texture heap (memory.c mem_init), so the service run reads the player's
+//     totk.ini and mods folder (installer/steps.py Lift.run, tools/exefs_plugins.py run). A start after a change of
+//     them differs and waits for the rebuild, which runs the service run again (installer/steps.py
+//     Check.relift_stale; #1437).
 // Only svcs the init needs are allowed (SetHeapSize, QueryMemory, GetSystemTick, OutputDebugString, GetInfo 2-7,
 // 12-17 and 65001, Map/UnmapProcessMemory); any other one, such as CreateSession and ReplyAndReceive of exlaunch's
 // process-handle fallback, ends the run with the reason in the record.

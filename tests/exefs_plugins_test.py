@@ -606,14 +606,15 @@ class PerPlugin(unittest.TestCase):
             f.write_bytes(nso(PLUGIN_TEXT) + name.encode())
             self.files.append(f)
         (self.d / 'patches.txt').write_text('set fps60 TOTK_FPS60 1\n')
-        self.runs = []
+        self.runs, self.mods_seen = [], []
         saved = xp.run, xp.hook_impls
         self.real_run = xp.run
         self.addCleanup(lambda: (setattr(xp, 'run', saved[0]), setattr(xp, 'hook_impls', saved[1])))
         xp.run, xp.hook_impls = self.fake_run, lambda rec: IMPLS
 
-    def fake_run(self, exe, out, tick_offset, timeout, only):
+    def fake_run(self, exe, out, tick_offset, timeout, only, mods=None):
         self.runs.append(only)
+        self.mods_seen.append(mods)
         out.mkdir(parents=True, exist_ok=True)
         if only == 'plugin1':
             return 0xC0000005, 'its init ended the service run without a record (exit 0xc0000005)'
@@ -642,6 +643,8 @@ class PerPlugin(unittest.TestCase):
             sys.argv = argv
         self.assertEqual(code, 1)
         self.assertEqual(self.runs, ['-', 'plugin0', 'plugin0', 'plugin1', 'plugin2'])
+        # every service run reads the mods folder the game reads at play (a mod's HeapDef grows the pool, #1437)
+        self.assertEqual(self.mods_seen, [self.d / 'mods'] * 5)
         lines = {line.split('\t')[0]: line.split('\t') for line in status.read_text().splitlines()}
         key = {n: xp.fnv(f'{n}/exefs/subsdk9'.encode()) for n in 'ABC'}
         self.assertEqual(lines[key['A']][2:], ['plugin', '-', 'plugin0, 1 hooks'])
@@ -668,6 +671,23 @@ class PerPlugin(unittest.TestCase):
                                                               '(0xc0000005) at host 1\n', stderr='')
         code, why = self.real_run(None, self.d / 'c', 0, 7, 'plugin0')
         self.assertEqual(why, 'its init crashed the service run: access violation (0xc0000005) at host 1')
+
+    def test_run_points_at_the_mods_folder(self):
+        # the real run(): TOTK_MODS_DIR names the mods folder when there is one, and is left alone otherwise
+        saved = xp.subprocess.run
+        self.addCleanup(setattr, xp.subprocess, 'run', saved)
+        envs = []
+
+        def capture(cmd, **kw):
+            envs.append(kw['env'])
+            return SimpleNamespace(returncode=0, stdout='', stderr='')
+        xp.subprocess.run = capture
+        with mock.patch.dict(xp.os.environ, {}, clear=False):
+            xp.os.environ.pop('TOTK_MODS_DIR', None)
+            self.real_run(None, self.d / 'm', 0, 7, 'plugin0', self.d / 'mods')
+            self.real_run(None, self.d / 'n', 0, 7, 'plugin0')
+        self.assertEqual(envs[0]['TOTK_MODS_DIR'], str(self.d / 'mods'))
+        self.assertNotIn('TOTK_MODS_DIR', envs[1])
 
     def test_ran_view_leaves_out_plugins_that_did_not_run(self):
         rec = record()

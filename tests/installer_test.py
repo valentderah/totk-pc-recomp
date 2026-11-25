@@ -517,6 +517,95 @@ class LiftRunTest(unittest.TestCase):
         self.assertFalse(steps.plugins_status(self.ctx).is_file())
         self.assertIn('warn.plugins_skipped', self.ctx.reporter.out.getvalue())
 
+    def service_run_ini(self):
+        """Lift with a plugin; the text of the totk.ini beside the service run's exe while it ran (None: none)."""
+        seen = []
+        inner = steps.run_tool
+
+        def run_tool(ctx, step, script, args, parse=None, cwd=None):
+            if Path(script).name == 'exefs_plugins.py':
+                ini_copy = ctx.temp / 'build' / 'totk.ini'
+                seen.append(ini_copy.read_text() if ini_copy.is_file() else None)
+            return inner(ctx, step, script, args, parse, cwd)
+        steps.run_tool = run_tool
+        steps.Lift().run(self.ctx)
+        return seen
+
+    def test_service_run_reads_the_players_settings(self):
+        # the pool the init sees grows with render_scale (#1437): the service run reads the install's totk.ini, and
+        # the copy is gone after it
+        self.plugin_setup('plugin')
+        (self.dest / 'totk.ini').write_text('[graphics]\nrender_scale = 100\n')
+        self.assertEqual(self.service_run_ini(), ['[graphics]\nrender_scale = 100\n'])
+        self.assertFalse((self.ctx.temp / 'build' / 'totk.ini').exists())
+
+    def test_service_run_without_settings_reads_none(self):
+        # no totk.ini in the install: a copy an earlier run left beside the exe does not stand in for it
+        self.plugin_setup('plugin')
+        (self.ctx.temp / 'build' / 'totk.ini').write_text('[graphics]\nrender_scale = 200\n')
+        self.assertEqual(self.service_run_ini(), [None])
+
+    def test_failed_service_run_removes_the_settings_copy(self):
+        self.plugin_setup('plugin')
+        (self.dest / 'totk.ini').write_text('[graphics]\nrender_scale = 100\n')
+        self.fail = {'exefs_plugins.py'}
+        self.service_run_ini()
+        self.assertFalse((self.ctx.temp / 'build' / 'totk.ini').exists())
+
+
+class StalePluginTest(unittest.TestCase):
+    """A rebuild the game starts because a plugin's start differed from the build (build-cache/plugins.stale) lifts
+    and compiles again, though no input of the lift key changed (#1437)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.bed = Bed(Path(tmp.name))
+        self.bed.run()   # a finished install: a second run skips lift and compile
+
+    def planned(self, plugin=True, stale_lines=('A1B2C3D4\t00000000\tits init wrote 1 words the build did not record',)):
+        dest = self.bed.dest
+        if plugin:
+            (dest / 'mods' / 'SQ' / 'exefs').mkdir(parents=True, exist_ok=True)
+            (dest / 'mods' / 'SQ' / 'exefs' / 'subsdk9').write_bytes(b'NSO0')
+        if stale_lines is not None:
+            (dest / 'build-cache').mkdir(exist_ok=True)
+            (dest / 'build-cache' / 'plugins.stale').write_text(''.join(f'{line}\n' for line in stale_lines))
+        layout = Layout(root=Path('.'), dev=True, release='1.0', python=Path('python'), tools=Path('tools'),
+                        recomp=Path('recomp'), llvm=Path('llvm'), deps=Path('deps'), runtime=Path('rt'),
+                        runtime_lib=Path('lib'), ninja=Path('ninja'), hactool=Path('hactool'), xlate=Path('xlate'))
+        options = SimpleNamespace(inputs={}, fail={}, verify_ok={}, ran=[], verified=[], forced=[])
+        log = self.bed.temp / 'setup.log'
+        rep = Reporter(out=io.StringIO(), log_path=log)
+        self.addCleanup(rep.close)
+        ctx = runner.Context(layout, dest, self.bed.temp, rep, options, state=state.load(dest))
+        ctx.steps = fake_steps()
+        ctx.plan()
+        before = {s: ctx.will_run(s) for s in ('lift', 'compile')}
+        steps.Check().relift_stale(ctx)
+        rep.close()
+        return (before, {s: ctx.will_run(s) for s in ('extract', 'lift', 'compile', 'prepare')},
+                log.read_text(encoding='utf-8') if log.is_file() else '')
+
+    def test_stale_plugin_lifts_and_compiles_again(self):
+        before, after, log = self.planned()
+        self.assertEqual(before, {'lift': False, 'compile': False})
+        self.assertEqual(after, {'extract': False, 'lift': True, 'compile': True, 'prepare': False})
+        self.assertIn('plugins.stale lists 1 plugin start(s)', log)
+
+    def test_no_stale_list_keeps_the_plan(self):
+        _, after, _ = self.planned(stale_lines=None)
+        self.assertEqual(after, {'extract': False, 'lift': False, 'compile': False, 'prepare': False})
+
+    def test_empty_stale_list_keeps_the_plan(self):
+        _, after, _ = self.planned(stale_lines=('',))
+        self.assertFalse(after['lift'] or after['compile'])
+
+    def test_stale_list_without_plugins_keeps_the_plan(self):
+        # the mod was removed: the lift key changed anyway, and a list of nothing it builds asks for no lift
+        _, after, _ = self.planned(plugin=False)
+        self.assertFalse(after['lift'] or after['compile'])
+
 
 class CompileKeyTest(unittest.TestCase):
     """The compile key follows the release string: the exe carries the port version of the release that built it."""

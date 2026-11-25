@@ -113,7 +113,10 @@ ahead of time, after the design in [#845](https://github.com/valentderah/totk-pc
 2. At every start each plugin's start-up runs again, before the game's own start-up code, in the same setting: it
    sees the game's own instructions, as in its service run. Its redirects are compared with the record of the
    rebuild. When they match, the mod's code sites go on. When they do not, the plugin stays off for this run, the
-   mod's row says why, and the next start runs the rebuild.
+   mod's row says why, and the next start runs the rebuild, which runs the plugin's service mode again. The service
+   mode reads the game's `totk.ini` and mods folder, because some plugins size their memory from the game's memory
+   pool, which grows with `render_scale`, the output size and an HD texture pack. Changing those settings can
+   therefore cost one rebuild at the next start.
 3. The plugin keeps what its start-up made (its memory, its tables), so its code works as on the Switch. The start
    costs about 50 ms per plugin; the game runs no differently without a plugin.
 4. Removing a plugin mod from the mods folder starts the rebuild at the next start, which builds the game without

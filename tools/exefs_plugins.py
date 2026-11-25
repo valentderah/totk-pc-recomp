@@ -783,15 +783,19 @@ def diff_records(a, b):
     return out
 
 
-def run(exe, out, tick_offset, timeout, only):
+def run(exe, out, tick_offset, timeout, only, mods=None):
     """One service run into out, only module `only`'s init running ("-": none). (exit code or None, why the run gave
-    no record or None); a refused run writes its record too."""
+    no record or None); a refused run writes its record too. mods: the mods folder the game reads at play, which the
+    run reads too (TOTK_MODS_DIR): a switched-on mod's HeapDef grows the texture heap and the pool (resolution.c
+    mod_tex_heap_kib), and an init that sizes its storage from the pool must see the size it sees at play (#1437)."""
     out.mkdir(parents=True, exist_ok=True)
     for f in out.iterdir():   # an earlier run's record must not pass for this one's
         if f.is_file() and (f.name in ('record.json', 'run.log') or f.suffix == '.img'):
             f.unlink()
     env = dict(os.environ, TOTK_PLUGIN_TICK_OFFSET=f'{tick_offset:#x}', TOTK_PLUGIN_ONLY=only,
                TOTK_BACKGROUND_WINDOW='1', TOTK_ASSUME_FOCUS='1')
+    if mods:
+        env['TOTK_MODS_DIR'] = str(mods)
     try:
         r = subprocess.run([str(exe), '--plugin-init', str(out)], env=env, capture_output=True, text=True,
                            errors='replace', timeout=timeout)
@@ -838,13 +842,13 @@ def report(rec, label, game=frozenset()):
     return hooks, reasons
 
 
-def plugin_runs(exe, out, module, timeout, game=frozenset()):
+def plugin_runs(exe, out, module, timeout, game=frozenset(), mods=None):
     """The two service runs of one plugin (run2 with the tick offset) into out/<module>: (its first record or None,
     hooks, reasons)."""
     recs = []
     for i, offset in enumerate((0, TICK_OFFSET), 1):
         d = out / module / f'run{i}'
-        code, why = run(exe, d, offset, timeout, module)
+        code, why = run(exe, d, offset, timeout, module, mods)
         if why:
             print(f'{module} run {i}: {why}; see {d / "run.log"}')
             return None, [], [why]
@@ -895,7 +899,7 @@ def main():
         ap.error('--exe and --out, or --check')
     # A run without any init names the plugin modules of the exe's layout and checks that the service run works at all:
     # without it no plugin can be built.
-    code, why = run(args.exe, args.out / 'list', 0, args.timeout, '-')
+    code, why = run(args.exe, args.out / 'list', 0, args.timeout, '-', args.mods)
     if why:
         print(f'the service run without inits gave no record: {why}; see {args.out / "list" / "run.log"}')
         return 2
@@ -903,7 +907,7 @@ def main():
     game = game_imports(args.exefs)
     results = []
     for m in (m for m in listing['modules'] if m['plugin']):
-        rec, hooks, bad = plugin_runs(args.exe, args.out, m['name'], args.timeout, game)
+        rec, hooks, bad = plugin_runs(args.exe, args.out, m['name'], args.timeout, game, args.mods)
         print(f'{m["name"]}: ' + (f'refused: {bad[0]}' if bad else f'accepted, {len(hooks)} hooks'))
         results.append((m['name'], m.get('file'), rec, args.out / m['name'] / 'run1', hooks, bad))
     if emitting:
