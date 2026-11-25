@@ -602,7 +602,12 @@ def init_code(rec, hooks, module):
     trampolines of its far hooks (the moved original words and a branch back). The plugin may point a veneer at any of
     them at play (Zonai Fieldworks turns its features' hooks on and off), so each is a root of the reach check and a
     seed of the lift. The trampolines of inline hooks (never run) and the Orig trampolines of replace hooks (the lift
-    serves them with the function's unpatched copy) are left out: their way back would split main's functions."""
+    serves them with the function's unpatched copy) are left out: their way back would split main's functions.
+
+    An exlaunch inline-hook stub the init writes (stur x30; bl impl; ldur x30; b trampoline; .quad callback) may be the
+    target of a hook the plugin turns on at play: Zonai Fieldworks writes one per member hook at init, back to back,
+    and a member switched on points its gate's pointer at it (the 4th of a row is plugin+0x135048 on 1.4.3). Each stub
+    and its callback are starts; the .quad is data, not code running on into the next stub."""
     p = {m['name']: m for m in rec['modules']}[module]
     img, pre = rec['images'].get(module), rec.get('pre_images', {}).get(module)
     if img is None or pre is None:
@@ -611,13 +616,24 @@ def init_code(rec, hooks, module):
     now, old = struct.unpack_from(f'<{n}I', img), struct.unpack_from(f'<{n}I', pre)
     known = {p['base'] + int(h['trampoline'].split('+')[1], 16) for h in hooks
              if (h.get('trampoline') or '').startswith(module + '+')}
-    out, inside = set(), False   # inside: the word before is a written word that goes on to this one
-    for i in range(n):
+    text = range(p['base'], p['base'] + p['text_end'])
+    out, inside, i = set(), False, 0   # inside: the word before is a written word that goes on to this one
+    while i < n:
         new = old[i] == 0 and now[i] != 0
+        if (new and i + 5 < n and now[i] == STUR_X30 and now[i + 1] & 0xFC000000 == 0x94000000
+                and now[i + 2] == LDUR_X30 and now[i + 3] & 0xFC000000 == 0x14000000):
+            stub = p['base'] + 4 * i
+            callback = now[i + 4] | now[i + 5] << 32
+            out.add(stub)
+            if callback in text:
+                out.add(callback)
+            inside, i = False, i + 6
+            continue
         if new and not inside:
             out.add(p['base'] + 4 * i)
         # b, br, ret end a trampoline; one may follow right after
         inside = new and now[i] & 0xFC000000 != 0x14000000 and now[i] & 0xFFFFFC1F not in (0xD61F0000, 0xD65F0000)
+        i += 1
     return out - known
 
 

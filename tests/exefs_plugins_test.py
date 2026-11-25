@@ -603,6 +603,22 @@ class Lines(unittest.TestCase):
         self.assertIn(f'orig mod_x plugin0 {TRAMP_OFF:x} main {SITE_OFF:x}', out)
         self.assertIn(f'seed plugin0 {THUNK_OFF:x}', out)
 
+    def test_stubs_written_back_to_back_are_each_a_start(self):
+        # Zonai Fieldworks writes an inline-hook stub per member hook at init, back to back; a member switched on at
+        # play points its gate at one (1.4.3 plugin+0x135048, the 4th). The .quad callback after each stub is data.
+        rec = record()
+        img, row = bytearray(rec['images']['plugin0']), 0x8000
+        for k in range(3):
+            at = row + 0x18 * k
+            struct.pack_into('<4IQ', img, at, xp.STUR_X30, b(PLUGIN + at + 4, PLUGIN + IMPL_OFF, True), xp.LDUR_X30,
+                             b(PLUGIN + at + 12, PLUGIN + TRAMP_OFF), PLUGIN + CB_OFF)
+        rec['images']['plugin0'] = bytes(img)
+        pre = bytearray(img)
+        pre[row:row + 0x48] = bytes(0x48)
+        rec['pre_images'] = {'plugin0': bytes(pre)}
+        starts = xp.init_code(rec, [], 'plugin0')
+        self.assertEqual(starts, {PLUGIN + row, PLUGIN + row + 0x18, PLUGIN + row + 0x30, PLUGIN + CB_OFF})
+
     def test_hook_on_main_header_keeps_only_its_expect(self):
         # Challenge Mode's Enemy Health Regeneration on an update its table lacks: a replace hook at main+0x0, whose
         # word 1 is main's module header. The write is checked at start; the lift gets no site, orig or seed for it.
