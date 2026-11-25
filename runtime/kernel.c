@@ -389,7 +389,7 @@ static int core_allowed(const RtThread *t, int c) { return (int)((t->mask >> c) 
 // inheritance and the preemption disable without interrupting owners.
 #define AP_FIRST_NS 250000ull   // the waiter spins this long before the first interruption (most waits end sooner)
 #define AP_GAP_NS 1000000ull    // and interrupts the same owner at most this often
-// TOTK_AP_FIRST_US replaces AP_FIRST_NS (10..1000 us). TOTK_HOST_CHECKPOINT=1: an owner with a pending preempt request
+// TOTK_AP_FIRST_US replaces AP_FIRST_NS (10..1000 us). TOTK_HOST_CHECKPOINT (on by default): an owner with a pending preempt request
 // that returns from a host call or SVC to game code gives its core up there (kern_host_left), as at its next SVC or
 // indirect call, instead of running on until one or until a waiter interrupts it.
 static uint64_t g_ap_first_ns = AP_FIRST_NS;
@@ -413,8 +413,7 @@ static void ap_init(void) {
         long long us = atoll(f);
         g_ap_first_ns = (uint64_t)(us < 10 ? 10 : us > 1000 ? 1000 : us) * 1000;
     }
-    const char *hc = cfg_get("TOTK_HOST_CHECKPOINT");
-    g_host_cp = hc && !strcmp(hc, "1");
+    g_host_cp = cfg_bool("TOTK_HOST_CHECKPOINT");
     if (g_ap) {
         RtModule m[16];
         int n = rt_linked_modules(m, 16);

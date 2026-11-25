@@ -107,7 +107,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"BIND_RIGHT", "input"}, {"BIND_DOWN", "input"}, {"BIND_LSTICK_LEFT", "input"}, {"BIND_LSTICK_UP", "input"},
     {"BIND_LSTICK_RIGHT", "input"}, {"BIND_LSTICK_DOWN", "input"}, {"BIND_RSTICK_LEFT", "input"},
     {"BIND_RSTICK_UP", "input"}, {"BIND_RSTICK_RIGHT", "input"}, {"BIND_RSTICK_DOWN", "input"}, {"BIND_SHAKE", "input"},
-    {"ASYNC_PREEMPT", "performance"}, {"REPLAY_ASYNC", "performance"}, {"REPLAY_WORKERS", "performance"}, {"FREE_CORES", "performance"},
+    {"ASYNC_PREEMPT", "performance"}, {"HOST_CHECKPOINT", "performance"}, {"REPLAY_ASYNC", "performance"}, {"REPLAY_WORKERS", "performance"}, {"FREE_CORES", "performance"},
     {"TIMER_1MS", "performance"}, {"PIPE_WAIT", "performance"}, {"PIPE_SKIP", "performance"},
     {"BARRIER_MERGE", "performance"}, {"LIB_PREBUILD", "performance"}, {"LIB_PREBUILD_THREADS", "performance"}, {"PIPE_PREBUILD", "performance"},
     {"PREWARM_XLATE", "performance"}, {"GPL", "performance"}, {"ASTC", "performance"}, {"MEMORY", "performance"},
@@ -216,7 +216,8 @@ static const CfgMeta metas[] = {
     {"DISCORD_APP_ID", "1567232599846293504", NULL, LIVE},
     {"DISCORD_IMAGE", "totk_512x512", NULL, LIVE},
     // Advanced: scheduling
-    {"ASYNC_PREEMPT", "1", "0|1|2", RESTART}, {"REPLAY_ASYNC", "0", "0|1", RESTART},
+    {"ASYNC_PREEMPT", "1", "0|1|2", RESTART}, {"HOST_CHECKPOINT", "1", "0|1", RESTART},
+    {"REPLAY_ASYNC", "0", "0|1", RESTART},
     {"REPLAY_WORKERS", "0", "0..16", RESTART}, {"REPLAY_CHUNKS", "0", "0..64", RESTART},
     {"REPLAY_CHUNK_DRAWS", "128", "1..100000", RESTART}, {"REPLAY_STATE_CHECK", "0", "0|1", RESTART},
     {"REPLAY_SKEW_US", "0", "0..100000", RESTART},
