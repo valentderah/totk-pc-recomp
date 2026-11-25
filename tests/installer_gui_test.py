@@ -361,8 +361,8 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(default_game_language('zh-Hans'), 'en-US')
         self.assertEqual(default_game_language('ru'), 'ru')
         self.assertEqual(default_game_language('ja'), 'ja')
-        for ui in ('ko', 'pt-BR'):
-            self.assertEqual(default_game_language(ui), 'en-US')
+        self.assertEqual(default_game_language('pt-BR'), 'pt-BR')
+        self.assertEqual(default_game_language('ko'), 'en-US')
 
     def test_posix_locale_picks_the_window_language(self):
         for loc, lang in (('ru_RU.UTF-8', 'ru'), ('pt_BR.UTF-8', 'pt-BR'), ('pt_PT.UTF-8', 'en'),

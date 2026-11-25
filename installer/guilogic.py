@@ -39,7 +39,8 @@ LANG_PT_BR = 0x0416   # Portuguese (Brazil), the whole LANGID: Portugal's Portug
 PRIMARY_LANGS = {0x04: 'zh-Hans', 0x19: 'ru', 0x07: 'de', 0x0c: 'fr', 0x0a: 'es', 0x10: 'it', 0x13: 'nl', 0x11: 'ja',
                  0x12: 'ko', 0x2a: 'vi'}
 # window language -> the game language the form starts with (default_game_language)
-GAME_LANGUAGE_FOR_UI = {'ru': 'ru', 'de': 'de', 'fr': 'fr', 'es': 'es', 'it': 'it', 'nl': 'nl', 'ja': 'ja'}
+GAME_LANGUAGE_FOR_UI = {'ru': 'ru', 'pt-BR': 'pt-BR', 'de': 'de', 'fr': 'fr', 'es': 'es', 'it': 'it', 'nl': 'nl',
+                        'ja': 'ja'}
 
 
 def load_texts(lang):
@@ -123,7 +124,8 @@ def default_game_language(ui):
     """The game language the form starts with: the window's own when the game has it. A Chinese or Korean window
     still starts with English: that game text needs the Switch shared fonts (ini.NEED_SHARED_FONTS), which the setup
     extracts only from a firmware folder, and the game stops when they are missing; the player can still pick it.
-    The game has no Brazilian Portuguese, so that window starts with English too."""
+    A Brazilian Portuguese window starts with pt-BR: 1.4.3 has that text, and on an older build, which lacks it, the
+    game reads pt-BR as en-US (runtime/ov_system.c ov_language)."""
     return GAME_LANGUAGE_FOR_UI.get(ui, 'en-US')
 
 
