@@ -454,6 +454,10 @@
 # labels, xbox for the others). The bind_ lines below apply on top. Changes while the game runs take effect at once.
 # 0.1.9's xbox_prompts is read as nintendo with prompts = xbox.
 # pad_layout = auto
+# The gamepad while the game window has no focus (Linux; on Windows it always plays): 1 keeps it playing behind other
+# windows, 0 pauses it, auto pauses it only when Steam started the game, so the Steam overlay and Steam's menus
+# (the Quick Access menu in SteamOS's Game Mode) get the gamepad while they are open. Read at start.
+# pad_background = auto
 # The buttons the game's prompts show: nintendo (the game's own), xbox (LB RB LT RT, Menu, View and a d-pad cross,
 # and A B X Y as labelled on the button pad_layout presses: with nintendo, A shows as B and X as Y), playstation
 # (○ × △ □, L1 R1 L2 R2, Options and Share, on the button pad_layout presses: with nintendo, A shows as ○), or pc

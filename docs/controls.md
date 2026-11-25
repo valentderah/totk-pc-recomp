@@ -324,6 +324,13 @@ gyro all the time. Pick an activation the game does not need (a back button), or
 of the game's own motion. Under Steam the Steam Controller's gyro arrives already corrected, so it keeps a bias of its
 own (`gyro_bias_pad` ends in "(under Steam)").
 
+On Linux the gamepad keeps playing while the game window has no focus (#971), except in a game Steam started: the
+Steam overlay and Steam's menus (the Quick Access menu and the Steam menu in SteamOS's Game Mode) take the focus while
+they are open, and the presses meant for them must not reach the game too (#1462). Steam sets `SteamGameId` for its
+own games and for non-Steam shortcuts; the log then says `input: the gamepad pauses while the window has no focus`.
+`pad_background = 1` keeps the gamepad playing behind other windows under Steam too, `0` pauses it everywhere
+(`runtime/input.c`, `start`; read at start). On Windows the game window is not SDL's, and the gamepad always plays.
+
 ## Scripted input
 
 `TOTK_INPUT_SCRIPT=<file>` replays presses. It is ORed with real input and still applies under `TOTK_INPUT=none`. One event per line, `#` starts a comment:

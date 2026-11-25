@@ -671,9 +671,18 @@ static void start(void) {
     // window lacks keyboard focus (SDL_PrivateJoystickShouldIgnoreEvent in SDL_joystick.c; centring and releases
     // pass). That applies where the window is SDL's (Linux); the Win32 window on Windows is not an SDL window. The
     // game keeps running out of focus by default (TOTK_ASSUME_FOCUS, ov_system.c oe_set_focus), so the gamepad has to
-    // keep working there. With the setting off the game's main thread waits while unfocused and reads no input, so
-    // the hint can stay on for the whole run.
-    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    // keep working there (#971). With the setting off the game's main thread waits while unfocused and reads no input,
+    // so the hint can stay on for the whole run. A game Steam started is the exception (input_pad_background_pick):
+    // Steam's overlay and menus take the focus while they are open, and the presses meant for them reached the game
+    // too (#1462). Steam sets SteamGameId for its own games and for non-Steam shortcuts, SteamOverlayGameId with the
+    // overlay. TOTK_PAD_BACKGROUND = 1 or 0 decides it either way.
+    const char *gid = getenv("SteamGameId"), *ogid = getenv("SteamOverlayGameId");
+    int under_steam = (gid && *gid) || (ogid && *ogid);
+    const char *bg = cfg_value("TOTK_PAD_BACKGROUND");
+    if (input_pad_background_pick(bg, under_steam)) SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    else
+        rt_log("input: the gamepad pauses while the window has no focus (%s)",
+               strcmp(bg, "0") ? "Steam started the game; pad_background = 1 keeps it" : "pad_background = 0");
     if (!SDL_Init(SDL_INIT_GAMEPAD)) { state = -1; rt_log("input: SDL gamepad init failed (%s), keyboard only", SDL_GetError()); }
     else state = 1;
     if (state == 1) test_pad_attach();
