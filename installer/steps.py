@@ -218,6 +218,60 @@ def linux_glibc():
 # GLIBC_FLOOR); on an older one they cannot start
 GLIBC_NEEDED = (2, 34)
 
+# The libraries the release puts next to the game (libSDL3.so.0 from the Steam Runtime sysroot) link system libraries
+# that a minimal system may lack: libXss.so.1 on AnataseOS (#1315, #1428), libdecor-0.so.0 on Batocera (#1419). The
+# loader then stops the game before it runs, after the half hour of lift and compile, as `totk --prepare-shaders`
+# with exit code 127. The package that provides a common one, by distribution family.
+LIBRARY_PACKAGES = {
+    'libXss.so.1': ('libXScrnSaver', 'libxss1', 'libxss'),
+    'libdecor-0.so.0': ('libdecor', 'libdecor-0-0', 'libdecor'),
+    'libXi.so.6': ('libXi', 'libxi6', 'libxi'),
+    'libXrandr.so.2': ('libXrandr', 'libxrandr2', 'libxrandr'),
+    'libXcursor.so.1': ('libXcursor', 'libxcursor1', 'libxcursor'),
+    'libXinerama.so.1': ('libXinerama', 'libxinerama1', 'libxinerama'),
+    'libXext.so.6': ('libXext', 'libxext6', 'libxext'),
+    'libXfixes.so.3': ('libXfixes', 'libxfixes3', 'libxfixes'),
+    'libX11.so.6': ('libX11', 'libx11-6', 'libx11'),
+    'libxkbcommon.so.0': ('libxkbcommon', 'libxkbcommon0', 'libxkbcommon'),
+    'libwayland-client.so.0': ('libwayland-client', 'libwayland-client0', 'wayland'),
+    'libasound.so.2': ('alsa-lib', 'libasound2', 'alsa-lib'),
+}
+LDD_NOT_FOUND = re.compile(r'^\s*(\S+) => not found', re.M)
+LOADER_NOT_FOUND = re.compile(r'error while loading shared libraries: (\S+?): cannot open shared object file')
+
+
+def library_packages(libraries):
+    """The packages that provide the known ones of libraries, as " (Fedora: ..., Debian/Ubuntu: ..., Arch: ...)" for
+    the message; "" when none is known."""
+    known = [LIBRARY_PACKAGES[n] for n in libraries if n in LIBRARY_PACKAGES]
+    if not known:
+        return ''
+    return ' (' + ', '.join(f'{family}: {" ".join(p[i] for p in known)}'
+                            for i, family in enumerate(('Fedora', 'Debian/Ubuntu', 'Arch'))) + ')'
+
+
+def loader_missing(log):
+    """The libraries the system's loader could not find in a tool's log ("error while loading shared libraries"), in
+    order, each once."""
+    log = Path(log)
+    text = log.read_text(encoding='utf-8', errors='replace') if log.is_file() else ''
+    return list(dict.fromkeys(LOADER_NOT_FOUND.findall(text)))
+
+
+def missing_libraries(paths):
+    """Linux: the shared libraries `ldd` reports as not found for paths, in order, each once; [] elsewhere, when ldd
+    cannot run, or when nothing is missing."""
+    if not sys.platform.startswith('linux'):
+        return []
+    found = []
+    for p in paths:
+        try:
+            r = subprocess.run(['ldd', str(p)], capture_output=True, text=True, errors='replace', timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            return []
+        found += [n for n in LDD_NOT_FOUND.findall(r.stdout) if n not in found]
+    return found
+
 
 def linux_kernel():
     """(major, minor) of the running Linux kernel, None elsewhere."""
@@ -537,6 +591,12 @@ class Check(Step):
         host = self.probe_host(ctx, exe)
         if not host['x86_64_v2']:
             raise InstallError('check.cpu_too_old')
+        # Before lift and compile: the game would not start without these (LIBRARY_PACKAGES); a repository build links
+        # the system's own libraries
+        missing = [] if layout.dev else missing_libraries(layout.dlls)
+        if missing:
+            raise InstallError('check.libraries_missing', libraries=', '.join(missing),
+                               packages=library_packages(missing))
         # v3 is the faster build; v2 runs on CPUs without AVX2/FMA (runtime/fma.c supplies the fused multiply-add).
         ctx.cpu = 'v3' if host['x86_64_v3'] else 'v2'
         if not host['loader']:
@@ -1519,6 +1579,11 @@ class Prepare(Step):
                              [dest, '--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--exefs',
                               dest / 'exefs', '--list', shader_list], parse)
         if code or not (dest / 'shader-prepared.bin').is_file():
+            # The loader stopped the game before it ran: name the library rather than exit code 127
+            missing = loader_missing(log)
+            if missing:
+                raise InstallError('prepare.libraries_missing', libraries=', '.join(missing),
+                                   packages=library_packages(missing), log=str(log))
             raise InstallError('prepare.shaders_failed', code=code, log=str(log))
         if skipped[0]:
             rep.warning('warn.shaders_skipped', count=skipped[0], log=str(log))

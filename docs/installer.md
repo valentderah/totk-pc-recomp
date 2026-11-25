@@ -109,7 +109,9 @@ loads the saves 1.4.3 wrote.
    file but the UI archive; for `pc` with the same `--binds` as the PC prompts step, whose key the step follows). The shapes are those of every connected display (Windows: `EnumDisplayDevices`; Linux:
    `xrandr`, else the DRM connectors), of the `output_res` the game defaults to on each, and of the `totk.ini`
    `output_res` (`installer/screens.py`). One folder per shape, named after the shape's size in `ASPECT_SIZES` (the
-   closest within 1%; `5120x2160` uses `2560x1080`); `runtime/romfs.c` `overlay_init` maps the game resolution the
+   closest within 1%; `5120x2160` uses `2560x1080`), or for an unlisted shape from 4:3 to 32:9 its own size (a
+   `totk.ini` `output_res` of `2560x1200`, say; a display of an unlisted shape gets none, as the game keeps 1920x1080
+   there); `runtime/romfs.c` `overlay_init` maps the game resolution the
    same way, and a folder of the exact size from an older setup still wins. A 16:9 player gets none. The step runs
    again when the displays, the prompts or the patches change. At a game resolution whose shape has no folder the
    game draws 16:9 with bars and starts the generator itself, in the background, for the next start: at start and
