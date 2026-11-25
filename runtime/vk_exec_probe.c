@@ -758,6 +758,10 @@ static int test_xfer(const GfxBackend *b, uint8_t *guest, int *bytes) {
     p = put(p, OP_CLEAR_TEX, &ct, sizeof ct);
     const p_signal_event ev1 = {event, NVN_EVENT_SIGNAL_MODE_WRITE, 7}, ev2 = {event, NVN_EVENT_SIGNAL_MODE_ADD, 5};
     p = put(p, OP_SIGNAL_EVENT, &ev1, sizeof ev1);
+    // CommandBufferFenceSync's record: the replay passes over it (the front end signals the sync at submit)
+    static sync_t fs_sync;
+    const p_fence_sync fs = {&fs_sync};
+    p = put(p, OP_FENCE_SYNC, &fs, sizeof fs);
     p = put(p, OP_SIGNAL_EVENT, &ev2, sizeof ev2);
     const p_report_counter rc = {NVN_COUNTER_TYPE_TIMESTAMP, (uint64_t)(uintptr_t)ctr};
     p = put(p, OP_REPORT_COUNTER, &rc, sizeof rc);
@@ -786,6 +790,7 @@ static int test_xfer(const GfxBackend *b, uint8_t *guest, int *bytes) {
     memcpy(&clv, cl, 4);
     for (int i = 0; i < XF_W * XF_H; i++) CHECK(px[i] == clv, "CLEAR_TEX texel %d is %08x, expected %08x", i, px[i], clv);
     CHECK(*event == 12, "event word is %u after WRITE 7 and ADD 5", *event);
+    CHECK(!fs_sync.fenced && !fs_sync.fence, "the replay left the FENCE_SYNC record's sync alone");
     CHECK(ctr->counter == 0 && ctr->timestamp != 0, "counter report is {%llu, %llu}", (unsigned long long)ctr->counter,
           (unsigned long long)ctr->timestamp);
     CHECK(sp->counter == 0 && sp->timestamp != 0, "samples-passed report after a reset and no draw is {%llu, %llu}",

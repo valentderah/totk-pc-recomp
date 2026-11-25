@@ -1175,7 +1175,7 @@ static int walk(VkExec *ex, const op_hdr *h, int depth, const op_hdr *stop) {
             if (ex->wpos_i < ex->wpos_end && ex->wpos[ex->wpos_i] == ex->pos) ex->drop_n++, ex->wpos_i++;
         }
         switch (h->op) {
-        case OP_BEGIN: break;
+        case OP_BEGIN: case OP_FENCE_SYNC: break;   // FENCE_SYNC: the front end signals it at submit (p_fence_sync)
         case OP_JUMP: h = (const op_hdr *)(uintptr_t)((const p_jump *)a)->target; continue;
         case OP_CALL:
             if (depth >= CALL_DEPTH) rt_fatal("vk: command buffer calls nested deeper than %d", CALL_DEPTH);
@@ -1749,7 +1749,7 @@ static void scan(VkExec *s, int hi, const op_hdr *h, int depth) {
             if (vk_exec_xfer_revive(h->op, a, s->pos)) scan_hold(HOLD_TEX);
             SC.open = 0;
             break;
-        case OP_SIGNAL_EVENT: break;
+        case OP_SIGNAL_EVENT: case OP_FENCE_SYNC: break;
         case OP_RENDER_COND: SC.cond[SC.ncond++] = (uint8_t)vk_exec_xfer_scan(s, h->op, a); break;
         case OP_REPORT_COUNTER: case OP_RESET_COUNTER: case OP_RENDER_ENABLE: vk_exec_xfer_scan(s, h->op, a); break;
         default: state_op(s, h->op, a);   // walk stops on an op without a handler

@@ -128,7 +128,9 @@ The rebuild refuses a plugin when its start-up or the code its redirects reach n
 system calls other than the few its start-up needs (memory queries and maps, the heap size, the clock, debug output),
 or a library call the game itself never makes and a reviewed list does not hold (memory and string functions, the heap,
 text formatting, mutexes, the clock, the system language, the SD card's files), such as network sockets or the module
-loader. A library call the game makes (threads, input, time, its files) runs on the path the game runs on. A start-up
+loader. A library call the game makes (threads, input, time, its files) runs on the path the game runs on. A call to a
+function the plugin itself holds counts as its own code, even when it goes through the plugin's import table (C++
+library templates such as `std::vector` built into it). A start-up
 still gets only the system calls above, so it cannot start a thread or open a service; a redirect that is not one of exlaunch's hook shapes
 (inline hook, replace hook, call-site rewrite, a branch into its code from inside a game function, a pointer in the
 game's data swapped for one into its code); a write into the game's read-only data or into another module; two runs of

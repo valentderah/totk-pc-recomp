@@ -414,8 +414,9 @@ void nvn_pins_stats(uint64_t *live, uint64_t *freed) {
 // deferred: 0 unknown, 1 none, 2 some; pins: texture pins its ops name, counted in their refs; pin_v: those pins, in
 // record order, or NULL (then pin_refs walks the records); cap: bytes of the block from the large-block cache
 // (copy_block), 0 for a plain heap block; hw: the recording's command memory as the real driver counts it (set at
-// EndRecording), what CopyCommands of it adds to nvnCommandBufferGetCommandMemoryUsed (inline_recording)
-typedef struct { uint64_t magic, bytes, made_at, used_at, deferred, pins, cap, hw; const tex_t **pin_v; } copy_prefix;
+// EndRecording), what CopyCommands of it adds to nvnCommandBufferGetCommandMemoryUsed (inline_recording); fsync: 1 when
+// the records hold an OP_FENCE_SYNC (flatten_recording), which nvn_submit_fence_syncs signals at submit
+typedef struct { uint64_t magic, bytes, made_at, used_at, deferred, pins, cap, hw, fsync; const tex_t **pin_v; } copy_prefix;
 _Static_assert(sizeof(copy_prefix) % 8 == 0, "records stay 8-byte aligned");
 typedef struct { uintptr_t lo, hi; uint8_t *copy; } cmd_copy;
 typedef struct { cmd_copy *v; uint32_t n, cap; } copy_bucket;
@@ -423,6 +424,7 @@ static PlatMutex copy_lock = PLAT_MUTEX_INIT;    // guards the two maps, the cou
 static nvn_hmap copy_pages = {.klen = 8};   // page -> copy_bucket
 static nvn_hmap copy_live = {.klen = 8};    // handle -> copy_prefix of a live copy
 static uint64_t ncopies, copy_bytes, copies_made;
+static int fence_sync_recorded;   // 1 once nvnCommandBufferFenceSync recorded an op (never set by the game itself)
 // Asynchronous replay: copies released by the game, and per-submission clones, that a queued submission still reads.
 // Freed once gfx_replayed_submits() reaches their used_at. Empty with synchronous replay.
 static copy_prefix **zombies;
@@ -598,6 +600,8 @@ static uint8_t *flatten_recording(const uint8_t *p, size_t n) {
     static __thread struct { const tex_t **v; uint64_t cap; } named;   // the pins of this recording, reused
     uint64_t pins_named = 0;
     int listed = 1;   // 0 after a failed growth: the copy goes without a list
+    // Looked for only once some recording held the op (fence_sync_recorded): the game's own recordings never do.
+    int find_fsync = __atomic_load_n(&fence_sync_recorded, __ATOMIC_RELAXED), fsync = 0;
     for (size_t at = 0;;) {   // the records stay checked: a corrupt one stops here, not in the replay
         op_hdr h;
         memcpy(&h, p + at, sizeof h);
@@ -616,6 +620,7 @@ static uint8_t *flatten_recording(const uint8_t *p, size_t n) {
         }
         if (k && listed) memcpy((void *)(named.v + pins_named), pinned, sizeof *pinned * (size_t)k);
         pins_named += (uint64_t)k;
+        fsync |= find_fsync && h.op == OP_FENCE_SYNC;
         at += h.size;
         if (h.op == OP_END) {
             if (at != n) rt_fatal("nvn: recording at %p ends at %zu of %zu bytes", (const void *)p, at, n);
@@ -625,7 +630,8 @@ static uint8_t *flatten_recording(const uint8_t *p, size_t n) {
     const tex_t **pin_v = NULL;
     if (pins_named && listed && (pin_v = malloc(sizeof *pin_v * pins_named)))
         memcpy((void *)pin_v, (const void *)named.v, sizeof *pin_v * pins_named);
-    *block = (copy_prefix){.magic = COPY_MAGIC, .bytes = n, .pins = pins_named, .cap = block->cap, .pin_v = pin_v};
+    *block = (copy_prefix){.magic = COPY_MAGIC, .bytes = n, .pins = pins_named, .cap = block->cap, .fsync = (uint64_t)fsync,
+                           .pin_v = pin_v};
     return out + sizeof(copy_prefix);
 }
 
@@ -1260,6 +1266,15 @@ NVN_API(nvnCommandBufferWaitEvent) { (void)c; }
 NVN_API(nvnCommandBufferSetShaderScratchMemory) { (void)c; }
 NVN_API(nvnCommandBufferSetPatchSize) { (void)c; }
 
+// void nvnCommandBufferFenceSync(NVNcommandBuffer *cmd, NVNsync *sync, NVNsyncCondition condition, int flags): the sync
+// is signaled once the GPU ran every command before it. Here it is fenced at the value of the whole submit that carries
+// the record (nvn_submit_fence_syncs), which completes no earlier than the console's point. The game never calls it;
+// mod plugins do (Zonai Fieldworks' native-font renderer).
+NVN_API(nvnCommandBufferFenceSync) {
+    __atomic_store_n(&fence_sync_recorded, 1, __ATOMIC_RELAXED);
+    REC(cmd_of(c), OP_FENCE_SYNC, p_fence_sync)->sync = arg_p(c, 1);
+}
+
 // ---------- submit
 // What the console reads at the submit call is read here, on the game thread: every handle must be a live recording,
 // and deferred binds take the handles the game's arrays hold now (the game fills its tables for the next frame as soon
@@ -1353,6 +1368,18 @@ void nvn_submit_prepare_async(const uint64_t *handles, uint64_t *out, int n) {
                (unsigned long long)now, (unsigned long long)__atomic_load_n(&n_clones, __ATOMIC_RELAXED), nzombies);
 }
 
+// The game's handles, not the per-submission clones of nvn_submit_prepare_async: a clone may be freed as soon as the
+// replay is done with it, and the handles stay live while the game is in QueueSubmitCommands. Copies hold no OP_CALL
+// or OP_JUMP (flatten_recording), so each is one run of records to OP_END.
+void nvn_submit_fence_syncs(const uint64_t *handles, int n, uint64_t fence) {
+    if (!__atomic_load_n(&fence_sync_recorded, __ATOMIC_RELAXED)) return;
+    for (int i = 0; i < n; i++) {
+        if (!((const copy_prefix *)(uintptr_t)handles[i] - 1)->fsync) continue;
+        for (const op_hdr *h = nvn_op_first(handles[i]); h->op != OP_END; h = nvn_op_next(h))
+            if (h->op == OP_FENCE_SYNC) nvn_sync_fence(((const p_fence_sync *)nvn_op_payload(h))->sync, fence);
+    }
+}
+
 uint64_t nvn_submit_count(void) { return __atomic_load_n(&nsubmits, __ATOMIC_RELAXED); }
 
 const char *nvn_op_name(uint32_t op) {
@@ -1362,7 +1389,7 @@ const char *nvn_op_name(uint32_t op) {
         "BIND_VSTREAM", "BIND_VBUF", "BIND_UBO", "BIND_SSBO", "BIND_TEX", "BIND_SAMP", "STENCIL", "POLY_OFFSET", "DRAW",
         "DRAW_IDX", "DISPATCH", "BARRIER", "SET_TEX_POOL", "SET_SAMP_POOL", "COPY_B2T", "COPY_STRIDE", "BLEND_COLOR",
         "COPY_T2B", "BIND_IMG", "COPY_T2T", "RESET_COUNTER", "CLEAR_TEX", "DEPTH_CLAMP", "RENDER_ENABLE",
-        "RASTER_DISCARD", "RENDER_COND", "PRIM_RESTART", "DRAW_IDX_IND", "DISPATCH_IND", "CLEAR_BUF",
+        "RASTER_DISCARD", "RENDER_COND", "PRIM_RESTART", "DRAW_IDX_IND", "DISPATCH_IND", "CLEAR_BUF", "FENCE_SYNC",
     };
     _Static_assert(sizeof names / sizeof *names == OP_COUNT_, "one name per op");
     return op < OP_COUNT_ ? names[op] : "?";
