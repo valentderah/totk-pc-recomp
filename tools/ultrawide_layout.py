@@ -172,7 +172,14 @@ def tall_edits(k):
     out = [('AppAlbum_00', 'N_FadeInOut_00', 'scale_y', k), ('AppAlbum_00', 'N_Open_01', 'scale_y', tall),
            *[('AppMenuOverlay_00', p, 'scale_y', k) for p in ('N_FadeInOut_00', 'N_FadeInOut_01', 'N_Icon_00',
                                                                'N_TitleOne_01')],
-           ('CameraPointer_00', 'N_Type_01', 'scale_y', k), ('CameraSystemWindow_00', 'N_FirstOut_00', 'scale_y', k),
+           ('CameraPointer_00', 'N_Type_01', 'scale_y', k),
+           # The camera's "save to the album?" window: N_InOut_00 takes the screen's height (below), so the photo's
+           # frame (N_AlbumPic_00) has the screen's shape, as the photo has. The compendium's square photos
+           # (N_PictureBook_00) and the album's question and buttons (N_AlbumCon_00) keep their proportions, and the
+           # question and the buttons move out by the frame's extra half height (319.5 of its 639).
+           *[('CameraSystemWindow_00', p, 'scale_y', k) for p in ('N_PictureBook_00', 'N_AlbumCon_00')],
+           ('CameraSystemWindow_00', 'T_TextAlbum_00', 'y', 380 + 319.5 * (tall - 1)),
+           *[('CameraSystemWindow_00', p, 'y', -396 - 319.5 * (tall - 1)) for p in ('Pa_BtnL_01', 'Pa_BtnR_01')],
            *[('LoadingFade_00', p, 'scale_y', k) for p in ('Pa_IconPlayer_00', 'Pa_LargeDungeonMap_00',
                                                             'Pa_LargeDungeonMap_01', 'Pa_Map_00', 'Pa_Map_01')],
            *[('AppMap_00', f'N_BlurInOut_0{i}', 'scale_y', tall) for i in range(4)],
@@ -198,7 +205,10 @@ def tall_edits(k):
         'ShopMenu_00', 'SystemActionGuide_00') + SYSTEM_MENUS]
     out += [(name, 'RootPane', 'y', -540 * (1 - k)) for name in (
         'CtrlGuide_00', 'DoCommand_00', 'EnvironmentInfo_00', 'HorseGauge_00', 'MessageDialog_00', 'MessageLog_01',
-        'PauseMenuOverlay_00', 'SaveLoadIcon_00', 'TreasureFullShortCut_00')]
+        'PauseMenuOverlay_00', 'SaveLoadIcon_00', 'TreasureFullShortCut_00',
+        # the clock an inn's choices show (05:00) under MessageDialog_00's list: it stayed in the middle 16:9 and was
+        # drawn over the list's last rows
+        'Time_00')]
     out += [('AppAlbum_00', 'N_PicLoad_01', 'y', -540 * (1 - k)), ('AppMap_00', 'N_AllMapTime_00', 'y', -h),
             ('AppMenuOverlay_00', 'A_Align_00', 'y', -(505 + h)), ('AppMenuOverlay_00', 'Pa_GuideLeft_00', 'y', -(505 + h)),
             ('AppMenuOverlay_00', 'N_TitleTab_00', 'y', 491 + h),
