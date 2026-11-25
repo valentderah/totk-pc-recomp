@@ -603,6 +603,20 @@ class Lines(unittest.TestCase):
         self.assertIn(f'orig mod_x plugin0 {TRAMP_OFF:x} main {SITE_OFF:x}', out)
         self.assertIn(f'seed plugin0 {THUNK_OFF:x}', out)
 
+    def test_hook_on_main_header_keeps_only_its_expect(self):
+        # Challenge Mode's Enemy Health Regeneration on an update its table lacks: a replace hook at main+0x0, whose
+        # word 1 is main's module header. The write is checked at start; the lift gets no site, orig or seed for it.
+        new = b(MAIN, PLUGIN + THUNK_OFF)
+        rec = record(writes=[{'module': 'main', 'offset': 0, 'old': 1, 'new': new}])
+        hook = {'kind': 'replace', 'site': 'main+0x0', 'original': '0x00000001', 'target': f'plugin0+{THUNK_OFF:#x}',
+                'trampoline': f'plugin0+{TRAMP_OFF:#x}'}
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / 'plugin0.img').write_bytes(rec['images']['plugin0'])
+            rec['modules'][2]['image'] = 'plugin0.img'
+            out = xp.plugin_lines(rec, [hook], 'mod_x', d, 'plugin0')
+        self.assertIn(f'expect mod_x main 0 00000001 {new:08x}', out)
+        self.assertFalse(any(x.startswith(('site', 'orig', 'seed', 'entry')) for x in out), out)
+
     def test_call(self):
         new = b(MAIN + SITE_OFF, PLUGIN + THUNK_OFF, True)
         w = [{'module': 'main', 'offset': SITE_OFF, 'old': 0x94000010, 'new': new}]

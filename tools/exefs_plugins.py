@@ -132,6 +132,14 @@ def u(v):
     return int(v, 16) if isinstance(v, str) else v
 
 
+def header_site(h):
+    """The hook sits on main's module header, not on code. exlaunch adds a table offset to main's base, and a game
+    update the plugin's table lacks gives offset 0 (Challenge Mode's Enemy Health Regeneration names 1.0.0 to 1.4.1).
+    Nothing runs there, on the Switch either: the write is kept and checked, and the lift gets no site for it (its
+    first word, 1, decodes as a trap the generator refuses to patch)."""
+    return h['site'] == 'main+0x0'
+
+
 def ran_view(rec):
     """The record as seen from the plugins whose inits ran: a plugin that only stayed loaded (TOTK_PLUGIN_ONLY) counts
     as a module that is no plugin, so its exports and code are not checked as this record's. A record without "ran"
@@ -621,6 +629,7 @@ def entries(rec, hooks, module):
     back there too."""
     mods = {m['name']: m for m in rec['modules']}
     main, p = mods['main'], mods[module]
+    hooks = [h for h in hooks if not header_site(h)]   # never run: no way back into main, no code to seed
     out = {int(h['site'].split('+')[1], 16) + 4 for h in hooks
            if h['kind'] == 'branch' or h['kind'] == 'replace' and not h.get('trampoline')}
     base, img = p['base'], rec['images'][module]
@@ -667,6 +676,8 @@ def plugin_lines(rec, hooks, name, record_dir, module):
 
     for h in hooks:
         site = int(h['site'].split('+')[1], 16)
+        if header_site(h):
+            continue
         if h['kind'] == 'inline':
             sm, so = at(h['stub'])
             stubs.setdefault(sm, set()).add(so)
@@ -853,6 +864,9 @@ def report(rec, label, game=frozenset()):
         else:
             print(f'  {h["kind"]} {h["site"]} (was {h["original"]}) -> {"bl" if h["kind"] == "call" else "b"} '
                   f'{h["target"]}' + (f', Orig trampoline {h["trampoline"]}' if h.get('trampoline') else ''))
+        if header_site(h):
+            print(f'  note: {h["site"]} is main\'s module header, not code: the plugin has no address for this game '
+                  f'update there, and this hook does nothing, as on the Switch')
     for r in reasons:
         print(f'  REFUSED: {r}')
     if not reasons:
