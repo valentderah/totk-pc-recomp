@@ -15,8 +15,9 @@ The built-in table is [recomp/patches-v110.txt](../recomp/patches-v110.txt). The
 | cascade | 4 | Read the four sun shadow cascade defaults from page +64..76. Shadow range 100 leaves the original constructor. |
 | climb | 1 | Climbing speed above 60 fps: the 1.2.1 climb factor in the 1.1.0 climb controller. Follows `TOTK_CLIMB_FIX` and needs the real-time step. |
 | gears | 2 | The gear rotation check scales its one-frame threshold by the update's frame delta, so shrine gears read as turning above 30 fps. Follows `TOTK_HIGHFPS_FIX`. |
+| optref | 1 | Treat a negative optional reference at object +0x6b0 (`main+0x163159c`) as absent instead of dereferencing it (#1005). Follows `TOTK_OPTREF_GUARD`. |
 
-The table has 16 sets and 54 instruction sites in total. Its 889 spin back-edges are unchanged. The sets use the existing runtime page and settings; no new setting, allocator or renderer path is introduced.
+The table has 17 sets and 55 instruction sites in total. Its 889 spin back-edges are unchanged. The sets use the existing runtime page and settings; no new setting, allocator or renderer path is introduced.
 
 The camera sites were cross-checked by normalized instruction-window matching from the local 1.0.0 main. The viewport routine has two matching copies: both are patched. Other sites were checked through their data flow: the equipment timer and its gate, the map clock, the ability clock, the NVN texture storage/package calls, the shadow size publication and the cascade parameter constructor. FOV's s8 is overwritten by the next original instruction; x10 is saved. The cursor sites use the same scratch registers as their 1.2.1 counterparts.
 

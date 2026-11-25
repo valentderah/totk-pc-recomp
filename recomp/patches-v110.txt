@@ -136,6 +136,14 @@ set gears    TOTK_HIGHFPS_FIX    1
 site gears main 213eee4 f9402001 bd40082c f9402001
 site gears main 213f0d4 1e24180c 3c9f0fe4 1e241804 1e2c088c 3cc107e4
 
+# Optional reference with an invalid value (#1005). The same guard as set optref in patches-v143.txt (main+0x1bd01c0)
+# and patches-v121.txt (main+0x1622bec), here for 1.1.0's main+0x163159c (function main+0x1631510):
+# ldr x8, [x19, #0x6b0]; cbz x8; ldr x21, [x8]. A negative value counts as absent. x8 and x9 are dead at the branch
+# target 0x16315cc, which loads x8 again and clobbers x9 on every path before any read; on the fall-through path x8 is
+# unchanged.
+set optref   TOTK_OPTREF_GUARD   1
+site optref main 163159c b4000188 937ffd09 8a290108 b4000188   # cbz x8 -> asr x9, x8, #63; bic x8, x8, x9; cbz x8
+
 # Spin waits, from tools/spin_waits.py --exefs build/extracted/v110/exefs --patches recomp/patches-v110.txt: loops that only
 # another thread can end; their back-edges pass rt_spin_gate (runtime/kernel.c), TOTK_SPIN=0 keeps the core.
 
