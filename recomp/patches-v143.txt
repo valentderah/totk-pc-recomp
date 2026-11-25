@@ -1298,6 +1298,13 @@ site vr main b3440 94165aa4 94e8b2b0   # bl 0x649ed0 (setView) -> page+0xf00 (VR
 site vr main 1b22bc 94125f05 94e4b711   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
 site vr main 5b272c 94025de9 94d4b5f5   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
 site vr main 5e59ac 94019149 94d3e955   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
+# Object detail at the headset's wide view (0x8a8830, run from the game's update, not the renderer): every placed
+# object's distance is scaled by tan(fovy / 2) / tan(25 deg) before its model level is picked, so at a headset's
+# ~110-120 degrees trees and other objects kept their low-poly model until ~3.7x closer than in the flat game. The half
+# angle used there is half the flat view's at most: page +108 = 1 / the flat view angle in radians (vk_xr.c,
+# TOTK_VR_LODFOV degrees, default 50; 0 = the game's own). The picture and the culling do not read it. x17 and s2 are
+# written before any read after the site.
+site vr main 8a89ac 1e210808 @page:x17 1e210808 bd406e22 1e221822 1e225908   # fmul s8, s0, s1 -> then ldr s2, [page+108]; fdiv s2, s1, s2 (0.5 / [page+108]); fmin s8, s8, s2
 site vr main 63e208 94002f32 94d2873e   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
 site vr main 63e394 94002ecf 94d286db   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)
 site vr main 63e6c8 94002e02 94d2860e   # bl 0x649ed0 (setView) -> page+0xf00 (VR world mode)

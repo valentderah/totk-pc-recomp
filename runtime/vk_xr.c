@@ -633,6 +633,13 @@ static void publish_views(const XrView v[2], int64_t tdisp) {
     if (set < 0 || !page || fabsf(fovy - shown_fovy) < 1e-4f) return;
     memcpy(page + 84, &fovy, 4);
     memcpy(page + 60, &zero, 4);
+    {   // object detail distance as at a flat view (recomp/patches-v143.txt, site 8a89ac): 1 / TOTK_VR_LODFOV in radians
+        const char *lv = getenv("TOTK_VR_LODFOV");
+        float deg = lv && *lv ? strtof(lv, NULL) : 50.0f;
+        float inv = deg > 1 && deg < 179 ? 57.2958f / deg : 0;
+        memcpy(page + 108, &inv, 4);
+        if (!shown_fovy) rt_log("vr: object detail distance as at a %.0f degree view (TOTK_VR_LODFOV)", inv ? deg : 0);
+    }
     if (shown_fovy) rt_log("vr: game view now %.1f x %.1f degrees", 2 * atanf(th) * 57.2958f, fovy * 57.2958f);
     if (!shown_fovy) {
         rt_patch_switch(set, 1);
