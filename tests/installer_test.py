@@ -1037,6 +1037,59 @@ class FreeSpaceTest(unittest.TestCase):
         usage.assert_called_once_with(root)
 
 
+class MissingLibraryTest(unittest.TestCase):
+    """#1428, #1315, #1419: a system library the release's libSDL3.so.0 links is missing; the setup names it (and the
+    package that provides it) before the lift, and after a game start the loader stopped, instead of exit code 127."""
+
+    LDD = ('\tlinux-vdso.so.1 (0x00007ffd)\n\tlibXss.so.1 => not found\n'
+           '\tlibX11.so.6 => /usr/lib64/libX11.so.6 (0x00007f00)\n\tlibdecor-0.so.0 => not found\n')
+
+    def test_packages_of_known_libraries(self):
+        self.assertEqual(steps.library_packages(['libXss.so.1']),
+                         ' (Fedora: libXScrnSaver, Debian/Ubuntu: libxss1, Arch: libxss)')
+        self.assertEqual(steps.library_packages(['libXss.so.1', 'libfoo.so.9', 'libdecor-0.so.0']),
+                         ' (Fedora: libXScrnSaver libdecor, Debian/Ubuntu: libxss1 libdecor-0-0, '
+                         'Arch: libxss libdecor)')
+        self.assertEqual(steps.library_packages(['libfoo.so.9']), '')
+
+    def test_ldd_not_found_lines(self):
+        runs = []
+
+        def ldd(cmd, **kw):
+            runs.append(cmd)
+            return SimpleNamespace(returncode=1, stdout=self.LDD, stderr='')
+        with mock.patch.object(steps.sys, 'platform', 'linux'), mock.patch.object(steps.subprocess, 'run', ldd):
+            self.assertEqual(steps.missing_libraries([Path('a/libSDL3.so.0'), Path('b/libother.so')]),
+                             ['libXss.so.1', 'libdecor-0.so.0'])
+        self.assertEqual([c[0] for c in runs], ['ldd', 'ldd'])
+
+    def test_no_ldd_or_not_linux(self):
+        def missing(cmd, **kw):
+            raise FileNotFoundError('ldd')
+        with mock.patch.object(steps.sys, 'platform', 'linux'), mock.patch.object(steps.subprocess, 'run', missing):
+            self.assertEqual(steps.missing_libraries([Path('libSDL3.so.0')]), [])
+        with mock.patch.object(steps.sys, 'platform', 'win32'):
+            self.assertEqual(steps.missing_libraries([Path('SDL3.dll')]), [])
+
+    def test_loader_error_in_the_prepare_log(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / 'prepare-prepare_shaders.log'
+            log.write_text('/home/p/TotK/totk: error while loading shared libraries: libXss.so.1: cannot open shared '
+                           'object file: No such file or directory\ntotk.exe --prepare-shaders: rc=127\n'
+                           '/home/p/TotK/totk: error while loading shared libraries: libXss.so.1: cannot open shared '
+                           'object file: No such file or directory\n', encoding='utf-8')
+            self.assertEqual(steps.loader_missing(log), ['libXss.so.1'])
+            self.assertEqual(steps.loader_missing(Path(d) / 'none.log'), [])
+
+    def test_messages_take_the_parameters(self):
+        for path in (ROOT / 'installer' / 'text').glob('*.json'):
+            catalog = json.loads(path.read_text(encoding='utf-8'))
+            for id in ('check.libraries_missing', 'prepare.libraries_missing'):
+                text = catalog[id].format(libraries='libXss.so.1', packages=' (Fedora: libXScrnSaver)', log='x.log')
+                self.assertIn('libXss.so.1', text, (path.name, id))
+                self.assertIn('libXScrnSaver', text, (path.name, id))
+
+
 class BaseGameCheckTest(unittest.TestCase):
     """Issue #261: an update NSP chosen as the base game was reported as "not Tears of the Kingdom"."""
     BASE, UPDATE = '0100F2C0115B6000', '0100F2C0115B6800'
