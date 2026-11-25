@@ -146,6 +146,8 @@ int probe_cfg(void) {
     CHECK(m && EQ(m->def, "130") && EQ(m->values, "0..300"), "meta: rumble strength 130 in 0..300");
     m = cfg_meta("PERF_OVERLAY");
     CHECK(m && EQ(m->def, "off") && EQ(m->values, "off|fps|full") && m->live, "meta: perf_overlay is live, off by default");
+    m = cfg_meta("VERT_PLUS");
+    CHECK(m && EQ(m->def, "0") && m->live, "meta: vert_plus is live, off by default");
     CHECK(cfg_meta("BIND_A") == NULL && cfg_meta("FPS_COUNTER") == NULL && cfg_meta("NO_SUCH") == NULL,
           "meta: keys the menu does not show are NULL");
 
@@ -363,16 +365,25 @@ int probe_cfg(void) {
               "prompts: the PlayStation folder puts A on the circle exactly when the layout puts A on the east button");
     }
     // One folder per screen shape (cfg.c cfg_shape_size, installer/screens.py shape_size): the closest aspect ratio of
-    // SHAPED within 1%, the first of equal ones; 16:9 and unlisted shapes have none.
+    // SHAPED within 1%, the first of equal ones; an unlisted shape from 4:3 to 32:9 its own size; 16:9, portrait and
+    // shapes narrower than 4:3 none.
     unsigned sz[2] = {0, 0};
     CHECK(cfg_shape_size(5120, 2160, sz) && sz[0] == 2560 && sz[1] == 1080, "shape: 5120x2160 takes 2560x1080's folder");
     CHECK(cfg_shape_size(3440, 1440, sz) && sz[0] == 3440 && sz[1] == 1440, "shape: 3440x1440 keeps its own (0.8% off 2560x1080)");
     CHECK(cfg_shape_size(1920, 800, sz) && sz[0] == 3840 && sz[1] == 1600, "shape: 1920x800 takes 3840x1600's folder");
     CHECK(cfg_shape_size(2560, 1600, sz) && sz[0] == 1280 && sz[1] == 800 && cfg_shape_size(3000, 2000, sz) &&
-              sz[0] == 1920 && sz[1] == 1280 && cfg_shape_size(5120, 1440, sz) && sz[0] == 3840 && sz[1] == 1080,
+              sz[0] == 1920 && sz[1] == 1280 && cfg_shape_size(5120, 1440, sz) && sz[0] == 3840 && sz[1] == 1080 &&
+              cfg_shape_size(7680, 2160, sz) && sz[0] == 3840 && sz[1] == 1080,
           "shape: 16:10, 3:2 and 32:9 take their first size");
-    CHECK(!cfg_shape_size(1920, 1080, sz) && !cfg_shape_size(2560, 1440, sz) && !cfg_shape_size(1024, 768, sz),
-          "shape: none for 16:9 and 4:3");
+    CHECK(cfg_shape_size(1024, 768, sz) && sz[0] == 1440 && sz[1] == 1080 && cfg_shape_size(2048, 1536, sz) &&
+              sz[0] == 1440 && sz[1] == 1080 && cfg_shape_size(3120, 1440, sz) && sz[0] == 2340 && sz[1] == 1080,
+          "shape: 4:3 and 19.5:9 take their first size");
+    CHECK(cfg_shape_size(2560, 1200, sz) && sz[0] == 2560 && sz[1] == 1200 && cfg_shape_size(2000, 1080, sz) &&
+              sz[0] == 2000 && sz[1] == 1080,
+          "shape: an unlisted shape between 4:3 and 32:9 keeps its own size");
+    CHECK(!cfg_shape_size(1920, 1080, sz) && !cfg_shape_size(2560, 1440, sz) && !cfg_shape_size(1280, 1024, sz) &&
+              !cfg_shape_size(1080, 1920, sz) && !cfg_shape_size(7680, 1440, sz),
+          "shape: none for 16:9, narrower than 4:3, portrait and wider than 32:9");
     // romfs.c shaped_name: the exact size's folder (an older setup wrote every size) wins, else the shape's
     {
         char dir[1100], f[1200];

@@ -101,6 +101,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_MOVIE_ASPECT_KEEP] = "Black bars", [UI_MENU_MOVIE_ASPECT_STRETCH] = "Stretch",
     [UI_MENU_FOV] = "Field of view",
     [UI_MENU_FOV_DESC] = "How much of the world the camera shows, in percent of the game's own. Game versions 1.1.0, 1.2.1 and 1.4.3.",
+    [UI_MENU_VERT_PLUS] = "Keep the 16:9 width",
+    [UI_MENU_VERT_PLUS_DESC] = "On screens narrower than 16:9 (Steam Deck, 16:10, 4:3) the camera shows the same width of the world as at 16:9, and more above and below. No effect at 16:9 or wider.",
     [UI_MENU_SHADOW_RES] = "Shadow map size",
     [UI_MENU_SHADOW_RES_DESC] = "Size of the sun's shadow map. The game's own size changes with the view, down to about 400 "
                                 "near the ground, so leaf shadows look blocky and jump; a fixed size keeps them still and "
@@ -750,6 +752,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_MOVIE_ASPECT_KEEP] = "Чёрные полосы", [UI_MENU_MOVIE_ASPECT_STRETCH] = "Растянуть",
     [UI_MENU_FOV] = "Поле зрения",
     [UI_MENU_FOV_DESC] = "Сколько мира показывает камера, в процентах от игрового. Для версий игры 1.1.0, 1.2.1 и 1.4.3.",
+    [UI_MENU_VERT_PLUS] = "Ширина обзора как в 16:9",
+    [UI_MENU_VERT_PLUS_DESC] = "На экранах уже 16:9 (Steam Deck, 16:10, 4:3) камера показывает мир той же ширины, что и в 16:9, и больше сверху и снизу. На 16:9 и шире ничего не меняет.",
     [UI_MENU_SHADOW_RES] = "Размер карты теней",
     [UI_MENU_SHADOW_RES_DESC] = "Размер карты теней от солнца. Собственный размер игры меняется вместе с видом, у земли до "
                                 "примерно 400, поэтому тени листвы выглядят квадратными и дёргаются; постоянный размер делает "
@@ -1749,6 +1753,8 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_FOV] = "Campo de visão",
     [UI_MENU_FOV_DESC] = "Quanto do mundo a câmera mostra, em porcentagem do original do jogo. Nas versões 1.1.0, 1.2.1 e 1.4.3 "
                          "do jogo.",
+    [UI_MENU_VERT_PLUS] = "Manter a largura de 16:9",
+    [UI_MENU_VERT_PLUS_DESC] = "Em telas mais estreitas que 16:9 (Steam Deck, 16:10, 4:3), a câmera mostra a mesma largura do mundo que em 16:9, e mais acima e abaixo. Sem efeito em 16:9 ou mais largo.",
     [UI_MENU_SHADOW_RES] = "Tamanho do mapa de sombras",
     [UI_MENU_SHADOW_RES_DESC] = "Tamanho do mapa de sombras do sol. O tamanho do jogo muda com a vista, até cerca de "
                                 "400 perto do chão, então as sombras das folhas ficam quadriculadas e pulam; um "
@@ -2149,6 +2155,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_FOV] = "视野",
     [UI_MENU_FOV_DESC] = "镜头能看到多大范围，以游戏自身视野的百分比表示。"
                           "支持游戏版本 1.1.0、1.2.1 和 1.4.3。",
+    [UI_MENU_VERT_PLUS] = "保持 16:9 宽度",
+    [UI_MENU_VERT_PLUS_DESC] = "在比 16:9 更窄的屏幕上（Steam Deck、16:10、4:3），镜头显示与 16:9 相同宽度的世界，上下显示更多。16:9 或更宽的屏幕没有变化。",
     [UI_MENU_SHARPNESS] = "FSR 锐度",
     [UI_MENU_SHARPNESS_DESC] = "FSR 缩放后的锐化强度；0 为关闭。",
     [UI_MENU_COLOR] = "色彩",
@@ -2861,6 +2869,8 @@ static const char *const text_de[UI_TEXT_COUNT] = {
     [UI_MENU_MOVIE_ASPECT_STRETCH] = "Strecken",
     [UI_MENU_FOV] = "Sichtfeld",
     [UI_MENU_FOV_DESC] = "Wie viel von der Welt die Kamera zeigt, in Prozent des Spielwerts. Nur Spielversion 1.4.3.",
+    [UI_MENU_VERT_PLUS] = "16:9-Breite behalten",
+    [UI_MENU_VERT_PLUS_DESC] = "Auf Bildschirmen, die schmaler als 16:9 sind (Steam Deck, 16:10, 4:3), zeigt die Kamera dieselbe Breite der Welt wie bei 16:9 und mehr darüber und darunter. Bei 16:9 oder breiter ohne Wirkung.",
     [UI_MENU_SHADOW_RES] = "Größe der Schattenkarte",
     [UI_MENU_SHADOW_RES_DESC] = "Größe der Schattenkarte der Sonne. Die Größe des Spiels ändert sich mit der Ansicht, "
                                 "bis etwa 400 nahe am Boden, daher wirken Blätterschatten klotzig und springen; eine "
@@ -3766,6 +3776,8 @@ static const char *const text_fr[UI_TEXT_COUNT] = {
     [UI_MENU_FOV] = "Champ de vision",
     [UI_MENU_FOV_DESC] = "La part du monde que montre la caméra, en pourcentage de celle du jeu. Version 1.4.3 du jeu "
                          "uniquement.",
+    [UI_MENU_VERT_PLUS] = "Garder la largeur 16:9",
+    [UI_MENU_VERT_PLUS_DESC] = "Sur les écrans plus étroits que 16:9 (Steam Deck, 16:10, 4:3), la caméra montre la même largeur du monde qu'en 16:9, et davantage au-dessus et en dessous. Sans effet en 16:9 ou plus large.",
     [UI_MENU_SHADOW_RES] = "Taille de la carte d'ombres",
     [UI_MENU_SHADOW_RES_DESC] = "Taille de la carte d'ombres du soleil. La taille du jeu change avec la vue, jusqu'à "
                                 "environ 400 près du sol, si bien que les ombres des feuilles paraissent pixelisées "
@@ -4692,6 +4704,8 @@ static const char *const text_es[UI_TEXT_COUNT] = {
     [UI_MENU_FOV] = "Campo de visión",
     [UI_MENU_FOV_DESC] = "Cuánto del mundo muestra la cámara, en porcentaje del propio del juego. Solo la versión "
                          "1.4.3 del juego.",
+    [UI_MENU_VERT_PLUS] = "Mantener el ancho de 16:9",
+    [UI_MENU_VERT_PLUS_DESC] = "En pantallas más estrechas que 16:9 (Steam Deck, 16:10, 4:3), la cámara muestra el mismo ancho del mundo que en 16:9, y más por arriba y por abajo. Sin efecto en 16:9 o más ancho.",
     [UI_MENU_SHADOW_RES] = "Tamaño del mapa de sombras",
     [UI_MENU_SHADOW_RES_DESC] = "Tamaño del mapa de sombras del sol. El tamaño del juego cambia con la vista, hasta "
                                 "unos 400 cerca del suelo, por lo que las sombras de las hojas se ven pixeladas y "
@@ -5603,6 +5617,8 @@ static const char *const text_it[UI_TEXT_COUNT] = {
     [UI_MENU_FOV] = "Campo visivo",
     [UI_MENU_FOV_DESC] = "Quanta parte del mondo mostra la telecamera, in percentuale di quella del gioco. Solo "
                          "versione 1.4.3 del gioco.",
+    [UI_MENU_VERT_PLUS] = "Mantieni la larghezza 16:9",
+    [UI_MENU_VERT_PLUS_DESC] = "Sugli schermi più stretti di 16:9 (Steam Deck, 16:10, 4:3) la telecamera mostra la stessa larghezza del mondo che in 16:9, e di più sopra e sotto. Nessun effetto a 16:9 o più largo.",
     [UI_MENU_SHADOW_RES] = "Dimensione della mappa delle ombre",
     [UI_MENU_SHADOW_RES_DESC] = "Dimensione della mappa delle ombre del sole. Quella del gioco cambia con la visuale, "
                                 "fino a circa 400 vicino al suolo, quindi le ombre delle foglie sembrano squadrate e "
@@ -6515,6 +6531,8 @@ static const char *const text_nl[UI_TEXT_COUNT] = {
     [UI_MENU_FOV] = "Gezichtsveld",
     [UI_MENU_FOV_DESC] = "Hoeveel van de wereld de camera toont, in procenten van dat van het spel. Alleen spelversie "
                          "1.4.3.",
+    [UI_MENU_VERT_PLUS] = "16:9-breedte behouden",
+    [UI_MENU_VERT_PLUS_DESC] = "Op schermen die smaller zijn dan 16:9 (Steam Deck, 16:10, 4:3) toont de camera dezelfde breedte van de wereld als bij 16:9, en meer erboven en eronder. Geen effect bij 16:9 of breder.",
     [UI_MENU_SHADOW_RES] = "Grootte van de schaduwkaart",
     [UI_MENU_SHADOW_RES_DESC] = "Grootte van de schaduwkaart van de zon. De grootte van het spel verandert met het "
                                 "zicht, tot ongeveer 400 dicht bij de grond, waardoor bladschaduwen blokkerig ogen en "
@@ -7397,6 +7415,8 @@ static const char *const text_ja[UI_TEXT_COUNT] = {
     [UI_MENU_MOVIE_ASPECT_STRETCH] = "引き伸ばし",
     [UI_MENU_FOV] = "視野角",
     [UI_MENU_FOV_DESC] = "カメラが映す範囲を、ゲーム本来の視野に対するパーセントで指定します。ゲームのバージョン 1.4.3 のみ。",
+    [UI_MENU_VERT_PLUS] = "16:9 の横幅を保つ",
+    [UI_MENU_VERT_PLUS_DESC] = "16:9 より横幅の狭い画面（Steam Deck、16:10、4:3）で、カメラが 16:9 と同じ横幅の世界を映し、上下はより広く映します。16:9 以上の横長の画面では変わりません。",
     [UI_MENU_SHADOW_RES] = "シャドウマップのサイズ",
     [UI_MENU_SHADOW_RES_DESC] = "太陽のシャドウマップの大きさです。ゲーム本来のサイズは視点によって変わり、地面近くでは約 400 まで下がるため、葉の影がブロック状になって跳ねます。固定サイ"
                                 "ズにすると影が安定し、くっきりします。1024 を超えると GPU 時間とビデオメモリが増えます。",
@@ -8147,6 +8167,8 @@ static const char *const text_ko[UI_TEXT_COUNT] = {
     [UI_MENU_MOVIE_ASPECT_STRETCH] = "늘리기",
     [UI_MENU_FOV] = "시야각",
     [UI_MENU_FOV_DESC] = "카메라가 보여 주는 범위를 게임 원래 시야에 대한 퍼센트로 지정합니다. 게임 버전 1.4.3 전용입니다.",
+    [UI_MENU_VERT_PLUS] = "16:9 너비 유지",
+    [UI_MENU_VERT_PLUS_DESC] = "16:9보다 좁은 화면(Steam Deck, 16:10, 4:3)에서 카메라가 16:9와 같은 너비의 세계를 보여 주고 위아래는 더 많이 보여 줍니다. 16:9 이상 넓은 화면에서는 효과가 없습니다.",
     [UI_MENU_SHADOW_RES] = "그림자 맵 크기",
     [UI_MENU_SHADOW_RES_DESC] = "태양 그림자 맵의 크기입니다. 게임 원래 크기는 시점에 따라 바뀌며 지면 가까이에서는 약 400까지 내려가서 나뭇잎 그림자가 각지고 튀게 됩니다. 고정 "
                                 "크기로 하면 그림자가 안정되고 선명해집니다. 1024를 넘으면 GPU 시간과 비디오 메모리가 늘어납니다.",
@@ -8883,6 +8905,8 @@ static const char *const text_vi[UI_TEXT_COUNT] = {
     [UI_MENU_MOVIE_ASPECT_KEEP] = "Dải đen", [UI_MENU_MOVIE_ASPECT_STRETCH] = "Kéo giãn",
     [UI_MENU_FOV] = "Góc nhìn",
     [UI_MENU_FOV_DESC] = "Camera cho thấy bao nhiêu thế giới, tính theo phần trăm của game gốc. Game phiên bản 1.1.0, 1.2.1 và 1.4.3.",
+    [UI_MENU_VERT_PLUS] = "Giữ bề ngang 16:9",
+    [UI_MENU_VERT_PLUS_DESC] = "Trên màn hình hẹp hơn 16:9 (Steam Deck, 16:10, 4:3), camera cho thấy thế giới rộng ngang như ở 16:9, và nhiều hơn ở phía trên và dưới. Không có tác dụng ở 16:9 hoặc rộng hơn.",
     [UI_MENU_SHADOW_RES] = "Kích thước bản đồ bóng",
     [UI_MENU_SHADOW_RES_DESC] = "Kích thước bản đồ bóng của mặt trời. Kích thước của game đổi theo tầm nhìn, xuống còn khoảng "
                                 "400 khi gần mặt đất, nên bóng lá trông bị vỡ ô và nhảy; kích thước cố định giữ chúng đứng "
