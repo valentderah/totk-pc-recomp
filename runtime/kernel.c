@@ -389,6 +389,11 @@ static int core_allowed(const RtThread *t, int c) { return (int)((t->mask >> c) 
 // inheritance and the preemption disable without interrupting owners.
 #define AP_FIRST_NS 250000ull   // the waiter spins this long before the first interruption (most waits end sooner)
 #define AP_GAP_NS 1000000ull    // and interrupts the same owner at most this often
+// TOTK_AP_FIRST_US replaces AP_FIRST_NS (10..1000 us). TOTK_HOST_CHECKPOINT=1: an owner with a pending preempt request
+// that returns from a host call or SVC to game code gives its core up there (kern_host_left), as at its next SVC or
+// indirect call, instead of running on until one or until a waiter interrupts it.
+static uint64_t g_ap_first_ns = AP_FIRST_NS;
+static int g_host_cp;
 static int g_ap = -1, g_ap_int;   // g_ap_int: interrupt owners (TOTK_ASYNC_PREEMPT=2: inheritance and disable only)
 static int g_ap_log;              // redirects logged so far (AP_LOG_N)
 #define AP_LOG_N 40
@@ -401,6 +406,13 @@ static void ap_init(void) {
     const char *e = cfg_value("TOTK_ASYNC_PREEMPT");
     g_ap = strcmp(e, "0") != 0;
     g_ap_int = g_ap && strcmp(e, "2") != 0;
+    const char *f = cfg_get("TOTK_AP_FIRST_US");
+    if (f && *f) {
+        long long us = atoll(f);
+        g_ap_first_ns = (uint64_t)(us < 10 ? 10 : us > 1000 ? 1000 : us) * 1000;
+    }
+    const char *hc = cfg_get("TOTK_HOST_CHECKPOINT");
+    g_host_cp = hc && !strcmp(hc, "1");
     if (g_ap) {
         RtModule m[16];
         int n = rt_linked_modules(m, 16);
@@ -425,8 +437,12 @@ static void ap_init(void) {
             kern_host_track = 1;
         }
     }
-    rt_log("kernel: asynchronous preemption of virtual cores %s, priority inheritance and preemption disable %s; lifted "
-           "code exe+%#llx-exe+%#llx", g_ap_int ? "on" : "off", g_ap ? "on (TOTK_ASYNC_PREEMPT=0 turns all off)" : "off",
+    if (g_ap && g_host_cp) kern_host_track = 1;
+    rt_log("kernel: asynchronous preemption of virtual cores %s (first after %llu us, TOTK_AP_FIRST_US), priority "
+           "inheritance and preemption disable %s; preempt requests honoured at host call returns %s "
+           "(TOTK_HOST_CHECKPOINT); lifted code exe+%#llx-exe+%#llx",
+           g_ap_int ? "on" : "off", (unsigned long long)(g_ap_first_ns / 1000),
+           g_ap ? "on (TOTK_ASYNC_PREEMPT=0 turns all off)" : "off", g_ap && g_host_cp ? "on" : "off",
            (unsigned long long)(g_gen_lo ? g_gen_lo - plat_exe_base() : 0),
            (unsigned long long)(g_gen_hi ? g_gen_hi - plat_exe_base() : 0));
 }
@@ -733,6 +749,7 @@ int kern_core_diag_on(void) { return g_diag > 0; }
 void kern_host_left(void *thread) {
     RtThread *t = thread;
     if (g_diag > 0 && t->dg_kick && t->dg_host_kick && !t->dg_host_end) t->dg_host_end = kern_now_ns();
+    if (g_host_cp && g_ap > 0 && t == tcur) kern_checkpoint();
 }
 
 static int dg_in_host(const RtThread *o) { return __atomic_load_n(&o->host_depth, __ATOMIC_RELAXED) > 0; }
@@ -1026,7 +1043,7 @@ static void core_take(RtThread *t) {
     core_kick();
     if (g_diag > 0) t->dg_cls = dg_class0(t);
     if (g_ap_int && t->target && t->cur_core < 0) {   // most waits end within microseconds: spin before interrupting
-        uint64_t end = kern_now_ns() + AP_FIRST_NS;
+        uint64_t end = kern_now_ns() + g_ap_first_ns;
         unlock();
         while (__atomic_load_n(&t->cur_core, __ATOMIC_RELAXED) < 0 && kern_now_ns() < end) plat_pause();
         lock();
