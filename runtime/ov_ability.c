@@ -1,6 +1,6 @@
-// Recall and Ultrahand target check (patch set "ability", recomp/patches-v143.txt and patches-v121.txt).
+// Recall and Ultrahand target check (patch set "ability", recomp/patches-v143.txt, patches-v121.txt and patches-v110.txt).
 //
-// main+0x1bd0138 on 1.4.3 (main+0x1622b60 on 1.2.1, the same code and actor offsets) runs while an ability picks its
+// main+0x1bd0138 on 1.4.3 (main+0x1622b60 on 1.2.1, main+0x1631510 on 1.1.0, the same code and actor offsets) runs while an ability picks its
 // target. Once the owner's request says ready, it loads the result holder from the owner (x8 = [x19+0x6b0]), the
 // target actor from the holder (x21 = [x8]), links the actor (main+0x155ec: reads the actor's +0x10, +0x24 and
 // +0x1a8), reads [[x21+0x228]+0xb0] (main+0x9a89d4) and takes a reference on that (main+0x2b8464: an atomic
@@ -52,7 +52,7 @@ static int read_only_module(uint64_t a) {
 // NULL when the game's code can follow the actor without a fault, else what would fault.
 static const char *faults(uint64_t actor) {
     if (!readable(actor, ACTOR_SPAN)) return "actor not readable";
-    // main+0x155ec (1.2.1: main+0x809ecc) follows a non-null link record unless the actor's state word +0x24 is 7..11:
+    // main+0x155ec (1.2.1: main+0x809ecc, 1.1.0: main+0x7d97c0) follows a non-null link record unless the actor's state word +0x24 is 7..11:
     // it stores the record in the owner, updates +0x50 atomically (main+0x15838) and later compares +0x40 and +0x48.
     uint64_t link = u64_at(actor + 0x1a8);
     if (link && u32_at(actor + 0x24) - 7 >= 5 &&
