@@ -136,6 +136,13 @@ set gears    TOTK_HIGHFPS_FIX    1
 site gears main 213eee4 f9402001 bd40082c f9402001
 site gears main 213f0d4 1e24180c 3c9f0fe4 1e241804 1e2c088c 3cc107e4
 
+# Sound command lists above 200 updates a second (issue #337): as in patches-v121.txt, which also says when the
+# game's guard fires. After pushing a processed list back onto the free ring, main+0x7bf0d0 goes on past the command
+# ring's check (b 0x7bec68). Send it back to the check (0x7bec38, where the game's own 0x7bf568 also branches; x21,
+# the engine loaded at 0x7bec2c, is not written between the check and the site), so it drains every queued list.
+set audiodrain TOTK_AUDIO_DRAIN_FIX 1
+site audiodrain main 7bf0d0 17fffee6 17fffeda   # b 0x7bec68 -> b 0x7bec38
+
 # Spin waits, from tools/spin_waits.py --exefs build/extracted/v110/exefs --patches recomp/patches-v110.txt: loops that only
 # another thread can end; their back-edges pass rt_spin_gate (runtime/kernel.c), TOTK_SPIN=0 keeps the core.
 
