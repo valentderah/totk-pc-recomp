@@ -581,6 +581,7 @@ NVN_API(nvnSyncWait) {
         if (det) vk_ahead_frame_lag(s->fence, lag, behind);
         b->cpu_synced(want == s->fence ? s->fence : b->fence_done());
         if (det) vk_ahead_frame_done(1);
+        if (mode == 1) vk_counter_frame();
         ret_x(c, NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED);
         return;
     }
@@ -592,6 +593,7 @@ NVN_API(nvnSyncWait) {
     if (det) vk_ahead_frame_lag(s->fence, lag, behind);
     if (ok) b->cpu_synced(want == s->fence ? s->fence : b->fence_done());
     if (det) vk_ahead_frame_done(ok);
+    if (mode == 1) vk_counter_frame();
     ret_x(c, ok ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED);
 }
 // void nvnEventBuilderSetDefaults(NVNeventBuilder *b)
