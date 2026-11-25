@@ -619,6 +619,17 @@ class Lines(unittest.TestCase):
         starts = xp.init_code(rec, [], 'plugin0')
         self.assertEqual(starts, {PLUGIN + row, PLUGIN + row + 0x18, PLUGIN + row + 0x30, PLUGIN + CB_OFF})
 
+    def test_yield_loops_are_spin_waits(self):
+        # Zonai Fieldworks' hook wrapper takes a byte lock (plugin+0xe3ff4 on 1.4.3): yield; ldaxrb; stxrb; cbnz; tbnz
+        # back to the yield. A loop with a yield and a call in it, or a back branch with no yield, is no spin wait.
+        ldaxrb, stxrb = 0x085FFC40, 0x08037C41
+        words = [xp.NOP] * 64
+        words[1:6] = [xp.YIELD, ldaxrb, stxrb, 0x35FFFFC3, 0x3707FF80]   # cbnz w3, -8; tbnz w0, #0, -16
+        words[10:14] = [xp.YIELD, 0x94000100, xp.NOP, 0x17FFFFFD]        # yield; bl; nop; b -12
+        words[20:23] = [xp.NOP, xp.NOP, 0x17FFFFFE]                      # b -8
+        img = struct.pack('<64I', *words)
+        self.assertEqual(xp.yield_spins(img, len(img)), {4: [20]})
+
     def test_hook_on_main_header_keeps_only_its_expect(self):
         # Challenge Mode's Enemy Health Regeneration on an update its table lacks: a replace hook at main+0x0, whose
         # word 1 is main's module header. The write is checked at start; the lift gets no site, orig or seed for it.

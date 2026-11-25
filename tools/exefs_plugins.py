@@ -206,6 +206,8 @@ def relocated(orig, site, word, at):
 # hook's site calls the stub and runs main's own original after it, recomp/patches.py @call; a replace hook's Orig
 # reaches an unpatched copy of the function, `orig`), so these forms only tell an exlaunch hook from other code.
 NOP = 0xD503201F
+YIELD = 0xD503203F
+SPIN_WIN = 512           # bytes from a spin wait's back-edge back to its head (tools/spin_waits.py SPIN_WIN)
 LDR_X17_8 = 0x58000051   # ldr x17, #8
 LDR_X17_12 = 0x58000071  # ldr x17, #12
 ADR_X30_16 = 0x1000009E  # adr x30, #16
@@ -637,6 +639,32 @@ def init_code(rec, hooks, module):
     return out - known
 
 
+def yield_spins(img, text_end):
+    """{loop head offset: [back-edge offsets]} of the plugin's spin waits: a direct branch back at most SPIN_WIN bytes
+    to a head whose loop body holds a `yield` and no call or SVC; the yield is the hint code puts in a loop that waits
+    for another thread (an exclusive
+    byte lock in Zonai Fieldworks' hook wrappers, plugin+0xe3ff4 on 1.4.3). On the Switch the lock holder runs on its own
+    core; here both hold one of the three virtual cores (runtime/kernel.c), and a holder preempted for the spinner
+    waits for that core while the spinner, which makes no SVC, keeps it: the game froze when Zonai Fieldworks turned a
+    member off. A `spin` line sends each back-edge through rt_spin_gate, which hands the core to a waiting thread
+    (tools/spin_waits.py finds the game's own waits; the installer has no disassembler, so this test is by word)."""
+    n = text_end // 4
+    words = struct.unpack_from(f'<{n}I', img)
+    out = {}
+    for j, w in enumerate(words):
+        pr = pc_relative(w, 4 * j)
+        if pr is None or pr[0][0] not in ('b', 'b.cond', 'cbz', 'tbz') or w & 0xFC000000 == 0x94000000:
+            continue
+        head = pr[1]
+        if not 4 * j - SPIN_WIN <= head <= 4 * j or head % 4:
+            continue
+        body = words[head // 4:j]
+        if YIELD in body and not any(x & 0x7C000000 == 0x14000000 and x >> 31 or x & 0xFFFFFC1F == 0xD63F0000
+                                     or x & 0xFFE0001F == 0xD4000001 for x in body):   # bl, blr, svc: a call
+            out.setdefault(head, []).append(4 * j)
+    return out
+
+
 def entries(rec, hooks, module):
     """(main offsets, plugin offsets): where module's hook code comes back into main's .text, which the lift makes
     function starts (recomp/patches.py `entry`), and the code its veneers lead to, seeds of its lift. The site + 4 of a
@@ -724,6 +752,8 @@ def plugin_lines(rec, hooks, name, record_dir, module):
         lines.append(f'seed {m} ' + ' '.join(f'{o:x}' for o in sorted(seeds[m])))
     if back:
         lines.append('entry main ' + ' '.join(f'{o:x}' for o in back))
+    for head, edges in sorted(yield_spins(img, p['text_end']).items()):
+        lines.append(f'spin {module} {head:x} ' + ' '.join(f'{b:x}' for b in edges) + '   # a loop with a yield')
     return lines
 
 
