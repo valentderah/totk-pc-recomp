@@ -679,7 +679,7 @@ int res_wants_wide_overlay(const unsigned out[2]) {
 // through the aspect ratio. A factor of 1 switches the set off, so the camera code is the game's own. Runs on a settings
 // change (gfx_present.c window_settings_live), the first time at the first present.
 //
-// Vert+ (TOTK_VERT_PLUS, on by default): the camera keeps the game's vertical view angle at every shape, so a shape
+// Vert+ (TOTK_VERT_PLUS, off by default; the Display tab's row under the field of view): the camera keeps the game's vertical view angle at every shape, so a shape
 // narrower than 16:9 (16:10, 3:2, 4:3) showed less of the world at the sides than 16:9 does. The factor is then also
 // multiplied by the one that gives the game's default view the horizontal angle it has at 16:9: tan(v'/2) = tan(v/2)
 // * (16/9) / aspect, so v' / v = 2 atan(tan(v/2) k) / v with k = 16:9 over the aspect. v is the game's default
@@ -697,7 +697,7 @@ static void vert_plus_init(double ratio_over_16x9) {
 }
 
 void res_fov_live(void) {
-    static int set = -2, shown = 100, shown_vp = -1;
+    static int set = -2, shown = 100, shown_vp = 0;   // the game's own view: nothing to write until one changes
     if (set == -2) set = rt_patch_set("fov");
     int pct = cfg_int("TOTK_FOV");
     pct = pct < FOV_MIN ? FOV_MIN : pct > FOV_MAX ? FOV_MAX : pct;

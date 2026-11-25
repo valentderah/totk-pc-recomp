@@ -226,12 +226,12 @@
 # screens streamed to (2340x1080 or 3120x1440 at 19.5:9, 2400x1080 at 20:9). The installer makes the UI layout for the
 # shapes of the connected displays and of this setting; at a shape it has none for, the game draws the largest 16:9 size
 # that fits inside it with bars and makes the layout in the background for the next start (a source build: make it with
-# tools/make_romfs_patches.py --aspect WxH). A shape narrower than 16:9 keeps the width of the 16:9 view and shows more
-# above and below (vert_plus). Portrait shapes and shapes outside 4:3..32:9 draw 16:9 with bars. Read at start. Default:
-# 1920x1080, or on a primary display of 21:9, 32:9, 16:10, 3:2 or 4:3 the smallest size of that shape at least 1080 high
-# that fits the display (1920x1280 on a 3:2 laptop, 2560x1080 on a 21:9 monitor), so the picture fills the screen
-# without black bars, with prompts = xbox or pc too (on an install by an older setup, which built the Xbox prompts for
-# 16:9 only, prompts = xbox keeps 1920x1080).
+# tools/make_romfs_patches.py --aspect WxH). With vert_plus = 1 a shape narrower than 16:9 keeps the width of the 16:9
+# view and shows more above and below. Portrait shapes and shapes outside 4:3..32:9 draw 16:9 with bars. Read at start.
+# Default: 1920x1080, or on a primary display of 21:9, 32:9, 16:10, 3:2 or 4:3 the smallest size of that shape at least
+# 1080 high that fits the display (1920x1280 on a 3:2 laptop, 2560x1080 on a 21:9 monitor), so the picture fills the
+# screen without black bars, with prompts = xbox or pc too (on an install by an older setup, which built the Xbox
+# prompts for 16:9 only, prompts = xbox keeps 1920x1080).
 # output_res = 1920x1080
 # HUD width on a game resolution wider than 16:9: full, the default, puts the HUD at the screen's left and right edges;
 # 21:9 keeps it within the middle 21:9 of the screen and 16:9 within the middle 16:9 (the game's own HUD), so the
@@ -266,11 +266,11 @@
 # Field of view, in percent of the game's own: 70 to 140, 100 (the default) leaves the camera as it is. Higher shows
 # more of the world around Link. Game versions 1.1.0, 1.2.1 and 1.4.3. Changes while the game runs take effect at once.
 # fov = 100
-# Vert+ at a game resolution narrower than 16:9 (16:10, 3:2, 4:3): 1, the default, widens the camera's vertical view
-# so the picture shows as much of the world at the sides as 16:9 does, and more above and below. 0: the game's own
-# vertical view at every shape, so a narrower shape shows less at the sides. Multiplies with fov. Changes while the
-# game runs take effect at once.
-# vert_plus = 1
+# Vert+ at a game resolution narrower than 16:9 (16:10, 3:2, 4:3): 1 widens the camera's vertical view so the picture
+# shows as much of the world at the sides as 16:9 does, and more above and below. 0, the default: the game's own
+# vertical view at every shape, so a narrower shape shows less at the sides. No effect at 16:9 or wider. Multiplies
+# with fov. Changes while the game runs take effect at once.
+# vert_plus = 0
 # Anisotropic filtering of surface textures: game (the level the game asks for, as on the Switch) or 2, 4, 8, 16. Keeps
 # ground, roads and walls seen at a shallow angle sharp into the distance. Only filtered, mipmapped textures that tile
 # are raised; shadow maps, data maps and screen-sized buffers keep the game's setting. Read at start.

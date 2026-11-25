@@ -31,7 +31,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
   at the screen's edges or in the middle 21:9 or 16:9 (`hud_width`)
 - Other screen shapes from 4:3 to 32:9, each with the camera and the interface in that shape: 16:10 (Steam Deck,
   handhelds), 3:2 (Surface, Framework), 4:3 (iPads, CRT monitors) and phones (19.5:9, 20:9) for streaming; on shapes
-  narrower than 16:9 the view keeps the 16:9 width (Vert+)
+  narrower than 16:9 the view can keep the 16:9 width (`vert_plus`, off by default)
 - Anisotropic texture filtering up to 16x, for sharp ground into the distance
 - In-game settings menu (F1) and performance overlay (F10)
 - Play time across runs on the Game tab of the settings menu, kept in `playtime.txt` next to the saves
