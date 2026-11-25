@@ -315,6 +315,12 @@ int probe_cfg(void) {
     CHECK(input_pad_layout_pick("xbox_prompts", 0) == PAD_LAYOUT_NINTENDO &&
               input_pad_layout_pick("Xbox_Prompts", 1) == PAD_LAYOUT_NINTENDO,
           "pad layout: 0.1.9's xbox_prompts keeps the Nintendo positions (only the prompts change, romfs.c overlay_init)");
+    // Gamepad events behind other windows (input_map.c, input.c start)
+    CHECK(input_pad_background_pick("auto", 0) && !input_pad_background_pick("auto", 1) &&
+              input_pad_background_pick(NULL, 0) && !input_pad_background_pick(NULL, 1),
+          "pad background: automatic is on, off when Steam started the game (its overlay takes the gamepad, #1462)");
+    CHECK(input_pad_background_pick("1", 1) && !input_pad_background_pick("0", 0),
+          "pad background: 1 and 0 win over the Steam check");
     // Button prompts (input_map.c)
     CHECK(input_prompts_pick(NULL, "auto") == PROMPTS_NINTENDO && input_prompts_pick("", "xbox") == PROMPTS_NINTENDO &&
               input_prompts_pick("Xbox", "nintendo") == PROMPTS_XBOX && input_prompts_pick("nintendo", "xbox") == PROMPTS_NINTENDO,
