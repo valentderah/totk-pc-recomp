@@ -291,11 +291,11 @@ static double scene_scale(void) {
 uint64_t res_heap_extra_bytes(void) { return ((res_heap_extra_kib() << 10) + 0x1fffff) & ~0x1fffffull; }
 
 // TOTK_GRASS_RANGE (percent, 50 to 400; 100 = the game's): how far around the camera grass blades grow. The near grass
-// map (the grass patch set, recomp/patches-v121.txt and patches-v143.txt) covers 62.5 m and draws into 256x256 and
-// 128x128 textures; other values scale the extent, its step and both textures together, so the grass keeps its detail
-// per metre. The larger textures come from the grass heap "草" of the HeapDef, which has no room for them (at 200 %
-// without growth the game stops at start on a failed allocation), so it grows by 9318 KiB, its size in 1.4.3, times
-// the textures' growth in area (k^2 - 1).
+// map (the grass patch set, recomp/patches-v110.txt, patches-v121.txt and patches-v143.txt) covers 62.5 m and draws
+// into 256x256 and 128x128 textures; other values scale the extent, its step and both textures together, so the grass
+// keeps its detail per metre. The larger textures come from the grass heap "草" of the HeapDef, which has no room for
+// them (at 200 % without growth the game stops at start on a failed allocation), so it grows by 9318 KiB, its size in
+// 1.4.3, times the textures' growth in area (k^2 - 1).
 #define GRASS_HEAP_KIB 9318
 static int grass_pct(void) {
     int pct = cfg_int("TOTK_GRASS_RANGE");
