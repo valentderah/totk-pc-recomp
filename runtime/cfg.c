@@ -196,7 +196,7 @@ static const CfgMeta metas[] = {
     {"VR", "0", "0|1", RESTART}, {"VR_RENDER_SCALE", "200", "50|67|75|100|125|150|200", RESTART}, {"VR_CAM_HEIGHT", "0", "-2..3", LIVE}, {"VR_HEAD_AIM", "1", "0|1", LIVE},
     {"VR_HEAD_AIM_HOLD", "400", "0..5000", RESTART}, {"VR_LEVEL", "1", "0|1", LIVE}, {"VR_HEAD_POSITION", "0", "0|1", LIVE},
     {"VR_SCALE", "1", "0.1..10", LIVE}, {"VR_MARGIN", "5", "0..20", LIVE}, {"VR_HUD", "1", "0|1", RESTART}, {"VR_HUD_SIZE", "2", "0.2..10", LIVE},
-    {"VR_HUD_ASPECT", "1.7778", "0..4", LIVE}, {"VR_HUD_DISTANCE", "2", "0.3..20", LIVE}, {"VR_HUD_FOLLOW", "25", "0..90", LIVE},
+    {"VR_HUD_ASPECT", "0", "0..4", LIVE}, {"VR_HUD_DISTANCE", "2", "0.3..20", LIVE}, {"VR_HUD_FOLLOW", "25", "0..90", LIVE},
     {"VR_WORLDHUD", "1", "0|1", LIVE}, {"VR_WORLDHUD_DIST", "4", "0.3..100", LIVE}, {"VR_MARKERS3D", "1", "0|1", LIVE},
     {"VR_MARKER_REF", "4", "0.5..50", LIVE}, {"VR_MARKER_MIN", "0.05", "0.01..1", LIVE}, {"VR_MARKER_MAX", "2", "1..5", LIVE},
     {"VR_STAMINA_MOVE", "1", "0|1", RESTART}, {"VR_STAMINA_POS", "0.725,0.94", NULL, RESTART},
@@ -485,6 +485,12 @@ int cfg_shape_size(unsigned w, unsigned h, unsigned out[2]) {
     }
     if (best >= 0) {
         out[0] = SHAPED[best][0], out[1] = SHAPED[best][1];
+        return 1;
+    }
+    // VR: every headset's shape has a layout of its own, named at 2048 high with the width in steps of 64 (the steps
+    // of 1/32 vk_xr.c vh_size holds the picture's aspect to, so a headset keeps its folder from session to session)
+    if (cfg_bool("TOTK_VR") && r >= 0.5 && r <= 2) {
+        out[0] = 64 * (unsigned)floor(r * 32 + 0.5), out[1] = 2048;
         return 1;
     }
     if (r < SHAPE_MIN || r > SHAPE_MAX) return 0;
@@ -947,8 +953,9 @@ static void load_ini(void) {
 }
 
 // VR (--vr / vr = 1, docs/vr.md): the display settings VR draws with, over totk.ini's flat ones, before anything sizes
-// memory or the window for them: a square 2048x2048 picture per eye (the HUD layouts for that shape), the HUD at full
-// width, SDR, a window as preview, and the render scale of vr_render_scale. The environment still wins.
+// memory or the window for them: the headset's picture size and shape per eye (vk_xr.c vk_xr_output_size; the HUD laid
+// out for that shape, cfg_shape_size), the HUD at full width, SDR, a window as preview, and the render scale of
+// vr_render_scale on top. The environment still wins (TOTK_OUTPUT_RES fixes the picture's size).
 static void vr_defaults(void) {
     if (!cfg_bool("TOTK_VR")) return;
     // OpenXR must start first (loader, runtime, a headset): without it the game plays exactly as without --vr (the VR
@@ -960,8 +967,15 @@ static void vr_defaults(void) {
         return;
     }
     const char *rs = cfg_get("TOTK_VR_RENDER_SCALE");
+    // The picture per eye: this headset's size and shape (vk_xr.c vk_xr_output_size: SteamVR's recommended eye size,
+    // the view remembered from its last session), else the square 2048x2048
+    int vk_xr_output_size(unsigned out[2], unsigned win[2]);
+    unsigned o[2], w[2];
+    char out_s[24] = "2048x2048", win_s[24] = "1024x1024";
+    if (vk_xr_output_size(o, w))
+        snprintf(out_s, sizeof out_s, "%ux%u", o[0], o[1]), snprintf(win_s, sizeof win_s, "%ux%u", w[0], w[1]);
     const struct { const char *key, *value; } vr[] = {
-        {"TOTK_OUTPUT_RES", "2048x2048"}, {"TOTK_WINDOW_SIZE", "1024x1024"}, {"TOTK_FULLSCREEN", "0"},
+        {"TOTK_OUTPUT_RES", out_s}, {"TOTK_WINDOW_SIZE", win_s}, {"TOTK_FULLSCREEN", "0"},
         {"TOTK_HUD_WIDTH", "full"}, {"TOTK_HDR", "0"}, {"TOTK_RENDER_SCALE", rs && *rs ? rs : "200"},
     };
     for (size_t i = 0; i < sizeof vr / sizeof *vr; i++)

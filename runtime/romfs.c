@@ -1422,6 +1422,12 @@ static int shape_spawn(const char *const *argv, const char *dir, const char *fol
     return ok;
 }
 
+// The prompts are picked as overlay_init picks them (the VR thread can get here before it ran).
+int romfs_folders_prepare_for(unsigned w, unsigned h) {
+    const char *layout = cfg_value("TOTK_PAD_LAYOUT");
+    return romfs_folders_prepare(w, h, input_prompts_folder(input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), layout));
+}
+
 int romfs_folders_prepare(unsigned w, unsigned h, const char *prompts_folder) {
     char python[1024], script[1100], dir[2100], romfs[2200], out[2300], reuse[2300], binds[2300], size[32], version[8],
         folder[160];

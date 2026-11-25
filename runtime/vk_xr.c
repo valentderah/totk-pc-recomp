@@ -59,6 +59,8 @@ static struct {
     int running;
     _Atomic int active;   // frames are wanted (the session runs)
     int frame_ext;        // XR_VALVE_frame_controller_interaction enabled
+    unsigned rec_w, rec_h;   // SteamVR's recommended eye image size (its resolution settings included), at start
+    char sysname[XR_MAX_SYSTEM_NAME_SIZE];
     _Atomic int quit;     // vk_xr_shutdown: 1 asked, 2 exit requested from SteamVR
     _Atomic int done;     // the VR thread has ended (its session destroyed)
     int64_t quit_t0;
@@ -93,6 +95,87 @@ int vk_xr_wanted(void) {
 static int xr_init_once(void);
 // OpenXR's start (loader, instance, the headset), once: cfg.c vr_defaults asks first, before anything is sized for VR;
 // vk_xr_instance_exts reuses the answer.
+// ---- the picture's size and shape per headset (cfg.c vr_defaults, before anything is sized)
+// The game draws one symmetric view that covers both eyes plus TOTK_VR_MARGIN (publish_views). Its shape needs the eyes'
+// field of view, which OpenXR gives only in a running session, after the output is sized; so each session's view is
+// kept per headset in vr-headset.txt next to totk.ini, and the next start draws that shape. Its size is SteamVR's
+// recommended eye size at that eye's pixel density across the wider view; the render scale goes on top as usual.
+// A headset not in the file yet starts square at its recommended size (one restart then gives the exact shape).
+// Lines: name TAB eye tangents (left right up down, eye 0 then eye 1, all positive) TAB the HUD layout's folder size
+// (installer/screens.py vr_layouts reads that column).
+#define VR_HEADSET_FILE "vr-headset.txt"
+static float vh_tan[8];   // the view read from the file for this headset (vh_have) or seen in the session
+static int vh_have;
+
+static int vh_path(char *out, size_t cap) {
+    if (!plat_exe_path(out, cap)) return 0;
+    char *cut = plat_last_sep(out);
+    if (!cut) cut = strrchr(out, '/');
+    if (!cut || (size_t)(cut + 1 - out) + sizeof VR_HEADSET_FILE > cap) return 0;
+    strcpy(cut + 1, VR_HEADSET_FILE);
+    return 1;
+}
+
+// The output size for the view tangents t (8, as in the file), SteamVR's recommended eye size and the margin; shape =
+// the HUD layout's folder size (cfg.c cfg_shape_size gives the same for that output). The aspect is held to steps of
+// 1/32 so a slightly different session keeps its folder; sides in steps of 16, at most 4096.
+static void vh_size(const float *t, unsigned rw, unsigned rh, unsigned out[2]) {
+    float th = fmaxf(fmaxf(t[0], t[1]), fmaxf(t[4], t[5])), tv = fmaxf(fmaxf(t[2], t[3]), fmaxf(t[6], t[7]));
+    double mg = cfg_double("TOTK_VR_MARGIN");
+    if (mg > 0 && mg <= 20) {
+        float rad = (float)(mg / 57.2958);
+        th = tanf(fminf(atanf(th) + rad, 1.45f)), tv = tanf(fminf(atanf(tv) + rad, 1.45f));
+    }
+    double k = floor((double)th / tv * 32 + 0.5);
+    if (k < 16) k = 16;
+    if (k > 64) k = 64;
+    double rq = k / 32;
+    // pixels per unit of tangent at the eye's centre, the denser axis, over the whole view
+    double dx = rw / (double)(t[0] + t[1]), dy = rh / (double)(t[2] + t[3]), d = dx > dy ? dx : dy;
+    double h = d * 2 * (th / rq > tv ? th / rq : tv), w = h * rq;
+    double big = w > h ? w : h;
+    if (big > 4096) w *= 4096 / big, h *= 4096 / big;
+    out[0] = (unsigned)(floor(w / 16 + 0.5) * 16), out[1] = (unsigned)(floor(h / 16 + 0.5) * 16);
+    if (out[0] < 512) out[0] = 512;
+    if (out[1] < 512) out[1] = 512;
+}
+
+// cfg.c vr_defaults: the output_res and window for this headset; 0 without a recommended size from SteamVR.
+int vk_xr_output_size(unsigned out[2], unsigned win[2]) {
+    if (!X.ok || !X.rec_w || !X.rec_h) return 0;
+    char path[1100];
+    FILE *f = vh_path(path, sizeof path) ? fopen(path, "r") : NULL;
+    char line[512];
+    while (f && fgets(line, sizeof line, f)) {
+        char *tab = strchr(line, '\t');
+        if (line[0] == '#' || !tab) continue;
+        *tab = 0;
+        if (strcmp(line, X.sysname)) continue;
+        float t[8];
+        if (sscanf(tab + 1, "%f %f %f %f %f %f %f %f", &t[0], &t[1], &t[2], &t[3], &t[4], &t[5], &t[6], &t[7]) == 8) {
+            int sane = 1;
+            for (int i = 0; i < 8; i++) sane &= t[i] > 0.05f && t[i] < 20;
+            if (sane) memcpy(vh_tan, t, sizeof t), vh_have = 1;
+        }
+    }
+    if (f) fclose(f);
+    if (vh_have) {
+        vh_size(vh_tan, X.rec_w, X.rec_h, out);
+        rt_log("vr: picture %ux%u per eye for \"%s\" (its view from %s, SteamVR's %ux%u)", out[0], out[1], X.sysname,
+               VR_HEADSET_FILE, X.rec_w, X.rec_h);
+    } else {
+        unsigned s = X.rec_w > X.rec_h ? X.rec_w : X.rec_h;
+        s = (s + 8) / 16 * 16;
+        if (s > 4096) s = 4096;
+        out[0] = out[1] = s;
+        rt_log("vr: picture %ux%u per eye for \"%s\" (square: its view is not known yet; the first session notes it in %s "
+               "for the next start)", s, s, X.sysname, VR_HEADSET_FILE);
+    }
+    // the window is only a preview: the picture's shape, 1024 high
+    win[1] = 1024, win[0] = (unsigned)((double)out[0] * 1024 / out[1] / 2 + 0.5) * 2;
+    return 1;
+}
+
 int vk_xr_probe(void) {
     static int tried, ok;
     if (!tried) tried = 1, ok = xr_init_once();
@@ -152,6 +235,26 @@ static int xr_init_once(void) {
     XrSystemGetInfo gi = {.type = XR_TYPE_SYSTEM_GET_INFO, .formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY};
     r = xrGetSystem(X.inst, &gi, &X.sys);
     if (XR_FAILED(r)) { rt_log("vr: no headset (xrGetSystem %d); is the Frame connected to SteamVR?", (int)r); return 0; }
+    // The headset's name and the eye size SteamVR recommends (its resolution sliders included): vk_xr_output_size
+    XRF(xrGetSystemProperties);
+    XrSystemProperties sp = {.type = XR_TYPE_SYSTEM_PROPERTIES};
+    if (xrGetSystemProperties && XR_SUCCEEDED(xrGetSystemProperties(X.inst, X.sys, &sp)))
+        snprintf(X.sysname, sizeof X.sysname, "%s", sp.systemName);
+    for (char *c = X.sysname; *c; c++)
+        if (*c == '\t' || *c == '\n' || *c == '\r') *c = ' ';
+    if (!X.sysname[0]) snprintf(X.sysname, sizeof X.sysname, "headset");
+    XRF(xrEnumerateViewConfigurationViews);
+    XrViewConfigurationView vv[2] = {{.type = XR_TYPE_VIEW_CONFIGURATION_VIEW}, {.type = XR_TYPE_VIEW_CONFIGURATION_VIEW}};
+    uint32_t nvv = 0;
+    if (xrEnumerateViewConfigurationViews &&
+        XR_SUCCEEDED(xrEnumerateViewConfigurationViews(X.inst, X.sys, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 2, &nvv, vv)) &&
+        nvv == 2) {
+        X.rec_w = vv[0].recommendedImageRectWidth > vv[1].recommendedImageRectWidth ? vv[0].recommendedImageRectWidth
+                                                                                     : vv[1].recommendedImageRectWidth;
+        X.rec_h = vv[0].recommendedImageRectHeight > vv[1].recommendedImageRectHeight ? vv[0].recommendedImageRectHeight
+                                                                                       : vv[1].recommendedImageRectHeight;
+    }
+    rt_log("vr: headset \"%s\", SteamVR recommends %ux%u per eye", X.sysname, X.rec_w, X.rec_h);
     XRF(xrGetVulkanInstanceExtensionsKHR);
     XRF(xrGetVulkanDeviceExtensionsKHR);
     uint32_t n = 0;
@@ -430,9 +533,57 @@ static XrPosef seen_now(const EyeView *v) {
     return p;
 }
 
+// publish_views, once per session: the eyes' view goes into vr-headset.txt for this headset's next start (other
+// headsets' lines are kept); the log says when the next start will draw another shape.
+static void vh_note(const XrView v[2]) {
+    float t[8];
+    for (int e = 0; e < 2; e++)
+        t[4 * e] = tanf(-v[e].fov.angleLeft), t[4 * e + 1] = tanf(v[e].fov.angleRight), t[4 * e + 2] = tanf(v[e].fov.angleUp),
+        t[4 * e + 3] = tanf(-v[e].fov.angleDown);
+    for (int i = 0; i < 8; i++)
+        if (!(t[i] > 0.05f && t[i] < 20)) return;
+    int same = vh_have;
+    for (int i = 0; same && i < 8; i++) same = fabsf(t[i] - vh_tan[i]) < 0.002f * vh_tan[i] + 1e-4f;
+    if (same || !X.rec_w) return;
+    unsigned now[2] = {E.w, E.h}, next[2], shape[2];
+    if (!now[0]) res_wanted(now);
+    vh_size(t, X.rec_w, X.rec_h, next);
+    if (!cfg_shape_size(next[0], next[1], shape)) shape[0] = next[0], shape[1] = next[1];
+    char path[1100], tmp[1110];
+    if (!vh_path(path, sizeof path)) return;
+    snprintf(tmp, sizeof tmp, "%s.new", path);
+    FILE *in = fopen(path, "r"), *o = fopen(tmp, "w");
+    if (!o) { if (in) fclose(in); rt_log("vr: %s could not be written", path); return; }
+    fprintf(o, "# The view of each headset the game played with in VR, for its picture's size and shape (written by the "
+               "game; delete a line to forget a headset)\n");
+    char line[512];
+    while (in && fgets(line, sizeof line, in)) {
+        char *tab = strchr(line, '\t');
+        if (line[0] == '#' || !tab) continue;
+        if ((size_t)(tab - line) == strlen(X.sysname) && !strncmp(line, X.sysname, (size_t)(tab - line))) continue;
+        fputs(line, o);
+    }
+    if (in) fclose(in);
+    fprintf(o, "%s\t%.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f\t%ux%u\n", X.sysname, t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7],
+            shape[0], shape[1]);
+    int ok = !fclose(o);
+    if (ok) { remove(path); ok = !rename(tmp, path); }
+    if (!ok) { rt_log("vr: %s could not be written", path); return; }
+    memcpy(vh_tan, t, sizeof t), vh_have = 1;
+    int differ = abs((int)next[0] - (int)now[0]) > 16 || abs((int)next[1] - (int)now[1]) > 16;
+    // the next start's HUD layout, made now in the background, so that start has it
+    int romfs_folders_prepare_for(unsigned w, unsigned h);   // romfs.c
+    if (differ) romfs_folders_prepare_for(next[0], next[1]);
+    rt_log("vr: \"%s\" sees %.1f x %.1f degrees per eye; noted in %s%s%ux%u%s", X.sysname,
+           (atanf(t[0]) + atanf(t[1])) * 57.2958f, (atanf(t[2]) + atanf(t[3])) * 57.2958f, VR_HEADSET_FILE,
+           differ ? ": the next start draws " : " (", next[0], next[1], differ ? " per eye (this start draws its own size)" : " per eye, as now)");
+}
+
 // Publishes both eyes of a headset frame, with one symmetric view (the game renders one) that covers both eyes' views at
 // the output's shape, and points the game's projection at it.
 static void publish_views(const XrView v[2], int64_t tdisp) {
+    static int noted;
+    if (!noted) noted = 1, vh_note(v);
     float th = 0, tv = 0;
     for (int e = 0; e < 2; e++) {
         float l = tanf(-v[e].fov.angleLeft), r = tanf(v[e].fov.angleRight), u = tanf(v[e].fov.angleUp), d = tanf(-v[e].fov.angleDown);
@@ -1036,12 +1187,22 @@ int vk_xr_frame_clock(uint64_t *wake, uint64_t *period, int *every) {
 }
 
 // ---- the HUD panel (VR thread): its swapchain, its picture, and where it floats. The panel sits TOTK_VR_HUD_DISTANCE m
-// The panel's height / width (the game lays its HUD out in 1920x1080 and stretches it over the square
-// headset output, so a square panel squished it sideways; shown at 16:9 it has its own shape again). TOTK_VR_HUD_ASPECT
-// (width / height, live, default 16:9; 0 = the picture's own shape).
+// The panel's height / width: the HUD picture's own shape when the HUD is laid out for the output's shape (its
+// romfs-patches-<w>x<h> loaded: round stays round), else 16:9 (without that layout the game stretches its 16:9 HUD over
+// the output, and at 16:9 it has its own shape again). TOTK_VR_HUD_ASPECT (width / height, live) sets another; 0 (the
+// default) = this rule. The panel keeps TOTK_VR_HUD_SIZE as its width.
 static float hud_shape(void) {
     double a = cfg_double("TOTK_VR_HUD_ASPECT");
     if (a > 0.1) return (float)(1.0 / a);
+    static int laid = -1;
+    if (laid < 0) {
+        unsigned out[2] = {E.w, E.h};
+        if (!out[0]) res_wanted(out);
+        laid = out[0] && romfs_shaped_ready(out[0], out[1]);
+        rt_log("vr: HUD panel %s", laid ? "in the HUD picture's own shape (its layout is loaded)"
+                                        : "at 16:9 (no HUD layout for the picture's shape: the 16:9 HUD is stretched over it)");
+    }
+    if (!laid) return 9.0f / 16.0f;
     return X.hw ? (float)X.hh / (float)X.hw : 1;
 }
 // ahead of the head and TOTK_VR_HUD_SIZE m wide, and follows the head lazily: it stays put while the head turns less

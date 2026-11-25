@@ -29,6 +29,28 @@ VR_SIZE = '2048x2048'
 VR_SHORTCUT = 'TotK VR.lnk' if os.name == 'nt' else 'TotK VR.desktop'
 
 
+# The game notes each headset's view in this file next to totk.ini (runtime/vk_xr.c vh_note): name TAB tangents TAB the
+# folder size of its HUD layout (runtime/cfg.c cfg_shape_size: any VR shape has one, at 2048 high).
+VR_HEADSETS = 'vr-headset.txt'
+
+
+def vr_layouts(dest):
+    """The HUD layout sizes of the headsets the game has played with in VR (vr-headset.txt), e.g. ['2112x2048']."""
+    try:
+        text = (Path(dest) / VR_HEADSETS).read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return []
+    out = []
+    for line in text.splitlines():
+        cols = line.split('\t')
+        if line.startswith('#') or len(cols) < 3:
+            continue
+        m = re.fullmatch(r'(\d+)x(\d+)', cols[2].strip())
+        if m and 256 <= int(m.group(1)) <= 8192 and 256 <= int(m.group(2)) <= 8192:
+            out.append(f'{int(m.group(1))}x{int(m.group(2))}')
+    return out
+
+
 def vr_set_up(dest):
     try:
         return (Path(dest) / VR_SHORTCUT).is_file()
@@ -217,7 +239,7 @@ def prompts_style(text):
 def wanted(dest, screens=None, vr=False):
     """(sizes, style): the shape sizes to write layouts for, sorted, and the prompts style. A shape is wanted for each
     display's own size and for the output_res the game defaults to there, for the totk.ini output_res, and VR's square
-    one when VR is set up (vr, or the install's VR shortcut)."""
+    one plus each headset's own (vr-headset.txt) when VR is set up (vr, or the install's VR shortcut)."""
     screens = displays() if screens is None else screens
     try:
         text = (Path(dest) / 'totk.ini').read_text(encoding='utf-8-sig', errors='replace')
@@ -237,5 +259,6 @@ def wanted(dest, screens=None, vr=False):
         sizes.add(shape_size(int(m.group(1)), int(m.group(2))))
     if vr or vr_set_up(dest):
         sizes.add(VR_SIZE)
+        sizes.update(vr_layouts(dest))
     sizes.discard(None)
     return sorted(sizes, key=size_order), prompts_style(text)

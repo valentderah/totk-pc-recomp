@@ -39,9 +39,16 @@ from the install folder. Then in its Properties:
 
 ## Settings
 
-`--vr` needs no configuration: its defaults are the values that worked across the headset tests. It draws each eye at a
-square 2048x2048 picture (with the HUD laid out for that shape) at render scale 200, and the frame rate follows the
-headset (a left and a right frame per headset frame). In game, **F1 > VR** has the comfort settings (camera height,
+`--vr` needs no configuration: its defaults are the values that worked across the headset tests. It draws each eye at
+the headset's own picture size and shape (with the HUD laid out for that shape) at render scale 200 on top, and the frame
+rate follows the headset (a left and a right frame per headset frame).
+
+The picture's size is SteamVR's recommended eye size, so SteamVR's resolution settings (global and per application)
+count; the render scale multiplies it. Its shape is the headset's field of view, which OpenXR only reports once VR runs:
+the game notes it per headset in `vr-headset.txt` next to `totk.ini`, so **the first start with a new headset draws a
+square picture and every later start the headset's own shape** (the log says `the next start draws ...`). The HUD
+layout for that shape is made in the background on that first start too. Setting `output_res` in the environment
+(`TOTK_OUTPUT_RES`) overrides the size. Delete a line of `vr-headset.txt` to forget a headset. In game, **F1 > VR** has the comfort settings (camera height,
 head aim); the `[vr]` section of `totk.ini` has them too, and `vr_render_scale` sets the render scale VR uses.
 
 All VR settings are listed in [settings.md](settings.md), section "VR": the player's settings (HUD panel size and

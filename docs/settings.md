@@ -265,7 +265,7 @@ Settings of VR (`--vr` or `vr = 1`; `docs/vr.md`). The first table is the player
 
 | Setting | What it does | Effect of changing it | Safety |
 | --- | --- | --- | --- |
-| `vr` (default `0`) | `1` plays in a SteamVR headset through OpenXR (`docs/vr.md`); the same as starting with `--vr`. Sets `output_res` 2048x2048, `window_size` 1024x1024, `fullscreen` 0, `hud_width` full, `hdr` 0 and `render_scale` from `vr_render_scale` over the flat values (the environment still wins), switches on the `vr` patch set and starts OpenXR. Without a headset or runtime the game plays flat and the log says why. | Read at start. Every frame is drawn twice (once per eye): about twice the flat game's frame rate is needed at the headset's refresh rate. | Safe |
+| `vr` (default `0`) | `1` plays in a SteamVR headset through OpenXR (`docs/vr.md`); the same as starting with `--vr`. Sets `output_res` to the headset's picture size and shape (SteamVR's recommended eye size over the headset's view, noted per headset in `vr-headset.txt`; square on its first start, 2048x2048 when SteamVR gives no size), `window_size` the same shape 1024 high, `fullscreen` 0, `hud_width` full, `hdr` 0 and `render_scale` from `vr_render_scale` over the flat values (the environment still wins), switches on the `vr` patch set and starts OpenXR. Without a headset or runtime the game plays flat and the log says why. | Read at start. Every frame is drawn twice (once per eye): about twice the flat game's frame rate is needed at the headset's refresh rate. | Safe |
 | `vr_render_scale` (default `200`) | `render_scale` in VR (the flat setting stays for flat play). 200 renders 4096x4096 per eye. | Read at start. Lower values (150, 100) cost less GPU time and look softer. | Safe |
 | `vr_cam_height` (default `0`) | Metres added to the height of the camera behind Link (F1 > VR). | Live. | Safe |
 | `vr_head_aim` (default `1`) | While the bow (ZR) or a throw (R) is held, or the camera / scope viewfinder is open, the game aims where the head looks (F1 > VR). `0`: aim with the right stick. | Live. | Safe |
@@ -276,7 +276,7 @@ Settings of VR (`--vr` or `vr = 1`; `docs/vr.md`). The first table is the player
 | `vr_margin` (default `5`) | Degrees the game draws beyond the headset's widest view, so fast head turns don't show the picture's edge. | Live. More margin costs resolution at the same render scale. | Safe |
 | `vr_hud` (default `1`) | The HUD on a floating panel in front of the player (the game's HUD draws replayed onto it). `0`: no HUD in VR. | Read at start. | Safe |
 | `vr_hud_size` (default `2`) | The HUD panel's width in metres. | Live. | Safe |
-| `vr_hud_aspect` (default `1.7778`) | The HUD panel's width / height. | Live. | Safe |
+| `vr_hud_aspect` (default `0`) | The HUD panel's width / height. `0`: the HUD picture's own shape when its layout for the picture's shape is loaded (the HUD undistorted), else 16:9. The panel's width stays `vr_hud_size`. | Live. | Safe |
 | `vr_hud_distance` (default `2`) | The HUD panel's distance in metres. | Live. | Safe |
 | `vr_hud_follow` (default `25`) | Degrees the head may turn away from the HUD panel before it follows (lazily). With the camera or scope open it stays straight ahead. | Live. | Safe |
 | `vr_worldhud` (default `1`) | World markers (names, enemy health, lock-on, speech balloons, the stamina wheel's place) drawn by the game into each eye, at their place in the world. | Live. `0`: they go on the HUD panel. | Safe |
