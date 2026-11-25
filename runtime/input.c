@@ -675,9 +675,14 @@ static void start(void) {
     // so the hint can stay on for the whole run. A game Steam started is the exception (input_pad_background_pick):
     // Steam's overlay and menus take the focus while they are open, and the presses meant for them reached the game
     // too (#1462). Steam sets SteamGameId for its own games and for non-Steam shortcuts, SteamOverlayGameId with the
-    // overlay. TOTK_PAD_BACKGROUND = 1 or 0 decides it either way.
+    // overlay. TOTK_PAD_BACKGROUND = 1 or 0 decides it either way. On Windows the game window is not SDL's, so SDL never
+    // drops events for focus there and the Steam check is left out: the hint stays as it was.
+#ifdef _WIN32
+    int under_steam = 0;
+#else
     const char *gid = getenv("SteamGameId"), *ogid = getenv("SteamOverlayGameId");
     int under_steam = (gid && *gid) || (ogid && *ogid);
+#endif
     const char *bg = cfg_value("TOTK_PAD_BACKGROUND");
     if (input_pad_background_pick(bg, under_steam)) SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     else
