@@ -1,8 +1,9 @@
 // The software keyboard's front end for SDL windows (swkbd.h): a text window of its own, opened on the window thread
 // (gfx_window_sdl_run) and fed by that thread's events. The keyboard types, Backspace deletes, Enter is OK and Escape
 // cancels. The controller moves a letter grid: D-pad moves the cursor, the bottom button adds the letter, the right
-// button deletes, Start is OK and the top button cancels. The guest thread waits for the answer. Without a game window
-// it takes the starting text at once.
+// button deletes, the left shoulder switches upper and lower case, Start is OK and the top button cancels. The hints
+// name the buttons as the connected controller labels them. The guest thread waits for the answer. Without a game
+// window it takes the starting text at once.
 #include <stdio.h>
 #include <string.h>
 
@@ -24,8 +25,10 @@ typedef struct {
     uint16_t text[KB_LIMIT + 1];
     size_t n;
     int sel;                     // the grid cell the controller's cursor is on
+    int lower;                   // the grid shows and types lower case letters
     int result;                  // 1 OK, -1 Cancel, 0 still open
     int open;
+    SDL_Gamepad *pad;            // the controller, for its button labels; NULL when none is connected
     SDL_Window *win;
     SDL_Renderer *ren;
     Uint32 id;
@@ -34,8 +37,26 @@ typedef struct {
 
 static Box *g_box;               // one text entry at a time (swkbd.c holds the lock)
 
+static char grid_char(const Box *b, int i) {
+    char c = grid_chars[i];
+    return b->lower && c >= 'A' && c <= 'Z' ? (char)(c + ('a' - 'A')) : c;
+}
+
+// The label the connected controller prints on a face button; the common layout's when none is known.
+static const char *face_label(const Box *b, SDL_GamepadButton button, const char *fallback) {
+    if (!b->pad) return fallback;
+    switch (SDL_GetGamepadButtonLabel(b->pad, button)) {
+    case SDL_GAMEPAD_BUTTON_LABEL_A: return "A";
+    case SDL_GAMEPAD_BUTTON_LABEL_B: return "B";
+    case SDL_GAMEPAD_BUTTON_LABEL_X: return "X";
+    case SDL_GAMEPAD_BUTTON_LABEL_Y: return "Y";
+    default: return fallback;
+    }
+}
+
 static void draw(const Box *b) {
     char prompt[0x101 * 3 + 1], text[KB_LIMIT * 3 + 2], line[KB_LIMIT * 3 + 2];
+    char pad1[64], pad2[64];
     size_t pl = 0;
     while (pl < 0x100 && b->req->prompt[pl]) pl++;
     if (pl) swkbd_utf16_to_utf8(b->req->prompt, pl, prompt, sizeof prompt);
@@ -49,6 +70,9 @@ static void draw(const Box *b) {
         swkbd_utf16_to_utf8(b->text, b->n, text, sizeof text);
     }
     snprintf(line, sizeof line, "%s_", text);
+    snprintf(pad1, sizeof pad1, "Pad: D-pad move  %s add  %s delete", face_label(b, SDL_GAMEPAD_BUTTON_SOUTH, "A"),
+             face_label(b, SDL_GAMEPAD_BUTTON_EAST, "B"));
+    snprintf(pad2, sizeof pad2, "LB upper/lower  Start OK  %s cancel", face_label(b, SDL_GAMEPAD_BUTTON_NORTH, "Y"));
     SDL_SetRenderDrawColor(b->ren, 24, 24, 32, 255);
     SDL_RenderClear(b->ren);
     SDL_SetRenderScale(b->ren, 4.0f, 4.0f);
@@ -57,7 +81,7 @@ static void draw(const Box *b) {
     SDL_RenderDebugText(b->ren, 4, 20, line);
     for (int i = 0; i < GRID_N; i++) {
         float x = 4.0f + (float)(i % GRID_COLS) * 14.0f, y = 40.0f + (float)(i / GRID_COLS) * 18.0f;
-        char c[2] = {grid_chars[i], 0};
+        char c[2] = {grid_char(b, i), 0};
         if (i == b->sel) {
             SDL_FRect cell = {x - 2.0f, y - 2.0f, 12.0f, 12.0f};
             SDL_SetRenderDrawColor(b->ren, 200, 160, 40, 255);
@@ -69,8 +93,8 @@ static void draw(const Box *b) {
     }
     // the debug font draws ASCII: the hints are the catalog's English text whatever the game's language
     SDL_RenderDebugText(b->ren, 4, 116, ui_text_in("en", UI_SWKBD_SDL_KEYS_HINT));
-    SDL_RenderDebugText(b->ren, 4, 130, ui_text_in("en", UI_SWKBD_SDL_PAD_HINT1));
-    SDL_RenderDebugText(b->ren, 4, 144, ui_text_in("en", UI_SWKBD_SDL_PAD_HINT2));
+    SDL_RenderDebugText(b->ren, 4, 130, pad1);
+    SDL_RenderDebugText(b->ren, 4, 144, pad2);
     SDL_RenderPresent(b->ren);
 }
 
@@ -93,6 +117,13 @@ static void open_box(void *arg) {
     b->id = SDL_GetWindowID(b->win);
     b->open = 1;
     g_box = b;
+    int count = 0;
+    SDL_JoystickID *ids = SDL_GetGamepads(&count);
+    if (ids && count) {
+        b->pad = SDL_GetGamepadFromID(ids[0]);
+        if (!b->pad) b->pad = SDL_OpenGamepad(ids[0]);
+    }
+    SDL_free(ids);
     SDL_StartTextInput(b->win);
     SDL_RaiseWindow(b->win);
     draw(b);
@@ -151,12 +182,15 @@ static void pad_button(Box *b, Uint8 button) {
         if (b->sel + GRID_COLS < GRID_N) b->sel += GRID_COLS;
         break;
     case SDL_GAMEPAD_BUTTON_SOUTH: {
-        uint16_t one = (uint16_t)grid_chars[b->sel];
+        uint16_t one = (uint16_t)grid_char(b, b->sel);
         add_text(b, &one, 1);
         break;
     }
     case SDL_GAMEPAD_BUTTON_EAST:
         delete_last(b);
+        break;
+    case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER:
+        b->lower = !b->lower;
         break;
     case SDL_GAMEPAD_BUTTON_START:
         if ((int)b->n >= b->req->min_len) b->result = 1;
@@ -174,6 +208,8 @@ int swkbd_sdl_event(const SDL_Event *e) {
     Box *b = g_box;
     if (!b) return 0;
     if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+        SDL_Gamepad *pad = SDL_GetGamepadFromID(e->gbutton.which);
+        if (pad) b->pad = pad;
         pad_button(b, e->gbutton.button);
         if (b->result) close_box(b);
         else draw(b);
