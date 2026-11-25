@@ -394,6 +394,8 @@ static int core_allowed(const RtThread *t, int c) { return (int)((t->mask >> c) 
 // indirect call, instead of running on until one or until a waiter interrupts it.
 static uint64_t g_ap_first_ns = AP_FIRST_NS;
 static int g_host_cp;
+static uint64_t g_hcp_taken;   // cores given up at a host call or SVC return (atomic)
+static int checkpoint(void);
 static int g_ap = -1, g_ap_int;   // g_ap_int: interrupt owners (TOTK_ASYNC_PREEMPT=2: inheritance and disable only)
 static int g_ap_log;              // redirects logged so far (AP_LOG_N)
 #define AP_LOG_N 40
@@ -749,7 +751,7 @@ int kern_core_diag_on(void) { return g_diag > 0; }
 void kern_host_left(void *thread) {
     RtThread *t = thread;
     if (g_diag > 0 && t->dg_kick && t->dg_host_kick && !t->dg_host_end) t->dg_host_end = kern_now_ns();
-    if (g_host_cp && g_ap > 0 && t == tcur) kern_checkpoint();
+    if (g_host_cp && g_ap > 0 && t == tcur && checkpoint()) __atomic_add_fetch(&g_hcp_taken, 1, __ATOMIC_RELAXED);
 }
 
 static int dg_in_host(const RtThread *o) { return __atomic_load_n(&o->host_depth, __ATOMIC_RELAXED) > 0; }
@@ -850,10 +852,10 @@ void kern_core_diag_frame(uint64_t frame, uint64_t interval_ns) {
         unlock();
         rt_log("kernel: frame %llu: asynchronous preemption: %llu interrupted, %llu cores given up there; refused: "
                "%llu in a host call, %llu outside game code, %llu preemption disabled, %llu failed; %llu waits ended "
-               "in the first spin; SVC 0x36 %llu",
+               "in the first spin; SVC 0x36 %llu; cores given up at host call returns %llu",
                (unsigned long long)frame, (unsigned long long)v[0], (unsigned long long)v[1], (unsigned long long)v[2],
                (unsigned long long)v[3], (unsigned long long)v[4], (unsigned long long)v[5], (unsigned long long)v[6],
-               (unsigned long long)v[7]);
+               (unsigned long long)v[7], (unsigned long long)__atomic_load_n(&g_hcp_taken, __ATOMIC_RELAXED));
     }
     if (g_diag <= 0) return;
     DgWindow w;
@@ -1155,9 +1157,10 @@ void rt_spin_gate(Cpu *c, uint64_t head) {
 
 // A pending preempt request, at an SVC or an indirect call. The core goes over only if a better thread still waits
 // for it, so core_put grants it to a waiter better than t; a stale request (that waiter got another core) is dropped.
-void kern_checkpoint(void) {
+// checkpoint: 1 if the core was given up (holding G inside).
+static int checkpoint(void) {
     RtThread *t = tcur;
-    if (!t || !__atomic_load_n(&t->preempt, __ATOMIC_RELAXED)) return;
+    if (!t || !__atomic_load_n(&t->preempt, __ATOMIC_RELAXED)) return 0;
     lock();
     if (g_diag > 0 && t->cur) {
         t->dg_pc = t->cur->pc;
@@ -1179,7 +1182,10 @@ void kern_checkpoint(void) {
         g_pre_stale++;
     }
     unlock();
+    return better;
 }
+
+void kern_checkpoint(void) { checkpoint(); }
 
 // kern_ap_stub, on the interrupted owner: where to jump back to, then the core given up as at a checkpoint.
 uint64_t kern_ap_rip(void) { return tcur->ap_rip; }
