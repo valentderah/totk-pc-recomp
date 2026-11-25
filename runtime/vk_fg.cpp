@@ -103,7 +103,7 @@ static struct {
     unsigned toggle;
     uint64_t frame_id, last_prep_ns, made;
     // settings read at start (vk_fg_init)
-    int workers, sync_ahead, hdr, test, debug, times;
+    int workers, hdr, test, debug, times;
     uint64_t shot_at;               // TOTK_FG_SHOT: the first present shot, or (shot_w) the first after that world time
     int64_t shot_w;
     char shot_dir[260];
@@ -295,7 +295,6 @@ static void start(void) {
     }
     g.win_fmt = VK_FORMAT_R8G8B8A8_UNORM;
     g.workers = cfg_int("TOTK_REPLAY_WORKERS");
-    g.sync_ahead = cfg_bool("TOTK_SYNC_AHEAD") && strcmp(cfg_value("TOTK_SYNC_AHEAD"), "check") != 0;   // check: exact
     g.hdr = vk_hdr_wanted();
     g.test = knob_int("TOTK_FG_TEST");
     g.debug = knob_int("TOTK_FG_DEBUG");
@@ -329,14 +328,16 @@ extern "C" int vk_fg_wanted(int dlss) {
     if (vk_fg_engine() != VK_FG_FSR3) return 0;
     if (!started) start();   // turned on in the menu: the contexts now; the first prepare makes them for the scene
     if (!g.live || g.failed) return 0;
-    // the inputs are this frame's, recorded in replay order: one frame in flight more or chunks recording side by
-    // side are not handled yet
-    int why = dlss ? 1 : g.workers > 0 ? 2 : g.sync_ahead ? 3 : g.hdr ? 4 : 0;
+    // the inputs are this frame's, recorded in replay order: chunks recording side by side are not handled yet.
+    // sync_ahead only moves the game's frame wait; the replay and the presents keep their order, and the replay's
+    // next submission waits until the present thread submitted the blit (vk_backend.c submit_sync, vk_present_drain),
+    // so out[] and hl[] alternate safely with it on.
+    int why = dlss ? 1 : g.workers > 0 ? 2 : g.hdr ? 3 : 0;
     if (why) {
         if (!(g.said & 1u << why)) {
             g.said |= 1u << why;
             static const char *const r[] = {"", "DLSS runs (dlaa = 1)", "the replay records in chunks (replay_workers > 0)",
-                                            "sync_ahead = 1", "HDR output (hdr = 1)"};
+                                            "HDR output (hdr = 1)"};
             rt_log("fg: frame generation off while %s", r[why]);
         }
         return 0;
