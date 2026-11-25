@@ -13,10 +13,11 @@ The built-in table is [recomp/patches-v110.txt](../recomp/patches-v110.txt). The
 | pooloff | 2 | Widen texture-pool offsets unsigned, covering 2..4 GiB without changing offsets below 2 GiB. Enabled by default; `TOTK_POOL_OFFSET_PATCH=0` retains the original path. |
 | shadow | 1 | The sun shadow map takes its fixed size from page +92 before rounding. The shadow-resolution setting enables it; `shadow_res=game` leaves the game's sizing. |
 | cascade | 4 | Read the four sun shadow cascade defaults from page +64..76. Shadow range 100 leaves the original constructor. |
+| steady | 1 | Skip the load-dependent quality reduction list walk in the graphics settings setup (`main+0xcad2bc`, site `main+0xcad324`), controlled by `TOTK_LOD_STEADY`. |
 | climb | 1 | Climbing speed above 60 fps: the 1.2.1 climb factor in the 1.1.0 climb controller. Follows `TOTK_CLIMB_FIX` and needs the real-time step. |
 | gears | 2 | The gear rotation check scales its one-frame threshold by the update's frame delta, so shrine gears read as turning above 30 fps. Follows `TOTK_HIGHFPS_FIX`. |
 
-The table has 16 sets and 54 instruction sites in total. Its 889 spin back-edges are unchanged. The sets use the existing runtime page and settings; no new setting, allocator or renderer path is introduced.
+The table has 16 sets and 55 instruction sites in total. Its 889 spin back-edges are unchanged. The sets use the existing runtime page and settings; no new setting, allocator or renderer path is introduced.
 
 The camera sites were cross-checked by normalized instruction-window matching from the local 1.0.0 main. The viewport routine has two matching copies: both are patched. Other sites were checked through their data flow: the equipment timer and its gate, the map clock, the ability clock, the NVN texture storage/package calls, the shadow size publication and the cascade parameter constructor. FOV's s8 is overwritten by the next original instruction; x10 is saved. The cursor sites use the same scratch registers as their 1.2.1 counterparts.
 

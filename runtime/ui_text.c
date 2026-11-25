@@ -114,7 +114,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_ANISO_DESC] = "Anisotropic filtering of surface textures: ground, roads and walls seen at a shallow angle stay sharp into the distance instead of blurring. Game: the level the game asks for, as on the Switch.",
     [UI_MENU_ANISO_GAME] = "Game",
     [UI_MENU_LOD_STEADY] = "Steady detail under load",
-    [UI_MENU_LOD_STEADY_DESC] = "Skips the game's setup for lowering model and texture detail when the frame rate drops, as the emulator mod Disable LOD Quality Reduction does. Game versions 1.2.1 and 1.4.3. Leave it off on weak PCs: there this drop keeps the frame rate up.",
+    [UI_MENU_LOD_STEADY_DESC] = "Skips the game's setup for lowering model and texture detail when the frame rate drops, as the emulator mod Disable LOD Quality Reduction does. Game versions 1.1.0, 1.2.1 and 1.4.3. Leave it off on weak PCs: there this drop keeps the frame rate up.",
     [UI_MENU_SHARPNESS] = "FSR sharpness",
     [UI_MENU_SHARPNESS_DESC] = "Sharpening after FSR scaling; 0 turns it off.",
     [UI_MENU_COLOR] = "Colour",
@@ -794,7 +794,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_ANISO_DESC] = "Анизотропная фильтрация текстур поверхностей: земля, дороги и стены под острым углом остаются чёткими вдали, а не размываются. Игра: уровень, который запрашивает игра, как на Switch.",
     [UI_MENU_ANISO_GAME] = "Игра",
     [UI_MENU_LOD_STEADY] = "Стабильная детализация под нагрузкой",
-    [UI_MENU_LOD_STEADY_DESC] = "Пропускает настройку игры, снижающую детализацию моделей и текстур при падении частоты кадров, как эмуляторный мод Disable LOD Quality Reduction. Только для версий игры 1.2.1 и 1.4.3. На слабых ПК не включайте: там это снижение и держит частоту кадров.",
+    [UI_MENU_LOD_STEADY_DESC] = "Пропускает настройку игры, снижающую детализацию моделей и текстур при падении частоты кадров, как эмуляторный мод Disable LOD Quality Reduction. Только для версий игры 1.1.0, 1.2.1 и 1.4.3. На слабых ПК не включайте: там это снижение и держит частоту кадров.",
     [UI_MENU_SHARPNESS] = "Резкость FSR",
     [UI_MENU_SHARPNESS_DESC] = "Повышение резкости после масштабирования FSR; 0 выключает его.",
     [UI_MENU_COLOR] = "Цвет",
@@ -1833,7 +1833,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_LOD_STEADY] = "Detalhe estável sob carga",
     [UI_MENU_LOD_STEADY_DESC] = "Pula a configuração do jogo que reduz o detalhe de modelos e texturas quando a taxa "
                                 "de quadros cai, como faz o mod de emulador Disable LOD Quality Reduction. Só nas "
-                                "versões 1.2.1 e 1.4.3 do jogo. Deixe desligado em PCs fracos: lá essa redução mantém a taxa de quadros.",
+                                "versões 1.1.0, 1.2.1 e 1.4.3 do jogo. Deixe desligado em PCs fracos: lá essa redução mantém a taxa de quadros.",
     [UI_MENU_COLOR] = "Cor",
     [UI_MENU_COLOR_PRESET] = "Perfil de cor",
     [UI_MENU_COLOR_PRESET_DESC] = "Define os quatro valores abaixo. Vívido: mais contraste e saturação, sombras um "
@@ -2680,7 +2680,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_ANISO_GAME] = "游戏",
     [UI_MENU_LOD_STEADY] = "负载下保持细节",
     [UI_MENU_LOD_STEADY_DESC] = "跳过游戏在帧率下降时降低模型和纹理细节的设置，与模拟器模组 Disable LOD Quality "
-                                "Reduction 的作用相同。仅适用于游戏版本 1.2.1 和 1.4.3。低配电脑请勿开启：在那里正是这种降低维持了帧率。",
+                                "Reduction 的作用相同。仅适用于游戏版本 1.1.0、1.2.1 和 1.4.3。低配电脑请勿开启：在那里正是这种降低维持了帧率。",
     [UI_MENU_HDR_GROUP] = "HDR",
     [UI_MENU_HDR] = "HDR 输出",
     [UI_MENU_HDR_DESC] = "在 HDR 显示器上呈现明亮的高光。需要在 Windows 中开启 HDR（“使用 HDR”），或使用带色彩管理的 Wayland 合成器；否则画面保持 "
@@ -3002,7 +3002,7 @@ static const char *const text_de[UI_TEXT_COUNT] = {
     [UI_MENU_LOD_STEADY] = "Konstante Details unter Last",
     [UI_MENU_LOD_STEADY_DESC] = "Überspringt die Vorkehrung des Spiels, Modell- und Texturdetails zu senken, wenn die "
                                 "Bildrate fällt, wie es der Emulator-Mod Disable LOD Quality Reduction tut. "
-                                "Spielversionen 1.2.1 und 1.4.3. Auf schwachen PCs ausgeschaltet lassen: Dort hält "
+                                "Spielversionen 1.1.0, 1.2.1 und 1.4.3. Auf schwachen PCs ausgeschaltet lassen: Dort hält "
                                 "diese Absenkung die Bildrate oben.",
     [UI_MENU_SHARPNESS] = "FSR-Schärfe",
     [UI_MENU_SHARPNESS_DESC] = "Nachschärfen nach der FSR-Skalierung; 0 schaltet es aus.",
@@ -3913,7 +3913,7 @@ static const char *const text_fr[UI_TEXT_COUNT] = {
     [UI_MENU_LOD_STEADY] = "Détails stables sous charge",
     [UI_MENU_LOD_STEADY_DESC] = "Ignore le mécanisme du jeu qui réduit les détails des modèles et des textures quand "
                                 "la fréquence d'images baisse, comme le fait le mod d'émulateur Disable LOD Quality "
-                                "Reduction. Versions 1.2.1 et 1.4.3 du jeu. Laissez-le désactivé sur les PC peu "
+                                "Reduction. Versions 1.1.0, 1.2.1 et 1.4.3 du jeu. Laissez-le désactivé sur les PC peu "
                                 "puissants : cette baisse y maintient la fréquence d'images.",
     [UI_MENU_SHARPNESS] = "Netteté FSR",
     [UI_MENU_SHARPNESS_DESC] = "Accentuation après la mise à l'échelle FSR ; 0 la désactive.",
@@ -4845,7 +4845,7 @@ static const char *const text_es[UI_TEXT_COUNT] = {
     [UI_MENU_LOD_STEADY] = "Detalle estable con carga",
     [UI_MENU_LOD_STEADY_DESC] = "Omite el ajuste del juego que reduce el detalle de modelos y texturas cuando bajan "
                                 "los fotogramas por segundo, como hace el mod de emulador Disable LOD Quality "
-                                "Reduction. Versiones 1.2.1 y 1.4.3 del juego. Déjalo desactivado en PC poco "
+                                "Reduction. Versiones 1.1.0, 1.2.1 y 1.4.3 del juego. Déjalo desactivado en PC poco "
                                 "potentes: ahí esa reducción mantiene los fotogramas por segundo.",
     [UI_MENU_SHARPNESS] = "Nitidez de FSR",
     [UI_MENU_SHARPNESS_DESC] = "Enfoque tras el escalado FSR; 0 lo desactiva.",
@@ -5761,7 +5761,7 @@ static const char *const text_it[UI_TEXT_COUNT] = {
     [UI_MENU_LOD_STEADY] = "Dettaglio stabile sotto carico",
     [UI_MENU_LOD_STEADY_DESC] = "Salta l'impostazione del gioco che riduce il dettaglio di modelli e texture quando i "
                                 "fotogrammi al secondo calano, come fa la mod per emulatore Disable LOD Quality "
-                                "Reduction. Versioni del gioco 1.2.1 e 1.4.3. Lasciala disattivata sui PC poco "
+                                "Reduction. Versioni del gioco 1.1.0, 1.2.1 e 1.4.3. Lasciala disattivata sui PC poco "
                                 "potenti: lì questa riduzione mantiene alti i fotogrammi al secondo.",
     [UI_MENU_SHARPNESS] = "Nitidezza FSR",
     [UI_MENU_SHARPNESS_DESC] = "Nitidezza dopo il ridimensionamento FSR; 0 la disattiva.",
@@ -6680,7 +6680,7 @@ static const char *const text_nl[UI_TEXT_COUNT] = {
     [UI_MENU_LOD_STEADY] = "Stabiel detail bij belasting",
     [UI_MENU_LOD_STEADY_DESC] = "Slaat de regeling van het spel over die model- en textuurdetail verlaagt als de "
                                 "beeldsnelheid daalt, zoals de emulatormod Disable LOD Quality Reduction doet. "
-                                "Spelversies 1.2.1 en 1.4.3. Laat het uit op zwakke pc's: daar houdt deze verlaging "
+                                "Spelversies 1.1.0, 1.2.1 en 1.4.3. Laat het uit op zwakke pc's: daar houdt deze verlaging "
                                 "de beeldsnelheid op peil.",
     [UI_MENU_SHARPNESS] = "FSR-scherpte",
     [UI_MENU_SHARPNESS_DESC] = "Verscherpen na FSR-schaling; 0 zet het uit.",
@@ -7563,7 +7563,7 @@ static const char *const text_ja[UI_TEXT_COUNT] = {
     [UI_MENU_ANISO_GAME] = "ゲーム",
     [UI_MENU_LOD_STEADY] = "負荷時も詳細度を維持",
     [UI_MENU_LOD_STEADY_DESC] = "フレームレートが下がったときにモデルとテクスチャの詳細度を下げるゲームの仕組みを飛ばします。エミュレーター用 Mod の Disable LOD Quality "
-                                "Reduction と同じ動作です。ゲームのバージョン 1.2.1 と 1.4.3。性能の低い PC ではオフのままにしてください: "
+                                "Reduction と同じ動作です。ゲームのバージョン 1.1.0、1.2.1、1.4.3。性能の低い PC ではオフのままにしてください: "
                                 "そこではこの低下がフレームレートを保っています。",
     [UI_MENU_SHARPNESS] = "FSR シャープネス",
     [UI_MENU_SHARPNESS_DESC] = "FSR で拡大した後のシャープ化です。0 でオフになります。",
@@ -8320,7 +8320,7 @@ static const char *const text_ko[UI_TEXT_COUNT] = {
     [UI_MENU_ANISO_GAME] = "게임",
     [UI_MENU_LOD_STEADY] = "부하 시에도 세부 유지",
     [UI_MENU_LOD_STEADY_DESC] = "프레임 속도가 떨어질 때 모델과 텍스처의 세부를 낮추는 게임 설정을 건너뜁니다. 에뮬레이터 모드 Disable LOD Quality Reduction과 "
-                                "같은 효과입니다. 게임 버전 1.2.1과 1.4.3 전용입니다. 성능이 낮은 PC에서는 끄세요. 그런 PC에서는 이 저하가 프레임 속도를 유지해 줍니다.",
+                                "같은 효과입니다. 게임 버전 1.1.0, 1.2.1, 1.4.3 전용입니다. 성능이 낮은 PC에서는 끄세요. 그런 PC에서는 이 저하가 프레임 속도를 유지해 줍니다.",
     [UI_MENU_SHARPNESS] = "FSR 선명도",
     [UI_MENU_SHARPNESS_DESC] = "FSR로 확대한 뒤의 선명화입니다. 0이면 꺼집니다.",
     [UI_MENU_COLOR] = "색상",
@@ -9062,7 +9062,7 @@ static const char *const text_vi[UI_TEXT_COUNT] = {
     [UI_MENU_ANISO_DESC] = "Lọc dị hướng cho họa tiết bề mặt: nền đất, đường và tường nhìn ở góc thấp vẫn sắc nét ở xa thay vì bị nhòe. Theo game: mức game yêu cầu, như trên Switch.",
     [UI_MENU_ANISO_GAME] = "Theo game",
     [UI_MENU_LOD_STEADY] = "Giữ chi tiết ổn định khi tải nặng",
-    [UI_MENU_LOD_STEADY_DESC] = "Bỏ qua cơ chế của game hạ chi tiết mô hình và họa tiết khi tốc độ khung hình tụt, giống mod giả lập Disable LOD Quality Reduction. Game phiên bản 1.2.1 và 1.4.3. Nên tắt trên PC yếu: ở đó việc hạ này giữ tốc độ khung hình.",
+    [UI_MENU_LOD_STEADY_DESC] = "Bỏ qua cơ chế của game hạ chi tiết mô hình và họa tiết khi tốc độ khung hình tụt, giống mod giả lập Disable LOD Quality Reduction. Game phiên bản 1.1.0, 1.2.1 và 1.4.3. Nên tắt trên PC yếu: ở đó việc hạ này giữ tốc độ khung hình.",
     [UI_MENU_SHARPNESS] = "Độ sắc nét FSR",
     [UI_MENU_SHARPNESS_DESC] = "Làm nét sau khi FSR phóng to; 0 là tắt.",
     [UI_MENU_COLOR] = "Màu sắc",
