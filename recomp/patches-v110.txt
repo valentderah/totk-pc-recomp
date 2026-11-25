@@ -118,6 +118,12 @@ site cascade main 1157fb8 52a83408 @page:x8 b9404108
 site cascade main 1158040 52a84408 @page:x8 b9404508
 site cascade main 11580c8 52a85408 @page:x8 b9404908
 site cascade main 115814c 52a86408 @page:x8 b9404d08
+# In the field the shadow controller sets bit 1 of the scene's depth shadow flags (main+0xca98f8), so the per-view
+# update (main+0xa89f50) skips its copy of those parameters and the controller writes the cascade boundaries each
+# frame in main+0xd071d4: d[0] at main+0xd0768c, d[1..n-1] at main+0xd076f4 and d[n] at main+0xd0774c
+# (d = [cascade set + 0x308]). Multiply d[1..n] by page +64 / 20.0; x3, s16 and s17 are dead at both sites.
+site cascade main d076f4 bd000446 @page:x3 bd404070 1e269011 1e311a10 1e3008d0 bd000450   # str s6, [x2, #4] -> scale by page+64 / 20.0
+site cascade main d0774c bc29d945 @page:x3 bd404070 1e269011 1e311a10 1e3008b0 bc29d950   # str s5, [x10, w9, sxtw #2] -> scale by page+64 / 20.0
 
 # High-frame-rate climbing (#35, #276, #1001): r is in s9 in the local 1.1.0 controller at main+0x1927948.
 # The shipping formula multiplies by -0.181, doubles with fadd, then adds 1.272; keep its rounding and [0.5, 1.5] clamp.
