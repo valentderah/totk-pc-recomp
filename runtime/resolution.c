@@ -44,6 +44,8 @@
 #include "ov.h"
 #include "platform/platform.h"
 
+static void vert_plus_init(double ratio_over_16x9);
+
 #define BASE_W 1920
 #define BASE_H 1080
 #define SCENE_W 1600
@@ -643,6 +645,7 @@ void res_init(void) {
             memcpy(page + 56, &r, sizeof r);
             rt_patch_switch(aspect, 1);
             rt_log("resolution: camera aspect ratio %.4f (16:9 is %.4f)", ratio, game);
+            if (ratio < game) vert_plus_init(ratio / game);
         }
     } else {
         rt_patch_switch(aspect, 0);   // the page holds no ratio
@@ -673,25 +676,47 @@ int res_wants_wide_overlay(const unsigned out[2]) {
 
 // Field of view (TOTK_FOV, percent of the game's own, 70..140, live): the camera's vertical view angle times the factor
 // on page +60 (recomp/patches-v110.txt, patches-v121.txt and patches-v143.txt, set fov). The horizontal angle follows
-// through the aspect ratio. 100 switches the set off, so the camera code is the game's own. Runs on a settings change
-// (gfx_present.c window_settings_live), the first time at the first present.
+// through the aspect ratio. A factor of 1 switches the set off, so the camera code is the game's own. Runs on a settings
+// change (gfx_present.c window_settings_live), the first time at the first present.
+//
+// Vert+ (TOTK_VERT_PLUS, on by default): the camera keeps the game's vertical view angle at every shape, so a shape
+// narrower than 16:9 (16:10, 3:2, 4:3) showed less of the world at the sides than 16:9 does. The factor is then also
+// multiplied by the one that gives the game's default view the horizontal angle it has at 16:9: tan(v'/2) = tan(v/2)
+// * (16/9) / aspect, so v' / v = 2 atan(tan(v/2) k) / v with k = 16:9 over the aspect. v is the game's default
+// vertical angle, 51.2 degrees, measured on 1.4.3 at Lookout Landing: a 4:3 frame at TOTK_FOV=130 is a 16:9 frame of
+// the same moment scaled by 0.730 about its middle (tan(v/2) / tan(1.3 v/2) = 0.730 gives v = 51.2). The patch scales
+// the angle linearly, so a zoomed view (the bow, the scope) gets the same factor, a few percent short of the exact one.
 #define FOV_MIN 70
 #define FOV_MAX 140
+#define VERT_PLUS_V (51.2 * 3.14159265358979 / 180)
+static float vert_plus_k = 1;   // set by res_init (vert_plus_init) for a camera narrower than 16:9
+
+static void vert_plus_init(double ratio_over_16x9) {
+    double k = 1 / ratio_over_16x9, v = VERT_PLUS_V;
+    vert_plus_k = (float)(2 * atan(tan(v / 2) * k) / v);
+}
+
 void res_fov_live(void) {
-    static int set = -2, shown = 100;
+    static int set = -2, shown = 100, shown_vp = -1;
     if (set == -2) set = rt_patch_set("fov");
     int pct = cfg_int("TOTK_FOV");
     pct = pct < FOV_MIN ? FOV_MIN : pct > FOV_MAX ? FOV_MAX : pct;
-    if (pct == shown) return;
-    shown = pct;
+    int vp = vert_plus_k != 1 && cfg_bool("TOTK_VERT_PLUS");
+    if (pct == shown && vp == shown_vp) return;
+    shown = pct, shown_vp = vp;
     if (set < 0) {
-        rt_log("resolution: this game version has no field-of-view patch; TOTK_FOV=%d does nothing", pct);
+        if (pct != 100 || vp)
+            rt_log("resolution: this game version has no field-of-view patch; TOTK_FOV=%d and Vert+ do nothing", pct);
         return;
     }
-    float k = pct / 100.0f;
+    float k = pct / 100.0f * (vp ? vert_plus_k : 1);
     memcpy((uint8_t *)rt_patch_page() + 60, &k, sizeof k);   // before the switch: a site that sees it on reads k
-    rt_patch_switch(set, pct != 100);
-    rt_log("resolution: field of view %d%% of the game's", pct);
+    rt_patch_switch(set, k != 1);
+    if (vp)
+        rt_log("resolution: field of view %d%% of the game's, times %.4f for Vert+ (the 16:9 width at this narrower "
+               "shape)", pct, vert_plus_k);
+    else
+        rt_log("resolution: field of view %d%% of the game's", pct);
 }
 
 // TOTK_DYNAMIC_RES = 0 holds the game's dynamic resolution at 100 % (patches-v110.txt, patches-v121.txt and patches-v143.txt,
