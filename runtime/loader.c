@@ -397,7 +397,13 @@ static Res resolve(Mod *m, uint32_t si, int jump) {
     uint64_t guest = sym_defined(m, si) ? m->pub.base + m->syms[si].value : find_symbol(name, NULL);
     GuestFn f;
     Res r;
-    if (jump && m->pub.plugin && ldr_plugin_import) {   // the plugin service run counts the plugin's calls by name
+    // A plugin's calls out of its own code are counted by name (plugin_init.c plugin_import), so the plugin check can
+    // judge what its init reached. A JUMP_SLOT whose symbol the plugin defines itself is no call out: a plugin built
+    // with default visibility calls its own exported functions through its PLT, such as the std::vector<const char*>
+    // constructor of Challenge Mode's Enemy Health Regeneration (exefs subsdk8), and it binds to that definition as
+    // any other own symbol. A host override of the name still wins and stays counted.
+    int own_code = sym_defined(m, si) && !hostfn_override(name);
+    if (jump && m->pub.plugin && ldr_plugin_import && !own_code) {
         uint64_t to = (f = hostfn_override(name)) ? hostfn_register(name, f) : guest;
         if (!to) to = hostfn_register(name, unresolved_stub);
         r = (Res){hostfn_register_observer(name, ldr_plugin_import, to), RES_OBSERVER};

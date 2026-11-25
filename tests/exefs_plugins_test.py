@@ -452,6 +452,26 @@ class Reach(unittest.TestCase):
         svcs, imports, _, _, _ = xp.reach(img, self.BASE, 0x200, [self.BASE], {self.BASE + 0x80: 'malloc'})
         self.assertEqual((svcs, imports), (set(), {'malloc': 1}))
 
+    def test_own_function_through_plt_is_followed(self):
+        # bl plt; ret.  The PLT stub at 0x80 binds to the plugin's own function at 0x100: svc 0x40; ret
+        img = bytearray(code([b(self.BASE, self.BASE + 0x80, True), RET_W]))
+        struct.pack_into('<II', img, 0x100, SVC_40, RET_W)
+        svcs, imports, _, _, _ = xp.reach(bytes(img), self.BASE, 0x200, [self.BASE],
+                                          {self.BASE + 0x80: self.BASE + 0x100})
+        self.assertEqual((svcs, imports), ({0x40}, {}))
+
+    def test_plt_slot_of_own_symbol_maps_to_its_code(self):
+        # Two PLT stubs (adrp x16, page 0; ldr x17, [x16, #slot]; add x16, x16, #slot; br x17) over GOT slots 0x180
+        # and 0x188: the first binds an import, the second a symbol the plugin defines at +0x40.
+        def stub(slot):
+            return [0x90000010, 0xF9400211 | (slot // 8) << 10, 0x91000210 | slot << 10, 0xD61F0220]
+        img = code(stub(0x180) + stub(0x188))
+        nso = mock.Mock(relocs=[(0x180, xp.R_AARCH64_JUMP_SLOT, 1, 0), (0x188, xp.R_AARCH64_JUMP_SLOT, 2, 0)],
+                        syms=[('', 0, 0, 0, 0), ('malloc', 0x12, 0, 0, 0),
+                              ('_ZNSt6vectorIPKcSaIS1_EEC1ESt16initializer_listIS1_ERKS2_', 0x22, 7, 0x40, 8)])
+        self.assertEqual(xp.plt_imports(nso, img, self.BASE, 0x200),
+                         {self.BASE: 'malloc', self.BASE + 0x10: self.BASE + 0x40})
+
     def test_stub_returns_at_its_trampoline_branch(self):
         # stur; bl impl; ldur; b trampoline (where an svc sits): the b is the stub's return
         stub = [xp.STUR_X30, b(self.BASE + 4, self.BASE + 0x40, True), xp.LDUR_X30, b(self.BASE + 12, self.BASE + 0x100)]

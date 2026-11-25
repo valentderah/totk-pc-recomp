@@ -457,8 +457,15 @@ def check_record(rec, impls, game=frozenset()):
 # ---- the code the hooks reach
 def plt_imports(nso, img, base, text_end):
     """{absolute address of a PLT stub: the import its GOT slot binds} (adrp x16; ldr x17, [x16, #slot]; add x16, x16,
-    #slot; br x17), from the JUMP_SLOT relocations."""
-    slots = {off: nso.syms[sym][0] for off, typ, sym, _ in nso.relocs if typ == R_AARCH64_JUMP_SLOT}
+    #slot; br x17), from the JUMP_SLOT relocations. A slot whose symbol the plugin defines itself binds to that
+    definition (runtime/loader.c resolve), so its stub maps to the absolute address of the plugin's own code instead of
+    a name: a plugin built with default visibility calls its own exported functions through its PLT (the
+    std::vector<const char*> constructor of Challenge Mode's Enemy Health Regeneration)."""
+    slots = {}
+    for off, typ, sym, _ in nso.relocs:
+        if typ == R_AARCH64_JUMP_SLOT:
+            name, _, shndx, value, _ = nso.syms[sym]
+            slots[off] = base + value if shndx else name
     out = {}
     for o in range(0, text_end - 16, 4):
         w0, w1, _, w3 = struct.unpack_from('<4I', img, o)
@@ -499,6 +506,10 @@ def reach(img, base, text_end, roots, plt, stubs=()):
             if a in seen:
                 break
             if a in plt:
+                if isinstance(plt[a], int):   # the plugin's own function behind its PLT: the path goes on there
+                    seen.add(a)
+                    a = plt[a]
+                    continue
                 imports[plt[a]] = imports.get(plt[a], 0) + 1
                 break
             if not base <= a < base + text_end:
