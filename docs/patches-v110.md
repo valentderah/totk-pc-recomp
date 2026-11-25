@@ -15,14 +15,14 @@ The built-in table is [recomp/patches-v110.txt](../recomp/patches-v110.txt). The
 | cascade | 4 | Read the four sun shadow cascade defaults from page +64..76. Shadow range 100 leaves the original constructor. |
 | climb | 1 | Climbing speed above 60 fps: the 1.2.1 climb factor in the 1.1.0 climb controller. Follows `TOTK_CLIMB_FIX` and needs the real-time step. |
 | gears | 2 | The gear rotation check scales its one-frame threshold by the update's frame delta, so shrine gears read as turning above 30 fps. Follows `TOTK_HIGHFPS_FIX`. |
+| mouse_direct | 82 | Direct raw-count mouse camera across camera input, activity, free orbit, Ultrahand and the 16 `ExecutePlayerCamera*` modes (`runtime/mouse_direct.c`, `layout_110`); follows `TOTK_MOUSE_DIRECT_PATCH` and `mouse_mode = direct`. |
 
-The table has 16 sets and 54 instruction sites in total. Its 889 spin back-edges are unchanged. The sets use the existing runtime page and settings; no new setting, allocator or renderer path is introduced.
+The table has 17 sets and 136 instruction sites in total. Its 889 spin back-edges are unchanged. The sets use the existing runtime page and settings; no new setting, allocator or renderer path is introduced.
 
 The camera sites were cross-checked by normalized instruction-window matching from the local 1.0.0 main. The viewport routine has two matching copies: both are patched. Other sites were checked through their data flow: the equipment timer and its gate, the map clock, the ability clock, the NVN texture storage/package calls, the shadow size publication and the cascade parameter constructor. FOV's s8 is overwritten by the next original instruction; x10 is saved. The cursor sites use the same scratch registers as their 1.2.1 counterparts.
 
 ## Deliberately separate
 
-- Direct mouse: 1.1.0 continues to use stick emulation. Porting the complete camera hook set also needs the runtime layout and load-site table; matching an individual store or one camera mode is not sufficient. No partial set is enabled here.
 - Fade: the four 1.4.3 sites are not presumed to exist in 1.1.0. An equivalent zero-increment path has not been established.
 - Native Zstandard: the existing host bridge calls back to hard-coded 1.4.3 decoder entry points on fallback. Adding only the BL patches to 1.1.0 would be incorrect.
 - Live DLSS scene sizing and game-menu mouse input retain their existing version restrictions. They are not patch-table parity work.

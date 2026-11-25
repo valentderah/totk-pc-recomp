@@ -505,7 +505,7 @@ int main(void) {
     puts("direct mouse: one turn rate, linear pitch, ability gains and the hold after a handoff passed");
     puts("direct mouse: a mouse shake followed side by side and released at rest, not a slow turn nor small swings passed");
 }
-#else
+#elif TEST_GAME_VERSION == 121
 // 1.2.1: the same hooks with that version's registers and stack slots (MouseLayout layout_121) and its load sites
 int main(void) {
     assert(hook && activity_hook && begin_hook && angles_hook && hand_hook && load_hook && !state_hook);
@@ -588,6 +588,95 @@ int main(void) {
     }
     puts("direct mouse 1.2.1: camera input in s11, activity, orbit angles at sp+0x3c/0x40, Ultrahand in s9 passed");
     puts("direct mouse 1.2.1: aiming pitch store, horse turn, repeated stick reads, w8 yaw and dialogue loads passed");
+}
+#else
+// 1.1.0: the same hooks with that version's registers and stack slots (MouseLayout layout_110) and its load sites
+int main(void) {
+    assert(hook && activity_hook && begin_hook && angles_hook && hand_hook && load_hook && !state_hook);
+    (void)takes;
+    Cpu c, expected;
+    unsigned char target[0x500]={0}, camera[0x300]={0}, hand[0x300]={0};
+    uint64_t frame[0x20]={0};
+    memset(&c,0x5a,sizeof c);
+    // The camera input update keeps x in s11 (y in s10) and stores s11 at +0x420; s9 is not the update's
+    c.x[20]=(uintptr_t)target; c.x[21]=0; c.v[11]=c.v[10]=0; expected=c;
+    raw_x=100; raw_y=-50; ratio=0.5f; HOOK(&c);
+    assert(fabsf(scalar(c.v[11])-100*STICK_PER_COUNT/ratio)<1e-5f);
+    assert(fabsf(scalar(c.v[10])-PITCH_GAIN*50*STICK_PER_COUNT/ratio)<1e-5f);
+    float stored; memcpy(&stored,target+0x420,4); assert(stored==scalar(c.v[11]));
+    expected.v[11]=c.v[11]; expected.v[10]=c.v[10]; assert(!memcmp(&expected,&c,sizeof c));
+    // The activity hook: flags in w8, the displaced ldp d9, d8, [sp, #0x10]
+    uint64_t stack[4]={0,0,0x123456789abcdef0ull,0x456789abcdef0123ull}; c.sp=(uintptr_t)stack;
+    c.x[8]=0x28; activity_hook(&c); assert((uint32_t)c.x[8]==0x11 && c.v[9]==stack[2] && c.v[8]==stack[3]);
+    // The free orbit: the final pitch and yaw at [sp+0x3c] / [sp+0x40], the displaced ldr s13, [sp, #0x3c]
+    uint64_t input_address=(uintptr_t)target; memcpy(camera+0x20,&input_address,8);
+    c.x[20]=(uintptr_t)target; c.v[11]=c.v[10]=0; raw_x=100; raw_y=-50; HOOK(&c);
+    guest_float_store((uintptr_t)camera+0x108,30); guest_float_store((uintptr_t)camera+0x120,40);
+    guest_float_store((uintptr_t)frame+0x3c,30); guest_float_store((uintptr_t)frame+0x40,40);
+    c.x[0]=(uintptr_t)camera; begin_hook(&c);
+    assert(guest_float((uintptr_t)target+0x420)==0 && guest_float((uintptr_t)target+0x424)==0);
+    c.x[20]=(uintptr_t)camera; c.sp=(uintptr_t)frame; angles_hook(&c);
+    assert(fabsf(guest_float((uintptr_t)frame+0x3c)-(30-50*DEG_PER_COUNT))<0.0001f);
+    assert(fabsf(guest_float((uintptr_t)frame+0x40)-(40-100*DEG_PER_COUNT))<0.0001f);
+    assert(scalar(c.v[13])==guest_float((uintptr_t)frame+0x3c));
+    // Ultrahand: x in s9, y in s15, the displaced str w9, [sp, #0x10]
+    c.x[20]=(uintptr_t)target; c.v[11]=c.v[10]=0; raw_x=20; raw_y=10; HOOK(&c);
+    c.x[19]=(uintptr_t)hand; c.x[9]=0x12345678; c.v[9]=0; c.v[15]=0; hand_hook(&c);
+    assert(fabsf(scalar(c.v[9])-20*HAND_PER_COUNT/ratio)<1e-5f && fabsf(scalar(c.v[15])+10*HAND_PER_COUNT/ratio)<1e-5f);
+    uint32_t w9; memcpy(&w9,(unsigned char *)frame+0x10,4); assert(w9==0x12345678);
+    // Load sites
+    {
+        unsigned char input[0x500]={0}, cam[0x200]={0}; uint64_t lsp[0x10]={0}, fp[0x20]={0};
+        float pad_x=0.25f, pad_y=-0.5f;
+        #define LOAD(site,reg) (c.x[30]=MOD_MAIN_BASE+(site)+4, load_hook(&c), scalar(c.v[reg]))
+        #define SAMPLE(dx,dy) do { c.x[20]=(uintptr_t)input; c.x[21]=0; c.v[11]=0; c.v[10]=0; \
+            memcpy(&c.v[11],&pad_x,4); memcpy(&c.v[10],&pad_y,4); raw_x=(dx); raw_y=(dy); HOOK(&c); \
+            guest_float_store((uintptr_t)input+0x424,scalar(c.v[10])); } while(0)
+        c.x[19]=(uintptr_t)cam; c.sp=(uintptr_t)lsp; c.x[29]=(uintptr_t)(fp+0x10);
+        // Aiming: the pitch target the helper computed (+0x15c + turn) is stored with the degrees, and s0 holds it
+        SAMPLE(100,-50); c.x[22]=(uintptr_t)input;
+        assert(LOAD(0x1d41658,1)==pad_y);
+        float target_pitch=12; c.v[0]=0; memcpy(&c.v[0],&target_pitch,4);
+        c.x[30]=MOD_MAIN_BASE+0x1d41694+4; load_hook(&c);
+        assert(fabsf(scalar(c.v[0])-(12-50*DEG_PER_COUNT))<1e-5f && guest_float((uintptr_t)cam+0x154)==scalar(c.v[0]));
+        // with no stick load before it the store is the game's, bit for bit
+        float neg_zero=-0.0f; memcpy(&c.v[0],&neg_zero,4); c.x[30]=MOD_MAIN_BASE+0x1d41694+4; load_hook(&c);
+        float got=guest_float((uintptr_t)cam+0x154); assert(!memcmp(&got,&neg_zero,4));
+        assert(LOAD(0x1d418a4,1)==pad_x);
+        guest_float_store((uintptr_t)(fp+0x10)-0x48,40);
+        assert(fabsf(LOAD(0x1d418f0,1)-(40-100*DEG_PER_COUNT))<1e-5f);
+        // CameraFinder: yaw at [x29-0x40]
+        SAMPLE(100,-50); c.x[21]=(uintptr_t)input;
+        guest_float_store((uintptr_t)cam+0x50,3); guest_float_store((uintptr_t)(fp+0x10)-0x40,9);
+        assert(LOAD(0x1d44cfc,13)==pad_y && fabsf(LOAD(0x1d44d20,1)-(3-50*DEG_PER_COUNT))<1e-5f);
+        assert(LOAD(0x1d44d84,13)==pad_x && fabsf(LOAD(0x1d44dac,1)-(9-100*DEG_PER_COUNT))<1e-5f);
+        // Horse yaw: the turn ([sp+0x18]) the helper adds to +0x68 gets the degrees
+        SAMPLE(100,-50); c.x[20]=(uintptr_t)input; guest_float_store((uintptr_t)lsp+0x18,0.5f);
+        assert(LOAD(0x1d4d8cc,8)==pad_x && fabsf(LOAD(0x1d4d900,0)-(0.5f-100*DEG_PER_COUNT))<1e-5f);
+        // Wakeboard reads each axis twice: the first reads give the same values and leave the degrees to the second
+        SAMPLE(100,-50); c.x[22]=(uintptr_t)input;
+        float total=guest_float((uintptr_t)input+0x424);
+        guest_float_store((uintptr_t)cam+0xd8,12); guest_float_store((uintptr_t)lsp+0x38,20);
+        assert(LOAD(0x1d5d8f8,0)==pad_x && LOAD(0x1d5d900,1)==total);
+        assert(LOAD(0x1d5d928,0)==total && LOAD(0x1d5d92c,1)==pad_x);
+        assert(fabsf(LOAD(0x1d5e01c,0)-(12-50*DEG_PER_COUNT))<1e-5f);
+        assert(fabsf(LOAD(0x1d5e0e0,12)-(20-100*DEG_PER_COUNT))<1e-5f);
+        assert(LOAD(0x1d5e0e0,12)==20);   // once
+        // Waterfall climbing: the yaw is loaded into w8 as bits by ldr w8, [sp, #0x38]
+        SAMPLE(100,-50); c.x[22]=(uintptr_t)input; guest_float_store((uintptr_t)lsp+0x38,11);
+        assert(LOAD(0x1d5efd0,13)==pad_x);
+        c.x[30]=MOD_MAIN_BASE+0x1d5f178+4; c.x[8]=~0ull; load_hook(&c);
+        float w; uint32_t wb=(uint32_t)c.x[8]; memcpy(&w,&wb,4);
+        assert(c.x[8]>>32==0 && fabsf(w-(11-100*DEG_PER_COUNT))<1e-5f);
+        // Dialogue: the patched mov set x23 = x19 + 0x5c; the pitch load is ldr s1, [x23]
+        SAMPLE(100,-50); c.x[24]=(uintptr_t)input; c.x[23]=(uintptr_t)cam+0x5c; guest_float_store((uintptr_t)cam+0x5c,1);
+        assert(LOAD(0x1d475bc,11)==pad_y && fabsf(LOAD(0x1d475e4,1)-(1-50*DEG_PER_COUNT))<1e-5f);
+        assert(c.x[23]==(uintptr_t)cam+0x5c);
+        #undef LOAD
+        #undef SAMPLE
+    }
+    puts("direct mouse 1.1.0: camera input in s11, activity, orbit angles at sp+0x3c/0x40, Ultrahand in s9 at sp+0x10 passed");
+    puts("direct mouse 1.1.0: aiming pitch store, CameraFinder x29-0x40, horse turn, repeated stick reads, w8 yaw and dialogue loads passed");
 }
 #endif
 '''
@@ -692,7 +781,7 @@ def check_tables():
     """Each version's load-site table (runtime/mouse_direct.c) against its patch file: one bl to page +0xf80 a site, the
     same original word (a pre-indexed ldr s<t>, [x<n>, #imm]! is the plain ldr s<t>, [x<n>] after its patched mov)."""
     source = (ROOT / 'runtime' / 'mouse_direct.c').read_text()
-    for version, page in (('143', 0x3adf000), ('121', 0x472b000)):
+    for version, page in (('143', 0x3adf000), ('121', 0x472b000), ('110', 0x472d000)):
         block = re.search(r'load_sites_%s\[\] = \{(.*?)\n\};' % version, source, re.S)[1]
         table = {int(a, 16): int(w, 16) for a, w in re.findall(r'\{0x([0-9a-f]+), 0x([0-9a-f]+),', block)}
         assert len(table) == block.count('{0x'), f'v{version}: a site twice in the table'
@@ -723,7 +812,7 @@ def main():
         source.write_text(HARNESS)
         exe = folder / ('check.exe' if os.name == 'nt' else 'check')
         link = [] if os.name == 'nt' else ['-lm']
-        for version in (143, 121):
+        for version in (143, 121, 110):
             subprocess.run([args.cc, '-O2', '-Wall', '-Wextra', f'-DTEST_GAME_VERSION={version}', '-I', str(folder),
                             '-I', str(ROOT/'runtime'), str(source), *link, '-o', str(exe)], check=True)
             subprocess.run([str(exe)], check=True)
