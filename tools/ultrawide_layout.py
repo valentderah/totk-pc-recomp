@@ -18,7 +18,7 @@ import struct
 # BFLYT pane sections (pan1, pic1, txt1, ...): name at +12 (24 bytes), translate x / y at +44 / +48, scale x / y at +68 / +72,
 # size (width) at +76.
 PANE_MAGICS = (b'pan1', b'pic1', b'txt1', b'wnd1', b'bnd1', b'prt1', b'ali1', b'scr1')
-FIELD = {'x': 44, 'y': 48, 'scale_x': 68, 'scale_y': 72, 'w': 76}
+FIELD = {'x': 44, 'y': 48, 'scale_x': 68, 'scale_y': 72, 'w': 76, 'h': 80}
 
 # Full-screen layouts whose root pane stays as wide as the canvas.
 KEEP_ROOT = {'AppMenuBG_00', 'PauseMenuBG_00', 'ShopMenuParasailBG_00', 'ShortCutBG_00', 'TitleMenuBG_00', 'EventFade_00',
@@ -176,6 +176,10 @@ def tall_edits(k):
            *[('LoadingFade_00', p, 'scale_y', k) for p in ('Pa_IconPlayer_00', 'Pa_LargeDungeonMap_00',
                                                             'Pa_LargeDungeonMap_01', 'Pa_Map_00', 'Pa_Map_01')],
            *[('AppMap_00', f'N_BlurInOut_0{i}', 'scale_y', tall) for i in range(4)],
+           # The map's capture, its cut, backing and shadow are 1080 high, the height of a 16:9 layout: they take the
+           # screen's height, 1080 / k, so the map fills it instead of leaving black above and below (tall_anim
+           # does the same for the keys of AppMap_00_MiniMap that hold 1080)
+           *[('AppMap_00', pane, 'h', 1080 * tall) for pane in MAP_TALL + ('W_Shadow_00',)],
            *[(layout, 'P_BG_00', 'scale_y', tall) for layout in ('AppOpenDemoWindow_00', 'GameOver_00', 'LoadingFade_00',
                                                                  'PaLargeDungeonMap_00', 'PaRecipeCardList_00')],
            ('LoadingFade_00', 'N_Base_00', 'scale_y', tall),
@@ -243,6 +247,10 @@ FLPA_SIZE_X = 8   # BFLAN FLPA target: the pane's width
 # shrinks them), and the animation's keys win over the layout's size, so a wider screen still cut the map at 2250.
 MAP_SIZED = ('N_IconArea_00', 'N_Cut_00', 'N_Capture_00', 'P_MapCapture_00', 'Black8_01', 'N_Cut_01', 'N_Cut_02')
 
+# The map's panes that hold the 16:9 layout's height, 1080, in the layout and in the full map's keys of AppMap_00_MiniMap
+MAP_TALL = ('N_Cut_00', 'N_Capture_00', 'P_MapCapture_00', 'Black8_01')
+FLPA_SIZE_Y = 9   # BFLAN FLPA target: the pane's height
+
 def wide_anim(blarc, members, k, changed):
     """The animation keys that hold the full map's width, for a canvas wider than 16:9: 2250 becomes 2250 / k, the
     screen's width in the 16:9 root's units plus the same margin, as edits() does for the layout's sizes."""
@@ -297,6 +305,13 @@ def tall_anim(blarc, members, k, changed):
                 abs(get(k1 + 4) + 360) < 1e-3 and get(k1 + 8) == 0):
             raise SystemExit(f'AppMap_00_MiniMap {pane}: not a line from 0 to y -360')
         put(k0 + 8, -(360 + h)), put(k1 + 4, -(360 + h))
+    # The full map's height keys hold 1080 (the minimap shrinks the panes), and they win over the layout's sizes
+    found = 0
+    for pane in MAP_TALL:
+        for keys in anim_keys(blarc, lo, pane, b'FLPA', FLPA_SIZE_Y):
+            for key in keys:
+                if abs(get(key + 4) - 1080) < 1e-3: put(key + 4, 1080 / k); found += 1
+    if found < len(MAP_TALL): raise SystemExit(f'AppMap_00_MiniMap: {found} height keys of 1080, expected at least {len(MAP_TALL)}')
     # The large place name of a discovery holds its height (285, then 260) in flat keys; they move to the top edge.
     curves = anim_keys(blarc, anim('Location_00_IsDiscovery'), 'N_Large_00', b'FLPA', FLPA_Y)
     values = [get(key + 4) for keys in curves for key in keys]
