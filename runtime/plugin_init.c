@@ -708,6 +708,7 @@ int plugins_start(Cpu *c, const RtLoaded *sdk) {
     for (int i = 0; i < naliases; i++) live += aliases[i].live;
     rt_log("plugins: %d of %d plugins on in %llu ms (%d process-memory maps, %d kept)", on, nrun,
            (unsigned long long)(plat_now_ms() - t0), naliases, live);
+    mem_plugin_writes = on > 0;   // before main's DT_INIT seals its RELRO (memory.c mem_set_permission)
     if (on && cfg_bool("TOTK_PLUGIN_TRACE")) trace_entries();
     return 1;
 #else

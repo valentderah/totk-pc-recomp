@@ -500,6 +500,8 @@ static int module_data(uint64_t a, uint64_t n) {
     return off >= m->data_off && n <= m->size - off ? i : -1;
 }
 
+int mem_plugin_writes;
+
 uint32_t mem_set_permission(uint64_t a, uint64_t n, uint32_t perm) {
     if (a & (PAGE - 1)) return R_INVALID_ADDRESS;
     if (!n || (n & (PAGE - 1))) return R_INVALID_SIZE;
@@ -515,10 +517,16 @@ uint32_t mem_set_permission(uint64_t a, uint64_t n, uint32_t perm) {
             return R_INVALID_STATE;
         }
     memset(t, (int)perm, n / PAGE);
-    protect(a, n, perm == PERM_RW ? PLAT_PROT_RW : perm == PERM_R ? PLAT_PROT_READ : PLAT_PROT_NONE, "module data");
+    // With a mod plugin on, a read-only run (the RELRO the SDK seals in each module's DT_INIT, after the plugins'
+    // inits) stays writable on the host while QueryMemory reports what the game asked. Zonai Fieldworks swaps entries
+    // of main's RELRO tables from its own code when a member is switched on in play (#1451), writing main's address
+    // directly; on the platforms the mod is made for that write goes through, here it faulted.
+    int keep_rw = perm == PERM_R && mem_plugin_writes;
+    protect(a, n, perm == PERM_RW || keep_rw ? PLAT_PROT_RW : perm == PERM_R ? PLAT_PROT_READ : PLAT_PROT_NONE,
+            "module data");
     plat_mutex_unlock(&lock);
-    rt_log("%s data permission +%#llx size %#llx perm %u", m->name, (unsigned long long)(a - m->base),
-           (unsigned long long)n, perm);
+    rt_log("%s data permission +%#llx size %#llx perm %u%s", m->name, (unsigned long long)(a - m->base),
+           (unsigned long long)n, perm, keep_rw ? " (kept writable on the host: a mod plugin is on)" : "");
     return R_OK;
 }
 

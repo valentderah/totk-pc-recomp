@@ -148,6 +148,8 @@ void mem_init(void);                                       // reserve every regi
 const RtGuestLayout *mem_layout(void);
 uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr);                      // 0x01
 uint32_t mem_set_permission(uint64_t a, uint64_t n, uint32_t perm);             // 0x02
+extern int mem_plugin_writes;   // plugin_init.c plugins_start: a mod plugin is on; read-only module data stays writable
+                                // on the host (mem_set_permission)
 uint32_t mem_set_attribute(uint64_t a, uint64_t n, uint32_t mask, uint32_t at); // 0x03
 uint32_t mem_map(uint64_t dst, uint64_t src, uint64_t n);                       // 0x04
 uint32_t mem_unmap(uint64_t dst, uint64_t src, uint64_t n);                     // 0x05
