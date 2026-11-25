@@ -23,8 +23,9 @@ unsigned cfg_version(void);
 int cfg_from_env(const char *name);
 // 1 when the player set name (the environment or totk.ini), 0 when cfg_get gives a device profile's default or NULL.
 int cfg_is_set(const char *name);
-// The folder size of w x h's shape (cfg.c SHAPED: the closest aspect ratio within 1%, the first of equal ones), the
-// one romfs-patches-<w>x<h> the setup writes for it. 0 for 16:9 and for a shape without a UI layout.
+// The folder size of w x h's shape (cfg.c SHAPED: the closest aspect ratio within 1%, the first of equal ones; an
+// unlisted shape from 4:3 to 32:9 keeps w x h), the one romfs-patches-<w>x<h> the setup writes for it. 0 for 16:9 and
+// for a shape without a UI layout (portrait, narrower than 4:3, wider than 32:9).
 int cfg_shape_size(unsigned w, unsigned h, unsigned out[2]);
 // The size output_res defaults to on this display (its shape, cfg.c screen_default) while the player set no
 // output_res, also when the default stays 1920x1080 because that shape lacks the prompts' folder. The generator the game

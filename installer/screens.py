@@ -16,22 +16,28 @@ from pathlib import Path
 
 # The game resolutions of another shape than 16:9 that runtime/ui/menu.cpp row_output_res lists, in the order of
 # runtime/cfg.c SHAPED: 21:9 and 32:9 monitors, 16:10 screens (the Steam Deck's 1280x800, handhelds and laptops) and 3:2
-# screens (Surface and Framework laptops and tablets)
-ASPECT_SIZES = ('2560x1080', '3440x1440', '3840x1600', '5120x2160', '3840x1080', '5120x1440',
+# screens (Surface and Framework laptops and tablets), 4:3 screens (CRT monitors, iPads) and 19.5:9 and 20:9 phone screens
+# (streamed to a phone)
+ASPECT_SIZES = ('2560x1080', '3440x1440', '3840x1600', '5120x2160', '3840x1080', '5120x1440', '7680x2160',
                 '1280x800', '1680x1050', '1920x1200', '2560x1600',
-                '1920x1280', '2160x1440', '2256x1504', '2880x1920', '3000x2000')
+                '1920x1280', '2160x1440', '2256x1504', '2880x1920', '3000x2000',
+                '1440x1080', '1600x1200', '2048x1536', '2732x2048',
+                '2340x1080', '3120x1440', '2400x1080', '3200x1440')
 SHAPED = tuple(tuple(int(v) for v in s.split('x')) for s in ASPECT_SIZES)
 TOLERANCE = 0.01   # cfg.c and resolution.c res_is_16x9: shapes within 1% are the same
+# cfg.c SHAPE_MIN / SHAPE_MAX: the aspect ratios a UI layout can be made for (tools/ultrawide_layout.py), 4:3 to 32:9
+SHAPE_MIN, SHAPE_MAX = 4 / 3 * 0.99, 32 / 9 * 1.01
 
 
 def is_16x9(w, h):
     return abs((w / h) / (16 / 9) - 1) <= TOLERANCE
 
 
-def shape_size(w, h):
+def shape_size(w, h, listed=False):
     """The folder size of w x h's shape: of ASPECT_SIZES within 1% of its aspect ratio, the closest, the first of equal
-    ones (5120x2160 is 2560x1080's shape). None for 16:9 and for a shape the setup has no layout for. The same rule as
-    runtime/cfg.c cfg_shape_size."""
+    ones (5120x2160 is 2560x1080's shape); another shape from 4:3 to 32:9 its own size (an output_res of a phone's
+    3120x1440, say), unless listed. None for 16:9 and for a shape no layout can be made for (portrait, narrower than
+    4:3, wider than 32:9). The same rule as runtime/cfg.c cfg_shape_size."""
     if not w or not h or is_16x9(w, h):
         return None
     r, best, err = w / h, None, None
@@ -39,7 +45,15 @@ def shape_size(w, h):
         e = abs(sw / sh / r - 1)
         if e <= TOLERANCE and (err is None or e < err):
             best, err = f'{sw}x{sh}', e
-    return best
+    if best or listed or not SHAPE_MIN <= r <= SHAPE_MAX:
+        return best
+    return f'{w}x{h}'
+
+
+def size_order(size):
+    """Sort key: the ASPECT_SIZES order, then the sizes of unlisted shapes by width and height."""
+    w, h = (int(v) for v in size.split('x'))
+    return (ASPECT_SIZES.index(size), 0, 0) if size in ASPECT_SIZES else (len(ASPECT_SIZES), w, h)
 
 
 def default_size(w, h):
@@ -199,8 +213,10 @@ def wanted(dest, screens=None):
         text = ''
     sizes = set()
     for w, h in screens:
+        # A display of an unlisted shape keeps the 1920x1080 default (cfg.c screen_default): no folder for it unless
+        # output_res asks for its size.
         w, h = max(w, h), min(w, h)
-        sizes.add(shape_size(w, h))
+        sizes.add(shape_size(w, h, listed=True))
         d = default_size(w, h)
         if d:
             sizes.add(shape_size(*(int(v) for v in d.split('x'))))
@@ -208,4 +224,4 @@ def wanted(dest, screens=None):
     if m:
         sizes.add(shape_size(int(m.group(1)), int(m.group(2))))
     sizes.discard(None)
-    return sorted(sizes, key=ASPECT_SIZES.index), prompts_style(text)
+    return sorted(sizes, key=size_order), prompts_style(text)

@@ -50,6 +50,11 @@ uint64_t nvn_new_serial(void);                             // next tex_t / prog_
 void nvn_sync_ahead_present(void);
 uint64_t nvn_sync_ahead_guard(void);
 int nvn_sync_ahead_on(void);   // 1 when the frame-ahead wait is in effect: TOTK_SYNC_AHEAD=1 and a wait site known for this version
+// vk_exec_xfer.c, TOTK_SYNC_AHEAD: at the game's frame wait the newest timestamp written becomes the bound; the value
+// the game reads for the timestamp t of the report at addr (t, or the bound for a report its frame wait did not cover)
+void vk_counter_frame(void);
+uint64_t vk_counter_timestamp(uint64_t addr, uint64_t t);
+void vk_counter_log(void);   // the run total, once (gfx_exit_log)
 int vk_mem_shadow_on(void);   // vk_memory.c: 1 with shadow storage on (valid once the Vulkan back end is up)
 int vk_mem_mirror_on(void);   // vk_memory.c: 1 when pools used as buffers get VRAM mirrors (memory = mirror or auto on a discrete GPU)
 void vk_mem_shadow_fence(void);   // vk_memory.c: returns once every shadow sync that read the old guard is done

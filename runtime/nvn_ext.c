@@ -60,8 +60,12 @@ NVN_API(nvnDeviceSetAutomaticCheckpointsMask) { (void)c; }
 static uint64_t ticks_to_ns(uint64_t t) { return t / 12 * 625 + t % 12 * 625 / 12; }
 // uint64_t nvnDeviceGetCurrentTimestampInNanoseconds(const NVNdevice *d)
 NVN_API(nvnDeviceGetCurrentTimestampInNanoseconds) { ret_x(c, ticks_to_ns(rt_ticks())); }
-// uint64_t nvnDeviceGetTimestampInNanoseconds(const NVNdevice *d, const NVNcounterData *counter)
-NVN_API(nvnDeviceGetTimestampInNanoseconds) { ret_x(c, ticks_to_ns(((const NVNcounterData *)arg_p(c, 1))->timestamp)); }
+// uint64_t nvnDeviceGetTimestampInNanoseconds(const NVNdevice *d, const NVNcounterData *counter): with the frame wait
+// one frame late, a report that wait did not cover reads as the newest one written by then (vk_exec_xfer.c)
+NVN_API(nvnDeviceGetTimestampInNanoseconds) {
+    const NVNcounterData *d = arg_p(c, 1);
+    ret_x(c, ticks_to_ns(vk_counter_timestamp((uintptr_t)d, d->timestamp)));
+}
 
 // ---------- memory pools and buffers
 // size_t nvnMemoryPoolGetSize(const NVNmemoryPool *p)

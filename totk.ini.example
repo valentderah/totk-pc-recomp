@@ -69,7 +69,7 @@
 # timer_1ms = 1
 
 # One frame ahead of the GPU.
-# Let the game build the next frame while the GPU still draws the previous one, 0 or 1. Default: off. Each frame the
+# Let the game build the next frame while the GPU still draws the previous one, 0 or 1. Default: on. Each frame the
 # game waits once for the GPU to finish the frame it presented last; with 1 that wait covers the frame before it
 # instead. On Great Sky Island (Linux, RX 9070 XT) with shadow_defer = 1 this took about 73 to 100 fps. Costs one more
 # frame of input delay, and frame times vary more from frame to frame than with 0. GPU results the game reads back every frame after that wait, for example its depth queries, can be a frame old; a result it reads only once is waited for.
@@ -78,7 +78,7 @@
 # game's memory in place and guards copy or wait for what the game rewrites while the GPU still reads it (no shadow
 # copies, about 1 ms a frame less on a weak CPU). With memory = import and no shadow storage the setting is ignored
 # and the log says so.
-# sync_ahead = 0
+# sync_ahead = 1
 # Shadow storage, 0 or 1: each CPU-visible memory pool of the game gets a host-visible copy that the GPU reads, in
 # place of importing the game's memory. Default: on under Linux and Wine, off on native Windows.
 # Costs about 0.2 ms a frame and doubles the memory of those pools (about 1.1 GB; docs/building.md). Read at start.
@@ -219,16 +219,19 @@
 # gpu_index = 0
 # gpu_name = NVIDIA
 # Game resolution: the size the game draws its picture and interface in (1280x720 to 7680x4320). Above 1920x1080 the
-# game's texture heap and memory pool grow with it. Another shape than 16:9, such as 3440x1440 on a 21:9 monitor or
-# the Steam Deck's 1280x800 (16:10), gives the camera's view that shape and lays the HUD out for it. The installer
-# prepares the UI layout for fifteen sizes: 2560x1080, 3440x1440, 3840x1600, 5120x2160 (21:9), 3840x1080, 5120x1440
-# (32:9), 1280x800, 1680x1050, 1920x1200, 2560x1600 (16:10), 1920x1280, 2160x1440, 2256x1504, 2880x1920 and 3000x2000
-# (3:2). For any other size, or a source build that has not made the layout, the game draws the largest 16:9 size that
-# fits inside it (3440x1080 gives 1920x1080) and the present adds bars; build the layout with
-# tools/make_romfs_patches.py --aspect WxH to use the full shape. Read at start. Default: 1920x1080, or on a primary
-# display of one of those shapes the smallest of its sizes at least 1080 high that fits the display (1920x1280 on a 3:2
-# laptop, 2560x1080 on a 21:9 monitor), so the picture fills the screen without black bars, with prompts = xbox or pc
-# too (on an install by an older setup, which built the Xbox prompts for 16:9 only, prompts = xbox keeps 1920x1080).
+# game's texture heap and memory pool grow with it. Another shape than 16:9, such as 3440x1440 on a 21:9 monitor or the
+# Steam Deck's 1280x800 (16:10), gives the camera's view that shape and lays the HUD out for it. Any shape from 4:3 to
+# 32:9 works: 21:9 monitors (2560x1080, 3440x1440, 3840x1600, 5120x2160), 32:9 ones (3840x1080, 5120x1440, 7680x2160;
+# hud_width below keeps the HUD in the middle), 16:10 and 3:2 screens, 4:3 (1440x1080, 2048x1536 on an iPad) and phone
+# screens streamed to (2340x1080 or 3120x1440 at 19.5:9, 2400x1080 at 20:9). The installer makes the UI layout for the
+# shapes of the connected displays and of this setting; at a shape it has none for, the game draws the largest 16:9 size
+# that fits inside it with bars and makes the layout in the background for the next start (a source build: make it with
+# tools/make_romfs_patches.py --aspect WxH). With vert_plus = 1 a shape narrower than 16:9 keeps the width of the 16:9
+# view and shows more above and below. Portrait shapes and shapes outside 4:3..32:9 draw 16:9 with bars. Read at start.
+# Default: 1920x1080, or on a primary display of 21:9, 32:9, 16:10, 3:2 or 4:3 the smallest size of that shape at least
+# 1080 high that fits the display (1920x1280 on a 3:2 laptop, 2560x1080 on a 21:9 monitor), so the picture fills the
+# screen without black bars, with prompts = xbox or pc too (on an install by an older setup, which built the Xbox
+# prompts for 16:9 only, prompts = xbox keeps 1920x1080).
 # output_res = 1920x1080
 # HUD width on a game resolution wider than 16:9: full, the default, puts the HUD at the screen's left and right edges;
 # 21:9 keeps it within the middle 21:9 of the screen and 16:9 within the middle 16:9 (the game's own HUD), so the
@@ -263,6 +266,11 @@
 # Field of view, in percent of the game's own: 70 to 140, 100 (the default) leaves the camera as it is. Higher shows
 # more of the world around Link. Game versions 1.1.0, 1.2.1 and 1.4.3. Changes while the game runs take effect at once.
 # fov = 100
+# Vert+ at a game resolution narrower than 16:9 (16:10, 3:2, 4:3): 1 widens the camera's vertical view so the picture
+# shows as much of the world at the sides as 16:9 does, and more above and below. 0, the default: the game's own
+# vertical view at every shape, so a narrower shape shows less at the sides. No effect at 16:9 or wider. Multiplies
+# with fov. Changes while the game runs take effect at once.
+# vert_plus = 0
 # Anisotropic filtering of surface textures: game (the level the game asks for, as on the Switch) or 2, 4, 8, 16. Keeps
 # ground, roads and walls seen at a shallow angle sharp into the distance. Only filtered, mipmapped textures that tile
 # are raised; shadow maps, data maps and screen-sized buffers keep the game's setting. Read at start.
@@ -351,10 +359,12 @@
 # for a frame. 0, the default: DLSS estimates the exposure itself, as before. Every DLSS mode. Changes while the game
 # runs take effect at once.
 # dlss_fixed_exposure = 0
-# With DLAA (dlaa = 1, dlss = dlaa), fog, dust and other particles are drawn over the picture DLSS has already smoothed,
-# as the game draws them without DLSS, so small particles in fog (shrines) no longer vanish or leave trails. 0: DLSS
-# processes these effects too, as before (the default until the inventory preview, the scope and water edges are
-# checked on NVIDIA). The upscaling DLSS modes always process them. Changes while the game runs take effect at once.
+# With DLAA (dlaa = 1, dlss = dlaa), dust and other particles are drawn over the picture DLSS has already smoothed, as
+# the game draws them without DLSS, so small particles in fog (shrines) no longer vanish or leave trails. The fog layer
+# and the clouds still go through DLSS: drawn over its picture they left a flickering bright outline on distant ridges
+# at night and at dawn. 0: DLSS processes all these effects too, as before (the default until the inventory preview,
+# the scope and water edges are checked on NVIDIA). The upscaling DLSS modes always process them. Changes while the
+# game runs take effect at once.
 # dlaa_effects_after = 0
 # Low latency: off, auto, on or boost. Reduces system input latency. on and boost enable NVIDIA Reflex
 # (VK_NV_low_latency2); boost also keeps NVIDIA GPU clocks high in CPU-bound scenes. auto enables Reflex, or AMD
@@ -454,6 +464,10 @@
 # labels, xbox for the others). The bind_ lines below apply on top. Changes while the game runs take effect at once.
 # 0.1.9's xbox_prompts is read as nintendo with prompts = xbox.
 # pad_layout = auto
+# The gamepad while the game window has no focus (Linux; on Windows it always plays): 1 keeps it playing behind other
+# windows, 0 pauses it, auto pauses it only when Steam started the game, so the Steam overlay and Steam's menus
+# (the Quick Access menu in SteamOS's Game Mode) get the gamepad while they are open. Read at start.
+# pad_background = auto
 # The buttons the game's prompts show: nintendo (the game's own), xbox (LB RB LT RT, Menu, View and a d-pad cross,
 # and A B X Y as labelled on the button pad_layout presses: with nintendo, A shows as B and X as Y), playstation
 # (○ × △ □, L1 R1 L2 R2, Options and Share, on the button pad_layout presses: with nintendo, A shows as ○), or pc

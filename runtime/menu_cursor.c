@@ -22,7 +22,8 @@
 // TOTK_MENU_CURSOR (live, default 1): 0 leaves the menus to the keys and the pad.
 //
 // With TOTK_MAP_CLICK=1 (live, default 0: one key per controller button) input.c makes the left mouse button A on the
-// map (menu_cursor_map), so a click acts at the map's cursor. The map is found only while TOTK_MENU_CURSOR is on.
+// map (menu_cursor_map), so a click acts at the map's cursor. The map is found while TOTK_MENU_CURSOR is on, and with
+// it off while the gameplay tweaks' map zoom is on (TOTK_GAMEPLAY_MAP_ZOOM), which acts only on the map found here.
 //
 // The same read of the open screens tells input.c when a dialogue box is on screen (menu_cursor_dialogue), where the
 // left mouse button presses B (it advances the text and skips its scroll) and the right one A, instead of their
@@ -34,6 +35,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "gameplay_tweaks.h"
 #include "gfx.h"
 #include "host.h"
 #include "input.h"
@@ -377,8 +379,11 @@ void menu_cursor_poll(uint64_t *buttons) {
         main_lo = MOD_MAIN_BASE, main_hi = MOD_MAIN_BASE + MAIN_SIZE;
         if (RT_V143) rt_log("menu_cursor: on for 1.4.3 (TOTK_MENU_CURSOR=0 turns it off)");
     }
-    int cursor = enabled(), talk = dialogue_enabled();
-    if (!cursor && !talk) {
+    // The map zoom of the gameplay tweaks (gameplay_tweaks.c map_zoom_allowed) acts only on the map found here, so with
+    // the menu cursor off and that zoom on, the map is still looked for, as the dialogue is for dialogue_click; the
+    // pointer and the menus stay off (#1376).
+    int cursor = enabled(), talk = dialogue_enabled(), zoom = !cursor && RT_V143 && gameplay_tweaks_map_zoom();
+    if (!cursor && !talk && !zoom) {
         set_pointer(0);
         __atomic_store_n(&g_map, 0, __ATOMIC_RELAXED);
         __atomic_store_n(&g_dialogue, 0, __ATOMIC_RELAXED);
@@ -414,7 +419,12 @@ void menu_cursor_poll(uint64_t *buttons) {
     __atomic_store_n(&g_dialogue, dialogue, __ATOMIC_RELAXED);
     if (!cursor) {
         set_pointer(0);
-        __atomic_store_n(&g_map, 0, __ATOMIC_RELAXED);
+        if (zoom && map && !map_logged) {
+            map_logged = 1;
+            rt_log("menu_cursor: the map is open: the mouse moves its cursor and the scroll wheel zooms "
+                   "(gameplay_map_zoom; menu_cursor = 0 leaves the menus alone)");
+        }
+        __atomic_store_n(&g_map, zoom ? map : 0, __ATOMIC_RELAXED);
         __atomic_store_n(&g_menu, 0, __ATOMIC_RELAXED);
         __atomic_store_n(&g_strip, 0, __ATOMIC_RELAXED);
         __atomic_store_n(&g_camera, 0, __ATOMIC_RELAXED);

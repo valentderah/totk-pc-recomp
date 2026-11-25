@@ -91,6 +91,12 @@ void input_map_configure(void);
 // pad's east button is labelled A (a Switch Pro Controller, a GuliKit) and Xbox otherwise.
 int input_pad_layout_pick(const char *setting, int east_labelled_a);
 
+// Whether SDL passes gamepad presses and stick movements to the game while its window has no focus (TOTK_PAD_BACKGROUND,
+// input.c start): "1" on, "0" off. Anything else ("auto", NULL) is on unless Steam started the game: then the focus
+// goes to Steam's overlay and menus (the Quick Access menu in SteamOS's Game Mode), whose gamepad it is while they are
+// open (#1462); elsewhere the gamepad keeps playing while another window has the focus (#971).
+int input_pad_background_pick(const char *setting, int under_steam);
+
 // Button prompts (TOTK_PROMPTS): the controller whose buttons the game's prompts show. Nintendo: the game's own. Xbox:
 // LB RB LT RT, Menu, View and a d-pad cross for the other buttons, and the face buttons named by the label of the
 // button the pad layout presses (runtime/romfs.c overlay_init, tools/make_romfs_patches.py --prompts). PlayStation: the

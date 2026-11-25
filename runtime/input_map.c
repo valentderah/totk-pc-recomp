@@ -305,6 +305,12 @@ int input_pad_layout_pick(const char *setting, int east_labelled_a) {
     return east_labelled_a ? PAD_LAYOUT_NINTENDO : PAD_LAYOUT_XBOX;
 }
 
+int input_pad_background_pick(const char *setting, int under_steam) {
+    if (setting && !strcmp(setting, "1")) return 1;
+    if (setting && !strcmp(setting, "0")) return 0;
+    return !under_steam;
+}
+
 int input_prompts_pick(const char *prompts, const char *pad_layout) {
     if (prompts && *prompts)
         return !strcasecmp(prompts, "xbox") ? PROMPTS_XBOX

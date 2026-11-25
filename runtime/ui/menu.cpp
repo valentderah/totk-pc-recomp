@@ -571,15 +571,18 @@ static void folders_retry(const char *id, int need) {
 }
 
 // The game resolution (resolution.c): 16:9 sizes from its smallest, 1280x720 (for weak GPUs), up, the common 21:9 and
-// 32:9 monitor sizes, the 16:10 screens of the Steam Deck, handhelds and laptops and the 3:2 screens of laptops and
-// tablets (Surface, Framework; the camera and the HUD follow
-// another shape, resolution.c res_init; the installer lays the HUD out for each, installer/steps.py ASPECT_SIZES), and
-// the current value when it is another size.
+// 32:9 monitor sizes (7680x2160: the 57-inch dual-4K ones), the 16:10 screens of the Steam Deck, handhelds and laptops, the 3:2 screens of laptops and
+// tablets (Surface, Framework), the 4:3 screens of CRT monitors and iPads and the 19.5:9 and 20:9 screens of phones a
+// game is streamed to (the camera and the HUD follow another shape, resolution.c res_init; the installer lays the HUD
+// out for each, installer/screens.py ASPECT_SIZES), and the current value when it is another size: any shape from 4:3
+// to 32:9 gets a layout of its own (cfg.c cfg_shape_size).
 static void row_output_res(void) {
     static const char *const vals[] = {"1280x720", "1600x900", "1920x1080", "2560x1440", "3200x1800", "3840x2160",
-                                       "2560x1080", "3440x1440", "3840x1600", "5120x2160", "3840x1080", "5120x1440",
+                                       "2560x1080", "3440x1440", "3840x1600", "5120x2160", "3840x1080", "5120x1440", "7680x2160",
                                        "1280x800", "1680x1050", "1920x1200", "2560x1600",
-                                       "1920x1280", "2160x1440", "2256x1504", "2880x1920", "3000x2000"};
+                                       "1920x1280", "2160x1440", "2256x1504", "2880x1920", "3000x2000",
+                                       "1440x1080", "1600x1200", "2048x1536", "2732x2048",
+                                       "2340x1080", "3120x1440", "2400x1080", "3200x1440"};
     enum { N = sizeof vals / sizeof *vals };
     char shown[N][32];
     const char *names[N];
@@ -822,6 +825,7 @@ static void tab_screen(float scale) {
     static const UiTextId movie_aspect[] = {UI_MENU_MOVIE_ASPECT_KEEP, UI_MENU_MOVIE_ASPECT_STRETCH};
     opt_choice("TOTK_MOVIE_ASPECT", UI_MENU_MOVIE_ASPECT, movie_aspect, 2, UI_MENU_MOVIE_ASPECT_DESC);
     opt_slider("TOTK_FOV", UI_MENU_FOV, 70, 140, UI_MENU_FOV_DESC, 5, "%.0f %%");
+    opt_toggle("TOTK_VERT_PLUS", UI_MENU_VERT_PLUS, UI_MENU_VERT_PLUS_DESC);
     static const char *const aniso[] = {"game", "2", "4", "8", "16"};
     const char *aniso_names[] = {menu_text(UI_MENU_ANISO_GAME), "2x", "4x", "8x", "16x"};
     opt_choice_list("TOTK_ANISO", UI_MENU_ANISO, aniso, aniso_names, 5, UI_MENU_ANISO_DESC);

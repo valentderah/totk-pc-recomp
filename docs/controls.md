@@ -294,7 +294,7 @@ With `gameplay_tweaks_enabled = 1` (`TOTK_GAMEPLAY_TWEAKS_ENABLED=1`, live; off 
 - **Ultrahand distance**: holding the right mouse button while scrolling pushes or pulls the held object closer or farther (`gameplay_ultrahand_distance = 1`, sensitivity `gameplay_distance_sensitivity = 1`).
 - **Free-roam weapon switching**: scrolling the mouse wheel in free roam steps through equipped weapons (`gameplay_weapon_wheel = 1`, sensitivity `gameplay_weapon_sensitivity = 1`). Press E to confirm the chosen weapon; right click or pressing B cancels.
 - **Quick-selection menus**: scrolling the mouse wheel browses items while a quick-selection menu (weapons, bows, shields, materials) is open (`gameplay_item_wheel = 1`, sensitivity `gameplay_item_sensitivity = 1`). A and D keys step left and right through the strip (`gameplay_item_ad = 1`).
-- **Smooth map zoom**: the mouse wheel performs continuous inertial zooming on the Purah Pad map (`gameplay_map_zoom = 1`, sensitivity `gameplay_map_zoom_sensitivity = 1`).
+- **Smooth map zoom**: the mouse wheel performs continuous inertial zooming on the Purah Pad map (`gameplay_map_zoom = 1`, sensitivity `gameplay_map_zoom_sensitivity = 1`). It works with `menu_cursor = 0` too: the map is still found then, and the mouse moves the map's cursor there as with the menu cursor on, while the game's other menus stay without the pointer.
 
 All sub-toggles default to 1 and sensitivities to 1 (range 0.25 to 4.0), so enabling `gameplay_tweaks_enabled` activates the full suite immediately while allowing individual features to be toggled or tuned.
 
@@ -323,6 +323,13 @@ for example Gyro Behavior "As Mouse"; its activation only decides when Steam its
 gyro all the time. Pick an activation the game does not need (a back button), or Steam's mouse turns the camera on top
 of the game's own motion. Under Steam the Steam Controller's gyro arrives already corrected, so it keeps a bias of its
 own (`gyro_bias_pad` ends in "(under Steam)").
+
+On Linux the gamepad keeps playing while the game window has no focus (#971), except in a game Steam started: the
+Steam overlay and Steam's menus (the Quick Access menu and the Steam menu in SteamOS's Game Mode) take the focus while
+they are open, and the presses meant for them must not reach the game too (#1462). Steam sets `SteamGameId` for its
+own games and for non-Steam shortcuts; the log then says `input: the gamepad pauses while the window has no focus`.
+`pad_background = 1` keeps the gamepad playing behind other windows under Steam too, `0` pauses it everywhere
+(`runtime/input.c`, `start`; read at start). On Windows the game window is not SDL's, and the gamepad always plays.
 
 ## Scripted input
 
