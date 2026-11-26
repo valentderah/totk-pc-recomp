@@ -1004,8 +1004,9 @@ static void row_quicksave_keys(void) {
 // greyed, and while the hook does not run (the switch off, or on but not yet restarted) the combo is greyed; the key
 // row, which opt_disable_next does not grey, says why in its note.
 static void rows_freecam(void) {
-    UiTextId why = rt_game_version != 143 ? UI_MENU_FREECAM_PAD_V143 : UI_MENU_FREECAM_OFF_NOTE;
-    if (rt_game_version != 143) opt_disable_next(UI_MENU_FREECAM_PAD_V143);
+    int supported = rt_game_version == 110 || rt_game_version == 143;
+    UiTextId why = !supported ? UI_MENU_FREECAM_PAD_V143 : UI_MENU_FREECAM_OFF_NOTE;
+    if (!supported) opt_disable_next(UI_MENU_FREECAM_PAD_V143);
     opt_toggle("TOTK_FREECAM_PATCH", UI_MENU_FREECAM, UI_MENU_FREECAM_DESC);
     static const char *const combos[] = {"zl+zr+lstick", "zl+zr+rstick", "l+r+lstick", "l+r+rstick", "none"};
     static const int pads[][3] = {{PAD_ZL, PAD_ZR, PAD_LSTICK}, {PAD_ZL, PAD_ZR, PAD_RSTICK},
