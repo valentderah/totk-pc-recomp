@@ -63,6 +63,9 @@ static const char *switch_language(const char *tag) {
     for (const char *p = tag + n; *p;) {
         p += strspn(p, "-_");
         size_t k = strcspn(p, "-_");
+        // A singleton starts an extension or private-use sequence (BCP 47). Its subtags are not the language's
+        // script or region: e.g. the calendar key in en-GB-u-ca-gregory must not replace GB with CA.
+        if (k == 1) break;
         if (k == 2 && isalpha((unsigned char)p[0]) && isalpha((unsigned char)p[1])) {
             region[0] = (char)toupper((unsigned char)p[0]);
             region[1] = (char)toupper((unsigned char)p[1]);
@@ -79,9 +82,12 @@ static const char *switch_language(const char *tag) {
              : !strcmp(lang, "nl") ? "nl" : !strcmp(lang, "ru") ? "ru" : !strcmp(lang, "ko") ? "ko" : "pt";
     if (!strcmp(lang, "fr")) return !strcmp(region, "CA") ? "fr-CA" : "fr";
     if (!strcmp(lang, "es")) return *region && strcmp(region, "ES") ? "es-419" : "es";
-    if (!strcmp(lang, "zh"))
+    if (!strcmp(lang, "zh")) {
+        // An explicit writing system takes precedence over a region's usual script (zh-Hans-TW is Simplified).
+        if (!strcmp(script, "Hans")) return "zh-Hans";
         return !strcmp(script, "Hant") || !strcmp(region, "TW") || !strcmp(region, "HK") || !strcmp(region, "MO")
                    ? "zh-Hant" : "zh-Hans";
+    }
     if (!strcmp(lang, "en"))
         return !strcmp(region, "GB") || !strcmp(region, "IE") || !strcmp(region, "AU") || !strcmp(region, "NZ")
                    ? "en-GB" : "en-US";
