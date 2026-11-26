@@ -89,6 +89,7 @@ struct VkExecDraw;   // vk_exec_draw.c: the memos and command buffer state of on
 // next, as in MacNativeGames' and LAS Recomp's replays. The "per command buffer" fields are reset by vk_exec_record.
 // The fields from rt up to views are that queue state (VK_EXEC_STATE_BEGIN/END); the rest belongs to the context that
 // records with it.
+#define VK_FBL_MAX 9   // images in the feedback layout at one time (a pass attaches 9 at most)
 typedef struct VkExec {
     // ---- per command buffer
     VkCommandBuffer cb;                  // being recorded
@@ -159,8 +160,8 @@ typedef struct VkExec {
     // Feedback loops (vk.h VkCtx.feedback, vk_exec_draw.c feedback_prepare). Learned targets are attached in
     // ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT; they stay in it across consecutive passes and go back to GENERAL at the next
     // full barrier that is not a pass begin.
-    VkImage fbl_img[9];                  // images in the feedback layout now
-    VkImageAspectFlags fbl_aspect[9];
+    VkImage fbl_img[VK_FBL_MAX];         // images in the feedback layout now
+    VkImageAspectFlags fbl_aspect[VK_FBL_MAX];
     int nfbl;
     uint32_t fbl_mask;                   // attachments of the open pass in that layout: bit i colour i, bit 8 depth
     uint32_t fb_dirty;                   // attachments of the open pass written by a draw or clear since the pass began
@@ -201,6 +202,15 @@ typedef struct VkExec {
     const uint32_t *wpos;                // the positions of the draws and dispatches among those ops (vk_exec_draw_writes)
     uint32_t wpos_i, wpos_end;           // the next of them, and the end of the chunk's
     uint32_t pos;                        // ops of the submission up to and with it (the scan's too)
+    // The full barrier names its images (vk_exec.c barrier_to, TOTK_BAR_IMG): wr_img are the attachments of
+    // the pass begun since the last full barrier; rec_light counts the commands recorded in that pass (rec_pass0:
+    // `recorded` at its begin). When nothing else was recorded since the barrier, only those images were written.
+    VkImage wr_img[9];
+    VkImageAspectFlags wr_asp[9];
+    int nwr, rec_pass0, rec_light;
+    uint32_t wr_clear;                   // bit i: wr_img[i] was written by a whole-image clear, not as an attachment
+    uint8_t fb_nondraw;                  // an in-pass clear wrote an attachment since the last feedback barrier of a draw
+                                         // (vk_exec_draw.c terrain_chain)
 } VkExec;
 
 #define VK_EXEC_STATE_BEGIN offsetof(VkExec, rt)
@@ -214,6 +224,10 @@ void vk_exec_pass_end(VkExec *ex);
 // Full memory barrier (all commands, all memory); ends the open pass first. Copies and dispatches order themselves with
 // it. Skipped when nothing was recorded since the last one.
 void vk_exec_barrier(VkExec *ex);
+// vk_exec_barrier_keep (TOTK_FB_KEEP): the same barrier, but the images in the feedback layout stay in it,
+// all but `out` (VK_NULL_HANDLE: none), which the caller uses in GENERAL next.
+void vk_exec_barrier_keep(VkExec *ex, VkImage out);
+int vk_exec_bar_img(void);   // TOTK_BAR_IMG is on (or "ab"): the draws note storage writes for barrier_to
 int vk_exec_barrier_merge_on(void);   // TOTK_BARRIER_MERGE, read once (vk_exec.c barrier_merges)
 // UpdateUniformBuffer overlays (vk_exec_draw.c): the copies into the real buffers that updates inside a pass left for
 // the next barrier (barrier_to records them first), and a GPU write of another kind into [addr, addr+n) of this

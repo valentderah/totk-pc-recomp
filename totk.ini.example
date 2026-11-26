@@ -223,6 +223,17 @@
 # the RADV driver in the Linux build and imported memory, off elsewhere (not run there). Read at start.
 # usnap_peek = 1
 
+# Barriers for the RADV driver, each 0 or 1. bar_img: the barrier between two passes names its images. fb_imgbar: the
+# barrier inside a pass, before a draw that samples an attachment of the pass, names that attachment. fb_keep: a
+# target stays in the feedback loop layout across barriers. fb_terrain (game 1.4.3): a chain of terrain draws with
+# one shader has no barrier between its draws. With 0 RADV syncs its caches for all images at each barrier and
+# decompresses the depth image again (Steam Deck: 3 to 6% more GPU work a frame). Default: on with the RADV driver in
+# the Linux build and imported memory, off elsewhere (not run there). Read at start.
+# bar_img = 1
+# fb_imgbar = 1
+# fb_keep = 1
+# fb_terrain = 1
+
 [display]
 # Device profile: auto (the Steam Deck when this is one), desktop or deck. On a Steam Deck the keys this file does not
 # set default to fullscreen = 1, window_size = 1280x800, output_res = 1280x800, render_scale = game, vk_present = fifo
