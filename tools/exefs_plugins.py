@@ -10,9 +10,9 @@ addresses). The record says what the build expects that start-up to write.
                                 --patches-out <patch file> --status <file>   # and the patch lines for the generator
 
 With --mods, --patches, --patches-out and --status, an accepted plugin becomes one `ordered` patch set mod_<hash>
-(recomp/patches.py: a plugin line, its expected writes, stubs, seeds, orig lines and its hook sites) appended to the
---patches file into --patches-out, and every plugin gets a line of --status (runtime/mods.c reads it as
-build-cache/plugins.status), in the format of tools/exefs_patches.py --status:
+(recomp/patches.py: a plugin line, its expected writes, stubs, seeds, orig lines, its hook sites and code words)
+appended to the --patches file into --patches-out, and every plugin gets a line of --status (runtime/mods.c reads it
+as build-cache/plugins.status), in the format of tools/exefs_patches.py --status:
 
   <file hash> <content hash> <kind> <built-in sets> <note>
 
@@ -809,7 +809,8 @@ def entries(rec, hooks, module):
 
 def plugin_lines(rec, hooks, name, record_dir, module):
     """The patch lines of the accepted plugin module (recomp/patches.py) for set name: the plugin line, the expected
-    writes (the words at its hooks' sites), the stubs, the seeds, the orig lines and the hook sites."""
+    writes (the words at its hooks' sites), the hook sites and code words, the orig lines, the stubs, the seeds and
+    the entries."""
     lines = []
     mods = {m['name']: m for m in rec['modules']}
     p = mods[module]
