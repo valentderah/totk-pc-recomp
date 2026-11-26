@@ -322,10 +322,18 @@ void frame_step_present(uint64_t display_ns, int interval) {
                     // Pair mode runs ~100-144 game frames/s. Hair is solved with position constraints each step: gravity
                     // moves it by dt^2, the bend constraints pull it fully back to its rest shape, so at such short steps
                     // the rest shape wins (Yona's head fin stood out sideways and flapped instead of hanging
-                    // like in the flat game at 60). The cloth clock never goes below TOTK_VR_CLOTHMIN (s, default 1/60).
+                    // like in the flat game at 60). A floor on every frame (TOTK_VR_CLOTHMIN, s, default 1/60) cured
+                    // that, but hair and cloth then ran 1.7-2.4x too fast and moved a whole 1/60 s between the two eyes
+                    // of a pair (Link's hair and armour trims flapped, and differed between the eyes).
+                    // TOTK_VR_CLOTHPAIR (default 1): hair and cloth step once per pair, the pair's whole time on the
+                    // left frame and nothing on the right one: real-time speed, one shape for both eyes, and steps as
+                    // long as a flat game's at the pair rate. 0: the floor on every frame.
                     static double cmin = -1;
+                    static int cpair = -1;
                     if (cmin < 0) { const char *e = cfg_get("TOTK_VR_CLOTHMIN"); cmin = e ? atof(e) : 1.0 / 60.0; }
-                    cloth_store((float)(step > cmin ? step : cmin));
+                    if (cpair < 0) { const char *e = cfg_get("TOTK_VR_CLOTHPAIR"); cpair = !e || *e != '0'; }
+                    if (cpair) cloth_store(vs <= STEP_MIN_S ? 0.0f : (float)(2 * step));
+                    else cloth_store((float)(step > cmin ? step : cmin));
                 }
             }
         }

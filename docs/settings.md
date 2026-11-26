@@ -320,7 +320,8 @@ Settings of VR (`--vr` or `vr = 1`; `docs/vr.md`). The first table is the player
 | `vr_pairgame` (default `1`) | A pair's right eye carries its left frame's game-camera label. | Off: in fast camera pans the eyes can be shown from different places. | Caution |
 | `vr_locklabel` (default `1`) | A frame's label follows the head lock decided for that frame. | Off: one eye can turn away at a cutscene cut. | Caution |
 | `vr_rethead` (default `1`) | The Ultrahand / Recall reticle sits at the head's view centre (where the game picks targets in VR). | Off: on the game camera's aim. | Caution |
-| `vr_clothmin` (default `0.0167`) | Shortest step in seconds of the hair and cloth clock in VR (the game runs about twice as fast). | Lower: hair and cloth stiffen. | Caution |
+| `vr_clothpair` (default `1`) | Hair and cloth step once per pair of eye pictures in VR, so they move at their normal speed and look the same in both eyes. | `0`: they step on every game frame with `vr_clothmin` as the shortest step, and run about twice as fast. | Safe |
+| `vr_clothmin` (default `0.0167`) | Shortest step in seconds of the hair and cloth clock in VR; only used with `vr_clothpair = 0`. | Lower: hair and cloth stiffen. | Caution |
 | `vr_pairhud` (default `31`) | HUD handling in stereo pairs (bits): 1 the eye picture after the HUD, 2 panel HUD left out of it, 4 the panel from left frames only, 8 no separate marker layer, 16 HUD draws outside any layout left out of the picture too, 32 world markers left out as well. | Read at start. | Caution |
 | `vr_rtearly` (default `1`) | Render targets are resolved before the HUD rules judge a draw. | Off: grass trampling never fades and terrain tiles can stay dark. | Caution |
 | `vr_hudoutsize` (default `1`) | The HUD's output is recognised by its texture and its size. | Off: by the texture alone. | Caution |
