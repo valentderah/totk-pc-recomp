@@ -128,6 +128,8 @@ def main(argv=None):
     rep.emit('start', release=layout.release, mode=ctx.mode, dev=layout.dev, dest=str(dest), log=str(log),
              steps=[s.id for s in steps])
     result = run_steps(steps, ctx)
+    if args.prepare and result == 'ok':
+        rep.out.finish(any(ctx.will_run(s.id) for s in steps if not s.always))
     rep.emit('end', result=result, seconds=round(time.monotonic() - t0, 1))
     rep.close()
     return EXIT[result]

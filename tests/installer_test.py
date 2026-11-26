@@ -1596,6 +1596,36 @@ class ProgressLinesTest(unittest.TestCase):
         self.assertEqual(lines[-1].split()[:2], ['progress', '0.500'])
         self.assertGreater(len(lines[-1].split()), 2)
 
+    def test_finish_says_whether_it_built(self):
+        for built, text in ((False, 'progress 1.000 Already built\n'), (True, 'progress 1.000 Built\n')):
+            out = io.StringIO()
+            ProgressLines(out).finish(built)
+            self.assertEqual(out.getvalue(), text)
+
+    def test_a_second_run_without_the_game_files_is_already_built(self):
+        class Once(runner.Step):
+            def __init__(self, id, always=False):
+                self.id, self.always = id, always
+
+            def current(self, ctx, record):
+                return (ctx.dest / f'{self.id}.out').is_file()
+
+            def run(self, ctx):
+                ctx.dest.mkdir(parents=True, exist_ok=True)
+                (ctx.dest / f'{self.id}.out').write_text('')
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        dest, temp = Path(tmp.name) / 'TotK', Path(tmp.name) / 'temp'
+        steps = lambda: [Once('check', always=True), Once('extract'), Once('cleanup', always=True)]  # noqa: E731
+        for argv, last in ((['--lang', 'en-US'], 'progress 1.000 Built'), ([], 'progress 1.000 Already built')):
+            out = io.TextIOWrapper(io.BytesIO(), encoding='utf-8')   # --prepare reconfigures stdout
+            with mock.patch.object(cli, 'all_steps', steps), mock.patch.object(sys, 'stdout', out):
+                code = cli.main(['--prepare', '--dest', str(dest), '--temp', str(temp), *argv])
+            out.flush()
+            self.assertEqual(code, 0)
+            self.assertEqual(out.buffer.getvalue().decode().splitlines()[-1], last)
+
 
 class SplitGameTest(unittest.TestCase):
     """--game: a file is the base game; a folder gives the base game and the update by their names."""

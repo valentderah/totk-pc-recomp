@@ -167,3 +167,8 @@ class ProgressLines:
             self.say((self.index + min(share, 1.0)) / count, render(c, f'phase.{e["step"]}.{e["phase"]}'))
         elif kind == 'error':
             self.say(self.fraction, render(c, e['id'], e.get('params')))
+
+    def finish(self, built):
+        """The last line of a run that succeeded. built: whether a step other than the check and the clean-up ran; a
+        launcher runs the setup again after each of its updates, and an install that is already current says so."""
+        self.say(1.0, 'Built' if built else 'Already built')
