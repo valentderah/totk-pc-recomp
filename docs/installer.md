@@ -293,20 +293,26 @@ bin/                  totk_xlate, hactool, ninja, libSDL3.so.0
 
 `recomplauncher.json` at the top of the release folder (the zip, and `/recomplauncher.json` in the AppImage) tells
 [RecompLauncher](https://recomplauncher.com) what to ask for and what to run. It names three inputs (the base game, the
-update and `prod.keys`) and runs the setup without a window:
+update and `prod.keys`) and runs the setup without a window, with each file as one argument:
 
 ```
-pythonpython.exe -m installer --prepare --base FILE --update FILE --keys FILE --dest <release folder>/TotK
+python\python.exe -m installer --prepare --base=FILE --update=FILE --keys=FILE --dest <release folder>/TotK
 TotK-Setup-x86_64.AppImage -m installer --prepare ...         (Linux; AppRun hands a command line that starts with -m
                                                               to the bundled Python)
 ```
 
 - `--prepare` prints `progress <0-1> <text>` lines instead of the JSON events: the fraction counts the finished steps of
   the plan plus the share of the running one, and an error prints its text at the fraction reached (`installer/events.py`,
-  `ProgressLines`). The exit codes are those of the command line. `--lang` defaults to `en-US` on a first install; the
-  `lang` key in `totk.ini` changes it later, and the launcher shows it as a setting.
-- The launcher does not pass `--firmware` or `--dlss`: Chinese and Korean text and NVIDIA DLSS stay with the setup window,
-  which can be run on the same folder afterwards.
+  `ProgressLines`). A run that succeeds ends with `progress 1 Built`, or `progress 1 Already built` when no step but the
+  check and the clean-up ran. The exit codes are those of the command line. `--lang` defaults to `en-US` on a first
+  install; the `lang` key in `totk.ini` changes it later, and the launcher shows it as a setting.
+- The launcher runs the setup again after each release it installs. The install folder keeps what the build needs
+  (`exefs/`, `romfs/`, `totk-install.json`), so that run needs only `--dest` and the keys, as "Updating the port" does:
+  with `keeps_copy` the launcher leaves out the base game's argument when it builds again without the player's copy,
+  and an update file that is gone is read only when the extraction must run again.
+- The launcher's DLSS and FSR 4 ticks pass `--dlss` and `--fsr` (Windows), each after the player accepts the vendor's
+  license. It does not pass `--firmware`: Chinese and Korean text stays with the setup window, which can be run on the
+  same folder afterwards.
 - The launcher keeps `prod.keys` in its own folder and passes its path; key values stay out of the output as always.
 - `totk.exe --game DIR` starts the game from an install folder at another place: its `exefs`, `romfs` and `profile`
   folders become the paths, and `--exefs`, `--romfs` and `--profile` after it still win. A folder without

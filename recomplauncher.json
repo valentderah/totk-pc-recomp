@@ -1,10 +1,11 @@
 {
   "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
   "format": 1,
+  "name": "TotK Recomp",
   "repo": "valentderah/totk-pc-recomp",
   "inputs": [
     {
-      "id": "base",
+      "id": "game",
       "label": "The Legend of Zelda: Tears of the Kingdom, base game (.xci or .nsp; compressed .xcz or .nsz also work)",
       "role": "game",
       "formats": [{ "type": "file", "extensions": ["xci", "nsp", "xcz", "nsz"], "requires": ["keys"] }]
@@ -24,12 +25,37 @@
   ],
   "prepare": {
     "program": ["python/python.exe", "TotK-Setup-x86_64.AppImage"],
-    "args": ["-m", "installer", "--prepare", "--base", "{input:base}", "--update", "{input:update}", "--keys", "{input:keys}", "--dest", "{install}/TotK"],
-    "label": "Building the game from your files (one time, it takes a while)",
-    "timeout": 14400
+    "args": ["-m", "installer", "--prepare", "--base={input:game}", "--update={input:update}", "--keys={input:keys}", "--dest", "{install}/TotK"],
+    "label": "Building the game from your files (the first time takes a while)",
+    "done": ["{install}/TotK/exefs/main.npdm", "{install}/TotK/romfs/romfs.bin", "{install}/TotK/build-cache/rebuild.txt"],
+    "keeps_copy": true,
+    "options": [
+      {
+        "id": "dlss",
+        "label": "NVIDIA DLSS",
+        "note": "Downloads nvngx_dlss.dll from NVIDIA's DLSS SDK on GitHub, for the DLSS and DLAA settings.",
+        "os": ["windows"],
+        "gpu": "nvidia",
+        "args": ["--dlss"],
+        "license": { "name": "NVIDIA RTX SDKs license", "url": "https://github.com/NVIDIA/DLSS/blob/main/LICENSE.txt" }
+      },
+      {
+        "id": "fsr",
+        "label": "AMD FSR 4",
+        "note": "Downloads AMD's FSR 4 libraries from AMD's FidelityFX SDK on GitHub, for the FSR 4 upscaler.",
+        "os": ["windows"],
+        "gpu": "amd",
+        "args": ["--fsr"],
+        "license": { "name": "AMD FidelityFX SDK license", "url": "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/v2.4.0/docs/license.md" }
+      }
+    ]
   },
   "start": {
     "program": ["TotK/totk.exe", "TotK/totk"]
+  },
+  "system": {
+    "windows": { "version": "10", "graphics": { "vulkan": "1.3" } },
+    "linux": { "glibc": "2.34", "graphics": { "vulkan": "1.3" } }
   },
   "config": [
     {
@@ -38,7 +64,9 @@
       "file": [{ "path": "{install}/TotK/totk.ini" }]
     }
   ],
+  "saves": ["{install}/TotK/profile"],
   "folders": {
+    "game": [{ "path": "{install}/TotK" }],
     "saves": [{ "path": "{install}/TotK/profile" }],
     "logs": [{ "path": "{install}/TotK/logs" }]
   },
@@ -48,67 +76,79 @@
       "label": "Game language",
       "help": "The language of the game's text. Korean and Chinese need the Switch fonts, which the TotK Setup window extracts from a firmware folder.",
       "choices": [
-        { "label": "English (US)", "set": { "lang": "en-US" } },
-        { "label": "English (UK)", "set": { "lang": "en-GB" } },
-        { "label": "Japanese", "set": { "lang": "ja" } },
-        { "label": "French", "set": { "lang": "fr" } },
-        { "label": "French (Canada)", "set": { "lang": "fr-CA" } },
-        { "label": "German", "set": { "lang": "de" } },
-        { "label": "Italian", "set": { "lang": "it" } },
-        { "label": "Spanish", "set": { "lang": "es" } },
-        { "label": "Spanish (Latin America)", "set": { "lang": "es-419" } },
-        { "label": "Dutch", "set": { "lang": "nl" } },
-        { "label": "Portuguese", "set": { "lang": "pt" } },
-        { "label": "Portuguese (Brazil)", "set": { "lang": "pt-BR" } },
-        { "label": "Russian", "set": { "lang": "ru" } }
+        { "label": "English (US)", "set": { "language/lang": "en-US" } },
+        { "label": "English (UK)", "set": { "language/lang": "en-GB" } },
+        { "label": "Japanese", "set": { "language/lang": "ja" } },
+        { "label": "French", "set": { "language/lang": "fr" } },
+        { "label": "French (Canada)", "set": { "language/lang": "fr-CA" } },
+        { "label": "German", "set": { "language/lang": "de" } },
+        { "label": "Italian", "set": { "language/lang": "it" } },
+        { "label": "Spanish", "set": { "language/lang": "es" } },
+        { "label": "Spanish (Latin America)", "set": { "language/lang": "es-419" } },
+        { "label": "Dutch", "set": { "language/lang": "nl" } },
+        { "label": "Portuguese", "set": { "language/lang": "pt" } },
+        { "label": "Portuguese (Brazil)", "set": { "language/lang": "pt-BR" } },
+        { "label": "Russian", "set": { "language/lang": "ru" } }
       ],
-      "defaults": { "lang": "en-US" }
+      "defaults": { "language/lang": "en-US" }
     },
     {
       "id": "frame_rate",
       "label": "Frame rate limit",
       "help": "60 is the game's smooth default. Above 60 is experimental. On a Steam Deck the game starts at 40 until you pick one.",
       "choices": [
-        { "label": "30", "set": { "fps_limit": "30" } },
-        { "label": "40", "set": { "fps_limit": "40" } },
-        { "label": "60", "set": { "fps_limit": "60" } },
-        { "label": "90", "set": { "fps_limit": "90" } },
-        { "label": "120", "set": { "fps_limit": "120" } },
-        { "label": "144", "set": { "fps_limit": "144" } },
-        { "label": "Monitor's refresh rate", "set": { "fps_limit": "display" } }
+        { "label": "30", "set": { "frame rate/fps_limit": "30" } },
+        { "label": "40", "set": { "frame rate/fps_limit": "40" } },
+        { "label": "60", "set": { "frame rate/fps_limit": "60" } },
+        { "label": "90", "set": { "frame rate/fps_limit": "90" } },
+        { "label": "120", "set": { "frame rate/fps_limit": "120" } },
+        { "label": "144", "set": { "frame rate/fps_limit": "144" } },
+        { "label": "Monitor's refresh rate", "set": { "frame rate/fps_limit": "display" } }
       ],
-      "defaults": { "fps_limit": "60" }
+      "defaults": { "frame rate/fps_limit": "60" }
     },
     {
       "id": "window",
       "label": "Window",
       "help": "Fullscreen fills the screen without a border. F11 switches it in the game.",
       "choices": [
-        { "label": "Windowed", "set": { "fullscreen": "0" } },
-        { "label": "Fullscreen", "set": { "fullscreen": "1" } }
+        { "label": "Windowed", "set": { "display/fullscreen": "0" } },
+        { "label": "Fullscreen", "set": { "display/fullscreen": "1" } }
       ],
-      "defaults": { "fullscreen": "0" }
+      "defaults": { "display/fullscreen": "0" }
+    },
+    {
+      "id": "scene_upscaler",
+      "label": "3D upscaler",
+      "help": "Upscaling and anti-aliasing for the 3D scene. FSR 3.1 works on any graphics card. DLSS needs an NVIDIA RTX card and NVIDIA's file, FSR 4 a Radeon card on Windows; on Windows, tick their downloads at setup.",
+      "choices": [
+        { "label": "Off", "set": { "display/scene_upscaler": "off" } },
+        { "label": "AMD FSR 3.1", "set": { "display/scene_upscaler": "fsr3" } },
+        { "label": "NVIDIA DLSS", "set": { "display/scene_upscaler": "dlss" } },
+        { "label": "AMD FSR 4", "set": { "display/scene_upscaler": "fsr4" } }
+      ],
+      "defaults": { "display/scene_upscaler": "off" }
     },
     {
       "id": "upscaler",
       "label": "Upscaling",
       "help": "How the picture is fitted to the window when the window is larger than the game's resolution. FSR sharpens it.",
       "choices": [
-        { "label": "FSR", "set": { "upscaler": "fsr" } },
-        { "label": "Bilinear", "set": { "upscaler": "bilinear" } }
+        { "label": "FSR", "set": { "display/upscaler": "fsr" } },
+        { "label": "Bilinear", "set": { "display/upscaler": "bilinear" } }
       ],
-      "defaults": { "upscaler": "fsr" }
+      "defaults": { "display/upscaler": "fsr" }
     },
     {
       "id": "overlay",
       "label": "Performance overlay",
       "help": "The frame rate in the top right corner. F10 cycles it in the game.",
       "choices": [
-        { "label": "Off", "set": { "perf_overlay": "off" } },
-        { "label": "Frame rate", "set": { "perf_overlay": "fps" } },
-        { "label": "Full", "set": { "perf_overlay": "full" } }
+        { "label": "Off", "set": { "display/perf_overlay": "off" } },
+        { "label": "Frame rate", "set": { "display/perf_overlay": "fps" } },
+        { "label": "Full", "set": { "display/perf_overlay": "full" } }
       ],
-      "defaults": { "perf_overlay": "off" }
+      "defaults": { "display/perf_overlay": "off" }
     }
   ],
   "actions": [
