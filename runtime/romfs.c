@@ -36,6 +36,7 @@
 #include "fs.h"
 #include "host.h"
 #include "input_map.h"
+#include "loadwin.h"
 #include "mods.h"
 #include "romfs_config.h"
 #include "romfs_path.h"
@@ -733,6 +734,10 @@ static void pack_note(const char *key, uint32_t was, uint32_t now, void *ctx) {
         rt_log("RomFS: resource size table: %s in %s (%s): entry %u -> %u", key, pn->pack, pn->mod, was, now);
 }
 
+// The loading window's count of restbl_overlay's work: the overlays of its file pass, then those of its pack pass.
+static volatile size_t restbl_done;
+static uint64_t restbl_progress(void *ctx) { return (void)ctx, (uint64_t)restbl_done; }
+
 // The entries of the members of every pack a mod serves, raised in out against the game's table base; the number
 // raised, *packs the number of packs with one.
 static int restbl_packs(Restbl *out, const Restbl *base, int *packs, int *lines) {
@@ -741,6 +746,7 @@ static int restbl_packs(Restbl *out, const Restbl *base, int *packs, int *lines)
     *packs = 0;
     for (size_t k = 0; k < noverlay; k++) {
         const Overlay *o = &overlays[k];
+        restbl_done = noverlay + k + 1;
         if ((!o->mod && o->prio != 1) || !ends_with(o->name, ".pack.zs")) continue;
         if (!opened++ && !packs_open(&ps)) {
             rt_log("RomFS: no zstd dictionary in Pack/ZsDic.pack.zs; the members of mods' packs keep their entries");
@@ -939,8 +945,10 @@ static void restbl_overlay(void) {
         restbl_free(t);
     }
     Overlay *served = NULL;
+    lw_count(LW_FILES, 2 * (uint64_t)noverlay, restbl_progress, NULL);
     for (size_t k = 0; k < noverlay; k++) {
         Overlay *o = &overlays[k];
+        restbl_done = k + 1;
         if (o->index == gi) served = o;
         if ((!o->mod && o->prio != 1) || o->index == gi) continue;
         char key[4200];
@@ -1274,6 +1282,7 @@ static void overlay_init(void) {
     overlay_contest();
     mods_overlay_log();
     restbl_overlay();
+    lw_count_end(LW_FILES);
     heapdef_overlay();
     camera_overlay();
     added_init();
@@ -1516,6 +1525,7 @@ static void init_once(void *param) {
     rt_fatal("this build has no RomFS: tools/build_game.py found no index.json in its --romfs directory");
 #else
     double t0 = now_s();
+    lw_begin(LW_FILES);
     load_index();
     const char *dir = rt_config()->romfs;
     need(snprintf(image_file, sizeof image_file, "%s/romfs.bin", dir) < (int)sizeof image_file, "image path");
@@ -1540,6 +1550,7 @@ static void init_once(void *param) {
         }
     }
     overlay_init();
+    lw_end(LW_FILES);
     rt_log("RomFS ready: %llu files, %zu overlays, %zu added, %.2f s", (unsigned long long)file_count, noverlay,
            nadded, now_s() - t0);
 #endif
