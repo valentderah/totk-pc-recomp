@@ -107,7 +107,10 @@ ahead of time, after the design in [#845](https://github.com/valentderah/totk-pc
 
 1. The rebuild (the same one as for code patches above) compiles the plugins with the game, then starts the game's
    code in a service mode that runs only one plugin's start-up (`totk.exe --plugin-init`), twice per plugin, and
-   records which instructions it redirects. Each redirect becomes a code site of the mod, built into `totk.exe`. Each
+   records every instruction it writes into the game's code. What it wrote is new code there, built into `totk.exe`
+   next to the game's own: a one-word redirect of exlaunch's hook shapes becomes a code site of the mod, and any other
+   new code (SageWheel's three-word far jumps into its functions) a second copy of the game function that holds it,
+   which runs in place of that function while the mod is on. Each
    plugin is judged on its own: one that is refused, or whose start-up crashes or never returns, stays off with its
    reason, and the other plugins are built in.
 2. At every start each plugin's start-up runs again, before the game's own start-up code, in the same setting: it
@@ -122,7 +125,10 @@ ahead of time, after the design in [#845](https://github.com/valentderah/totk-pc
    it (half a minute on 12 cores with the lift cache). A plugin mod switched off on the Mods tab only stays off.
 
 The Mods tab order decides between a plugin and another mod's patch on the same instruction, as for code patches. A
-plugin site over one of the port's own patches turns that built-in patch off while the mod is on.
+plugin site over one of the port's own patches turns that built-in patch off while the mod is on. Where a plugin's new
+code takes a second copy of a game function, that copy keeps the other mods' patches in the function, but on the
+instructions the plugin wrote; when two plugins write new code into the same game function, the copy of the first
+one by mod folder name runs there.
 
 The rebuild refuses a plugin when its start-up or the code its redirects reach needs what the port does not give it:
 system calls other than the few its start-up needs (memory queries and maps, the heap size, the clock, debug output),
@@ -131,10 +137,12 @@ text formatting, mutexes, the clock, the system language, the SD card's files), 
 loader. A library call the game makes (threads, input, time, its files) runs on the path the game runs on. A call to a
 function the plugin itself holds counts as its own code, even when it goes through the plugin's import table (C++
 library templates such as `std::vector` built into it). A start-up
-still gets only the system calls above, so it cannot start a thread or open a service; a redirect that is not one of exlaunch's hook shapes
-(inline hook, replace hook, call-site rewrite, a branch into its code from inside a game function, a pointer in the
-game's data swapped for one into its code); a write into the game's read-only data or into another module; two runs of
-its start-up that differ in code; or a start-up that crashes the service run or does not return within two minutes.
+still gets only the system calls above, so it cannot start a thread or open a service; new code in the game's
+instructions that jumps anywhere but the game's code and the plugin's own, into one of exlaunch's hook stubs from
+elsewhere, makes a system call outside the few above, or loads a constant from words the start-up wrote (the game
+keeps its own instructions in memory, only the built code changes); a write into the game's read-only data or into
+another module; two runs of its start-up that differ in code; or a start-up that crashes the service run or does not
+return within two minutes.
 The row then says **Its plugin ... cannot run in the port** with the reason, and the mod stays off; **Use <mod> without
 its code** uses the rest of it, including its other plugins that were built in. UltraCam stays refused: it hooks the graphics API,
 reads input and opens sockets.

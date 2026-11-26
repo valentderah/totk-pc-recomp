@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tests'))
 sys.path.insert(0, str(ROOT / 'tools'))
 sys.path.insert(0, str(ROOT / 'recomp'))
+import layout  # noqa: E402
 import patches  # noqa: E402
 from check_content import GENERATED_MARKER  # noqa: E402
 # The jump table module and the NSO writer of tests/exefs_patches_test.py; a change there changes this test's module,
@@ -190,6 +191,23 @@ class LiftCache(unittest.TestCase):
         self.assert_like_fresh(patch_file(MOV_W8_200, spin=True))
         self.assertEqual(self.gen(patch_file(MOV_W8_200))['chunks_reused'], 2)
         self.assertNotIn('rt_spin_gate', self.chunk(0).read_text())
+
+    def test_code_words_are_in_the_key(self):
+        """A `code` line (recomp/patches.py: new code a plugin wrote) on h's mov copies h with the new word: f_h tests
+        the set and tail-calls fw0_h. Only h's chunk is lifted again, for the line and for another word in it."""
+        def code(w):
+            return f'set p TEST_P 0 ordered\ncode p main {H:x} {MOV_W8_100:08x} {w:08x}\n'
+        self.gen(patch_file(MOV_W8_200))
+        self.assertEqual(self.gen(patch_file(MOV_W8_200) + code(MOV_W8_300))['chunks_reused'], 2)
+        text, h = self.chunk(2).read_text(), layout.FIRST_BASE + H
+        self.assertIn(f'if (rt_patch_on[1]) {{ __attribute__((musttail)) return fw1_{h:x}(c); }}', text)
+        self.assertIn(f'static void fw1_{h:x}(Cpu *c) {{', text)
+        self.assertIn('x8 = (uint32_t)(0x300ull);', text[text.index(f'static void fw1_{h:x}(Cpu *c) {{'):])
+        self.assert_like_fresh(patch_file(MOV_W8_200) + code(MOV_W8_300))
+        self.assertEqual(self.gen(patch_file(MOV_W8_200) + code(MOV_W8_200))['chunks_reused'], 2)
+        self.assert_like_fresh(patch_file(MOV_W8_200) + code(MOV_W8_200))
+        self.assertEqual(self.gen(patch_file(MOV_W8_200))['chunks_reused'], 2)
+        self.assertNotIn('fw1_', self.chunk(2).read_text())
 
     def test_hooks_are_in_the_key(self):
         """No hook line: FN_ENTER in every function. The first hook line takes it out of every other function, so

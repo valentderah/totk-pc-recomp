@@ -94,6 +94,11 @@ def orig_name(a):
     return f'fo_{a:x}'
 
 
+def code_name(k, a):
+    """The copy of the function at a with set k's `code` words in it (patches.py `code`, Emitter.code_copy)."""
+    return f'fw{k}_{a:x}'
+
+
 def open_module(name, path, base, table, plugin=False):
     """Module name for lifting: a plugin with a `plugin` line of the patch table (recomp/patches.py) is lifted from its
     image after the init, its inline-hook stubs returning where they would branch to their trampolines. A game module's
@@ -294,13 +299,20 @@ class Emitter:
     the C (an argument here, or anything else it reads) must go into the lift cache's key: chunk_key."""
 
     def __init__(self, mod, starts, patched=None, reg_locals=regs.LOCALS, callee_saved=True, spins=None,
-                 v_locals=vlocals.LOCALS, v_trust=False, hooks=None, fn_enter_all=False, picks=None, origs=None):
+                 v_locals=vlocals.LOCALS, v_trust=False, hooks=None, fn_enter_all=False, picks=None, origs=None,
+                 codes=None):
         self.mod = mod
         self.starts = starts
         self.patched = patched or {}   # {address: [(set index, [replacement words])]} (recomp/patches.py)
         self.picks = picks or {}       # {contested site: (pick index, {ordered set: value})} (recomp/patches.py)
         self.spins = spins or {}       # {spin wait back-edge: its head} (recomp/patches.py `spin`)
         self.origs = origs or set()    # functions also emitted unpatched, as orig_name() (recomp/patches.py `orig`)
+        # recomp/patches.py `code`: {address: [(set index, new word)]} and the copies they make ({function start: [set
+        # index in file order]}, code_copies)
+        self.codes = codes or {}
+        self.copies = code_copies(self.codes, starts)
+        self.copying = None            # the set whose copy function() lifts now, else None
+        self._overlays = {}
         self.reg_locals = reg_locals   # recomp/regs.py: registers per function in C locals
         self.kept = regs.CALLEE_SAVED if callee_saved else frozenset()   # not reloaded after a call
         self.v_locals = v_locals   # recomp/vlocals.py: V registers per function in C locals (0: all in c->v)
@@ -452,6 +464,49 @@ class Emitter:
             raise patches.PatchError(f'{a:#x}: a patched call that uses flags')
         return reads, alts[0][1]
 
+    def overlay(self, k):
+        """The module as set k's init left it: its `code` words in place of the module's own (Module.overlay)."""
+        o = self._overlays.get(k)
+        if o is None:
+            o = self._overlays[k] = self.mod.overlay({a: w for a, alts in self.codes.items() for j, w in alts
+                                                      if j == k})
+        return o
+
+    def code_copy(self, entry, end, k, refs):
+        """C of the function [entry, end) as set k's plugin init left it, named code_name(k, entry) and static: what
+        f_<entry> runs instead of its own body while rt_patch_on[k] is set (recomp/patches.py `code`). The per-site
+        patches of the function stay, but for those on the words set k wrote. Its fall-back fb_ is renamed too."""
+        kept, mod = self.patched, self.mod
+        written = {a for a, alts in self.codes.items() if entry <= a < end and any(j == k for j, _ in alts)}
+        self.patched = {a: alts for a, alts in kept.items() if a not in written}
+        self.mod, self.copying = self.overlay(k), k
+        try:
+            lines, r = self.function(entry, end)
+        finally:
+            self.patched, self.mod, self.copying = kept, mod, None
+        refs |= r
+        name = code_name(k, entry)
+        text = '\n'.join(lines).replace(f'fb_{entry:x}(', f'fbw{k}_{entry:x}(')
+        head = f'void {fname(entry)}(Cpu *c) {{'
+        if head not in text:
+            raise patches.PatchError(f'{entry:#x}: no function head to rename for its code copy')
+        self.stats['code_copies'] += 1
+        return text.replace(head, f'static void {name}(Cpu *c) {{', 1)
+
+    def constant_branches(self, insns, entry, end):
+        """In a code copy: each br / blr among the copy set's words whose register those words make a constant
+        (patches.region_targets) becomes a b / bl to that address. The walk forgets the values at every label of the
+        function, where other paths arrive."""
+        stats = self.stats.copy()
+        labels, _ = self.scan(insns, entry, end)
+        self.stats = stats
+        words = {a: w for a, alts in self.codes.items() if entry <= a < end for j, w in alts if j == self.copying}
+        for a, (kind, t) in patches.region_targets(words, labels | {entry}).items():
+            if kind in ('br', 'blr'):
+                insns[(a - entry) // 4] = Insn('b' if kind == 'br' else 'bl', target=t)
+                self.stats['code_constant_branches'] += 1
+        return insns
+
     def unpatched_copy(self, entry, end, refs):
         """C of the function [entry, end) without its patched sites, named orig_name(entry): what a plugin's replace
         hook calls as the original (its trampoline, recomp/patches.py `orig`). Its own fall-back fb_ is renamed too."""
@@ -472,6 +527,8 @@ class Emitter:
         """(lines of C, referenced function starts) for the guest function [entry, end)."""
         mod, starts = self.mod, self.starts
         insns = [mod.lift(a) for a in range(entry, end, 4)]
+        if self.copying is not None:
+            insns = self.constant_branches(insns, entry, end)
         labels, tables = self.scan(insns, entry, end)
         refs = set()
         all_labels = 'all' in tables.values()
@@ -505,16 +562,33 @@ class Emitter:
         def take(i):   # flags that callee or callback left
             return fp.take(i) if fp and fp.used else ''
 
+        def direct(t):
+            """t is a function start of the module, which a branch here calls by name. A code copy's branch into its
+            own module must reach one: its words came after the lift chose the starts, and tools/exefs_plugins.py
+            makes each such target an `entry`. A branch out of the module goes through rt_dispatch with its constant
+            target, as a plugin's one-word branch hooks do: the plugin's seed is in the dispatch table, where
+            TOTK_PLUGIN_TRACE counts the calls (runtime/plugin_init.c trace_entries)."""
+            if t in starts:
+                return True
+            if self.copying is not None and mod.lo <= t < mod.hi:
+                raise patches.PatchError(f'{entry:#x}: the code copy branches to {t:#x}, no function start')
+            return False
+
         def jump(t, i):
             if entry <= t < end:
                 return f'goto L_{t:x};'
-            if t in starts:
+            if direct(t):
                 refs.add(t)
                 return f'{publish(i)}{spill}{MUSTTAIL} {fname(t)}(c);'
             self.stats['external_branches'] += 1
             return f'{publish(i)}{spill}c->pc = {hx(t)}; {MUSTTAIL} rt_dispatch(c);'
 
-        enter = [f'    FN_ENTER({hx(entry)});'] if self.hooks is None or entry in self.hooks else []
+        enter = ([f'    FN_ENTER({hx(entry)});'] if (self.hooks is None or entry in self.hooks) and self.copying is None
+                 else [])
+        if self.copying is None and entry in self.copies:
+            # the copies with a plugin's new code (recomp/patches.py `code`): the first set that is on runs its own
+            enter += [f'    if (rt_patch_on[{k}]) {{ {MUSTTAIL} {code_name(k, entry)}(c); }}' for k in self.copies[entry]]
+            self.uses_patches = True
         if all_labels:
             # An unresolved computed br re-enters the function through fb_<entry>, which switches on c->pc to any
             # instruction. A goto to a shared dispatch block inside the body instead turns every instruction into
@@ -534,7 +608,7 @@ class Emitter:
                 out.append('    ' + fp.decl())
 
         def call(t, a, i):
-            if t in starts:
+            if direct(t):
                 refs.add(t)
                 return f'{give(i)}c->x[30] = {hx(a + 4)}; {spill}{fname(t)}(c);{reload_call}{take(i)}'
             self.stats['external_calls'] += 1
@@ -658,14 +732,19 @@ def chunk_text(name, number, emitter, fns):
     """C text of one chunk. fns: [(entry, end)]."""
     body, refs = [], set()
     emitter.uses_patches = emitter.uses_picks = False
+    copies = []
     for entry, end in fns:
         lines, r = emitter.function(entry, end)
         body.append('\n'.join(lines))
         refs |= r
         if entry in emitter.origs:
             body.append(emitter.unpatched_copy(entry, end, refs))
+        for k in emitter.copies.get(entry, ()):
+            body.append(emitter.code_copy(entry, end, k, refs))
+            copies.append(code_name(k, entry))
     # Every referenced function gets a prototype, including ones defined later in this chunk.
     protos = ''.join(f'void {fname(r)}(Cpu *c);\n' for r in sorted(refs))
+    protos += ''.join(f'static void {n}(Cpu *c);\n' for n in copies)
     if emitter.uses_patches:
         protos += 'extern uint8_t rt_patch_on[];\n'
     if emitter.uses_picks:
@@ -733,18 +812,14 @@ def _emitter(name):
         mod = open_module(name, path, base, _W['patches'])
         # Module.read is how the jump tables (recomp/jumptables.py _eval) read .text and .rodata at lift time: the
         # bytes it returns become part of the generated code, so <mod>/folded.txt lists them
-        read, reads = mod.read, _W['reads'].setdefault(name, [])
-
-        def recorded(a, n, signed=False):
-            reads.append((a - base, a - base + n))
-            return read(a, n, signed=signed)
-        mod.read = recorded
+        mod.record_reads(_W['reads'].setdefault(name, []))
         e = _W['emitters'][name] = Emitter(mod, set(_W['starts'][name].tolist()),
                                            _W['patches'].for_module(name, base),
                                            spins=_W['patches'].spins_for(name, base),
                                            hooks=_W['patches'].hooks_for(name, base),
                                            picks=_W['patches'].picks_for(name, base),
-                                           origs=_W['patches'].origs_for(name, base), **_W['opts'])
+                                           origs=_W['patches'].origs_for(name, base),
+                                           codes=_W['patches'].codes_for(name, base), **_W['opts'])
     return e
 
 
@@ -865,7 +940,24 @@ def in_span(addrs, lo, hi):
     return addrs[bisect.bisect_left(addrs, lo):bisect.bisect_left(addrs, hi)]
 
 
-def chunk_key(mod_key, number, fns, patched, site_addrs, spins, spin_addrs, hook_addrs, picks=None, origs=None):
+def code_copies(codes, starts):
+    """{function start: [set index, in file order]} of the functions holding `code` words (recomp/patches.py), each
+    word in the function of the greatest start at or before it. starts: every function start of the module."""
+    if not codes:
+        return {}
+    order = np.asarray(sorted(starts), dtype=np.int64)
+    out = {}
+    for a in sorted(codes):
+        i = int(np.searchsorted(order, a, side='right')) - 1
+        if i < 0:
+            raise patches.PatchError(f'{a:#x}: code word before the first function')
+        sets = out.setdefault(int(order[i]), [])
+        sets += [k for k, _ in codes[a] if k not in sets]
+    return {e: sorted(ks) for e, ks in out.items()}
+
+
+def chunk_key(mod_key, number, fns, patched, site_addrs, spins, spin_addrs, hook_addrs, picks=None, origs=None,
+              codes=None):
     """Key of one chunk: its module, number (in its header) and functions, and the patch sites (set index and
     replacement words, @page resolved, so the patch page is in them), the pick index and values of its contested
     sites, spin waits and hooked functions inside its address range; hook_addrs None (FN_ENTER in every function) keys
@@ -881,6 +973,9 @@ def chunk_key(mod_key, number, fns, patched, site_addrs, spins, spin_addrs, hook
     copies = [e for e, _ in fns if e in (origs or ())]
     if copies:   # none: the key it had before plugins
         parts.append(copies)
+    written = [[a, list(map(list, codes[a]))] for a in in_span(sorted(codes or ()), lo, hi)]
+    if written:   # none: the key it had before `code` lines
+        parts.append(written)
     return _key(*parts)
 
 
@@ -1061,6 +1156,7 @@ def main():
         if table.plugin_inputs(name):
             mkey = _key(mkey, table.plugin_inputs(name), _sha256(Path(table.plugins[name]['image']).read_bytes()))
         patched, spins, picks = table.for_module(name, base), table.spins_for(name, base), table.picks_for(name, base)
+        codes = table.codes_for(name, base)
         origs = table.origs_for(name, base)
         bad = sorted(origs - set(abs_starts.tolist()))
         if bad:
@@ -1074,7 +1170,8 @@ def main():
         hook_addrs = None if hooks is None else sorted(hooks)
         for number, (i0, i1) in enumerate(chunks):
             fns = list(zip(abs_starts[i0:i1].tolist(), ends[i0:i1].tolist()))
-            key = chunk_key(mkey, number, fns, patched, site_addrs, spins, spin_addrs, hook_addrs, picks, origs)
+            key = chunk_key(mkey, number, fns, patched, site_addrs, spins, spin_addrs, hook_addrs, picks, origs,
+                            codes)
             tasks.append((int(est[i0:i1].sum()), (name, number, str(moddir / f'{name}_{number:04d}.c'), fns, key)))
         paths[name] = (str(path), base)
         starts_abs[name] = abs_starts
@@ -1184,6 +1281,7 @@ def main():
                 'chunks_reused': sum(r['reused'] for r in rs),
                 'stale_chunks_removed': removed,
                 **{k: v for k, v in sorted(stats.items()) if k.startswith('v_')},   # --v-locals only
+                **{k: stats[k] for k in ('code_copies', 'code_constant_branches') if stats[k]},   # `code` lines only
             },
             'unsupported_census': dict(unsupported.most_common(50)),
             'timings': {

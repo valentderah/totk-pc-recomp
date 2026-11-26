@@ -16,6 +16,7 @@ path may be a JSON double-quoted string to preserve spaces, `#` and escaped char
   stub <module> <offset>
   seed <module> <offset> [<offset> ...]
   orig <set> <module> <offset> <function module> <function offset>
+  code <set> <module> <offset> <old> <new>
   entry <module> <offset> [<offset> ...]
 
 <address> is a module offset (hex), <original> the instruction word the module has there (checked; a mismatch stops
@@ -70,6 +71,17 @@ run's record; the design follows #845 by itaskaev2):
     lifts the function at <function module>+<function offset> a second time without its patched sites
     (fo_<address>) and lists that copy at the trampoline's address in <module>'s function table, so the call reaches
     the original code and not the hook again.
+  - `code`: one word the init writes into a game module's .text that is new code there rather than one of the hook
+    shapes above (SageWheel's `adrp x17; add x17, x17, #lo; br x17` far jumps into the plugin). gen.py lifts the
+    function holding it a second time with all of the set's code words in place of the module's (fw<set>_<address>,
+    Emitter.code_copy) and starts the function's own C with `if (rt_patch_on[<set>])` and a tail call of that copy,
+    so the copy runs instead of the game's code while the set is on. Inside the copy the new words are lifted as any
+    code: a br or blr whose register the code words before it set to a constant (region_targets) is a b or bl to it,
+    into a plugin through rt_dispatch with that constant, as the one-word branch hooks go. The copy keeps the
+    function's per-site patches; a function with code words of two sets runs the copy of the first set that is on, in
+    file order.
+    tools/exefs_plugins.py writes `entry` lines for the main addresses the new code branches to and seeds for its
+    plugin targets, so each is a function start.
 An `entry` line names addresses of a game module that a plugin calls by pointer although they are no function start
 of the game's code (Zonai Fieldworks calls main+0x481918 of 1.4.3, the second word of a function, skipping its first
 test). gen.py makes each one a function start of the module's lift: the function that held it ends there and runs on
@@ -125,6 +137,7 @@ class Table:
         #  'seeds': {offset}, 'origs': {trampoline offset: (function module, function offset)}}}; empty without
         # plugin lines
         self.plugins = plugins or {}
+        self.codes = {}            # {module: {offset: [(set index, new word, old word)]}}: `code` lines
         self.bases = {}            # {module: base} of the layout load() read
 
     def plugin_inputs(self, name):
@@ -133,6 +146,10 @@ class Table:
         if not p:
             return None
         return [p['image'], p['sha256'], sorted(p['stubs']), sorted(p['seeds']), sorted(p['origs'])]
+
+    def codes_for(self, name, base):
+        """{absolute address: [(set index, new word)]} of module name's `code` words, in file order."""
+        return {base + o: [(k, new) for k, new, _ in alts] for o, alts in self.codes.get(name, {}).items()}
 
     def origs_for(self, name, base):
         """The absolute addresses of module name's functions that a plugin's `orig` line copies."""
@@ -197,7 +214,7 @@ class Table:
 
 def load(path, mods):
     """Table from a patch file; mods is layout() output [(name, base, size)]."""
-    sets, index, sites, spins, hooks, ordered, plugins, entries = [], {}, {}, {}, {}, set(), {}, {}
+    sets, index, sites, spins, hooks, ordered, plugins, entries, codes = [], {}, {}, {}, {}, set(), {}, {}, {}
     bases = {n: (b, s) for n, b, s in mods}
     for no, raw in enumerate(Path(path).read_text(encoding='utf-8').splitlines(), 1):
         where = f'{path}:{no}'
@@ -265,6 +282,16 @@ def load(path, mods):
                              'seeds': set(), 'origs': {}}
         elif f[0] in ('expect', 'stub', 'seed', 'orig'):
             plugin_line(f, where, index, bases, plugins)
+        elif f[0] == 'code' and len(f) == 6:
+            if f[1] not in index or f[2] not in bases:
+                raise PatchError(f'{where}: unknown set {f[1]} or module {f[2]}')
+            off, old, new = int(f[3], 16), int(f[4], 16), int(f[5], 16)
+            alts = codes.setdefault(f[2], {}).setdefault(off, [])
+            if any(k == index[f[1]] for k, _, _ in alts):
+                raise PatchError(f'{where}: {f[2]}+{off:#x} written twice by set {f[1]}')
+            if alts and alts[0][2] != old:
+                raise PatchError(f'{where}: {f[2]}+{off:#x} expects {old:08x}, an earlier line {alts[0][2]:08x}')
+            alts.append((index[f[1]], new, old))
         elif f[0] == 'entry' and len(f) >= 3:
             if f[1] not in bases:
                 raise PatchError(f'{where}: module {f[1]} not in the layout')
@@ -282,6 +309,7 @@ def load(path, mods):
         raise PatchError(f'no room for the patch page after main ({page:#x})')
     table = Table(sets, sites, page, spins, hooks, ordered, plugins, entries)
     table.bases = {n: b for n, (b, _) in bases.items()}
+    table.codes = codes
     return table
 
 
@@ -324,6 +352,12 @@ def check(table, mod, name):
         have = mod.word(a)
         if have != want:
             raise PatchError(f'{name}+{off:#x}: module has {have:08x}, the patch expects {want:08x}')
+    for off, [(_, _, want), *_] in table.codes.get(name, {}).items():
+        a = mod.base + off
+        if not mod.in_text(a):
+            raise PatchError(f'{name}+{off:#x}: code word outside .text')
+        if mod.word(a) != want:
+            raise PatchError(f'{name}+{off:#x}: module has {mod.word(a):08x}, the code line expects {want:08x}')
     for b, head in table.spins.get(name, {}).items():
         a = mod.base + b
         if not mod.in_text(a) or branch_target(mod.word(a), a) != mod.base + head:
@@ -339,6 +373,76 @@ def branch_target(w, a):
     if w & 0x7E000000 == 0x36000000:
         return a + ((((w >> 5) & 0x3FFF) ^ 0x2000) - 0x2000 << 2)
     return None
+
+
+MASK64 = (1 << 64) - 1
+
+
+def _sx(v, bits):
+    return v - (1 << bits) if v >> (bits - 1) & 1 else v
+
+
+def region_targets(words, resets=()):
+    """{address: (kind, target)} of the branches among words ({address: word}, new code a plugin wrote): b, bl and
+    the conditional ones ('b', 'bl', 'bcond') with their targets, and each br or blr ('br', 'blr') whose register holds
+    a constant there. The constant comes from the words before it in the same run of consecutive words: adrp, adr,
+    add / sub (immediate, 64-bit) of a known register, movz / movn / movk; any other word may write any register and
+    forgets them all, as does a call. A run starts afresh at each address of resets (a branch target, where another
+    path arrives with other values). tools/exefs_plugins.py reads it for seeds and entries, gen.py Emitter.code_copy
+    to lift such a br as a direct branch."""
+    out, regs, prev = {}, {}, None
+    for a in sorted(words):
+        w = words[a]
+        if prev is None or a != prev + 4 or a in resets:
+            regs = {}
+        prev = a
+        rd = w & 31
+        if w & 0x7C000000 == 0x14000000:   # b, bl
+            out[a] = ('bl' if w >> 31 else 'b', a + _sx(w & 0x3FFFFFF, 26) * 4)
+            if w >> 31:
+                regs = {}
+            continue
+        t = branch_target(w, a)
+        if t is not None:
+            out[a] = ('bcond', t)
+            continue
+        if w & 0xFFDFFC1F == 0xD61F0000:   # br, blr
+            rn = w >> 5 & 31
+            if rn in regs:
+                out[a] = ('blr' if w & 0x00200000 else 'br', regs[rn])
+            regs = {}
+            continue
+        if w == 0xD503201F:   # nop
+            continue
+        if w & 0x1F000000 == 0x10000000:   # adr, adrp
+            imm = _sx((w >> 5 & 0x7FFFF) << 2 | w >> 29 & 3, 21)
+            if rd != 31:
+                regs[rd] = ((a & ~0xFFF) + (imm << 12) if w >> 31 else a + imm) & MASK64
+            continue
+        if w & 0xBF800000 == 0x91000000 and w >> 31:   # add / sub (immediate), 64-bit, no flags
+            rn, imm = w >> 5 & 31, (w >> 10 & 0xFFF) << (12 if w >> 22 & 1 else 0)
+            if rn in regs and rd != 31:
+                regs[rd] = (regs[rn] + (-imm if w >> 30 & 1 else imm)) & MASK64
+            else:
+                regs.pop(rd, None)
+            continue
+        if w & 0x1F800000 == 0x12800000 and w >> 29 & 3 != 1:   # movn, movz, movk
+            sf, opc, hw, imm = w >> 31, w >> 29 & 3, w >> 21 & 3, w >> 5 & 0xFFFF
+            if rd == 31:
+                continue
+            if not sf and hw > 1:
+                regs = {}
+                continue
+            mask = MASK64 if sf else 0xFFFFFFFF
+            if opc == 2:
+                regs[rd] = imm << 16 * hw
+            elif opc == 0:
+                regs[rd] = ~(imm << 16 * hw) & mask
+            elif rd in regs:
+                regs[rd] = (regs[rd] & ~(0xFFFF << 16 * hw) | imm << 16 * hw) & mask
+            continue
+        regs = {}
+    return out
 
 
 def header_text(table, marker):
