@@ -532,7 +532,26 @@ static void rslot_frame(void) {
             static int was;
             // the learned offset is relative to Link: relearn quickly after switching anchors
             if (!was) lvl_ok = 0;
-            memcpy(link_pos, lp, 12), atomic_store(&link_ok, 1), was = 1;
+            // Stereo pairs: the right frame is a game step (1/240 s) after its left one, and Link has moved by then. The
+            // VR camera sits at Link + the level offset, so with the right frame's own Link position the whole world
+            // shifted between the eyes by Link's movement (running: ~4 cm, more than half the eye distance; forward
+            // movement gave the near ground up to a degree of vertical offset between the eyes), while Link alone kept
+            // still. The right frame keeps its left frame's anchor: the world is the same in both eyes.
+            // TOTK_VR_PAIRLINK=0: old.
+            static int pairlink = -1;
+            static float left_lp[3];
+            static int left_lp_ok;
+            if (pairlink < 0) { const char *e = getenv("TOTK_VR_PAIRLINK"); pairlink = !e || *e != '0'; }
+            const float *ap = lp;
+            if (pairlink && vr_pairs() && FP.have) {
+                if (FP.eye == 0) memcpy(left_lp, lp, 12), left_lp_ok = 1;
+                else if (left_lp_ok && fabsf(lp[0] - left_lp[0]) + fabsf(lp[1] - left_lp[1]) + fabsf(lp[2] - left_lp[2]) < 2) {
+                    ap = left_lp;
+                    static unsigned nl;
+                    if (!nl++) rt_log("vr: stereo pairs: the right eye keeps its left frame's place for Link (the view's anchor)");
+                }
+            }
+            memcpy(link_pos, ap, 12), atomic_store(&link_ok, 1), was = 1;
             memcpy(last, lp, 12);
         } else atomic_store(&link_ok, 0);
         if (!RAG.on && !RAG.gliding)   // (the orbit is learned relative to Link: not while the anchor is held)
