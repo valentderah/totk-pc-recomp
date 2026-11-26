@@ -1665,6 +1665,44 @@ int romfs_unmount(const char *name) {
     return found;
 }
 
+// The last OPEN_RING RomFS opens and what served each: the crash report names the files the game read just before it,
+// and whether a mod gave them (#1421: a model file of a mod merge that probably did not load). One slot per open, a
+// fixed 3.5 KiB, written without a lock: a crash report may read a slot that another thread is writing at that moment,
+// and seq tells it to skip that one.
+#define OPEN_RING 16
+typedef struct { volatile int32_t seq; const char *who; char path[200]; } OpenNote;
+static OpenNote open_ring[OPEN_RING];
+static volatile int32_t open_count;
+
+static void open_note(const char *p, uint32_t ov) {
+    int32_t n = plat_inc32(&open_count);
+    OpenNote *o = &open_ring[(uint32_t)(n - 1) % OPEN_RING];
+    __atomic_store_n(&o->seq, 0, __ATOMIC_RELEASE);
+    o->who = ov ? owner_name(&overlays[ov - 1]) : "game";
+    snprintf(o->path, sizeof o->path, "%s", p);
+    __atomic_store_n(&o->seq, n, __ATOMIC_RELEASE);
+}
+
+void romfs_crash_report(void) {
+    int32_t n = plat_cas32(&open_count, 0, 0);
+    if (!n) return;
+    int32_t from = n > OPEN_RING ? n - OPEN_RING : 0;
+    rt_logf("  RomFS opens: %d this run, the last %d (oldest first) with what served them:\n", n, n - from);
+    for (int32_t i = from; i < n; i++) {
+        const OpenNote *o = &open_ring[(uint32_t)i % OPEN_RING];
+        if (__atomic_load_n(&o->seq, __ATOMIC_ACQUIRE) == i + 1) rt_logf("    %s (%s)\n", o->path, o->who);
+    }
+}
+
+const char *romfs_handle_name(uint64_t h) {
+    if (!romfs_handle(h)) return NULL;
+    plat_mutex_lock_shared(&lock);
+    uint64_t i = handles[h - ROMFS_HANDLE_BASE];
+    plat_mutex_unlock_shared(&lock);
+    if (!i--) return NULL;
+    return i < file_count ? entry_name(entry(i)) : i - file_count < nadded ? added[i - file_count] : NULL;
+}
+
 uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
     fs_trace("rom", path);
     if (!out || mode != FS_OPEN_READ) return FS_R_UNSUPPORTED_OPEN;
@@ -1699,6 +1737,7 @@ uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
             handle_audio_cat[j] = (uint8_t)cat;
             *out = ROMFS_HANDLE_BASE + j;
             plat_mutex_unlock(&lock);
+            open_note(p, ov);
             return 0;
         }
     plat_mutex_unlock(&lock);
@@ -1867,9 +1906,17 @@ uint32_t romfs_list(const char *path, int (*cb)(const char *name, int kind, uint
 
 // ---- overrides
 // nn::Result nn::fs::MountRom(const char *name, void *cache, size_t cache_size)
-static void ov_mount_rom(Cpu *c) { ret_x(c, romfs_mount(arg_p(c, 0))); }
+static void ov_mount_rom(Cpu *c) {
+    uint32_t r = romfs_mount(arg_p(c, 0));
+    if (r) fs_failed(c, "MountRom", arg_p(c, 0), r, 0);
+    ret_x(c, r);
+}
 // nn::Result nn::fs::MountRom(const char *name): the same without a cache buffer (the sdk runs one mount routine)
-static void ov_mount_rom_nocache(Cpu *c) { ret_x(c, romfs_mount(arg_p(c, 0))); }
+static void ov_mount_rom_nocache(Cpu *c) {
+    uint32_t r = romfs_mount(arg_p(c, 0));
+    if (r) fs_failed(c, "MountRom", arg_p(c, 0), r, 0);
+    ret_x(c, r);
+}
 // nn::Result nn::fs::QueryMountRomCacheSize(size_t *out): no cache needed, the host reads the image directly
 static void ov_query_cache(Cpu *c) {
     uint64_t *out = arg_p(c, 0);

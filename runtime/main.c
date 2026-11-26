@@ -29,6 +29,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "fs.h"
 #include "host.h"
 #include "layout.h"
 #include "platform/platform.h"
@@ -396,6 +397,7 @@ static void crash_handler(const PlatCrash *x) {
     }
     crash_memory(x, c);
     crash_compound_shape(c);
+    fs_crash_report();   // a mod's file that did not open or load often comes before the crash it causes
     kern_free_cores_note();
     fflush(stderr);
     plat_exit(71);

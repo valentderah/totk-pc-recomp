@@ -205,5 +205,8 @@ A mod never stops the game from starting. Whatever the port cannot use is left o
    game update and does not fight another mod over the same files.
 2. `logs\totk.log` next to `totk.exe` names every mod at the start (lines starting with `mods:`), the cheats
    (`cheats:`) and the resource size table (`RomFS: resource size table:`). Open log folder on the Advanced tab of
-   the menu shows the logs.
+   the menu shows the logs. A file a mod plugin could not open is logged as `fs: open failed <path>: <result>
+   (plugin<N> (<mod>))`, usually a file of the mod's own that is missing from its folder. A crash report names the mod
+   of each plugin address (`plugin0 (Zonai Fieldworks)+0xc5420`) and lists the last failed file calls (those of mod
+   plugins apart) and the last game files opened, each with the mod that served it or `game`.
 3. When reporting a problem, attach `totk.log` and list your mods with the links you downloaded them from.

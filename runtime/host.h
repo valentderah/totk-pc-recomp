@@ -225,7 +225,11 @@ int ldr_plugins_gone(uint32_t *key);                       // layout plugins who
 const RtLoaded *ldr_module(int i);                         // order: main, subsdk0, sdk
 uint64_t ldr_symbol(const char *name);                     // exported definition, 0 if none
 uint64_t ldr_plt_stub(const char *module, const char *name); // PLT stub whose GOT slot holds name, 0 if none
-const char *ldr_describe(uint64_t a, char *buf, int n);    // "main+0x1234 (symbol+0x10)", "host <name>", or the address
+const char *ldr_describe(uint64_t a, char *buf, int n);    // "main+0x1234 (symbol+0x10)", "host <name>", or the address;
+                                                           // a mod plugin with its mod: "plugin0 (Zonai Fieldworks)+0x10"
+const char *ldr_label(uint64_t a, int *plugin);            // the name of the module holding a ("main", "plugin0 (<mod>)"),
+                                                           // NULL outside every module; plugin: it is a mod's plugin
+int ldr_plugin_count(void);                                // mod plugins loaded
 uint64_t ldr_nso_size(const char *dir, const char *file);   // image size of an ExeFS NSO (SHA-256 checked)
 void ldr_map_image(const char *dir, const char *file, uint64_t base, uint64_t *text_end, uint64_t *data_off);
                                                            // its segments at base (reserved by the caller), not
@@ -403,6 +407,8 @@ void plugin_init_setup(void);                              // plugin_init.c: bef
 void plugin_init_run(Cpu *c, const RtLoaded *sdk);         // plugin_init.c: from the module-init callback; exits
 void plugins_setup(void);                                  // plugin_init.c: rt_boot, before ldr_load; nothing
                                                            // without a plugin in the build
+uint64_t plugins_import_caller(void);                      // plugin_init.c: the plugin's return address of the
+                                                           // import call running on this thread, 0 outside one
 int plugins_start(Cpu *c, const RtLoaded *sdk);            // plugin_init.c: from the module-init callback, before
                                                            // the game's constructors; 1 when it ran sdk's DT_INIT
                                                            // (a plugin's init ran after it)

@@ -83,6 +83,7 @@ void gfx_window_focus_changed(int in) {
 void gfx_window_closed(void) {
     int restart = plat_cas32(&g_restart, 0, 0) != 0;
     rt_log("gfx: window closed; %s", restart ? "restarting" : "exiting");
+    fs_failed_summary();
     fs_save_flush();
     vk_pipeline_save();
     playtime_save();

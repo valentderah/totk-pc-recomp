@@ -279,6 +279,13 @@ static int plugin_svc(Cpu *c, uint32_t imm, uint64_t pc) {
     return 1;
 }
 
+// The plugin's return address of the import call running on this thread, 0 outside one. rt_original runs the guest
+// definition with x30 = RT_RET_HOST, so a host override behind it (nn::fs) sees the host as its caller; this names the
+// plugin (fs_host.c fail_caller).
+static __thread uint64_t import_lr;
+
+uint64_t plugins_import_caller(void) { return import_lr; }
+
 // Every JUMP_SLOT import of a plugin binds here (loader.c resolve): counted by name, then the guest definition runs,
 // except nn::oe::GetDisplayVersion, which gets this build's game version.
 static void plugin_import(Cpu *c) {
@@ -293,7 +300,10 @@ static void plugin_import(Cpu *c) {
         memcpy((void *)(uintptr_t)c->x[0], v, sizeof v);
         return;
     }
+    uint64_t outer = import_lr;   // an import that calls back into the plugin, which imports again
+    import_lr = c->x[30];
     rt_original(c);
+    import_lr = outer;
 }
 
 // ---- the record
