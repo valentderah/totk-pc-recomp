@@ -598,6 +598,7 @@ int main(void) {
     unsigned char target[0x500]={0}, camera[0x300]={0}, hand[0x300]={0};
     uint64_t frame[0x20]={0};
     memset(&c,0x5a,sizeof c);
+    assert(input_camera_context()==INPUT_CAM_UNCLASSIFIED);
     // The camera input update keeps x in s11 (y in s10) and stores s11 at +0x420; s9 is not the update's
     c.x[20]=(uintptr_t)target; c.x[21]=0; c.v[11]=c.v[10]=0; expected=c;
     raw_x=100; raw_y=-50; ratio=0.5f; HOOK(&c);
@@ -619,11 +620,20 @@ int main(void) {
     assert(fabsf(guest_float((uintptr_t)frame+0x3c)-(30-50*DEG_PER_COUNT))<0.0001f);
     assert(fabsf(guest_float((uintptr_t)frame+0x40)-(40-100*DEG_PER_COUNT))<0.0001f);
     assert(scalar(c.v[13])==guest_float((uintptr_t)frame+0x3c));
+    assert(input_camera_context()==INPUT_CAM_FREE_ROAM);
     // Ultrahand: x in s9, y in s15, the displaced str w9, [sp, #0x10]
     c.x[20]=(uintptr_t)target; c.v[11]=c.v[10]=0; raw_x=20; raw_y=10; HOOK(&c);
     c.x[19]=(uintptr_t)hand; c.x[9]=0x12345678; c.v[9]=0; c.v[15]=0; hand_hook(&c);
     assert(fabsf(scalar(c.v[9])-20*HAND_PER_COUNT/ratio)<1e-5f && fabsf(scalar(c.v[15])+10*HAND_PER_COUNT/ratio)<1e-5f);
     uint32_t w9; memcpy(&w9,(unsigned char *)frame+0x10,4); assert(w9==0x12345678);
+    assert(input_camera_context()==INPUT_CAM_ULTRAHAND_OBJECT);
+    patched=0;
+    assert(input_camera_context()==INPUT_CAM_UNCLASSIFIED);
+    patched=1;
+    now+=149999999ull;
+    assert(input_camera_context()==INPUT_CAM_ULTRAHAND_OBJECT);
+    now++;
+    assert(input_camera_context()==INPUT_CAM_UNCLASSIFIED);
     // Load sites
     {
         unsigned char input[0x500]={0}, cam[0x200]={0}; uint64_t lsp[0x10]={0}, fp[0x20]={0};
@@ -645,14 +655,77 @@ int main(void) {
         assert(LOAD(0x1d418a4,1)==pad_x);
         guest_float_store((uintptr_t)(fp+0x10)-0x48,40);
         assert(fabsf(LOAD(0x1d418f0,1)-(40-100*DEG_PER_COUNT))<1e-5f);
+        assert(input_camera_context()==INPUT_CAM_AIM);
+        // The telescope transfers mouse movement into pitch, bounded by its own camera limits.
+        SAMPLE(0,-50); c.x[23]=(uintptr_t)input;
+        guest_float_store((uintptr_t)cam+0x160,0);
+        guest_float_store((uintptr_t)cam+0x1ac,-40); guest_float_store((uintptr_t)cam+0x1b0,40);
+        assert(LOAD(0x1d43198,9)==pad_y && fabsf(LOAD(0x1d43438,0)+50*DEG_PER_COUNT)<1e-5f);
+        assert(input_camera_context()==INPUT_CAM_SCOPE);
+        mode=0;   // gameplay tweaks also consume camera context when the mouse uses stick mode
+        now+=150000000ull;
+        c.x[21]=1; HOOK(&c);
+        assert(input_camera_context()==INPUT_CAM_MENU_WHEEL);
+        float stick_pitch=guest_float((uintptr_t)input+0x424);
+        assert(LOAD(0x1d43198,9)==stick_pitch);
+        assert(input_camera_context()==INPUT_CAM_SCOPE);
+        mode=1;
         // CameraFinder: yaw at [x29-0x40]
         SAMPLE(100,-50); c.x[21]=(uintptr_t)input;
         guest_float_store((uintptr_t)cam+0x50,3); guest_float_store((uintptr_t)(fp+0x10)-0x40,9);
         assert(LOAD(0x1d44cfc,13)==pad_y && fabsf(LOAD(0x1d44d20,1)-(3-50*DEG_PER_COUNT))<1e-5f);
         assert(LOAD(0x1d44d84,13)==pad_x && fabsf(LOAD(0x1d44dac,1)-(9-100*DEG_PER_COUNT))<1e-5f);
+        assert(input_camera_context()==INPUT_CAM_SCOPE);
+        // Ability turning and Recall's offset mode share a context but send mouse counts to different outputs.
+        SAMPLE(100,-50); c.x[22]=(uintptr_t)input;
+        guest_float_store((uintptr_t)(fp+0x10)-0x58,7);
+        assert(LOAD(0x1d55638,15)==pad_x && fabsf(LOAD(0x1d55cf8,1)-(7-100*DEG_PER_COUNT))<1e-5f);
+        assert(input_camera_context()==INPUT_CAM_ABILITY);
+        uint32_t offset_mode=0x100; memcpy(input+0x15c,&offset_mode,4);
+        SAMPLE(100,-50); c.x[22]=(uintptr_t)input;
+        assert(LOAD(0x1d55638,15)==guest_float((uintptr_t)input+0x420));
+        assert(LOAD(0x1d55e8c,9)==guest_float((uintptr_t)input+0x420));
+        assert(input_camera_context()==INPUT_CAM_ABILITY);
+        float scale[2]={2,4}; c.x[0]=(uintptr_t)scale;
+        assert(LOAD(0x1d557b8,0)==4);
+        SAMPLE(100,-50); c.x[22]=(uintptr_t)input;
+        guest_float_store((uintptr_t)cam+0x1d8,0);
+        assert(LOAD(0x1d55e8c,9)==pad_x);
+        float offset=LOAD(0x1d55eb0,1);
+        float yaw=2*offset+atanf(offset*tanf(25*RECALL_PI/180)*16/9)*180/RECALL_PI;
+        assert(fabsf(yaw-100*DEG_PER_COUNT)<1e-3f);
+        offset_mode=0; memcpy(input+0x15c,&offset_mode,4);
+        // Both lock-on yaw reads get the same turn, then the per-step mouse delta is spent.
+        SAMPLE(100,-50); c.x[25]=(uintptr_t)input;
+        guest_float_store((uintptr_t)lsp+0x28,0.5f);
+        assert(LOAD(0x1d59af0,0)==guest_float((uintptr_t)input+0x420));
+        assert(input_camera_context()==INPUT_CAM_LOCK_ON);
+        assert(LOAD(0x1d59b18,1)==pad_x);
+        assert(fabsf(LOAD(0x1d59b3c,0)-(0.5f-100*DEG_PER_COUNT))<1e-5f);
+        assert(fabsf(LOAD(0x1d59b4c,9)-(0.5f-100*DEG_PER_COUNT))<1e-5f);
+        assert(LOAD(0x1d59b4c,9)==0.5f);
+        SAMPLE(100,-50); c.x[21]=(uintptr_t)input;
+        guest_float_store((uintptr_t)cam+0x198,2);
+        assert(LOAD(0x1d515a8,9)==pad_y && fabsf(LOAD(0x1d515f0,1)-(2-50*DEG_PER_COUNT))<1e-5f);
+        assert(input_camera_context()==INPUT_CAM_AIM);
         // Horse yaw: the turn ([sp+0x18]) the helper adds to +0x68 gets the degrees
         SAMPLE(100,-50); c.x[20]=(uintptr_t)input; guest_float_store((uintptr_t)lsp+0x18,0.5f);
         assert(LOAD(0x1d4d8cc,8)==pad_x && fabsf(LOAD(0x1d4d900,0)-(0.5f-100*DEG_PER_COUNT))<1e-5f);
+        c.x[21]=(uintptr_t)input; guest_float_store((uintptr_t)cam+0x64,6);
+        assert(LOAD(0x1d4dab8,8)==pad_y && fabsf(LOAD(0x1d4db6c,1)-(6-50*DEG_PER_COUNT))<1e-5f);
+        assert(LOAD(0x1d4db6c,1)==6);
+        assert(input_camera_context()==INPUT_CAM_VEHICLE);
+        // HorseLockOnEmpty observes the stick without taking its motion.
+        SAMPLE(100,-50); c.x[26]=(uintptr_t)input;
+        assert(LOAD(0x1d4ea9c,11)==guest_float((uintptr_t)input+0x420));
+        assert(sample_watched==sample.generation && sample_watched_mode==MODE_HORSE_LOCKON);
+        assert(input_camera_context()==INPUT_CAM_VEHICLE);
+        // The climbing pitch load relies on the patched mov having computed x22 = x19 + 0x88.
+        SAMPLE(100,-50); c.x[24]=(uintptr_t)input; c.x[22]=(uintptr_t)cam+0x88;
+        guest_float_store((uintptr_t)cam+0x88,4); guest_float_store((uintptr_t)cam+0x90,5);
+        assert(LOAD(0x1d45f70,1)==pad_y && fabsf(LOAD(0x1d45f7c,1)-(4-50*DEG_PER_COUNT))<1e-5f);
+        assert(LOAD(0x1d45fcc,1)==pad_x && fabsf(LOAD(0x1d45fd4,1)-(5-100*DEG_PER_COUNT))<1e-5f);
+        assert(c.x[22]==(uintptr_t)cam+0x88 && input_camera_context()==INPUT_CAM_FREE_ROAM);
         // Wakeboard reads each axis twice: the first reads give the same values and leave the degrees to the second
         SAMPLE(100,-50); c.x[22]=(uintptr_t)input;
         float total=guest_float((uintptr_t)input+0x424);
@@ -660,23 +733,57 @@ int main(void) {
         assert(LOAD(0x1d5d8f8,0)==pad_x && LOAD(0x1d5d900,1)==total);
         assert(LOAD(0x1d5d928,0)==total && LOAD(0x1d5d92c,1)==pad_x);
         assert(fabsf(LOAD(0x1d5e01c,0)-(12-50*DEG_PER_COUNT))<1e-5f);
+        guest_float_store((uintptr_t)(fp+0x10)+0x1c,0.3f);
+        assert(fabsf(LOAD(0x1d5da7c,0)-0.3f*(pad_y*fabsf(pad_y))/(total*fabsf(total)))<1e-6f);
+        assert(LOAD(0x1d5da7c,0)==0.3f);
         assert(fabsf(LOAD(0x1d5e0e0,12)-(20-100*DEG_PER_COUNT))<1e-5f);
         assert(LOAD(0x1d5e0e0,12)==20);   // once
+        assert(input_camera_context()==INPUT_CAM_FREE_ROAM);
+        // Shield surfing keeps the full pitch stick for other parameters and removes its mouse share from the turn.
+        SAMPLE(100,-50); c.x[23]=(uintptr_t)input;
+        total=guest_float((uintptr_t)input+0x424);
+        guest_float_store((uintptr_t)cam+0xdc,12);
+        assert(LOAD(0x1d532c8,0)==pad_x && LOAD(0x1d532d0,1)==total);
+        assert(LOAD(0x1d532f8,0)==total && LOAD(0x1d532fc,1)==pad_x);
+        assert(fabsf(LOAD(0x1d53948,0)-(12-50*DEG_PER_COUNT))<1e-5f);
+        assert(fabsf(LOAD(0x1d53ad0,0)-0.3f*(pad_y*fabsf(pad_y))/(total*fabsf(total)))<1e-6f);
+        assert(LOAD(0x1d53ad0,0)==0.3f);
+        assert(fabsf(LOAD(0x1d53974,12)-(20-100*DEG_PER_COUNT))<1e-5f);
+        SAMPLE(0,0);
+        assert(LOAD(0x1d532f8,0)==pad_y && LOAD(0x1d532fc,1)==pad_x);
+        assert(LOAD(0x1d53948,0)==12 && LOAD(0x1d53974,12)==20);
+        assert(input_camera_context()==INPUT_CAM_FREE_ROAM);
         // Waterfall climbing: the yaw is loaded into w8 as bits by ldr w8, [sp, #0x38]
         SAMPLE(100,-50); c.x[22]=(uintptr_t)input; guest_float_store((uintptr_t)lsp+0x38,11);
         assert(LOAD(0x1d5efd0,13)==pad_x);
         c.x[30]=MOD_MAIN_BASE+0x1d5f178+4; c.x[8]=~0ull; load_hook(&c);
         float w; uint32_t wb=(uint32_t)c.x[8]; memcpy(&w,&wb,4);
         assert(c.x[8]>>32==0 && fabsf(w-(11-100*DEG_PER_COUNT))<1e-5f);
+        assert(LOAD(0x1d5f108,9)==guest_float((uintptr_t)input+0x424));
+        assert(sample_watched==sample.generation && sample_watched_mode==MODE_WATERFALL);
         // Dialogue: the patched mov set x23 = x19 + 0x5c; the pitch load is ldr s1, [x23]
         SAMPLE(100,-50); c.x[24]=(uintptr_t)input; c.x[23]=(uintptr_t)cam+0x5c; guest_float_store((uintptr_t)cam+0x5c,1);
         assert(LOAD(0x1d475bc,11)==pad_y && fabsf(LOAD(0x1d475e4,1)-(1-50*DEG_PER_COUNT))<1e-5f);
         assert(c.x[23]==(uintptr_t)cam+0x5c);
+        assert(input_camera_context()==INPUT_CAM_DISABLED);
+        SAMPLE(100,-50); c.x[25]=(uintptr_t)input; c.x[24]=(uintptr_t)cam+0x74;
+        guest_float_store((uintptr_t)cam+0x74,2);
+        assert(LOAD(0x1d4b470,9)==pad_y && fabsf(LOAD(0x1d4b498,1)-(2-50*DEG_PER_COUNT))<1e-5f);
+        assert(input_camera_context()==INPUT_CAM_DISABLED);
+        now+=149999999ull;
+        assert(input_camera_context()==INPUT_CAM_DISABLED);
+        c.x[20]=(uintptr_t)input; c.x[21]=0; HOOK(&c);
+        now++;
+        assert(input_camera_context()==INPUT_CAM_FREE_ROAM);   // the camera input is fresh, its classification expired
+        now+=150000000ull;
+        assert(input_camera_context()==INPUT_CAM_UNCLASSIFIED);
         #undef LOAD
         #undef SAMPLE
     }
     puts("direct mouse 1.1.0: camera input in s11, activity, orbit angles at sp+0x3c/0x40, Ultrahand in s9 at sp+0x10 passed");
     puts("direct mouse 1.1.0: aiming pitch store, CameraFinder x29-0x40, horse turn, repeated stick reads, w8 yaw and dialogue loads passed");
+    puts("direct mouse 1.1.0: scope, ability/Recall, lock-on and climbing motion, camera contexts, expiry and patch-off passed");
+    puts("direct mouse 1.1.0: horse pitch and lock-on, waterfall height, wakeboard pitch share and shield surfing passed");
 }
 #endif
 '''
@@ -686,7 +793,17 @@ INPUT_HARNESS = r'''
 #include "input.c"
 GfxStats gfx_counters;
 InputMap input_map;
+int freecam_state(void) { return FREECAM_OFF; }
 // Other input entry points are linked by PE unwind metadata; reaching them is outside this script-only test.
+int input_pad_id(const char *name) { (void)name; abort(); }
+int motion_calibration_enabled(void) { abort(); }
+PlatThread *plat_thread_new(PlatThreadFn fn, void *arg, const char *name) {
+    (void)fn; (void)arg; (void)name; abort();
+}
+int plat_thread_join_ns(PlatThread *t, uint64_t ns) { (void)t; (void)ns; abort(); }
+void plat_cond_wait(PlatCond *c, PlatMutex *m) { (void)c; (void)m; abort(); }
+void plat_cond_signal(PlatCond *c) { (void)c; abort(); }
+void rt_fatal(const char *fmt, ...) { (void)fmt; abort(); }
 void ikb_cursor_update(void) { abort(); }
 void ikb_menu_closed(void) { abort(); }
 int gameplay_tweaks_capture_needed(void) { return 0; }
