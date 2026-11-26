@@ -77,6 +77,36 @@ class Module:
         o = a - self.base
         return int.from_bytes(self.image[o:o + n], 'little', signed=signed)
 
+    def record_reads(self, reads):
+        """Module.read appends the module offsets [start, end) it returns to reads from now on: the bytes the jump
+        tables (recomp/jumptables.py) take as constants, gen.py's folded.txt. An overlay records into the same list."""
+        self._reads = reads
+
+        def recorded(a, n, signed=False):
+            reads.append((a - self.base, a - self.base + n))
+            return Module.read(self, a, n, signed=signed)
+        self.read = recorded
+
+    def overlay(self, words):
+        """A view of the module whose .text holds words ({absolute address: word}) in place of its own: what a plugin's
+        init wrote there as new code (recomp/patches.py `code`, gen.py Emitter.code_copy). It shares the lifter and
+        the file; its bytes, words and lift cache are its own, and reads are recorded as the module's are."""
+        o = object.__new__(Module)
+        o.__dict__.update(self.__dict__)
+        o.__dict__.pop('read', None)
+        img = bytearray(self.image)
+        for a, w in words.items():
+            if not self.in_text(a):
+                raise ValueError(f'{self.name}: overlay word {a:#x} outside .text')
+            img[a - self.base:a - self.base + 4] = w.to_bytes(4, 'little')
+        o.image = bytes(img)
+        n = self.nso
+        o.words = np.frombuffer(o.image, dtype='<u4', count=n.text[1] // 4, offset=n.text[0])
+        o._cache = OrderedDict()
+        if getattr(self, '_reads', None) is not None:
+            o.record_reads(self._reads)
+        return o
+
     # ---- lifting
 
     def lift(self, a):
