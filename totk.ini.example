@@ -187,6 +187,13 @@
 # vb_used = 1
 # memx = 1
 # bind_inc = 0
+# CallCommands of a recording of 4 KiB or more records a call by reference in place of a copy of the called
+# commands, 0 or 1. Default: on in the Linux build on a Steam Deck, off elsewhere (not run there). Always off with
+# replay_workers above 0. Read at start.
+# nvn_call = 1
+# EndRecording gives the recording buffer away as the copy of a recording of 16 KiB or more, 0 or 1. Default: on in
+# the Linux build on a Steam Deck, off elsewhere (not run there). Read at start.
+# nvn_give = 1
 # Submit GPU work in parts every N draws between passes so the GPU starts earlier (0 to 1000; 0 = off), each part at
 # least split_us microseconds long (0 to 20000).
 # split_draws = 64

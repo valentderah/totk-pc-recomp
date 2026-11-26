@@ -96,8 +96,9 @@ uint64_t nvn_tex_view_offset(const tex_t *t, const view_t *v);
 
 // ---- nvn_api_cmd.c, nvn_ext.c: command buffers and their replay contract
 // A command handle (what QueueSubmitCommands receives) points at a host copy of one recording: a flat sequence of
-// 8-byte-aligned records {op_hdr, payload}, OP_BEGIN first and OP_END last. Called recordings are inlined, so a copy
-// holds no OP_CALL or OP_JUMP. Texture pointers in payloads (p_set_rt, p_copy_b2t, p_copy_t2t, p_clear_tex) are
+// 8-byte-aligned records {op_hdr, payload}, OP_BEGIN first and OP_END last. A called recording is inlined, or with
+// TOTK_NVN_CALL a large one is named by an OP_CALL record (p_jump.target: its handle; it lives as long as a record
+// names it), which every reader of a copy follows. A copy holds no OP_JUMP. Texture pointers in payloads (p_set_rt, p_copy_b2t, p_copy_t2t, p_clear_tex) are
 // immutable host copies ("pins"), one per tex_t.serial, that live while a recording copy names them and a while after
 // (nvn_pins_sweep). Deferred binds (p_bind_handles.src != 0) hold the
 // handles read at submit (nvn_submit_prepare). Payloads of the ops nvn_obj.h does not define:
