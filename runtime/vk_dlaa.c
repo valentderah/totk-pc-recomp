@@ -370,6 +370,12 @@ static struct {
     float cam_dr[2];             // the viewport depth range of the draw cam_addr was noted at
     int fg_mv_ok;                // the frame's motion is in the motion image (fg_motion)
     int fsr;                     // the AMD FSR engine (UPSCALER_FSR3 or UPSCALER_FSR4, picked at start), 0: DLSS
+    // The scene depth as it is before the first pass into the lit scene (depth_snapshot, "motion depth")
+    VkImage zc;
+    VmaAllocation zc_mem;
+    VkImageView zc_view;
+    uint32_t zc_w, zc_h;
+    VkImage zc_src;              // the scene depth it was copied from this frame, VK_NULL_HANDLE: none this frame
 } D = {.mv_ok = -1, .cfg_seen = ~0u};
 #define DLSS_SIZES (sizeof D.sizes / sizeof D.sizes[0])
 
@@ -961,6 +967,87 @@ static void mask_snapshot(VkExec *ex, const VkExecTarget *t) {
     R.cur = s;
 }
 
+// ---------------------------------------------------------------- motion depth
+// The depth the motion vectors, the upscaler and frame generation read: the scene depth copied at arming, before the
+// first pass into the lit scene. That pass draws, besides the transparents, the foliage the camera is inside or right
+// behind, faded out and blended over the scene, and those draws still write depth: with the camera in a canopy
+// (Korok Forest) the scene depth at the end of the scene held a layer of leaves about half a metre away over the whole
+// screen (frame dump: nearest depth 0.975 after the G-buffer, 0.79 after that pass, the sky covered), invisible in the
+// picture. The camera pass reprojected that layer (hundreds of pixels of motion while the camera turned, worse than
+// none), the per-object pass's depth test hid every object behind it, and frame generation showed the world twice.
+// Opaque geometry is drawn into the G-buffer before arming; what that pass draws is blended.
+static int zc_alloc(VkCommandBuffer cb, uint32_t w, uint32_t h) {
+    if (D.zc && D.zc_w == w && D.zc_h == h) return 1;
+    const VkCtx *c = vk_ctx();
+    if (D.zc) {
+        vkDeviceWaitIdle(c->device);   // another scene size: the old copy may still be read
+        vkDestroyImageView(c->device, D.zc_view, NULL);
+        vmaDestroyImage(c->vma, D.zc, D.zc_mem);
+        D.zc = VK_NULL_HANDLE, D.zc_view = VK_NULL_HANDLE;
+    }
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                            .format = VK_FORMAT_D32_SFLOAT, .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                     VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    if (vmaCreateImage(c->vma, &ii, &ai, &D.zc, &D.zc_mem, NULL) != VK_SUCCESS) return D.zc = VK_NULL_HANDLE, 0;
+    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = D.zc,
+                                .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_D32_SFLOAT,
+                                .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1}};
+    if (vkCreateImageView(c->device, &vi, NULL, &D.zc_view) != VK_SUCCESS) {
+        vmaDestroyImage(c->vma, D.zc, D.zc_mem);
+        return D.zc = VK_NULL_HANDLE, 0;
+    }
+    VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = D.zc,
+                                .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1}};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1,
+                           .pImageMemoryBarriers = &ib};
+    vkCmdPipelineBarrier2(cb, &di);
+    D.zc_w = w, D.zc_h = h;
+    return 1;
+}
+
+// At arming, outside any pass: D.depth (just set by vk_dlaa_plan) into the copy. TOTK_MV_DEPTH_COPY=0 takes no copy,
+// and the motion, the upscaler and frame generation read the scene depth as it is at the end of the scene.
+static void depth_snapshot(VkExec *ex) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("MV_DEPTH_COPY", "1");
+    const VkExecTarget *z = &D.depth;
+    D.zc_src = VK_NULL_HANDLE;
+    if (!on || !z->image || z->format != VK_FORMAT_D32_SFLOAT || z->is3d || !zc_alloc(ex->cb, z->width, z->height))
+        return;
+    vk_exec_barrier(ex);
+    VkImageCopy c = {.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, z->level, z->base_layer, 1},
+                     .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, .extent = {z->width, z->height, 1}};
+    vkCmdCopyImage(ex->cb, z->image, VK_IMAGE_LAYOUT_GENERAL, D.zc, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    full_barrier(ex->cb);
+    ex->recorded += 2;
+    D.zc_src = z->image;
+}
+
+// The depth for this frame's motion, upscaler and frame generation: the copy when it was taken of D.depth this frame,
+// else D.depth itself (DLAA before the effects arms at another point). *tmp holds the substitute; *zv gets its view.
+static const VkExecTarget *motion_depth(VkExecTarget *tmp, VkImageView *zv) {
+    const VkExecTarget *z = &D.depth;
+    if (D.zc_src && D.zc_src == z->image && D.zc_w == z->width && D.zc_h == z->height) {
+        *tmp = *z;
+        tmp->image = D.zc, tmp->level = 0, tmp->base_layer = 0;
+        *zv = D.zc_view;
+        return tmp;
+    }
+    *zv = vk_exec_target_view(z->img, z->format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT, z->level,
+                              z->base_layer, 1, 0);
+    return z;
+}
+
 // Before DLSS: the mask from the copy and the light target (view cv). NULL: none this frame.
 static struct Snap *mask_pass(VkCommandBuffer cb, VkImageView cv, uint32_t w, uint32_t h) {
     struct Snap *s = R.cur;
@@ -1401,7 +1488,10 @@ static int fsr_evaluate(VkExec *ex, struct Size *e, const VkExecTarget *t, const
 
 // dst: the target DLSS's picture goes to, NULL for the light target itself (DLAA in place).
 static void evaluate(VkExec *ex, const VkExecTarget *dst) {
-    const VkExecTarget *t = &D.color, *z = &D.depth;
+    const VkExecTarget *t = &D.color, *z;
+    VkExecTarget zt;
+    VkImageView zv;
+    z = motion_depth(&zt, &zv);   // the depth from before the blended foliage
     if (!dst) dst = t;
     uint32_t w = t->width, h = t->height, ow = dst->width, oh = dst->height;
     VkCommandBuffer cb = ex->cb;
@@ -1416,8 +1506,6 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     if (e != D.last) D.reset = 1, D.why[0]++, e->chars_ok = 0;   // another size's history is from another moment
     if (!D.fsr && !D.params && !NGX_OK(N.alloc_params(&D.params))) return dl_fail("parameter allocation", 0);
     NgxParam *p = D.params;
-    VkImageView zv = vk_exec_target_view(z->img, z->format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT, z->level,
-                                         z->base_layer, 1, 0);
     float jx = D.jit_used ? D.ux : 0.0f, jy = D.jit_used ? D.uy : 0.0f;
     static int no_mv = -1;
     if (no_mv < 0) no_mv = !rt_knob("DLAA_MV", "1");   // TOTK_DLAA_MV=0: zero motion (test)
@@ -1536,7 +1624,7 @@ engine_done:
     if (dst != t) vk_dlaa_swap_img = t->img, vk_dlaa_swap_view = e->out_view;   // the scaling draw reads DLSS's picture
     ex->recorded += 4;
     vk_exec_draw_new_cb(ex);   // NGX bound pipelines and descriptor sets of its own: the next draw binds everything again
-    D.jdepth = z->image;
+    D.jdepth = D.depth.image;   // the scene's own depth, not the motion depth's copy
     next_jitter(w, ow);
     cam_unjitter(ex);
     if (++D.evals == 1 || D.evals == 300 || D.evals % 3600 == 0)   // 300: one early line with the frames counted
@@ -1725,7 +1813,7 @@ int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
         c->samples <= 1 && !c->is3d && scene_large(c)) {
         int first = !D.armed;
         D.color = *c, D.depth = *z, D.armed = 1, D.nodepth = VK_NULL_HANDLE;
-        if (!first || !dl_active()) return 0;
+        if (!first) return 0;   // with frame generation alone too, for the motion depth
         *j = (VkExecJob){.kind = VK_JOB_DLSS_MASK, .scene = *c};   // the lit scene, before the transparents (reactive mask)
         return 1;
     }
@@ -1781,6 +1869,8 @@ static void fg_motion(VkExec *ex) {
     uint32_t w = t->width, h = t->height;
     VkCommandBuffer cb = ex->cb;
     uint64_t c0 = kern_now_ns();
+    VkExecTarget zt;
+    VkImageView zv;
     D.done = 1;
     vk_exec_barrier(ex);   // what drew the scene is done (no pass is open here)
     D.jdepth = z->image;   // the scene depth note_camera knows the scene's draws by in the next frame
@@ -1797,8 +1887,7 @@ static void fg_motion(VkExec *ex) {
         return;
     }
     e->used = D.evals + 1;
-    VkImageView zv = vk_exec_target_view(z->img, z->format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT, z->level,
-                                         z->base_layer, 1, 0);
+    z = motion_depth(&zt, &zv);   // the depth from before the blended foliage
     unsigned o[2], sc[2];
     res_sizes(o, sc);
     VkFgScene s = {.depth = z->image, .mv = e->mv, .w = w, .h = h, .ow = o[0], .oh = o[1]};
@@ -1889,7 +1978,11 @@ void vk_dlaa_exec(VkExec *ex, const VkExecJob *j) {
         target_now(&t), target_now(&D.color), target_now(&D.depth);
         if (D.ids_ok) target_now(&D.ids);
     }
-    if (j->kind == VK_JOB_DLSS_MASK) return mask_snapshot(ex, &t);
+    if (j->kind == VK_JOB_DLSS_MASK) {   // the motion depth, then (DLSS, FSR) the reactive mask's copy
+        depth_snapshot(ex);
+        if (dl_active()) mask_snapshot(ex, &t);
+        return;
+    }
     if (!dl_active()) return fg_motion(ex);
     if (!t.tex) return evaluate(ex, NULL);
     D.up = 1;
@@ -1979,6 +2072,7 @@ void vk_dlaa_frame(void) {
     if (!D.done) D.jit_ok = 0;
     D.armed = D.done = D.jit_used = D.gbuf = D.ended = D.up = D.ids_ok = 0;
     D.nodepth = D.glight = D.light_z = VK_NULL_HANDLE;
+    D.zc_src = VK_NULL_HANDLE;   // the motion depth is this frame's only
     D.cam_addr = 0;
 }
 
