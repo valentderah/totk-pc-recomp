@@ -154,14 +154,44 @@ static void tex_init(void *p) {
 }
 static _Thread_local int tex_depth;   // how often this thread holds tex_lock (entry_of releases it for a wait)
 static _Thread_local uint32_t tex_settles;   // entry_of waits of this thread (vk_texture_by_id_locked)
+// Slot registrations that found tex_lock held wait here instead of on the lock (vk_texture_register). The
+// replay thread holds the lock for a whole texture upload or creation, milliseconds at a time, and the game registers
+// textures on its frame threads and on its streaming threads: a frame thread stood still for 4-8 ms, and a streaming
+// thread (priority 51-53) kept its virtual core for 6-10 ms of waiting while frame threads needed it (measured:
+// in a quarter of the field's frames over 20 ms). Whoever takes the lock applies the waiting registrations first
+// (lock), in their order, so no reader under the lock sees a slot table older than before; and whoever lets it go
+// looks once more (unlock), so a registration queued while the lock was held never waits for the next taker.
+typedef struct { int id, has_v; tex_t t; view_t v; } RegPend;
+static PlatMutex pend_lock = PLAT_MUTEX_INIT;   // lock order: tex_lock, then pend_lock
+static RegPend *pend_v;
+static uint32_t pend_cap;
+static uint32_t pend_n;   // written under pend_lock, read without it
+static void register_apply(int id, const tex_t *t, const view_t *v);
+
+static void pend_drain(void) {   // tex_lock held
+    plat_mutex_lock(&pend_lock);
+    uint32_t n = pend_n;
+    for (uint32_t i = 0; i < n; i++) register_apply(pend_v[i].id, &pend_v[i].t, pend_v[i].has_v ? &pend_v[i].v : NULL);
+    __atomic_store_n(&pend_n, 0, __ATOMIC_SEQ_CST);
+    plat_mutex_unlock(&pend_lock);
+}
+
 static void lock(void) {
     if (!__atomic_load_n(&tex_ready, __ATOMIC_ACQUIRE)) plat_once(&tex_once, tex_init, NULL);
     plat_rmutex_lock(&tex_lock);
-    tex_depth++;
+    if (!tex_depth++ && __atomic_load_n(&pend_n, __ATOMIC_RELAXED)) pend_drain();
 }
 static void unlock(void) {
-    tex_depth--;
+    int outer = !--tex_depth;
     plat_rmutex_unlock(&tex_lock);
+    // A registration queued after this thread's last look: its own try for the lock failed while this thread held it,
+    // so this thread applies it (both sides use sequentially consistent accesses: one of the two sees the other).
+    while (outer && __atomic_load_n(&pend_n, __ATOMIC_SEQ_CST) && plat_rmutex_trylock(&tex_lock)) {
+        tex_depth++;
+        pend_drain();
+        tex_depth--;
+        plat_rmutex_unlock(&tex_lock);
+    }
 }
 
 static uint32_t umax(uint32_t a, uint32_t b) { return a > b ? a : b; }
@@ -1674,7 +1704,42 @@ void vk_texture_range_gone(uint64_t lo, uint64_t size, VmaAllocation alloc) {
 // ---------------------------------------------------------------- descriptor slots
 void vk_texture_register(int id, const tex_t *t, const view_t *v) {
     if (id < 0 || id >= (1 << 20)) rt_fatal("vk: texture slot %d out of range", id);
-    lock();
+    static int defer = -1;   // TOTK_TEX_REG_DEFER (vk_ran_default); 0: wait for the lock
+    if (defer < 0) defer = rt_knob("TEX_REG_DEFER", vk_ran_default());
+    if (!RT_KNOB_ON(defer) || tex_depth) {
+        lock();
+        register_apply(id, t, v);
+        unlock();
+        return;
+    }
+    if (!__atomic_load_n(&tex_ready, __ATOMIC_ACQUIRE)) plat_once(&tex_once, tex_init, NULL);
+    if (plat_rmutex_trylock(&tex_lock)) {
+        if (!tex_depth++ && __atomic_load_n(&pend_n, __ATOMIC_RELAXED)) pend_drain();
+        register_apply(id, t, v);
+        unlock();
+        return;
+    }
+    plat_mutex_lock(&pend_lock);
+    if (pend_n == pend_cap) {
+        pend_cap = pend_cap ? pend_cap * 2 : 64;
+        pend_v = realloc(pend_v, sizeof *pend_v * pend_cap);
+        if (!pend_v) rt_fatal("vk: out of memory for waiting texture registrations");
+    }
+    RegPend *r = &pend_v[pend_n];
+    r->id = id;
+    r->t = *t;
+    r->has_v = v != NULL;
+    if (v) r->v = *v;
+    __atomic_store_n(&pend_n, pend_n + 1, __ATOMIC_SEQ_CST);
+    plat_mutex_unlock(&pend_lock);
+    if (plat_rmutex_trylock(&tex_lock)) {   // let go meanwhile: nobody else may come for a long time
+        tex_depth++;
+        pend_drain();
+        unlock();
+    }
+}
+
+static void register_apply(int id, const tex_t *t, const view_t *v) {   // tex_lock held
     if (id >= ntslots) {
         int n = ntslots ? ntslots : 1024;
         while (n <= id) n *= 2;
@@ -1700,7 +1765,6 @@ void vk_texture_register(int id, const tex_t *t, const view_t *v) {
     s->has_view = v != NULL;
     if (v) s->v = *v;
     else memset(&s->v, 0, sizeof s->v);
-    unlock();
 }
 
 // The entry slot s resolves to at op pos, and the view and has_view a caller gets with it (the slot's, with the

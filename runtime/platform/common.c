@@ -15,6 +15,18 @@ void plat_rmutex_lock(PlatRMutex *m) {
     m->depth = 1;
 }
 
+int plat_rmutex_trylock(PlatRMutex *m) {
+    uint32_t me = plat_thread_id();
+    if (__atomic_load_n(&m->owner, __ATOMIC_RELAXED) == me) {
+        m->depth++;
+        return 1;
+    }
+    if (!plat_mutex_trylock(&m->m)) return 0;
+    __atomic_store_n(&m->owner, me, __ATOMIC_RELAXED);
+    m->depth = 1;
+    return 1;
+}
+
 void plat_rmutex_unlock(PlatRMutex *m) {
     if (--m->depth) return;
     __atomic_store_n(&m->owner, 0, __ATOMIC_RELAXED);
