@@ -57,9 +57,12 @@ static int x86_64_v3(void) {
     return (c & (1u << 5)) != 0;   // LZCNT (ABM)
 }
 
+// stdout is a pipe, so it is fully buffered: each part is flushed before the next call that can crash, and a probe
+// that a Vulkan layer or driver kills still hands the installer what it found (installer/steps.py Check.probe_host).
 int main(void) {
     printf("{\"x86_64_v2\": %s, \"x86_64_v3\": %s, ", x86_64_v2() ? "true" : "false",
            x86_64_v3() ? "true" : "false");
+    fflush(stdout);
     void *lib = open_lib();
     PFN_vkGetInstanceProcAddr gipa = lib ? (PFN_vkGetInstanceProcAddr)lib_sym(lib, "vkGetInstanceProcAddr") : NULL;
     if (!gipa) {
@@ -67,6 +70,7 @@ int main(void) {
         return 0;
     }
     printf("\"loader\": true, ");
+    fflush(stdout);
     PFN_vkCreateInstance create = (PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance");
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "totk-install",
                              .apiVersion = VK_API_VERSION_1_3};

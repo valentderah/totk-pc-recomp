@@ -1,3 +1,14 @@
+// What the bind ops changed in a context's bound slots since its last prepared draw (VkExec.dirt, TOTK_BIND_INC in
+// vk_exec_draw.c): a bit per slot, per NVN stage, set only when the bytes an op writes differ from those it replaces.
+typedef struct {
+    uint32_t prog;                       // the program pointer or its stage mask
+    uint32_t ubo[6];                     // uniform slots 0..17 (OP_BIND_UBO index)
+    uint32_t ssbo[6];                    // storage slots 0..15
+    uint64_t tex[6][2];                  // texture handles 0..127
+    uint32_t img[6];                     // image handles 0..31
+    uint32_t vbuf;                       // vertex buffer ranges 0..15
+} VkExecDirty;
+
 // The op-stream replay of the Vulkan back end. vk_exec.c walks the command
 // handles of a submission, keeps render targets, passes, clears and fixed-function state; draws, binds and dispatches
 // (vk_exec_draw.c) and copies, counters, events and conditional rendering (vk_exec_xfer.c) plug in through the two
@@ -43,6 +54,12 @@ typedef struct {
 // TOTK_TRACE=gfx: replay counters of the current frame, logged and reset at each present (vk_exec_frame_log).
 typedef struct {
     uint64_t passes, draws_seen, draws, clears, copies, dispatches, submits;
+    uint64_t barrier_bit[8];                  // the game's Barrier calls that carry NVN barrier bit 0..7 (TOTK_TRACE=gfx)
+    uint64_t barrier_merged;                  // the game's Barrier calls the open pass went on through (barrier_merge)
+    uint64_t barrier_undone;                  // passes a draw then ended for a read the merge cannot order (merge_guard)
+    uint64_t undone_color, undone_depth;      // of those, for sampling a colour target / the depth target the draw does
+                                              // not write itself (vk_exec_draw.c merge_unwritten_reads)
+    uint64_t pass_end_rt, pass_end_barrier;   // passes ended by other render targets, by the game's own Barrier (TOTK_TRACE=gfx)
     uint64_t fb_draws, fb_barriers, fb_restarts, fb_layouts;   // feedback loops: draws sampling a written target of
                                                                // their pass, in-pass barriers, pass restarts, layout
                                                                // transitions
@@ -58,6 +75,8 @@ typedef struct VkExecJob {
     int chunk;                           // vk_exec.c: the chunk that holds the op
     VkExecTarget scene, depth;           // contact: the scene colour and the linear depth; DLSS: the light target to copy
                                          // (mask) or the scaling pass's target (evaluation; no tex: in place)
+    VkExecTarget sun;                    // contact: the half-resolution lighting target whose alpha is sun visibility
+                                         // (no img: none in this frame)
     float pc[16];                        // the march's push constants
 } VkExecJob;
 
@@ -104,13 +123,14 @@ typedef struct VkExec {
     uint32_t st_vmask[2], st_wmask[2], st_ref[2];   // OP_STENCIL per face (0 front, 1 back): compare mask, write mask, ref
     float point_size;                    // OP_BIND_STATE kind 6: NVN point size for the support buffer; 0 = never set = 1
     p_poly_offset poly_offset;           // OP_POLY_OFFSET: depth bias factor, units, clamp
+    int8_t volume_bias;                  // the sign of the volume bias recorded in place of poly_offset: set by prepare_draw, used by record_fixed
     p_prim_restart prim_restart;         // OP_PRIM_RESTART: applied to indexed strip and fan draws (op_draw_idx)
     float blend_color[4];                // OP_BLEND_COLOR
     int64_t copy_stride;                 // OP_COPY_STRIDE: row stride of buffer <-> texture copies (vk_exec_xfer.c)
     const dpool_t *tex_pool, *samp_pool; // OP_SET_TEX_POOL, OP_SET_SAMP_POOL
     // Pipeline inputs. vk_exec.c writes depth_clamp (OP_DEPTH_CLAMP), raster_discard (OP_RASTER_DISCARD) and, at pass
     // begin, color_fmt, depth_fmt and samples; vk_exec_draw.c owns every other field (shaders, prim, y_flip, state
-    // objects, vertex input).
+    // objects, vertex input). Every write that changes it bumps pipe_gen.
     VkPipeState pipe;
 
     // ---- vk_exec_draw.c slots (draws, binds, dispatch): left empty by vk_exec.c
@@ -147,7 +167,21 @@ typedef struct VkExec {
                                          // or the last in-pass barrier
     const void *fb_fs;                   // feedback_scan's memo: fragment shader, texture bind serial, pass serial
     uint32_t fb_serial, fb_pass, fb_sampled;
+    // barrier_merge (vk_exec.c barrier_merges): bmerge is TOTK_BARRIER_MERGE, read once when the context is reset;
+    // pass_storage: a draw of the open pass may write a storage buffer or image; pass_merged: the open pass went on
+    // through a game Barrier. Both are cleared by the full barrier of every pass begin (barrier_to).
+    uint8_t bmerge, pass_storage, pass_merged;
+    const void *bm_vs;                   // merge_guard's memo: vertex shader, texture bind serial, pass serial, answer
+    uint32_t bm_serial, bm_pass, bm_hit;
     uint32_t tex_serial, pass_serial;    // bumped by every texture or image bind and pass begin
+    // TOTK_BIND_INC (vk_exec_draw.c): the slots the bind ops changed since this context's last prepared draw, cleared
+    // by that draw; vk_exec_draw_new_cb and copy_state set every bit. pipe_gen: bumped by every write that changes
+    // pipe (the state object and vertex input binds, OP_DEPTH_CLAMP, OP_RASTER_DISCARD, the target formats of
+    // resolve_rt, copy_state); an equal value says pipe holds what it held then. fbl_serial: bumped whenever the images
+    // in the feedback layout (fbl_img, nfbl) may have changed. Outside the copied state: each context counts its own.
+    VkExecDirty dirt;
+    uint64_t pipe_gen;
+    uint32_t fbl_serial;
 
     // ---- vk_exec_xfer.c: the occlusion query of the open pass and the queries closed since the last report or reset
     int oq_open;                         // slot of the active query, -1 none
@@ -180,6 +214,7 @@ void vk_exec_pass_end(VkExec *ex);
 // Full memory barrier (all commands, all memory); ends the open pass first. Copies and dispatches order themselves with
 // it. Skipped when nothing was recorded since the last one.
 void vk_exec_barrier(VkExec *ex);
+int vk_exec_barrier_merge_on(void);   // TOTK_BARRIER_MERGE, read once (vk_exec.c barrier_merges)
 // UpdateUniformBuffer overlays (vk_exec_draw.c): the copies into the real buffers that updates inside a pass left for
 // the next barrier (barrier_to records them first), and a GPU write of another kind into [addr, addr+n) of this
 // submission (a copy, a fill, a storage write), which retires the overlays it touches.
@@ -195,6 +230,15 @@ void vk_exec_inline_end(int reopen);
 // vk_exec_draw.c: forget what the command buffer being recorded has bound (pipeline, sets, dynamic state, vertex
 // buffers): the replay continues in a new one (vk_sync_split).
 void vk_exec_draw_new_cb(VkExec *ex);
+// Everything a context's next draw reads may differ from its last prepared draw's (VkExec.dirt, pipe_gen, fbl_serial):
+// its bound state was replaced or its command buffer state lost.
+static inline void vk_exec_dirty_all(VkExec *ex) {
+    __builtin_memset(&ex->dirt, 0xff, sizeof ex->dirt);
+    ex->pipe_gen++, ex->fbl_serial++;
+}
+// vk_exec_draw.c: the fragment stage of the draw being recorded samples img through one of its bound combined
+// textures (OP_BIND_TEX, the handles tex_info swaps; vk_dlaa.c vk_dlaa_skip_draw). Takes the texture lock.
+int vk_exec_draw_samples(VkExec *ex, const GfxShader *fs, const VkTexImage *img);
 // The recording threads of the chunked replay as this run read TOTK_REPLAY_WORKERS (0 off), -1 before the first
 // submission read it (the settings menu shows it).
 int vk_exec_replay_workers(void);
@@ -219,6 +263,7 @@ void vk_exec_noatt_dims(const VkExec *ex, uint32_t *w, uint32_t *h);   // pass s
 int vk_exec_targets_recent(VkExec *ex, int any);
 // The current pass's targets with their formats, extents and the frames they were last rendered in (diagnostics).
 void vk_exec_targets_describe(VkExec *ex, char *buf, size_t cap);
+int vk_exec_tfr_check(void);   // --probe-vkexec: a new target replaces a way of its own set; 1 when it does
 
 extern VkExecFrame vk_exec_frame;
 void vk_exec_frame_written(const tex_t *t);                    // vk_texture_gpu_written: t rendered or copied into

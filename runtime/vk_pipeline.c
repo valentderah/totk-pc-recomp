@@ -49,6 +49,7 @@
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
+#include "memx.h"
 #include "nvn_hmap.h"
 #include "platform/platform.h"
 #include "tex.h"
@@ -872,6 +873,115 @@ out:
     return o;
 }
 
+// Discard with demote semantics (docs/maxwell.md 3.5). Maxwell's KIL keeps the fragment running as a helper, so the
+// derivatives its 2x2 quad takes afterwards stay defined; the translator emits OpKill, which ends the invocation, and
+// what the quad's other fragments then get from an implicit derivative (OpImageQueryLod, implicit-LOD samples, dFdx) is
+// undefined. Mesa keeps computing after a discard; AMD's Windows compiler does not, and TotK's cloud shader, which
+// discards where the scene is in front and then takes OpImageQueryLod for its noise textures, lost fog in the pixels
+// sharing a quad with a discarded one: a light fringe round every silhouette against clouds (issue #164).
+// Each OpKill whose block is a direct target of a selection header, and which an explicit derivative follows (below),
+// becomes OpDemoteToHelperInvocation plus a branch to that selection's merge block, so the fragment goes on computing
+// and writes nothing. An OpKill anywhere else (the end of a function, a switch case) stays. NULL: nothing to change.
+// Only kills that an OpImageQueryLod, an OpDPdx..OpFwidthCoarse or an OpFunctionCall (whose callee may take one)
+// follows later in the same function change: the cloud shader's fringe came from OpImageQueryLod. A demoted fragment
+// runs the rest of the shader, so demoting every kill made each alpha-tested draw (grass, foliage, hair) pay for its
+// discarded pixels; implicit-LOD samples after a kill, which nearly every alpha-tested shader takes, kept the OpKill
+// they had before demote existed, without a report. Program order stands for "after": a derivative in the other arm
+// of the kill's selection demotes too (harmless), one reached only by a loop's back edge does not (that kill keeps
+// its OpKill, as before demote).
+// On by default on AMD's own drivers, where the fringe shows; other drivers keep the translator's OpKill, their output
+// unchanged. TOTK_DEMOTE=1 or 0 (ini: demote) overrides on any driver that enables shaderDemoteToHelperInvocation
+// (vk_caps.demote, set in vk_device.c create_device); without the feature the module keeps OpKill, since the
+// capability would be invalid.
+static uint64_t demote_mods, demote_kept;   // modules with an OpKill: some kill demoted, every kill kept (atomics)
+
+// Logs the split of modules with an OpKill at each power of two of their count.
+static void demote_note(int demoted) {
+    uint64_t d = demoted ? __atomic_add_fetch(&demote_mods, 1, __ATOMIC_RELAXED) : __atomic_load_n(&demote_mods, __ATOMIC_RELAXED);
+    uint64_t k = demoted ? __atomic_load_n(&demote_kept, __ATOMIC_RELAXED) : __atomic_add_fetch(&demote_kept, 1, __ATOMIC_RELAXED);
+    uint64_t t = d + k;
+    if (!(t & (t - 1)))
+        rt_log("vk_pipeline: discard as demote: %llu shaders with a discard demote it, %llu keep it (no derivative after)",
+               (unsigned long long)d, (unsigned long long)k);
+}
+
+static uint32_t *spirv_demote(const uint32_t *w, uint64_t n, uint64_t *out_n) {
+    enum { OP_EXTENSION = 10, OP_CAPABILITY = 17, OP_FUNCTION_END = 56, OP_FUNCTION_CALL = 57, OP_IMAGE_QUERY_LOD = 105,
+           OP_DPDX = 207, OP_FWIDTH_COARSE = 215, OP_SELECTION_MERGE = 247, OP_LABEL = 248, OP_BRANCH = 249,
+           OP_BRANCH_CONDITIONAL = 250, OP_KILL = 252, OP_DEMOTE = 5380, CAP_DEMOTE = 5379 };
+    static const char ext_name[36] = "SPV_EXT_demote_to_helper_invocation";   // 35 characters and the terminator: 9 words
+    static int on = -1;
+    if (on < 0) {
+        on = vk_caps.demote && rt_knob("DEMOTE", vk_caps.amd && !vk_caps.mesa ? "1" : "0");
+        rt_log("vk_pipeline: discard as demote: %s, for discards a derivative follows (shaderDemoteToHelperInvocation "
+               "%d, TOTK_DEMOTE)", on ? "on" : "off", vk_caps.demote);
+    }
+    if (!on || n < 5) return NULL;
+    // Pass 1: check the words, count the kills, and note each function's last derivative (or call) by function order.
+    uint64_t kills = 0, nfn = 0, cap_fn = 8, last = 0;
+    uint64_t *fn_deriv = malloc(cap_fn * sizeof *fn_deriv);
+    if (!fn_deriv) return NULL;
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, l = w[i] >> 16;
+        if (!l || i + l > n || (op == OP_CAPABILITY && l >= 2 && w[i + 1] == CAP_DEMOTE)) {   // malformed, or demotes already
+            free(fn_deriv);
+            return NULL;
+        }
+        kills += op == OP_KILL;
+        if (op == OP_IMAGE_QUERY_LOD || (op >= OP_DPDX && op <= OP_FWIDTH_COARSE) || op == OP_FUNCTION_CALL) last = i;
+        if (op == OP_FUNCTION_END) {
+            if (nfn == cap_fn) {
+                uint64_t *g = realloc(fn_deriv, 2 * cap_fn * sizeof *fn_deriv);
+                if (!g) { free(fn_deriv); return NULL; }
+                fn_deriv = g, cap_fn *= 2;
+            }
+            fn_deriv[nfn++] = last, last = 0;
+        }
+        i += l;
+    }
+    if (!kills) { free(fn_deriv); return NULL; }
+    uint32_t bound = w[3] < (1u << 22) ? w[3] : (1u << 22);
+    uint32_t *merge_of = calloc(bound ? bound : 1, sizeof *merge_of);   // label -> merge block of the selection that branches to it
+    uint32_t *o = malloc((n + 12 + 2 * kills) * 4);
+    if (!merge_of || !o) { free(merge_of), free(o), free(fn_deriv); return NULL; }
+    uint64_t on_w = 5, changed = 0, fn = 0;
+    uint32_t cur = 0, pending = 0;
+    int declared = 0;
+    memcpy(o, w, 5 * 4);
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, l = w[i] >> 16;
+        const uint32_t *a = w + i + 1;
+        if (!declared && op != OP_CAPABILITY) {   // capabilities come first, extensions right after them
+            o[on_w++] = 2u << 16 | OP_CAPABILITY, o[on_w++] = CAP_DEMOTE;
+            o[on_w++] = 10u << 16 | OP_EXTENSION;
+            memcpy(o + on_w, ext_name, sizeof ext_name), on_w += 9;
+            declared = 1;
+        }
+        if (op == OP_LABEL && l >= 2) cur = a[0];
+        if (op == OP_BRANCH_CONDITIONAL && l >= 4 && pending) {
+            // The true and the false block lie directly in the selection; a target that is the merge block itself does not.
+            for (int k = 1; k <= 2; k++)
+                if (a[k] < bound && a[k] != pending) merge_of[a[k]] = merge_of[a[k]] ? ~0u : pending;   // two headers: leave it
+        }
+        pending = op == OP_SELECTION_MERGE && l >= 3 ? a[0] : 0;
+        uint32_t m = op == OP_KILL && cur < bound && fn < nfn && fn_deriv[fn] > i ? merge_of[cur] : 0;
+        if (m && m != ~0u && m != cur) {
+            o[on_w++] = 1u << 16 | OP_DEMOTE;
+            o[on_w++] = 2u << 16 | OP_BRANCH, o[on_w++] = m;
+            changed++;
+        } else {
+            memcpy(o + on_w, w + i, l * 4), on_w += l;
+        }
+        fn += op == OP_FUNCTION_END;
+        i += l;
+    }
+    free(merge_of), free(fn_deriv);
+    demote_note(changed != 0);
+    if (!changed) { free(o); return NULL; }
+    *out_n = on_w;
+    return o;
+}
+
 // True when the module declares a GroupNonUniform* or SubgroupBallot-style capability (lane masks assume 32 lanes).
 static int uses_subgroup_ops(const uint32_t *w, uint64_t words) {
     for (uint64_t i = 5; i < words;) {
@@ -898,6 +1008,9 @@ static VkShaderModule make_module(const uint32_t *w, uint64_t words) {
     uint64_t fixed_n = 0;
     uint32_t *fixed = spirv_fixup(w, words, &fixed_n);
     if (fixed) w = fixed, words = fixed_n;
+    uint64_t demoted_n = 0;
+    uint32_t *demoted = spirv_demote(w, words, &demoted_n);
+    if (demoted) free(fixed), fixed = demoted, w = demoted, words = demoted_n;
     VkShaderModuleCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = (size_t)words * 4, .pCode = w};
     VkShaderModule m = VK_NULL_HANDLE;
     VkResult r = vkCreateShaderModule(P.device, &ci, NULL, &m);
@@ -1187,7 +1300,7 @@ static uint32_t vs_outs(const GfxShader *vs, const GfxShader *fs, GfxShaderIo io
 
 static Pipe *pipe_find(const void *key, size_t size, uint64_t h) {
     for (Pipe *p = pipes[h % PIPE_BUCKETS]; p; p = p->next)
-        if (p->hash == h && p->key_size == size && !memcmp(p->key, key, size)) return p;
+        if (p->hash == h && p->key_size == size && MX_EQ(p->key, key, size)) return p;
     return NULL;
 }
 
@@ -1269,6 +1382,7 @@ static uint32_t target_wmask(const VkPipeState *s, int i) {
     uint32_t m = s->chmask.mask >> (4 * i) & 0xf;
     if (s->fs && !(gfx_shader_outputs(s->fs, NULL) >> i & 1)) m = 0;
     if (i == 1 && s->fs && P.f_dual_src && uses_src1(s)) m = 0;   // output 1 is the second blend source (spirv_dual_source)
+    if (!s->color_fmt[i] && vk_caps.null_attach) m = 0;   // an empty slot's dummy attachment (vk_exec.c) takes no writes
     return m;
 }
 
@@ -1304,6 +1418,9 @@ static void gkey_fill(const VkPipeState *s, GKey *k) {
             o[3] = (uint8_t)blend_factor(b->src_a), o[4] = (uint8_t)blend_factor(b->dst_a), o[5] = (uint8_t)blend_op(b->eq_a);
         }
     }
+    if (vk_caps.null_attach)   // empty slots get the dummy attachment's format (vk_exec.c null_attach_view)
+        for (int i = 0; i < k->n_color; i++)
+            if (k->color[i] == VK_FORMAT_UNDEFINED) k->color[i] = VK_EXEC_NULL_ATTACH_FMT;
     if (!P.dyn_vi) {
         VtxInput v;
         vertex_input(s, &v);
@@ -3158,7 +3275,7 @@ uint32_t vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
                       compare_op(d->sf_b));
     // NVN_POLYGON_OFFSET_ENABLE_* bit of the polygon mode in use: point 1, line 2, fill 4
     unsigned mode = pl->mode <= NVN_POLYGON_MODE_FILL ? pl->mode : NVN_POLYGON_MODE_FILL;
-    vkCmdSetDepthBiasEnable(cb, (pl->offset_en >> mode & 1) != 0);
+    vkCmdSetDepthBiasEnable(cb, (pl->offset_en >> mode & 1) || vk_pipeline_volume_bias(s));
     vkCmdSetRasterizerDiscardEnable(cb, s->raster_discard != 0);
     vkCmdSetPrimitiveRestartEnable(cb, s->prim_restart != 0);
     // The vertex bindings the draw reads: those of its vertex input, set here or made into the pipeline from the same
@@ -3192,6 +3309,35 @@ uint32_t vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
     return streams;
 }
 
+// TotK marks the pixels inside its water volumes (seen at puddles) in a quarter-size mask: it draws a volume's front
+// faces with a LEQUAL depth test and no depth write, blending ONE/ONE with reverse subtract into one channel, against a
+// depth it rebuilt at that size from its linear depth. The volume's top face lies on the water surface, so the test
+// compares that surface with itself through two roundings and two sampling positions: on a puddle the face came out
+// up to 7 ulp in front of or behind the rebuilt depth, and up to about 0.6 of a pixel of its depth slope (64 ulp) behind
+// it. The camera's sub-millimetre idle motion moved that pattern every frame and the mask with it: the puddle's
+// reflection, which the mask turns on, flickered over a few hundred pixels a frame, and more with DLAA, whose jitter
+// moves the rebuilt depth but not the volume. Such a draw, when the game sets no polygon offset for it, gets a depth
+// bias toward the viewer of VOLUME_BIAS_UNITS plus VOLUME_BIAS_SLOPE times its depth slope (one pixel of it), so a
+// surface the face lies on counts as inside, as the test's equal case means; a surface farther from the face than a
+// pixel of its slope is decided as before. Only tests whose equal case passes (LEQUAL, GEQUAL) get the bias, toward
+// passing. The same pass also draws state-alike draws with GREATER, whose equal case fails: the volume's back faces
+// into the same channel and, in towns and in rain, another shader's front faces into the red channel. Biasing those
+// toward passing would turn the game's tie the other way, so they are left as the game sets them.
+// TOTK_VOLUME_MASK_BIAS=0 (test) leaves every such draw as the game sets it.
+int vk_pipeline_volume_bias(const VkPipeState *s) {
+    static int knob = -1;
+    if (knob < 0) knob = rt_knob("VOLUME_MASK_BIAS", "1");
+    if (!RT_KNOB_ON(knob)) return 0;
+    const poly_st *pl = &s->poly;
+    const ds_st *d = &s->ds;
+    const blend_st *b = &s->blend[0];
+    unsigned mode = pl->mode <= NVN_POLYGON_MODE_FILL ? pl->mode : NVN_POLYGON_MODE_FILL;
+    if (!d->dt || d->dw || (pl->offset_en >> mode & 1) || !(s->color.blend_en & 1) ||
+        b->eq_rgb != NVN_BLEND_EQUATION_REVERSE_SUB || b->src_rgb != NVN_BLEND_FUNC_ONE || b->dst_rgb != NVN_BLEND_FUNC_ONE)
+        return 0;
+    return d->df == NVN_DEPTH_FUNC_LEQUAL ? -1 : d->df == NVN_DEPTH_FUNC_GEQUAL;
+}
+
 // The values vk_pipeline_set_dynamic records for a state, as the commands take them.
 typedef struct {
     VkCullModeFlags cull;
@@ -3220,7 +3366,7 @@ static void dyn_vals(const VkPipeState *s, DynVals *o) {
     o->sop[1][0] = stencil_op(d->fail_b), o->sop[1][1] = stencil_op(d->zpass_b), o->sop[1][2] = stencil_op(d->zfail_b);
     o->scmp[0] = compare_op(d->sf_f), o->scmp[1] = compare_op(d->sf_b);
     unsigned mode = pl->mode <= NVN_POLYGON_MODE_FILL ? pl->mode : NVN_POLYGON_MODE_FILL;
-    o->bias = (pl->offset_en >> mode & 1) != 0;
+    o->bias = (pl->offset_en >> mode & 1) || vk_pipeline_volume_bias(s);
     o->discard = s->raster_discard != 0, o->restart = s->prim_restart != 0;
     o->clamp = s->depth_clamp != 0, o->a2c = s->ms.a2c != 0;
     o->poly = polygon_mode(pl->mode);
@@ -3278,7 +3424,7 @@ uint32_t vk_pipeline_set_dynamic_delta(VkCommandBuffer cb, const VkPipeState *s,
     if (v.restart != o->restart) vkCmdSetPrimitiveRestartEnable(cb, v.restart), k++;
     // The vertex input is made from the vertex shader's inputs and the attribute and stream states alone
     // (vertex_input): a draw that keeps all three keeps it, and the bindings it reads.
-    if (s->vs != DC.vs || memcmp(s->vattr, DC.vattr, sizeof DC.vattr) || memcmp(s->vstream, DC.vstream, sizeof DC.vstream)) {
+    if (s->vs != DC.vs || MX_NE(s->vattr, DC.vattr, sizeof DC.vattr) || MX_NE(s->vstream, DC.vstream, sizeof DC.vstream)) {
         uint32_t streams = VK_PIPE_ALL_BINDINGS;
         if (s->vs) {
             VtxInput vi;
@@ -3288,7 +3434,7 @@ uint32_t vk_pipeline_set_dynamic_delta(VkCommandBuffer cb, const VkPipeState *s,
             for (uint32_t i = 0; i < vi.n_bind; i++) streams |= 1u << vi.b[i].binding;
         }
         DC.vs = s->vs, DC.streams = streams;
-        memcpy(DC.vattr, s->vattr, sizeof DC.vattr), memcpy(DC.vstream, s->vstream, sizeof DC.vstream);
+        MX_CPY(DC.vattr, s->vattr, sizeof DC.vattr), MX_CPY(DC.vstream, s->vstream, sizeof DC.vstream);
     }
     if (P.dyn_clamp && v.clamp != o->clamp) rec_bool(P.set_clamp, cb, v.clamp), k++;
     if (P.dyn_poly && v.poly != o->poly) rec_polygon_mode(P.set_poly, cb, v.poly), k++;
@@ -3297,10 +3443,10 @@ uint32_t vk_pipeline_set_dynamic_delta(VkCommandBuffer cb, const VkPipeState *s,
     // One with fewer leaves the ones past its count as they were, which no draw of it reads.
     uint32_t n = (uint32_t)v.n;
     int all = v.n > o->n;
-    if (n && P.dyn_blend_en && (all || memcmp(v.en, o->en, n * sizeof *v.en))) rec_blend_enable(P.set_blend_en, cb, 0, n, v.en), k++;
-    if (n && P.dyn_blend_eq && (all || memcmp(v.eq, o->eq, n * sizeof *v.eq))) rec_blend_equation(P.set_blend_eq, cb, 0, n, v.eq), k++;
-    if (n && P.dyn_wmask && (all || memcmp(v.wm, o->wm, n * sizeof *v.wm))) rec_write_mask(P.set_wmask, cb, 0, n, v.wm), k++;
-    DC.v = v;   // the invariant now covers [0, v.n) only
+    if (n && P.dyn_blend_en && (all || MX_NE(v.en, o->en, n * sizeof *v.en))) rec_blend_enable(P.set_blend_en, cb, 0, n, v.en), k++;
+    if (n && P.dyn_blend_eq && (all || MX_NE(v.eq, o->eq, n * sizeof *v.eq))) rec_blend_equation(P.set_blend_eq, cb, 0, n, v.eq), k++;
+    if (n && P.dyn_wmask && (all || MX_NE(v.wm, o->wm, n * sizeof *v.wm))) rec_write_mask(P.set_wmask, cb, 0, n, v.wm), k++;
+    MX_CPY(&DC.v, &v, sizeof v);   // the invariant now covers [0, v.n) only
     *cmds = k;
     return DC.streams;
 }

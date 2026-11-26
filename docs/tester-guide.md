@@ -8,7 +8,8 @@ from it may be shared.
 
 - Windows 10 or later, an x86-64 CPU with SSE4.2 (AVX2/FMA recommended: they build the default, faster version), about
   60 GB free.
-- A GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`, with a current driver.
+- A GPU with Vulkan 1.3, with a current driver. `VK_EXT_external_memory_host` is recommended: without it the game
+  runs on shadow storage, which costs memory and frame rate.
 - *Tears of the Kingdom* base game (1.0.0) and the 1.1.0, 1.2.1 or 1.4.3 update, dumped from your own Switch as NSP or XCI.
 - `prod.keys` dumped from your own Switch. Never send it to anyone, and never paste it into a log or an issue.
 
@@ -42,6 +43,8 @@ do one run with it and one without (`set TOTK_VK_VALIDATION=`).
 If the game stops with a lost device (the log says `device lost` or `VK_ERROR_DEVICE_LOST`), the lines starting with
 `vk: pass marks` name the render pass or dispatch the GPU was running. AMD GPUs write them by default. On an NVIDIA GPU,
 `set TOTK_PASS_CRUMBS=1` (or GPU pass marks: On in the Advanced tab) before the run that reproduces the crash.
+`set TOTK_ADDR_REPORT=1` adds `vk: fault address` lines naming the image or buffer at the faulting address; it slows
+the game down over a session, so use it only for that run.
 
 The game keeps running behind other windows (`assume_focus = 0` in `totk.ini` pauses it instead). Shaders the preparation did not cover compile on first use, so
 the first minutes of play can stutter.

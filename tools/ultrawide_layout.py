@@ -12,11 +12,13 @@ found for 1.0.0 .. 1.2.1 (GPL; only those values are taken, no code; THIRD_PARTY
 implementation, checked against 1.2.1's Common.Product.110 and 1.4.3's Common.Product.140: every pane is found by name
 and every pane field and animation key holds the value the edit expects before it is written.
 """
+import math
 import struct
 
-# BFLYT pane sections (pan1, pic1, txt1, ...): name at +12 (24 bytes), translate x / y at +44 / +48, scale x / y at +68 / +72.
+# BFLYT pane sections (pan1, pic1, txt1, ...): name at +12 (24 bytes), translate x / y at +44 / +48, scale x / y at +68 / +72,
+# size (width) at +76.
 PANE_MAGICS = (b'pan1', b'pic1', b'txt1', b'wnd1', b'bnd1', b'prt1', b'ali1', b'scr1')
-FIELD = {'x': 44, 'y': 48, 'scale_x': 68, 'scale_y': 72}
+FIELD = {'x': 44, 'y': 48, 'scale_x': 68, 'scale_y': 72, 'w': 76, 'h': 80}
 
 # Full-screen layouts whose root pane stays as wide as the canvas.
 KEEP_ROOT = {'AppMenuBG_00', 'PauseMenuBG_00', 'ShopMenuParasailBG_00', 'ShortCutBG_00', 'TitleMenuBG_00', 'EventFade_00',
@@ -48,15 +50,53 @@ MARKER_ROOT = {
 # animations only key alpha, visibility and N_Loop_00's y. (pane, x, y) as shipped.
 BALLOON_PART = (('C_CaptureBase_00', 226.0, 20.0), ('N_InOut_00', 30.0, -10.0))
 
-def edits(k, hud_corner):
+def hud_extent(k, hud_aspect):
+    """(w_hud, right_hud) for the HUD: how far its edge moves out in a 1920-wide layout's own units (960 * (1 / kc - 1))
+    and in the grid units of a root pane already scaled by k (960 * k * (1 / kc - 1)), where kc = (16/9) / C and C is
+    the HUD's aspect: hud_aspect, never wider than the screen's 16/9 / k. None (or a cap that is not narrower than the
+    screen) puts the HUD at the screen's edges: the same w and 960 * (1 - k) the screen itself uses. C = 16/9 gives
+    (0, 0), the HUD in the middle 16:9 as shipped."""
+    screen = (16 / 9) / k
+    if hud_aspect is None or hud_aspect >= screen * 0.99: return 960 * (1 / k - 1), 960 * (1 - k)
+    inner = 1 / ((16 / 9) / hud_aspect) - 1   # 1 / kc - 1
+    return 960 * inner, 960 * k * inner
+
+# The loading screen's map is a capture of the world map that the game draws as the 3 x 3 tiles of 840 units around the
+# player's tile (measured with TOTK_DUMP at 3840x1080: nine 840x840 tile draws into the capture), so only 840 units
+# either side of the player are certain to hold map; wider, the capture shows black beside the tiles where the player
+# stands near a tile's edge. At 16:9 it is 1470 wide (the screen's 1920 less 450), its left edge 23 units past the
+# screen's, and the side panel (a window, so its frame keeps its proportions at any width) covers its right 237 units.
+LOADING_MAP_MAX = 1660
+
+def loading_map(k):
+    """(width, shift, panel width) of the loading screen's map capture and side panel for k = 16:9 over the aspect: the
+    map as wide as the screen allows up to LOADING_MAP_MAX, its left edge where 16:9 has it relative to the screen's
+    edge (shift: how far its centre moves from x -248), and the panel from the map's right part to the screen's edge."""
+    width = min(1920 / k - 450, max(1470, LOADING_MAP_MAX))
+    centre = -960 / k - 23 + width / 2
+    panel = 960 / k - (centre + width / 2 - 237)
+    return width, centre + 248, panel
+
+def edits(k, hud_aspect):
     """(layout, pane, field, value) for the aspect: k = 16/9 over the aspect (the root's scale), w = how far a 1920-wide
-    layout's edge moves out in its own units (960 * (1 / k - 1)). OFF moves a pane out of sight."""
+    layout's edge moves out in its own units (960 * (1 / k - 1)). OFF moves a pane out of sight. hud_aspect: the
+    widest aspect the HUD spreads over (None = the screen's, see hud_extent); w_hud and right_hud replace w and the
+    root's x for the HUD panes below, everything else belongs to the screen and keeps w and k."""
     w, OFF = 960 * (1 / k - 1), 10000.0
+    w_hud, right_hud = hud_extent(k, hud_aspect)
     wide = 1 / k
     out = [
         ('AppAlbum_00', 'N_FadeInOut_00', 'scale_x', k), ('AppAlbum_00', 'N_Open_01', 'scale_x', wide),
         *[('AppMap_00', f'N_BlurInOut_0{i}', 'scale_x', wide) for i in range(4)],
-        ('AppMap_00', 'N_MiniMap_00', 'x', -270 * (1 - k)),
+        # With the map as wide as the screen, the layer tabs go to its left edge and the time, temperature and
+        # position to its right edge, as at 16:9 (neither position is animated; AppMap_00_MiniMap keys their visibility).
+        ('AppMap_00', 'N_MiniMap_00', 'x', -w), ('AppMap_00', 'N_AllMapTime_00', 'x', w),
+        # The map: the panes that cut it out and its black backing are 2250 wide, so under the 16:9 root the world map
+        # ended short of the screen's sides and black bars showed there. They take the screen's width in the root's
+        # units instead (a size, not a scale: the map inside keeps its proportions and more of it shows), and so do the
+        # icon area and the shadow frame over it.
+        *[('AppMap_00', pane, 'w', 2250 / k) for pane in ('N_Cut_00', 'N_Capture_00', 'Black8_01', 'N_Cut_01',
+                                                          'P_MapCapture_00', 'N_Cut_02', 'N_IconArea_00', 'W_Shadow_00')],
         ('AppMenuOverlay_00', 'N_FadeInOut_00', 'scale_x', k), ('AppMenuOverlay_00', 'N_FadeInOut_01', 'scale_x', k),
         ('AppMenuOverlay_00', 'N_Icon_00', 'scale_x', k), ('AppMenuOverlay_00', 'N_TitleOne_01', 'scale_x', k),
         ('AppOpenDemoWindow_00', 'P_BG_00', 'scale_x', wide), ('AutoBuilder_00', 'N_BG_00', 'scale_x', wide),
@@ -68,21 +108,34 @@ def edits(k, hud_corner):
         ('CameraSystemWindow_00', 'T_Text_00', 'scale_x', k),
         ('ChallengeLog_00', 'C_CaptureUp_00', 'x', OFF), ('ChallengeLog_00', 'C_CaptureUp_01', 'x', OFF),
         ('GameOver_00', 'P_BG_00', 'scale_x', wide),
-        ('LoadingFade_00', 'N_Base_00', 'scale_x', wide), ('LoadingFade_00', 'N_Logo_00', 'x', w),
+        # The loading screen: the map starts at the screen's left edge and the side panel ends at its right edge, each
+        # unstretched. See loading_map for the widths.
+        ('LoadingFade_00', 'N_Logo_00', 'x', w),
         ('LoadingFade_00', 'N_Status_00', 'x', w), ('LoadingFade_00', 'N_Tips_00', 'x', -w),
-        ('LoadingFade_00', 'P_BG_00', 'scale_x', wide), ('LoadingFade_00', 'P_SideBGDeco_00', 'scale_x', k),
-        ('LoadingFade_00', 'Pa_IconPlayer_00', 'scale_x', k), ('LoadingFade_00', 'Pa_LargeDungeonMap_00', 'scale_x', k),
-        ('LoadingFade_00', 'Pa_LargeDungeonMap_01', 'scale_x', k), ('LoadingFade_00', 'Pa_Map_00', 'scale_x', k),
-        ('LoadingFade_00', 'Pa_Map_01', 'scale_x', k),
+        ('LoadingFade_00', 'P_BG_00', 'scale_x', wide), ('LoadingFade_00', 'P_BG_01', 'scale_x', wide),
+        ('LoadingFade_00', 'P_Grid_00', 'scale_x', wide), ('LoadingFade_00', 'P_Bar_00', 'scale_x', wide),
+        *[('LoadingFade_00', pane, 'w', loading_map(k)[0]) for pane in ('C_CaptureMap_00', 'C_CaptureMap_01',
+                                                                          'P_CaptureMap_00', 'P_CaptureMap_01')],
+        ('LoadingFade_00', 'N_Map_00', 'x', -248 + loading_map(k)[1]),
+        ('LoadingFade_00', 'W_SideBGDeco_00', 'x', 960 / k), ('LoadingFade_00', 'W_SideBGDeco_00', 'w', loading_map(k)[2]),
+        ('LoadingFade_00', 'P_SideBGDeco_00', 'x', 960 / k),
         ('MessageLog_01', 'P_Capture_00', 'scale_x', wide), ('OwnedHorseList_00', 'N_BG_00', 'scale_x', wide),
         ('PaCommonBtnTitle_00', 'B_Hit_00', 'x', OFF), ('PaCommonBtnTitle_00', 'N_Cursor_00', 'x', OFF),
         ('PaLargeDungeonMap_00', 'P_BG_00', 'scale_x', wide), ('PaMessageBtn_00', 'B_Hit_00', 'x', OFF),
         ('PaRecipeCardList_00', 'P_BG_00', 'scale_x', wide),
-        ('SaveLoadIcon_00', 'RootPane', 'x', -960 * (1 - k)),
+        # The saving indicator follows the same selected HUD area as the other corner indicators.
+        ('SaveLoadIcon_00', 'RootPane', 'x', -right_hud),
         ('ShopMenu_00', 'N_BG_00', 'scale_x', wide), ('StaffRoll_00', 'N_BG_00', 'scale_x', wide),
         *[e for pane, x, _ in BALLOON_PART for e in (('PaBalloonMessage_00', pane, 'scale_x', k),
                                                       ('PaBalloonMessage_00', pane, 'x', x * k))],
     ]
+    # The Purah Pad's frame (map, album, ...): AppMenuOverlay_00 keeps a root as wide as the screen, so the stone and
+    # light pieces at its left and right edges (x = -960 / 960, anchored at their outer side) were stretched with it.
+    # They keep their own width at the edges.
+    out += [('AppMenuOverlay_00', f'P_Frame{side}{part}', 'scale_x', k) for side in 'LR'
+            for part in ('Core_00', 'AlbNrm_00', 'Light_00', 'EdgeFast_00', 'EdgeSlow_00', 'EdgeFastGlow_00',
+                         'EdgeSlowGlow_00')]
+    out += [('AppMenuOverlay_00', f'P_Frame{side}Dent_0{i}', 'scale_x', k) for side in 'LR' for i in (0, 1)]
     # Menus framed by two side decorations, a header and a background: the frame stays at the screen's edges.
     for layout, deco in (('PauseMenuOverlay_00', 'P_Deco{}_00'), ('SystemLoadList_00', 'P_Deco{}_00'),
                          ('SystemOption_00', 'P_Deco{}_00'), ('SystemSaveLoad_00', 'P_Deco{}_00')):
@@ -97,18 +150,17 @@ def edits(k, hud_corner):
             ('SystemActionGuide_00', 'N_SystemBG_00', 'scale_x', wide),
             ('SystemActionGuide_00', 'P_DecoL_01', 'scale_x', k), ('SystemActionGuide_00', 'P_DecoL_01', 'x', -(675 + w) * k),
             ('SystemActionGuide_00', 'P_DecoL_02', 'scale_x', k), ('SystemActionGuide_00', 'P_DecoL_02', 'x', (675 + w) * k)]
-    if hud_corner:   # the HUD in the screen's corners instead of the middle 16:9
-        right = 960 * (1 - k)
-        out += [(name, 'RootPane', 'x', right) for name in ('EnvironmentInfo_00', 'EventSkip_00', 'InstantTipsAppMenu_00',
+    if hud_aspect is None or hud_aspect > 16 / 9:   # the HUD out to its area's edges; at 16:9 it stays as shipped
+        out += [(name, 'RootPane', 'x', right_hud) for name in ('EnvironmentInfo_00', 'EventSkip_00', 'InstantTipsAppMenu_00',
                                                              'InstantTipsWithPict_00', 'InstantTips_00', 'NumDisplaySecond_00',
                                                              'NumDisplay_00', 'PickUpWin_00')]
-        out += [('Location_00', 'N_Small_00', 'x', -(388 + w)),
-                ('PlayerStatus3D_00', 'N_ExtraStaminaTarget_01', 'x', -(745 + w)),
-                ('PlayerStatus_00', 'N_DevilDemoTargetC_00', 'x', -(284 + w)),
-                ('PlayerStatus_00', 'N_DevilDemoTargetLT_00', 'x', -(576 + w)),
-                ('PlayerStatus_00', 'N_HeartGaugeTargetLT_00', 'x', -(576 + w)),
-                ('PlayerStatus_00', 'N_HeartPos_00', 'x', -w),
-                ('PlayerStatus_00', 'Pa_CompanionLife_00', 'x', -(840 + w))]
+        out += [('Location_00', 'N_Small_00', 'x', -(388 + w_hud)),
+                ('PlayerStatus3D_00', 'N_ExtraStaminaTarget_01', 'x', -(745 + w_hud)),
+                ('PlayerStatus_00', 'N_DevilDemoTargetC_00', 'x', -(284 + w_hud)),
+                ('PlayerStatus_00', 'N_DevilDemoTargetLT_00', 'x', -(576 + w_hud)),
+                ('PlayerStatus_00', 'N_HeartGaugeTargetLT_00', 'x', -(576 + w_hud)),
+                ('PlayerStatus_00', 'N_HeartPos_00', 'x', -w_hud),
+                ('PlayerStatus_00', 'Pa_CompanionLife_00', 'x', -(840 + w_hud))]
     return out
 
 SYSTEM_MENUS = ('SystemLoadList_00', 'SystemOption_00', 'SystemSaveLoad_00')
@@ -120,10 +172,21 @@ def tall_edits(k):
     out = [('AppAlbum_00', 'N_FadeInOut_00', 'scale_y', k), ('AppAlbum_00', 'N_Open_01', 'scale_y', tall),
            *[('AppMenuOverlay_00', p, 'scale_y', k) for p in ('N_FadeInOut_00', 'N_FadeInOut_01', 'N_Icon_00',
                                                                'N_TitleOne_01')],
-           ('CameraPointer_00', 'N_Type_01', 'scale_y', k), ('CameraSystemWindow_00', 'N_FirstOut_00', 'scale_y', k),
+           ('CameraPointer_00', 'N_Type_01', 'scale_y', k),
+           # The camera's "save to the album?" window: N_InOut_00 takes the screen's height (below), so the photo's
+           # frame (N_AlbumPic_00) has the screen's shape, as the photo has. The compendium's square photos
+           # (N_PictureBook_00) and the album's question and buttons (N_AlbumCon_00) keep their proportions, and the
+           # question and the buttons move out by the frame's extra half height (319.5 of its 639).
+           *[('CameraSystemWindow_00', p, 'scale_y', k) for p in ('N_PictureBook_00', 'N_AlbumCon_00')],
+           ('CameraSystemWindow_00', 'T_TextAlbum_00', 'y', 380 + 319.5 * (tall - 1)),
+           *[('CameraSystemWindow_00', p, 'y', -396 - 319.5 * (tall - 1)) for p in ('Pa_BtnL_01', 'Pa_BtnR_01')],
            *[('LoadingFade_00', p, 'scale_y', k) for p in ('Pa_IconPlayer_00', 'Pa_LargeDungeonMap_00',
                                                             'Pa_LargeDungeonMap_01', 'Pa_Map_00', 'Pa_Map_01')],
            *[('AppMap_00', f'N_BlurInOut_0{i}', 'scale_y', tall) for i in range(4)],
+           # The map's capture, its cut, backing and shadow are 1080 high, the height of a 16:9 layout: they take the
+           # screen's height, 1080 / k, so the map fills it instead of leaving black above and below (tall_anim
+           # does the same for the keys of AppMap_00_MiniMap that hold 1080)
+           *[('AppMap_00', pane, 'h', 1080 * tall) for pane in MAP_TALL + ('W_Shadow_00',)],
            *[(layout, 'P_BG_00', 'scale_y', tall) for layout in ('AppOpenDemoWindow_00', 'GameOver_00', 'LoadingFade_00',
                                                                  'PaLargeDungeonMap_00', 'PaRecipeCardList_00')],
            ('LoadingFade_00', 'N_Base_00', 'scale_y', tall),
@@ -142,7 +205,10 @@ def tall_edits(k):
         'ShopMenu_00', 'SystemActionGuide_00') + SYSTEM_MENUS]
     out += [(name, 'RootPane', 'y', -540 * (1 - k)) for name in (
         'CtrlGuide_00', 'DoCommand_00', 'EnvironmentInfo_00', 'HorseGauge_00', 'MessageDialog_00', 'MessageLog_01',
-        'PauseMenuOverlay_00', 'SaveLoadIcon_00', 'TreasureFullShortCut_00')]
+        'PauseMenuOverlay_00', 'SaveLoadIcon_00', 'TreasureFullShortCut_00',
+        # the clock an inn's choices show (05:00) under MessageDialog_00's list: it stayed in the middle 16:9 and was
+        # drawn over the list's last rows
+        'Time_00')]
     out += [('AppAlbum_00', 'N_PicLoad_01', 'y', -540 * (1 - k)), ('AppMap_00', 'N_AllMapTime_00', 'y', -h),
             ('AppMenuOverlay_00', 'A_Align_00', 'y', -(505 + h)), ('AppMenuOverlay_00', 'Pa_GuideLeft_00', 'y', -(505 + h)),
             ('AppMenuOverlay_00', 'N_TitleTab_00', 'y', 491 + h),
@@ -185,6 +251,49 @@ def anim_keys(blarc, lo, pane, tag, target):
         pos += size
     return out
 
+FLPA_SIZE_X = 8   # BFLAN FLPA target: the pane's width
+
+# The map's panes that AppMap_00_MiniMap sizes: in the full map they hold the width 2250 in its keys (the minimap
+# shrinks them), and the animation's keys win over the layout's size, so a wider screen still cut the map at 2250.
+MAP_SIZED = ('N_IconArea_00', 'N_Cut_00', 'N_Capture_00', 'P_MapCapture_00', 'Black8_01', 'N_Cut_01', 'N_Cut_02')
+
+# The map's panes that hold the 16:9 layout's height, 1080, in the layout and in the full map's keys of AppMap_00_MiniMap
+MAP_TALL = ('N_Cut_00', 'N_Capture_00', 'P_MapCapture_00', 'Black8_01')
+FLPA_SIZE_Y = 9   # BFLAN FLPA target: the pane's height
+
+def wide_anim(blarc, members, k, changed):
+    """The animation keys that hold the full map's width, for a canvas wider than 16:9: 2250 becomes 2250 / k, the
+    screen's width in the 16:9 root's units plus the same margin, as edits() does for the layout's sizes."""
+    member = 'anim/AppMap_00_MiniMap.bflan'
+    if member not in members: raise SystemExit(f'AppMap_00_MiniMap: no animation {member} in the archive')
+    lo = members[member][0]
+    if blarc[lo:lo + 4] != b'FLAN': return   # tests/hud_layout_test.py's synthetic archive: fixed-offset keys only
+    found = 0
+    for pane in MAP_SIZED:
+        for keys in anim_keys(blarc, lo, pane, b'FLPA', FLPA_SIZE_X):
+            for key in keys:
+                if abs(struct.unpack_from('<f', blarc, key + 4)[0] - 2250) < 1e-3:
+                    struct.pack_into('<f', blarc, key + 4, 2250 / k); found += 1
+    if found < len(MAP_SIZED): raise SystemExit(f'AppMap_00_MiniMap: {found} width keys of 2250, expected at least {len(MAP_SIZED)}')
+    changed.add(member)
+
+def loading_anim(blarc, members, k, changed):
+    """The loading screen's map slides by 24 units when the bar comes in and goes out (LoadingFade_00_BarIn: x -278 to
+    -302, BarOut: -302 to -326); the keys move with the map's centre (loading_map)."""
+    shift = loading_map(k)[1]
+    for name, shipped in (('LoadingFade_00_BarIn', (-278, -302)), ('LoadingFade_00_BarOut', (-302, -326))):
+        member = f'anim/{name}.bflan'
+        mini = members.get('anim/AppMap_00_MiniMap.bflan')
+        if mini and blarc[mini[0]:mini[0] + 4] != b'FLAN': return   # tests/hud_layout_test.py's synthetic archive
+        if member not in members: raise SystemExit(f'{name}: no animation {member} in the archive')
+        lo = members[member][0]
+        curves = anim_keys(blarc, lo, 'N_Map_00', b'FLPA', 0)
+        keys = [key for curve in curves for key in curve]
+        values = tuple(round(struct.unpack_from('<f', blarc, key + 4)[0], 3) for key in keys)
+        if values != shipped: raise SystemExit(f'{name} N_Map_00 x: keys {values}, expected {shipped}')
+        for key in keys: struct.pack_into('<f', blarc, key + 4, struct.unpack_from('<f', blarc, key + 4)[0] + shift)
+        changed.add(member)
+
 def tall_anim(blarc, members, k, changed):
     """The animation keys that hold positions or zooms on the screen's height, for a canvas narrower than 16:9."""
     h = 540 * (1 / k - 1)
@@ -206,6 +315,13 @@ def tall_anim(blarc, members, k, changed):
                 abs(get(k1 + 4) + 360) < 1e-3 and get(k1 + 8) == 0):
             raise SystemExit(f'AppMap_00_MiniMap {pane}: not a line from 0 to y -360')
         put(k0 + 8, -(360 + h)), put(k1 + 4, -(360 + h))
+    # The full map's height keys hold 1080 (the minimap shrinks the panes), and they win over the layout's sizes
+    found = 0
+    for pane in MAP_TALL:
+        for keys in anim_keys(blarc, lo, pane, b'FLPA', FLPA_SIZE_Y):
+            for key in keys:
+                if abs(get(key + 4) - 1080) < 1e-3: put(key + 4, 1080 / k); found += 1
+    if found < len(MAP_TALL): raise SystemExit(f'AppMap_00_MiniMap: {found} height keys of 1080, expected at least {len(MAP_TALL)}')
     # The large place name of a discovery holds its height (285, then 260) in flat keys; they move to the top edge.
     curves = anim_keys(blarc, anim('Location_00_IsDiscovery'), 'N_Large_00', b'FLPA', FLPA_Y)
     values = [get(key + 4) for keys in curves for key in keys]
@@ -217,12 +333,13 @@ def tall_anim(blarc, members, k, changed):
     if len(curves) != 1 or values != [1.08, 1.28]: raise SystemExit(f'PaMapIconDragonTears_00_Zoom P_Geoglyph_00: keys {values}')
     for key in curves[0]: put(key + 4, get(key + 4) / k)
 
-def anim_edits(k, hud_corner):
-    """(animation, byte offset, value the game ships, new value): floats inside BFLAN key tables."""
-    w = 960 * (1 / k - 1)
+def anim_edits(k, hud_aspect):
+    """(animation, byte offset, value the game ships, new value): floats inside BFLAN key tables. hud_aspect as in
+    edits."""
+    w_hud, _ = hud_extent(k, hud_aspect)
     out = [('PaMapIconDragonTears_00_Zoom', 288, 1.08, 1.08 / k), ('PaMapIconDragonTears_00_Zoom', 300, 1.28, 1.28 / k)]
-    if hud_corner:   # the minimap's slide-in keys end at x 765, the right edge of a 16:9 layout
-        out += [('AppMap_00_MiniMap', o, 765.0, 765 + w) for o in (872, 880, 1628, 1636, 3264, 3272, 3468, 3476)]
+    if hud_aspect is None or hud_aspect > 16 / 9:   # the minimap's slide-in keys end at x 765, the right edge of a 16:9 layout
+        out += [('AppMap_00_MiniMap', o, 765.0, 765 + w_hud) for o in (872, 880, 1628, 1636, 3264, 3272, 3468, 3476)]
     return out
 
 def panes(blarc, lo, hi):
@@ -243,10 +360,18 @@ def find_pane(found, layout, name):
     if name not in found: raise SystemExit(f'{layout}: no pane {name}')
     return found[name]
 
-def apply(blarc, members, width, height, hud_corner=True):
+def apply(blarc, members, width, height, hud_aspect=None):
     """Edits blarc (bytearray) in place for a width x height canvas of another shape than 16:9. Returns the members it
-    changed. hud_corner (wider canvases): the HUD goes to the screen's corners; a narrower one always has it at the
-    top and bottom edges."""
+    changed. hud_aspect (wider canvases): the widest aspect the HUD spreads over, centred on the screen (21:9 =
+    21 / 9, 16:9 = 16 / 9); None, or one not narrower than the screen, puts it in the screen's corners. A taller canvas
+    always has the HUD at the top and bottom edges."""
+    if not all(isinstance(v, (int, float)) and math.isfinite(v) and v > 0 for v in (width, height)):
+        raise ValueError('canvas dimensions must be positive and finite')
+    if hud_aspect is not None:
+        if not math.isfinite(hud_aspect) or hud_aspect < 16 / 9:
+            raise ValueError('HUD aspect must be finite and at least 16:9')
+        # Runtime treats caps within one percent of the canvas as full width.
+        if hud_aspect >= width / height * 0.99: hud_aspect = None
     wide = width / height > 16 / 9
     k = (16 / 9) / (width / height) if wide else (width / height) / (16 / 9)
     assert k < 1, 'only for canvases of another shape than 16:9'
@@ -276,7 +401,7 @@ def apply(blarc, members, width, height, hud_corner=True):
         struct.pack_into('<f', blarc, at, k)
     # Every edit's value at k = 1 is the value the game ships (a scale of 1, the 16:9 position): checked before writing,
     # so a version with other numbers stops here instead of getting wrong positions. OFF moves a pane away: not checked.
-    table = zip(edits(k, hud_corner), edits(1.0, hud_corner)) if wide else zip(tall_edits(k), tall_edits(1.0))
+    table = zip(edits(k, hud_aspect), edits(1.0, hud_aspect)) if wide else zip(tall_edits(k), tall_edits(1.0))
     for (layout, pane, field, value), (_, _, _, shipped) in table:
         at = pane_offset(layout, pane) + FIELD[field]
         have = struct.unpack_from('<f', blarc, at)[0]
@@ -285,7 +410,7 @@ def apply(blarc, members, width, height, hud_corner=True):
     if not wide:
         tall_anim(blarc, members, k, changed)
         return sorted(changed)
-    for anim, offset, shipped, value in anim_edits(k, hud_corner):
+    for anim, offset, shipped, value in anim_edits(k, hud_aspect):
         member = f'anim/{anim}.bflan'
         if member not in members: raise SystemExit(f'{anim}: no animation {member} in the archive')
         lo, hi = members[member]
@@ -293,4 +418,6 @@ def apply(blarc, members, width, height, hud_corner=True):
         have = struct.unpack_from('<f', blarc, lo + offset)[0]
         if abs(have - shipped) >= 1e-4: raise SystemExit(f'{anim} +{offset}: {have}, expected {shipped}')
         struct.pack_into('<f', blarc, lo + offset, value); changed.add(member)
+    wide_anim(blarc, members, k, changed)
+    loading_anim(blarc, members, k, changed)
     return sorted(changed)

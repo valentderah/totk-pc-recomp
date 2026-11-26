@@ -1,5 +1,5 @@
 """Command line: python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR [--firmware DIR]
-                                     [--root DIR] [--temp DIR] [--verify] [--dlss] [--prepare]
+                                     [--root DIR] [--temp DIR] [--verify] [--dlss] [--fsr] [--prepare]
                                      (--game FILE_OR_FOLDER in place of --base and --update)
 
 A first install needs every option. --firmware names the Switch firmware folder (an unpacked firmware or an emulator's
@@ -10,10 +10,11 @@ extraction has to run again. Prints JSON events on stdout (events.py). Exit code
 line, 3 cancelled (Ctrl+C or Ctrl+Break).
 
 --dlss downloads NVIDIA's DLSS library (nvngx_dlss.dll) from NVIDIA's DLSS SDK repository into the install folder on
-Windows with an NVIDIA RTX GPU (steps.py, Dlss).
+Windows with an NVIDIA RTX GPU (steps.py, Dlss). --fsr downloads AMD's FSR loader and upscaler
+(amd_fidelityfx_loader_vk.dll, amd_fidelityfx_upscaler_vk.dll) from AMD's FSR SDK repository into the install folder on
+Windows, for scene_upscaler = fsr4; the libraries decide which GPUs get FSR 4 (steps.py, Fsr).
 """
 import argparse
-import hashlib
 import signal
 import sys
 import time
@@ -23,7 +24,7 @@ from . import layout as layouts
 from . import state as statefile
 from .events import ProgressLines, Reporter
 from .runner import Context, run_steps
-from .steps import UPDATE_TITLE_ID, all_steps, migrate_state
+from .steps import UPDATE_TITLE_ID, adopt_old_temp, all_steps, migrate_state
 
 EXIT = {'ok': 0, 'failed': 1, 'cancelled': 3}
 
@@ -60,17 +61,6 @@ def split_game(path):
     return found
 
 
-# The temp folder inside the install folder when the layout names none (the Linux release); the check step does not
-# count it when it requires an empty install folder
-TEMP_IN_DEST = '.setup-temp'
-
-
-def temp_folder(base, dest):
-    """One temp folder per install folder, so two installs never share generated files."""
-    tag = hashlib.sha256(str(dest).lower().encode()).hexdigest()[:8]
-    return base / f'{dest.name or "root"}-{tag}'
-
-
 def cancel(signum, frame):
     raise KeyboardInterrupt
 
@@ -85,11 +75,13 @@ def main(argv=None):
     ap.add_argument('--lang', help='game language, a Switch language code (en-US, en-GB, ja, de, ru, ...)')
     ap.add_argument('--dest', type=Path, required=True, help='install folder')
     ap.add_argument('--root', type=Path, help='release folder or repository (default: the folder above installer/)')
-    ap.add_argument('--temp', type=Path, help='temp folder (default: temp/ of the release on Windows, .setup-temp in '
-                                              'the install folder on Linux, build/install-temp in a repository)')
+    ap.add_argument('--temp', type=Path, help='temp folder (default: build-cache/work in the install folder on Windows, '
+                                              '.setup-temp there on Linux, build/install-temp in a repository)')
     ap.add_argument('--verify', action='store_true', help='hash every kept file, also those this release made')
     ap.add_argument('--dlss', action='store_true', help="download NVIDIA's nvngx_dlss.dll (NVIDIA RTX SDK license) next "
                                                       'to the game, for dlaa and the DLSS modes')
+    ap.add_argument('--fsr', action='store_true', help="download AMD's FSR loader and upscaler DLLs (AMD FSR SDK "
+                                                     'license) next to the game, for scene_upscaler = fsr4')
     ap.add_argument('--prepare', action='store_true', help='for a launcher: print `progress <0-1> <text>` lines instead of '
                                                            'JSON events, and take en-US as the language of a first install')
     ap.add_argument('--game', type=Path, help='the game files in one place: the base game file, or a folder holding the '
@@ -113,12 +105,14 @@ def main(argv=None):
             signal.signal(getattr(signal, name), cancel)
     layout = layouts.find(args.root)
     dest = args.dest.resolve()
-    base = args.temp or layout.temp
-    temp = temp_folder(base.resolve(), dest) if base else dest / TEMP_IN_DEST
+    temp = layouts.temp_for(layout, dest, args.temp)
+    adopted = adopt_old_temp(layout, dest, temp)
     log = temp / 'logs' / time.strftime('install-%Y%m%d-%H%M%S.log')
     if args.prepare:
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     rep = Reporter(out=ProgressLines(sys.stdout) if args.prepare else None, log_path=log)
+    if adopted:
+        rep.log(adopted)
     t0 = time.monotonic()
     try:
         state = statefile.load(dest)

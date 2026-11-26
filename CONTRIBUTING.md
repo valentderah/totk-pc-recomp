@@ -36,7 +36,7 @@ Open pull requests against `dev`. Branch from the current `dev` and rebase on it
 ### Before you start
 
 - Search the open pull requests and issues on the topic. When another pull request already covers it, improve that one or say in yours how they differ.
-- Fixes are reviewed before features, in order of how many players the bug hits. A feature with a design in [docs/milestones/](docs/milestones/) (mods, cheats, the menu) follows that design. For a feature without one, open an issue first.
+- Fixes are reviewed before features, in order of how many players the bug hits. A feature with a design in `docs/milestones/` (mods, cheats, the menu) follows that design. For a feature without one, open an issue first.
 - Find out where the bug reproduces: OS, GPU vendor and generation, driver, game update, settings. Put that in the description.
 
 ### What the change must keep
@@ -46,7 +46,7 @@ Open pull requests against `dev`. Branch from the current `dev` and rebase on it
 - **The fix, not a disabled feature.** A crash that goes away with a feature off points at the bug in that feature. Turning the feature off for a vendor is not a fix.
 - **The frame time on weak hardware.** Game threads and the render thread do no file I/O, no GPU allocations, no per-draw state copies and no global atomic counters. Memory kept per frame or per object is freed. The full list with measured costs: [docs/pr-review-kit/02-performance.md](docs/pr-review-kit/02-performance.md), "What the hot path must not do".
 - **Other GPUs.** New Vulkan code queries each feature, extension, format and limit it uses and keeps a working path without it. Nothing is hardcoded from what one GPU reports.
-- **Text in the catalogs.** Text a player sees gets an id in `runtime/ui_text.h` and an entry in `runtime/ui_text.c` for every menu language (English, Russian, Brazilian Portuguese, Simplified Chinese); installer text goes into `installer/text/*.json`.
+- **Text in the catalogs.** Text a player sees gets an id in `runtime/ui_text.h` and an entry in `runtime/ui_text.c` for every menu language (English, Russian, Brazilian Portuguese, Simplified Chinese, German, French, Spanish, Italian, Dutch, Japanese, Korean, Vietnamese); installer text goes into `installer/text/*.json`.
 - **The generator owns generated C.** Change `recomp/`, never `generated/`.
 
 ### Checks by what you changed

@@ -6,7 +6,9 @@ Run: python tests/installer_test.py
 import http.client
 import io
 import json
+import os
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -16,8 +18,9 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from installer import cli, ini, runner, state, steps  # noqa: E402
+from installer import cli, ini, runner, screens, state, steps  # noqa: E402
 from installer.events import ProgressLines, Reporter  # noqa: E402
+from installer import layout as layouts  # noqa: E402
 from installer.layout import Layout  # noqa: E402
 
 
@@ -198,6 +201,58 @@ class RunnerTest(unittest.TestCase):
             state.load(self.bed.dest)
         self.assertEqual(e.exception.id, 'state.newer_format')
 
+    def test_invalid_state_format_is_reported_as_unreadable(self):
+        self.bed.dest.mkdir()
+        path = self.bed.dest / state.NAME
+        for value in ('1', None, [], {}, True, 1.5, -1):
+            with self.subTest(value=value):
+                data = state.empty('r0') | {'format': value}
+                path.write_text(json.dumps(data))
+                before = path.read_bytes()
+                with self.assertRaises(state.StateError) as error:
+                    state.load(self.bed.dest)
+                self.assertEqual(error.exception.id, 'state.unreadable')
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_invalid_state_records_are_reported_as_unreadable(self):
+        self.bed.dest.mkdir()
+        for field in ('inputs', 'steps'):
+            for value in (None, [], 'bad', {'entry': None}, {'entry': 'bad'}):
+                with self.subTest(field=field, value=value):
+                    path = self.bed.dest / state.NAME
+                    path.write_text(json.dumps(state.empty('r0') | {field: value}))
+                    with self.assertRaises(state.StateError) as error:
+                        state.load(self.bed.dest)
+                    self.assertEqual(error.exception.id, 'state.unreadable')
+
+    def test_invalid_state_text_fields_are_reported_as_unreadable(self):
+        self.bed.dest.mkdir()
+        for field in ('release', 'lang', 'version'):
+            for value in (None, [], {}, 1):
+                with self.subTest(field=field, value=value):
+                    (self.bed.dest / state.NAME).write_text(json.dumps(state.empty('r0') | {field: value}))
+                    with self.assertRaises(state.StateError) as error:
+                        state.load(self.bed.dest)
+                    self.assertEqual(error.exception.id, 'state.unreadable')
+
+    def test_legacy_state_without_inputs_can_be_resumed(self):
+        self.bed.run()
+        path = self.bed.dest / state.NAME
+        data = json.loads(path.read_text())
+        del data['format'], data['inputs']
+        path.write_text(json.dumps(data))
+        self.assertEqual(state.load(self.bed.dest)['inputs'], {})
+        result = self.bed.run()
+        self.assertEqual((result.result, result.ran), ('ok', ['check', 'cleanup']))
+
+    def test_newer_state_format_is_not_validated_as_the_current_schema(self):
+        self.bed.dest.mkdir()
+        data = {'format': state.FORMAT + 1, 'steps': {}, 'inputs': [], 'lang': {}}
+        (self.bed.dest / state.NAME).write_text(json.dumps(data))
+        with self.assertRaises(state.StateError) as error:
+            state.load(self.bed.dest)
+        self.assertEqual(error.exception.id, 'state.newer_format')
+
 
 class ReleaseFilesTest(unittest.TestCase):
     def test_release_ships_every_tool_the_steps_run(self):
@@ -315,6 +370,45 @@ class LiftKeyTest(unittest.TestCase):
         self.assertEqual(self.key(), before)
 
 
+class PluginsStaleTest(unittest.TestCase):
+    """A plugin the game found stale (build-cache/plugins.stale, runtime/mods.c mods_plugin_off) plans the lift and the
+    compile of the game's rebuild: the plugin's service run is in the lift, and only Lift.run clears the file."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        dest, temp = base / 'install', base / 'temp'
+        (temp / 'gen').mkdir(parents=True)
+        (temp / 'gen' / 'layout.json').write_text('[]')
+        (temp / 'gen' / steps.STAMP).write_text('L\n')
+        (dest / 'build-cache').mkdir(parents=True)
+        (dest / ('totk' + steps.EXE)).write_bytes(b'MZ')
+        (dest / 'romfs-index.bin').write_bytes(b'')
+        layout = SimpleNamespace(release='1.0', dlls=[])
+        records = {'lift': {'key': 'L'}, 'compile': {'key': 'C', 'exe_sha256': steps.file_sha256(dest / ('totk' + steps.EXE))}}
+        self.ctx = runner.Context(layout, dest, temp, Reporter(out=io.StringIO()), SimpleNamespace(),
+                                  state={'release': '1.0', 'steps': records})
+        self.addCleanup(self.ctx.reporter.close)
+        self.ctx.steps = [steps.Lift(), steps.Compile()]
+        self.ctx.keys = {'lift': 'L', 'compile': 'C'}
+        self.stale = dest / 'build-cache' / 'plugins.stale'
+
+    def planned(self):
+        self.ctx.plan()
+        return [s.id for s in self.ctx.steps if self.ctx.will_run(s.id)]
+
+    def test_stale_plugin_runs_the_lift_and_the_compile(self):
+        self.assertEqual(self.planned(), [])
+        self.stale.write_text('A89F6A7C\t74492AD5\tits init wrote 1 words the build did not record '
+                              '(first main+0x3ad6eb8 87a00000 -> 823c0000)\n')
+        self.assertEqual(self.planned(), ['lift', 'compile'])
+
+    def test_empty_stale_file_keeps_the_build(self):
+        self.stale.write_text('')
+        self.assertEqual(self.planned(), [])
+
+
 class LiftRunTest(unittest.TestCase):
     """Lift.run with fake tools: the ExeFS patch stage writes the status and data files, the lift lists the bytes it
     read, and the data writes are checked against that list after it; a failed lift or check drops both files."""
@@ -326,7 +420,7 @@ class LiftRunTest(unittest.TestCase):
         self.dest, temp = base / 'install', base / 'temp'
         self.dest.mkdir()
         temp.mkdir()
-        layout = SimpleNamespace(recomp=ROOT / 'recomp', tools=ROOT / 'tools',
+        layout = SimpleNamespace(dev=True, recomp=ROOT / 'recomp', tools=ROOT / 'tools',
                                  patches=lambda version: base / 'patches-v143.txt')
         self.ctx = SimpleNamespace(dest=self.dest, temp=temp, layout=layout, keys={'lift': 'k'},
                                    state={'version': '1.4.3'}, reporter=Reporter(out=io.StringIO()))
@@ -383,6 +477,150 @@ class LiftRunTest(unittest.TestCase):
         self.assertEqual(self.outputs(), [False, False])
         self.assertIn('warn.exefs_skipped', self.ctx.reporter.out.getvalue())
 
+    def plugin_setup(self, kind, more=()):
+        """A mod with an exlaunch plugin (SQ), and one more mod per (name, kind) of more; the fake service run writes
+        each plugin's status line of its kind."""
+        kinds = {'SQ': kind, **dict(more)}
+        for name in kinds:
+            (self.dest / 'mods' / name / 'exefs').mkdir(parents=True, exist_ok=True)
+            (self.dest / 'mods' / name / 'exefs' / 'subsdk9').write_bytes(b'NSO0' + name.encode())
+        plugin = self.dest / 'mods' / 'SQ' / 'exefs' / 'subsdk9'
+        dll = self.dest.parent / 'release-bin' / 'SDL3.dll'
+        dll.parent.mkdir(exist_ok=True)
+        dll.write_bytes(b'MZ')
+        (self.ctx.temp / 'build').mkdir(parents=True, exist_ok=True)
+        self.ctx.layout = SimpleNamespace(**vars(self.ctx.layout), llvm='llvm', runtime='runtime', ninja='ninja', dlls=[dll],
+                                          deps=None, sysroot=None, runtime_lib_for=lambda cpu: None,
+                                          pgo=lambda version: None, expected=lambda version: 'expected.json')
+        saved = self.run_tool
+
+        def run_tool(ctx, step, script, args, parse=None, cwd=None):
+            code, log = saved(ctx, step, script, args, parse, cwd)
+            args = [str(a) for a in args]
+            if Path(script).name == 'exefs_plugins.py':
+                Path(args[args.index('--patches-out') + 1]).write_text('patches\n')
+                status = Path(args[args.index('--status') + 1])
+                status.parent.mkdir(parents=True, exist_ok=True)
+                lines = []
+                for name, k in kinds.items():
+                    h = 0x811C9DC5   # FNV-1a 32 of "<mod>/exefs/subsdk9", as tools/exefs_plugins.py keys it
+                    for b in f'{name}/exefs/subsdk9'.encode():
+                        h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
+                    lines.append(f'{h:08X}\t00000000\t{k}\t-\tnote\n')
+                status.write_text(''.join(lines))
+                return (1 if 'unsupported' in kinds.values() else 0), log
+            return code, log
+        steps.run_tool = run_tool
+        return plugin
+
+    def test_plugin_stage(self):
+        # the lift with the plugin, a totk.exe of it, the service run, then the lift with its hook sites
+        plugin = self.plugin_setup('plugin')
+        steps.Lift().run(self.ctx)
+        self.assertEqual([c[0] for c in self.calls], ['exefs_patches.py', 'gen.py', 'build_game.py',
+                                                      'exefs_plugins.py', 'gen.py', 'exefs_patches.py --folded'])
+        first, last = self.calls[1][1], self.calls[4][1]
+        self.assertEqual(first[first.index('--plugins') + 1], str(plugin))
+        self.assertEqual(last[last.index('--plugins') + 1], str(plugin))
+        self.assertEqual(last[last.index('--patches') + 1], str(self.ctx.temp / 'patches-plugins.txt'))
+        self.assertTrue(steps.plugins_status(self.ctx).is_file())
+        # the service run's totk.exe finds its DLLs beside it
+        self.assertTrue((self.ctx.temp / 'build' / 'SDL3.dll').is_file())
+
+    def test_refused_plugin_is_not_lifted(self):
+        # a refused plugin: its status line stays (the Mods tab says why), the game is lifted without it
+        self.plugin_setup('unsupported')
+        steps.Lift().run(self.ctx)
+        last = self.calls[4][1]
+        self.assertNotIn('--plugins', last)
+        self.assertTrue(steps.plugins_status(self.ctx).is_file())
+        self.assertNotIn('warn.plugins_skipped', self.ctx.reporter.out.getvalue())
+
+    def test_refused_plugin_stays_in_the_layout_of_a_built_one(self):
+        # one plugin built, one refused: the lift with the hook sites keeps both in the layout (the records hold the
+        # addresses of the service runs' layout); the refused one has no patch set, its status line says why
+        self.plugin_setup('plugin', [('ZZ', 'unsupported')])
+        steps.Lift().run(self.ctx)
+        last = self.calls[4][1]
+        mods = self.dest / 'mods'
+        self.assertEqual(last[last.index('--plugins') + 1],
+                         ','.join(str(mods / n / 'exefs' / 'subsdk9') for n in ('SQ', 'ZZ')))
+        self.assertIn('unsupported', steps.plugins_status(self.ctx).read_text())
+        self.assertNotIn('warn.plugins_skipped', self.ctx.reporter.out.getvalue())
+
+    def test_failed_plugin_build_warns(self):
+        self.plugin_setup('plugin')
+        self.fail = {'build_game.py'}
+        steps.Lift().run(self.ctx)
+        self.assertNotIn('--plugins', self.calls[-2][1])
+        self.assertFalse(steps.plugins_status(self.ctx).is_file())
+        self.assertIn('warn.plugins_skipped', self.ctx.reporter.out.getvalue())
+
+
+class CompileKeyTest(unittest.TestCase):
+    """The compile key follows the release string: the exe carries the port version of the release that built it."""
+
+    def key(self, release):
+        layout = SimpleNamespace(release=release, pgo=lambda version: None)
+        ctx = SimpleNamespace(layout=layout, keys={'lift': 'L'}, state={'version': '1.4.3'})
+        with mock.patch.object(steps, 'runtime_key', return_value='R'):
+            return steps.Compile().key(ctx)
+
+    def test_new_release_compiles_again(self):
+        self.assertEqual(self.key('0.4.2+abc'), self.key('0.4.2+abc'))
+        self.assertNotEqual(self.key('0.4.2+abc'), self.key('0.4.3+def'))
+
+
+class CompileLockedTest(unittest.TestCase):
+    """Compile.run when the linker cannot write its totk.exe: another program holds the file (a game started from the
+    temp build folder, an antivirus that quarantined it), which gets its own message instead of the plain failure."""
+
+    LLD = ("ld.lld: error: failed to write output 'temp/totk-1/build/totk.exe': Permission denied\n"
+           "clang-23: error: unable to remove file: Permission denied\n")
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        dest, temp = base / 'install', base / 'temp'
+        dest.mkdir()
+        temp.mkdir()
+        layout = SimpleNamespace(dev=True, tools=ROOT / 'tools', llvm=base / 'llvm', deps=None, sysroot=None, runtime=base,
+                                 ninja=base / 'ninja', dlls=[], runtime_lib_for=lambda cpu: None,
+                                 pgo=lambda version: None, expected=lambda version: base / 'expected.json')
+        self.ctx = SimpleNamespace(dest=dest, temp=temp, layout=layout, state={'version': '1.4.3'},
+                                   reporter=Reporter(out=io.StringIO()))
+        self.addCleanup(self.ctx.reporter.close)
+        self.log_text = ''
+        saved = steps.run_tool
+        self.addCleanup(lambda: setattr(steps, 'run_tool', saved))
+        steps.run_tool = self.run_tool
+
+    def run_tool(self, ctx, step, script, args, parse=None, cwd=None):
+        log = ctx.temp / 'compile.log'
+        log.write_text(self.log_text, encoding='utf-8')
+        return 1, log
+
+    def test_locked_link_output(self):
+        self.log_text = 'link: 0.8 s\n' + self.LLD
+        with self.assertRaises(steps.InstallError) as e:
+            steps.Compile().run(self.ctx)
+        self.assertEqual(e.exception.id, 'compile.exe_locked')
+        self.assertTrue(e.exception.params['path'].endswith('totk' + steps.EXE))
+
+    def test_other_failure(self):
+        self.log_text = 'runtime/x.c:1:1: error: expected expression\n'
+        with self.assertRaises(steps.InstallError) as e:
+            steps.Compile().run(self.ctx)
+        self.assertEqual(e.exception.id, 'compile.failed')
+
+    def test_message_in_every_language(self):
+        for path in sorted((ROOT / 'installer' / 'text').glob('*.json')):
+            text = json.loads(path.read_text(encoding='utf-8'))
+            self.assertIn('compile.exe_locked', text, path.name)
+            self.assertIn('{path}', text['compile.exe_locked'], path.name)
+            self.assertIn('{log}', text['compile.exe_locked'], path.name)
+
 
 class IniTest(unittest.TestCase):
     EXAMPLE = '[display]\n# vk_present = mailbox\n\n[language]\n# locale = en-US\n# lang = en-US\n# x = 1\n'
@@ -398,6 +636,21 @@ class IniTest(unittest.TestCase):
         out = ini.set_language(text, 'de')
         self.assertEqual(out, '[display]\nvk_present = fifo\n[language]\n  lang =  de\nfps60 = 0\n')
         self.assertEqual(ini.get_language(out), 'de')
+
+    def test_the_last_active_language_is_rewritten(self):
+        text = 'lang = ru\n[language]\n# lang = fr\n  TOTK_LANG =  ja\nfps_limit = 60\n'
+        out = ini.set_language(text, 'de')
+        self.assertEqual(out, 'lang = ru\n[language]\n# lang = fr\n  lang =  de\nfps_limit = 60\n')
+        self.assertEqual(screens.ini_value(out, 'lang'), 'de')
+        self.assertEqual(ini.get_language(out), 'de')
+
+    def test_language_reader_uses_runtime_order_quotes_and_empty_values(self):
+        for text, expected in [('lang = ru\nTOTK_LANG = "ja"\n', 'ja'),
+                               ('lang = ru\nlang = \nTOTK_LANG = ""\n', 'ru'),
+                               ('lang = \nTOTK_LANG = ""\n', None),
+                               ('lang = "   "\n', '   ')]:
+            with self.subTest(text=text):
+                self.assertEqual(ini.get_language(text), expected)
 
     def test_missing_section_is_added(self):
         self.assertEqual(ini.set_language('fps60 = 0\n', 'fr'), 'fps60 = 0\n\n[language]\nlang = fr\n')
@@ -426,6 +679,107 @@ class IniTest(unittest.TestCase):
             text = path.read_text()
             self.assertIn('vk_present = fifo', text)
             self.assertEqual(ini.get_language(text), 'ja')
+
+
+class ExtractMergeTest(unittest.TestCase):
+    """The real merge wrapper with synthetic inputs and hactool output; no game files or keys."""
+
+    LEVELS = '\n'.join(f'        Level {i} (GOOD):' for i in range(6))
+    LOG = ('NCA:\nFixed-Key Signature (FAIL): omitted\nNPDM Signature (GOOD): omitted\n'
+           'NPDM:\n    ACID:\n        Signature Key (GOOD): 0\n        Signature (FAIL): omitted\n'
+           + LEVELS + '\nDone!\n')
+    IMAGE = b'synthetic merged image'
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.output, self.logs = self.root / 'romfs', self.root / 'logs'
+        self.logs.mkdir()
+        self.base, self.update, self.keys = (self.root / name for name in ('base.nsp', 'update.nsp', 'prod.keys'))
+        self.log, self.code, self.base_log = self.LOG, 0, self.LEVELS
+        self.phases = []
+        header = bytearray(0xc00)
+        header[0x404] = 4   # one BKTR section
+        inputs = [(source, {'size': 1, 'nca_offset': 0}, bytes(header)) for source in (self.base, self.update)]
+        self.enterContext(mock.patch.object(steps.extract, 'program_ncas', return_value=({}, inputs)))
+        self.enterContext(mock.patch.object(steps.extract, 'copy_range'))
+        self.enterContext(mock.patch.object(steps.extract, 'hactool_prod_keys'))
+        self.enterContext(mock.patch.object(steps.extract.shutil, 'disk_usage',
+                                           return_value=SimpleNamespace(free=100 * steps.GiB)))
+        self.enterContext(mock.patch.object(steps.extract, 'run_hactool', side_effect=self.hactool))
+        self.index = self.enterContext(mock.patch.object(steps.extract, 'index_romfs', return_value=[]))
+
+    def hactool(self, command, environment):
+        if '-x' not in command:
+            return 0, self.base_log   # the extra verification that identifies a damaged input
+        image = Path(next(arg.split('=', 1)[1] for arg in command if arg.startswith('--section0=')))
+        image.write_bytes(self.IMAGE)
+        return self.code, self.log
+
+    def merge(self):
+        steps.extract.merge_update_romfs(self.base, self.update, self.keys, self.root / 'hactool', self.output,
+                                         self.logs, phase=self.phases.append)
+
+    def test_acid_signature_warning_keeps_a_verified_merge(self):
+        self.merge()
+        image = self.output / 'romfs.bin'
+        self.assertEqual(image.read_bytes(), self.IMAGE)
+        report = json.loads((self.output / 'index.json').read_text())
+        self.assertEqual((report['status'], report['romfs_size'], report['romfs_sha256']),
+                         ('pass', len(self.IMAGE), steps.extract.sha256(image)))
+        self.assertEqual(self.phases, ['copy', 'merge', 'index'])
+        self.assertEqual((self.logs / f'merge_romfs-{self.root.name}.log').read_text(), self.LOG)
+
+    def test_existing_npdm_signature_warning_is_still_allowed(self):
+        self.log = self.LOG.replace('NPDM Signature (GOOD)', 'NPDM Signature (FAIL)')
+        self.merge()
+        self.assertTrue((self.output / 'index.json').is_file())
+
+    def test_data_hash_failures_still_identify_the_damaged_update(self):
+        for label in [*(f'Level {i}' for i in range(6)), 'Superblock Hash', 'Hash Table']:
+            with self.subTest(label=label):
+                self.log = self.LOG + f'        {label} (FAIL): omitted\n'
+                with self.assertRaises(steps.extract.DamagedFile) as error:
+                    self.merge()
+                self.assertEqual(error.exception.path, self.update)
+                self.assertIn('diagnose', self.phases)
+                self.index.assert_not_called()
+                self.assertFalse(self.output.exists())
+
+    def test_base_hash_failure_is_still_identified(self):
+        self.log = self.LOG.replace('Level 5 (GOOD)', 'Level 5 (FAIL)')
+        self.base_log = self.LEVELS.replace('Level 5 (GOOD)', 'Level 5 (FAIL)')
+        with self.assertRaises(steps.extract.DamagedFile) as error:
+            self.merge()
+        self.assertEqual(error.exception.path, self.base)
+        self.index.assert_not_called()
+
+    def test_every_ivfc_level_is_still_required(self):
+        for level in range(6):
+            with self.subTest(level=level):
+                self.log = self.LOG.replace(f'        Level {level} (GOOD):\n', '')
+                with self.assertRaisesRegex(ValueError, 'did not verify all six IVFC levels'):
+                    self.merge()
+                self.index.assert_not_called()
+                self.assertFalse(self.output.exists())
+
+    def test_other_hactool_errors_are_still_rejected(self):
+        for message in ('Signature Key (FAIL): 0', 'Fixed-Key Index (FAIL): 0', 'Other Signature (FAIL): omitted',
+                        'Section (INVALID)', 'Failed to read section', 'Error: cannot save section'):
+            with self.subTest(message=message):
+                self.log = self.LOG + message + '\n'
+                with self.assertRaisesRegex(ValueError, 'hactool merge failed'):
+                    self.merge()
+                self.index.assert_not_called()
+                self.assertFalse(self.output.exists())
+
+    def test_nonzero_exit_is_still_rejected(self):
+        self.code = 1
+        with self.assertRaisesRegex(ValueError, 'hactool merge failed'):
+            self.merge()
+        self.index.assert_not_called()
+        self.assertFalse(self.output.exists())
 
 
 class CleanupTest(unittest.TestCase):
@@ -465,6 +819,16 @@ class CleanupTest(unittest.TestCase):
     def test_intact_romfs_passes(self):
         self.assertEqual(self.run_cleanup(), 'ok')
 
+    def test_selected_language_overrides_the_last_duplicate(self):
+        path = self.dest / 'totk.ini'
+        path.write_text('lang = ru\n[language]\nTOTK_LANG = ja\n[display]\nfps_limit = 60\n')
+        self.assertEqual(self.run_cleanup(), 'ok')
+        text = path.read_text()
+        self.assertEqual(screens.ini_value(text, 'lang'), self.ctx.lang)
+        self.assertEqual(ini.get_language(text), self.ctx.state['lang'])
+        self.assertIn('lang = ru\n', text)
+        self.assertIn('fps_limit = 60\n', text)
+
     def test_keeps_build_and_writes_rebuild_command(self):
         for name in ('gen', 'build', 'check'):
             (self.ctx.temp / name).mkdir()
@@ -474,6 +838,36 @@ class CleanupTest(unittest.TestCase):
         lines = (self.dest / 'build-cache' / 'rebuild.txt').read_text(encoding='utf-8').splitlines()
         self.assertEqual(lines[1:], ['-c', steps.REBUILD_BOOT, str(self.ctx.layout.root), '--root',
                                      str(self.ctx.layout.root), '--rebuild', str(self.dest)])
+
+    def test_appimage_rebuild_command_starts_the_appimage(self):
+        # The AppImage's mount, where its Python lives, is gone once the setup exits (#560, #403)
+        appimage = Path(self.tmp.name) / 'TotK-Setup-x86_64.AppImage'
+        appimage.write_bytes(b'')
+        with mock.patch.dict('os.environ', {'APPIMAGE': str(appimage)}):
+            self.assertEqual(self.run_cleanup(), 'ok')
+        lines = (self.dest / 'build-cache' / 'rebuild.txt').read_text(encoding='utf-8').splitlines()
+        self.assertEqual(lines, [str(appimage.resolve()), '--rebuild', str(self.dest)])
+
+    def test_appimage_variable_without_the_file_keeps_the_python_command(self):
+        with mock.patch.dict('os.environ', {'APPIMAGE': str(Path(self.tmp.name) / 'gone.AppImage')}):
+            self.assertEqual(self.run_cleanup(), 'ok')
+        lines = (self.dest / 'build-cache' / 'rebuild.txt').read_text(encoding='utf-8').splitlines()
+        self.assertEqual(lines[1:3], ['-c', steps.REBUILD_BOOT])
+
+    def test_removes_only_stale_part_folders(self):
+        # make_romfs_patches.py's unfinished folders: an hour-old one is a stopped run's, a fresh one a running one's
+        old, fresh = self.dest / 'romfs-patches-2560x1080.part-41', self.dest / 'romfs-patches-pc.part-stale-42'
+        for folder in (old, fresh):
+            (folder / 'UI').mkdir(parents=True)
+            (folder / 'UI' / 'a.zs').write_bytes(b'x')
+        (self.dest / 'romfs-patches-2560x1080').mkdir()
+        hour = steps.time.time() - steps.PART_STALE_S - 60
+        for path in (old, old / 'UI', old / 'UI' / 'a.zs'):
+            steps.os.utime(path, (hour, hour))
+        self.assertEqual(self.run_cleanup(), 'ok')
+        self.assertFalse(old.exists())
+        self.assertTrue(fresh.is_dir() and (self.dest / 'romfs-patches-2560x1080').is_dir())
+        self.assertIsNone(steps.SHAPED_FOLDER.match(old.name))   # the Shapes step's own clean-up leaves them
 
     def test_emptied_romfs_fails(self):
         for p in (self.dest / 'romfs').iterdir():
@@ -487,6 +881,137 @@ class CleanupTest(unittest.TestCase):
     def test_romfs_of_another_size_fails(self):
         (self.dest / 'romfs' / 'romfs.bin').write_bytes(b'short')
         self.assertEqual(self.run_cleanup(), 'cleanup.romfs_unreadable')
+
+
+def fake_release(root, version='1.0+abc'):
+    """A folder release_layout reads as a release: VERSION, the Python file and one file per other kit item."""
+    for name in layouts.KIT_ITEMS:
+        if '.' in name or name == 'VERSION':
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_text(version + '\n' if name == 'VERSION' else name)
+        else:
+            (root / name).mkdir(parents=True, exist_ok=True)
+            (root / name / 'f.txt').write_text(name)
+    layouts.release_python(root).parent.mkdir(parents=True, exist_ok=True)
+    layouts.release_python(root).write_bytes(b'')
+    (root / 'TotK-Setup.exe').write_bytes(b'launcher')
+    (root / 'installer' / '__pycache__').mkdir()
+    (root / 'installer' / '__pycache__' / 'x.pyc').write_bytes(b'')
+    return layouts.release_layout(root)
+
+
+@unittest.skipUnless(steps.os.name == 'nt', 'the build kit is Windows-only')
+class KitTest(unittest.TestCase):
+    """The build kit: the setup's release folder copied into the install folder, the later steps and the rebuild
+    command pointed at it, and an older setup's temp folder taken over."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.setup, self.dest = base / 'TotK-Setup', base / 'game'
+        self.dest.mkdir()
+        self.layout = fake_release(self.setup)
+        self.missing = mock.patch.object(Layout, 'missing', lambda self, cpu='v3': [])
+        self.missing.start()
+
+    def tearDown(self):
+        self.missing.stop()
+        self.tmp.cleanup()
+
+    def ctx(self, layout):
+        return SimpleNamespace(layout=layout, dest=self.dest, reporter=Reporter(out=io.StringIO()))
+
+    def install(self):
+        ctx = self.ctx(self.layout)
+        kit = steps.Kit()
+        self.assertFalse(kit.current(ctx, {}))
+        kit.run(ctx)
+        kit.settle(ctx)
+        return ctx, kit
+
+    def test_copies_the_release_and_the_next_steps_run_from_it(self):
+        ctx, kit = self.install()
+        folder = self.dest / 'build-kit'
+        self.assertEqual(ctx.layout.root, folder.resolve())
+        self.assertEqual(ctx.layout.release, '1.0+abc')
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), sorted(layouts.KIT_ITEMS))
+        self.assertFalse((folder / 'installer' / '__pycache__').exists())
+        self.assertFalse((self.dest / 'build-kit.new').exists() or (self.dest / 'build-kit.old').exists())
+        self.assertTrue(kit.current(self.ctx(self.layout), {}))
+
+    def test_the_kits_own_rebuild_keeps_it(self):
+        ctx, kit = self.install()
+        (self.dest / 'build-kit' / 'tools' / 'mark').write_text('kept')
+        self.assertTrue(kit.current(ctx, {}))
+        kit.run(ctx)
+        kit.settle(ctx)
+        self.assertEqual((self.dest / 'build-kit' / 'tools' / 'mark').read_text(), 'kept')
+
+    def test_a_newer_setup_replaces_the_kit(self):
+        self.install()
+        (self.dest / 'build-kit' / 'tools' / 'old-only').write_text('old')
+        self.layout = fake_release(Path(self.tmp.name) / 'TotK-Setup-2', '1.1+def')
+        ctx, _ = self.install()
+        self.assertEqual(ctx.layout.release, '1.1+def')
+        self.assertFalse((self.dest / 'build-kit' / 'tools' / 'old-only').exists())
+
+    def test_rebuild_command_is_relative_to_the_install_folder(self):
+        ctx, _ = self.install()
+        cmd = steps.rebuild_command(ctx)
+        self.assertEqual(cmd, [str(Path('build-kit', 'python', 'pythonw.exe' if (
+            ctx.layout.python.with_name('pythonw.exe')).is_file() else 'python.exe')), '-c', steps.REBUILD_BOOT,
+            'build-kit', '--root', 'build-kit', '--rebuild', '.'])
+        self.assertFalse(any(str(self.dest) in a or str(self.setup) in a for a in cmd))
+
+    def test_the_kits_builds_are_portable(self):
+        ctx, _ = self.install()
+        ctx.temp, ctx.state = self.dest / 'build-cache' / 'work', {'version': '1.4.3'}
+        self.assertIn('--portable', steps.build_args(ctx, ctx.temp / 'gen'))
+        ctx.layout = Layout(root=ROOT, dev=True, release='x', python=Path('python'), tools=Path('tools'),
+                            recomp=Path('recomp'), llvm=Path('llvm'), deps=None, runtime=Path('rt'),
+                            runtime_lib=Path('lib'), ninja=Path('ninja'), hactool=Path('hactool'), xlate=Path('xlate'))
+        self.assertNotIn('--portable', steps.build_args(ctx, ctx.temp / 'gen'))
+
+    def test_dev_mode_has_no_kit(self):
+        ctx = self.ctx(SimpleNamespace(dev=True, release='x', root=ROOT))
+        kit = steps.Kit()
+        self.assertTrue(kit.current(ctx, {}))
+        self.assertEqual(kit.run(ctx), {})
+        kit.settle(ctx)
+        self.assertFalse((self.dest / 'build-kit').exists())
+
+    def test_temp_folder_of_an_older_setup_moves_in(self):
+        old = layouts.temp_folder(self.setup / 'temp', self.dest)
+        (old / 'gen').mkdir(parents=True)
+        (old / 'gen' / '.install-key').write_text('k')
+        (self.dest / 'build-cache').mkdir()
+        (self.dest / 'build-cache' / 'rebuild.txt').write_text(
+            '\n'.join(['py', '-c', 'boot', str(self.setup), '--root', str(self.setup), '--rebuild', str(self.dest)]))
+        temp = layouts.temp_for(self.layout, self.dest)
+        self.assertEqual(temp, self.dest / 'build-cache' / 'work')
+        self.assertIn('moved', steps.adopt_old_temp(self.layout, self.dest, temp))
+        self.assertEqual((temp / 'gen' / '.install-key').read_text(), 'k')
+        self.assertFalse(old.exists())
+        self.assertIsNone(steps.adopt_old_temp(self.layout, self.dest, temp))   # once: the new one exists now
+
+    def test_no_temp_folder_to_take_over(self):
+        temp = layouts.temp_for(self.layout, self.dest)
+        self.assertIsNone(steps.adopt_old_temp(self.layout, self.dest, temp))
+        (self.dest / 'build-cache').mkdir()
+        (self.dest / 'build-cache' / 'rebuild.txt').write_text('build-kit\\python\\pythonw.exe\n-c\nboot\nbuild-kit\n')
+        self.assertIsNone(steps.adopt_old_temp(self.layout, self.dest, temp))
+
+
+class RuntimeKeyTest(unittest.TestCase):
+    def test_clangs_folder_is_not_in_the_key(self):
+        layout = SimpleNamespace(clang=Path('clang'), tools=Path('tools'), runtime=Path('rt'), deps=None, sysroot=None,
+                                 dlls=(), runtime_lib_for=lambda cpu: None)
+        keys = []
+        for where in ('C:/setup/llvm/bin', 'D:/game/build-kit/llvm/bin'):
+            out = f'clang version 23\nTarget: x86_64-w64-windows-gnu\nInstalledDir: {where}\nConfiguration file: {where}/x.cfg\n'
+            with mock.patch.object(steps.subprocess, 'run', return_value=SimpleNamespace(stdout=out)):
+                keys.append(steps.runtime_key(SimpleNamespace(layout=layout)))
+        self.assertEqual(keys[0], keys[1])
 
 
 class FreeSpaceTest(unittest.TestCase):
@@ -512,6 +1037,59 @@ class FreeSpaceTest(unittest.TestCase):
         usage.assert_called_once_with(root)
 
 
+class MissingLibraryTest(unittest.TestCase):
+    """#1428, #1315, #1419: a system library the release's libSDL3.so.0 links is missing; the setup names it (and the
+    package that provides it) before the lift, and after a game start the loader stopped, instead of exit code 127."""
+
+    LDD = ('\tlinux-vdso.so.1 (0x00007ffd)\n\tlibXss.so.1 => not found\n'
+           '\tlibX11.so.6 => /usr/lib64/libX11.so.6 (0x00007f00)\n\tlibdecor-0.so.0 => not found\n')
+
+    def test_packages_of_known_libraries(self):
+        self.assertEqual(steps.library_packages(['libXss.so.1']),
+                         ' (Fedora: libXScrnSaver, Debian/Ubuntu: libxss1, Arch: libxss)')
+        self.assertEqual(steps.library_packages(['libXss.so.1', 'libfoo.so.9', 'libdecor-0.so.0']),
+                         ' (Fedora: libXScrnSaver libdecor, Debian/Ubuntu: libxss1 libdecor-0-0, '
+                         'Arch: libxss libdecor)')
+        self.assertEqual(steps.library_packages(['libfoo.so.9']), '')
+
+    def test_ldd_not_found_lines(self):
+        runs = []
+
+        def ldd(cmd, **kw):
+            runs.append(cmd)
+            return SimpleNamespace(returncode=1, stdout=self.LDD, stderr='')
+        with mock.patch.object(steps.sys, 'platform', 'linux'), mock.patch.object(steps.subprocess, 'run', ldd):
+            self.assertEqual(steps.missing_libraries([Path('a/libSDL3.so.0'), Path('b/libother.so')]),
+                             ['libXss.so.1', 'libdecor-0.so.0'])
+        self.assertEqual([c[0] for c in runs], ['ldd', 'ldd'])
+
+    def test_no_ldd_or_not_linux(self):
+        def missing(cmd, **kw):
+            raise FileNotFoundError('ldd')
+        with mock.patch.object(steps.sys, 'platform', 'linux'), mock.patch.object(steps.subprocess, 'run', missing):
+            self.assertEqual(steps.missing_libraries([Path('libSDL3.so.0')]), [])
+        with mock.patch.object(steps.sys, 'platform', 'win32'):
+            self.assertEqual(steps.missing_libraries([Path('SDL3.dll')]), [])
+
+    def test_loader_error_in_the_prepare_log(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / 'prepare-prepare_shaders.log'
+            log.write_text('/home/p/TotK/totk: error while loading shared libraries: libXss.so.1: cannot open shared '
+                           'object file: No such file or directory\ntotk.exe --prepare-shaders: rc=127\n'
+                           '/home/p/TotK/totk: error while loading shared libraries: libXss.so.1: cannot open shared '
+                           'object file: No such file or directory\n', encoding='utf-8')
+            self.assertEqual(steps.loader_missing(log), ['libXss.so.1'])
+            self.assertEqual(steps.loader_missing(Path(d) / 'none.log'), [])
+
+    def test_messages_take_the_parameters(self):
+        for path in (ROOT / 'installer' / 'text').glob('*.json'):
+            catalog = json.loads(path.read_text(encoding='utf-8'))
+            for id in ('check.libraries_missing', 'prepare.libraries_missing'):
+                text = catalog[id].format(libraries='libXss.so.1', packages=' (Fedora: libXScrnSaver)', log='x.log')
+                self.assertIn('libXss.so.1', text, (path.name, id))
+                self.assertIn('libXScrnSaver', text, (path.name, id))
+
+
 class BaseGameCheckTest(unittest.TestCase):
     """Issue #261: an update NSP chosen as the base game was reported as "not Tears of the Kingdom"."""
     BASE, UPDATE = '0100F2C0115B6000', '0100F2C0115B6800'
@@ -535,6 +1113,248 @@ class BaseGameCheckTest(unittest.TestCase):
         records = [self.nca(0, self.BASE), self.nca(1, self.BASE), self.nca(3, self.BASE)]
         self.assertIsNone(steps.base_misuse(records))
         self.assertEqual(steps.program_nca(records)[0]['title_id'], self.BASE)
+
+
+class ShapesTest(unittest.TestCase):
+    """installer/screens.py and the shapes step: one folder per screen shape, only for the displays and the prompts
+    style this player has (runtime/cfg.c cfg_shape_size maps the game resolution the same way)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dest = Path(self.tmp.name)
+        self.ctx = SimpleNamespace(dest=self.dest, keys={'prepare': 'p'}, layout=SimpleNamespace(tools=ROOT / 'tools'),
+                                   reporter=Reporter(out=io.StringIO()))
+        self.saved = steps.run_tool, steps.game_version, screens.displays
+        steps.game_version = lambda ctx: '1.4.3'
+        self.calls = []
+
+        def run(ctx, step, script, args, parse=None, cwd=None):
+            self.calls.append([str(a) for a in args])
+            out = Path(args[args.index('--out') + 1])
+            out.mkdir(parents=True)
+            (out / 'manifest.tsv').write_text('#\n')
+            return 0, None
+        steps.run_tool = run
+
+    def tearDown(self):
+        steps.run_tool, steps.game_version, screens.displays = self.saved
+        self.ctx.reporter.close()
+        self.tmp.cleanup()
+
+    def test_shape_rule(self):
+        self.assertEqual([screens.shape_size(*s) for s in ((5120, 2160), (3440, 1440), (1920, 800), (2560, 1600),
+                                                           (1920, 1080), (1024, 768), (3120, 1440), (2560, 1200),
+                                                           (1280, 1024), (1080, 1920), (7680, 1440), (7680, 2160))],
+                         ['2560x1080', '3440x1440', '3840x1600', '1280x800', None, '1440x1080', '2340x1080',
+                          '2560x1200', None, None, None, '3840x1080'])
+        self.assertIsNone(screens.shape_size(2560, 1200, listed=True))   # a display of an unlisted shape
+        self.assertEqual(screens.default_size(3440, 1440), '2560x1080')   # runtime/cfg.c screen_default
+        self.assertEqual(screens.default_size(1280, 800), '1280x800')
+
+    def test_prompts_style_as_the_game_picks_it(self):
+        self.assertEqual([screens.prompts_style(t) for t in ('', 'prompts = pc', 'prompts = xbox',
+                                                             'pad_layout = nintendo\nprompts = xbox',
+                                                             'pad_layout = xbox_prompts', 'prompts = nintendo')],
+                         [None, 'pc', 'xbox-label', 'xbox', 'xbox', None])
+        self.assertEqual([screens.prompts_style(t) for t in ('prompts = playstation', 'prompts = PS',
+                                                             'pad_layout = nintendo\nprompts = playstation',
+                                                             'pad_layout = xbox\nprompts = playstation')],
+                         ['playstation-xbox', 'playstation-xbox', 'playstation', 'playstation-xbox'])
+
+    def test_playstation_shapes_replace_every_older_shaped_folder(self):
+        screens.displays = lambda: [(2560, 1080)]
+        (self.dest / 'totk.ini').write_text('pad_layout = auto\nprompts = playstation\n')
+        for old in ('romfs-patches-playstation-1280x800', 'romfs-patches-playstation-xbox-3440x1440-hud21x9',
+                    'romfs-patches-xbox-label-2560x1080', 'romfs-patches-playstation-xbox'):
+            (self.dest / old).mkdir()
+        (self.dest / 'romfs-patches-playstation-xbox' / 'manifest.tsv').write_text('#\n')
+        record = steps.Shapes().run(self.ctx)
+        self.assertEqual(record['folders'], ['romfs-patches-2560x1080', 'romfs-patches-playstation-xbox-2560x1080'])
+        self.assertEqual(sorted(p.name for p in self.dest.iterdir() if p.is_dir()),
+                         ['romfs-patches-2560x1080', 'romfs-patches-playstation-xbox',
+                          'romfs-patches-playstation-xbox-2560x1080'])
+        self.assertEqual(self.calls[-1][self.calls[-1].index('--prompts') + 1], 'playstation-xbox')
+
+    def test_wanted_from_displays_and_ini(self):
+        (self.dest / 'totk.ini').write_text('[display]\noutput_res = 3000x2000\n[input]\nprompts = pc\n')
+        self.assertEqual(screens.wanted(self.dest, [(3440, 1440), (1920, 1080), (800, 1280)]),
+                         (['2560x1080', '3440x1440', '1280x800', '1920x1280'], 'pc'))
+        self.assertEqual(screens.wanted(self.dest / 'none', [(2560, 1440)]), ([], None))
+
+    def test_wanted_unlisted_output_res_gets_its_own_size(self):
+        (self.dest / 'totk.ini').write_text('output_res = 2560x1200\n')
+        self.assertEqual(screens.wanted(self.dest, [(2560, 1200), (1600, 1200)]), (['1440x1080', '2560x1200'], None))
+
+    def test_layout_settings_keep_the_last_nonempty_value(self):
+        for empty in ('', '   ', '""'):
+            with self.subTest(empty=empty):
+                text = f'prompts = xbox\nTOTK_PROMPTS = "pc"\nprompts = {empty}\n'
+                self.assertEqual(screens.ini_value(text, 'prompts'), 'pc')
+                self.assertEqual(screens.prompts_style(text), 'pc')
+        self.assertEqual(screens.ini_value('prompts = pc\n# prompts = xbox\n; prompts = xbox', 'prompts'), 'pc')
+        # cfg.c trims the whole value and removes matching quotes; it does not strip inline comments.
+        self.assertEqual(screens.ini_value('prompts = pc # comment', 'prompts'), 'pc # comment')
+
+    def test_quoted_pad_layout_selects_the_matching_prompts(self):
+        self.assertEqual(screens.prompts_style('TOTK_PAD_LAYOUT = "nintendo"\nprompts = "PS"'), 'playstation')
+        self.assertEqual(screens.prompts_style('pad_layout = "xbox_prompts"'), 'xbox')
+
+    def test_shapes_generate_the_layouts_selected_by_quoted_or_repeated_settings(self):
+        screens.displays = lambda: []
+        (self.dest / 'romfs-patches-pc').mkdir()
+        (self.dest / 'romfs-patches-pc' / 'manifest.tsv').write_text('#\n')
+        for trailing in ('', '\noutput_res =\nTOTK_PROMPTS = ""\nhud_width =   \n'):
+            with self.subTest(trailing=trailing):
+                (self.dest / 'totk.ini').write_text('[display]\nTOTK_OUTPUT_RES = "3840x1080"\n'
+                                                  'hud_width = "16:9"\n[input]\nprompts = "pc"\n' + trailing)
+                ctx = SimpleNamespace(**vars(self.ctx))
+                record = steps.Shapes().run(ctx)
+                self.assertEqual(record['folders'], ['romfs-patches-3840x1080', 'romfs-patches-pc-3840x1080',
+                                                     'romfs-patches-3840x1080-hud16x9',
+                                                     'romfs-patches-pc-3840x1080-hud16x9'])
+                self.assertTrue(steps.Shapes().current(ctx, record))
+
+    def test_run_writes_only_the_wanted_folders(self):
+        screens.displays = lambda: [(2560, 1080)]
+        (self.dest / 'totk.ini').write_text('pad_layout = nintendo\nprompts = xbox\n')
+        for old in ('romfs-patches-3440x1440', 'romfs-patches-pc-1280x800', 'romfs-patches-xbox'):
+            (self.dest / old).mkdir()
+        (self.dest / 'romfs-patches-xbox' / 'manifest.tsv').write_text('#\n')
+        step = steps.Shapes()
+        step.key(self.ctx)
+        record = step.run(self.ctx)
+        self.assertEqual(record['folders'], ['romfs-patches-2560x1080', 'romfs-patches-xbox-2560x1080'])
+        self.assertEqual(sorted(p.name for p in self.dest.iterdir() if p.is_dir()),
+                         ['romfs-patches-2560x1080', 'romfs-patches-xbox', 'romfs-patches-xbox-2560x1080'])
+        self.assertEqual(self.calls[0][-2:], ['--aspect', '2560x1080'])
+        self.assertTrue(step.current(self.ctx, record))
+
+    def test_pc_prompts_shapes_follow_the_bindings(self):
+        screens.displays = lambda: [(3440, 1440)]
+        (self.dest / 'totk.ini').write_text('[input]\nprompts = pc\nbind_attack = key:f\n')
+        (self.dest / 'romfs-patches-pc').mkdir()
+        (self.dest / 'romfs-patches-pc' / 'manifest.tsv').write_text('#\n')
+        step = steps.Shapes()
+        self.ctx.keys['pc_prompts'] = 'a'
+        key = step.key(self.ctx)
+        self.ctx.keys['pc_prompts'] = 'b'
+        self.assertNotEqual(step.key(self.ctx), key)
+        record = step.run(self.ctx)
+        # the display's own shape and that of the 2560x1080 the game defaults to on it (runtime/cfg.c screen_default)
+        self.assertEqual(record['folders'], ['romfs-patches-2560x1080', 'romfs-patches-pc-2560x1080',
+                                             'romfs-patches-3440x1440', 'romfs-patches-pc-3440x1440'])
+        self.assertEqual(self.calls[1][-4:], ['--reuse', str(self.dest / 'romfs-patches-pc'), '--binds',
+                                              str(self.dest / 'totk.ini')])
+        self.assertNotIn('--binds', self.calls[0])
+
+    def test_selected_hud_only_for_needed_canonical_shapes(self):
+        screens.displays = lambda: [(5120, 1440), (3840, 1080), (2560, 1600)]
+        (self.dest / 'totk.ini').write_text('output_res = 5120x2160\nhud_width = 21:9\n')
+        step = steps.Shapes()
+        record = step.run(self.ctx)
+        self.assertEqual(record['folders'], ['romfs-patches-2560x1080', 'romfs-patches-2560x1080-hud21x9',
+                                             'romfs-patches-3840x1080', 'romfs-patches-3840x1080-hud21x9',
+                                             'romfs-patches-1280x800'])
+        caps = [c for c in self.calls if '--hud' in c]
+        self.assertEqual(len(caps), 2)
+        self.assertEqual(caps[0][-4:], ['--aspect', '2560x1080', '--hud', '21:9'])
+        self.assertEqual(caps[1][-4:], ['--aspect', '3840x1080', '--hud', '21:9'])
+        self.assertTrue(step.current(self.ctx, record))
+        (self.dest / record['folders'][3] / 'manifest.tsv').unlink()
+        self.assertFalse(step.current(self.ctx, record))
+
+    def test_hud_key_and_cleanup_follow_selection(self):
+        screens.displays = lambda: [(2560, 1080)]
+        ini = self.dest / 'totk.ini'
+        ini.write_text('hud_width = full\n')
+        step = steps.Shapes()
+        full_key = step.key(self.ctx)
+        for name in ('romfs-patches-3840x1080-hud21x9', 'romfs-patches-pc-2560x1080-hud16x9',
+                     'romfs-patches-player-custom'):
+            (self.dest / name).mkdir()
+        ini.write_text('TOTK_HUD_WIDTH = 16:9\n')
+        self.assertNotEqual(step.key(self.ctx), full_key)
+        record = step.run(self.ctx)
+        self.assertEqual(record['folders'], ['romfs-patches-2560x1080', 'romfs-patches-2560x1080-hud16x9'])
+        self.assertFalse((self.dest / 'romfs-patches-3840x1080-hud21x9').exists())
+        self.assertFalse((self.dest / 'romfs-patches-pc-2560x1080-hud16x9').exists())
+        self.assertTrue((self.dest / 'romfs-patches-player-custom').is_dir())
+        self.calls.clear()
+        ini.write_text('hud_width = full\n')
+        record = step.run(self.ctx)
+        self.assertEqual(record['folders'], ['romfs-patches-2560x1080'])
+        self.assertTrue(all('--hud' not in c for c in self.calls))
+        self.assertFalse((self.dest / 'romfs-patches-2560x1080-hud16x9').exists())
+
+    def test_full_hud_keeps_the_key_of_a_setup_before_hud_width(self):
+        # An install that writes no capped folder keeps the Shapes key it had, so its next setup run prepares nothing
+        screens.displays = lambda: [(2560, 1080), (2560, 1600)]
+        step = steps.Shapes()
+        sizes, style = step.wanted(self.ctx)
+        old = steps.fingerprint('shapes-2', 'p', '', style or 'nintendo', *sizes)
+        self.assertEqual(step.key(self.ctx), old)
+        (self.dest / 'totk.ini').write_text('hud_width = full\n')
+        self.assertEqual(step.key(self.ctx), old)
+        # a cap no shape here is wider than writes nothing either
+        screens.displays = lambda: [(2560, 1600)]
+        del self.ctx.shapes_wanted
+        (self.dest / 'totk.ini').write_text('hud_width = 16:9\n')
+        sizes, style = step.wanted(self.ctx)
+        self.assertEqual(step.key(self.ctx), steps.fingerprint('shapes-2', 'p', '', style or 'nintendo', *sizes))
+
+    def test_capped_pc_prompts_reuse_bindings(self):
+        screens.displays = lambda: [(3840, 1080)]
+        (self.dest / 'totk.ini').write_text('prompts = pc\nhud_width = 16:9\nbind_attack = key:f\n')
+        (self.dest / 'romfs-patches-pc').mkdir()
+        (self.dest / 'romfs-patches-pc' / 'manifest.tsv').write_text('#\n')
+        record = steps.Shapes().run(self.ctx)
+        self.assertEqual(record['folders'], ['romfs-patches-3840x1080', 'romfs-patches-pc-3840x1080',
+                                             'romfs-patches-3840x1080-hud16x9',
+                                             'romfs-patches-pc-3840x1080-hud16x9'])
+        self.assertEqual(self.calls[-1][-6:], ['--hud', '16:9', '--reuse', str(self.dest / 'romfs-patches-pc'),
+                                               '--binds', str(self.dest / 'totk.ini')])
+        self.assertNotIn('--binds', self.calls[-2])
+
+    def test_hud_caps_ignore_equal_narrow_and_invalid_choices(self):
+        # Common '21:9' modes are wider than exact 21/9: a manually selected cap is meaningful.
+        self.assertEqual(steps.shape_hud('2560x1080', '21:9'), '21:9')
+        self.assertEqual(steps.shape_hud('3440x1440', '21:9'), '21:9')
+        self.assertIsNone(steps.shape_hud('2520x1080', '21:9'))
+        self.assertIsNone(steps.shape_hud('1280x800', '16:9'))
+        self.assertIsNone(steps.shape_hud('3840x1080', 'full'))
+        self.assertEqual(steps.shape_hud('3440x1440', '16:9'), '16:9')
+        (self.dest / 'totk.ini').write_text('hud_width = invalid\n')
+        self.assertEqual(steps.hud_width(self.dest), 'full')
+
+    def test_failed_capped_prompts_are_retried(self):
+        screens.displays = lambda: [(3840, 1080)]
+        (self.dest / 'totk.ini').write_text('prompts = pc\nhud_width = 16:9\n')
+        (self.dest / 'romfs-patches-pc').mkdir()
+        (self.dest / 'romfs-patches-pc/manifest.tsv').write_text('#\n')
+        successful = steps.run_tool
+
+        def fail_cap(ctx, step, script, args, **kwargs):
+            if '--prompts' in args and '--hud' in args:
+                return 7, self.dest / 'failed.log'
+            return successful(ctx, step, script, args, **kwargs)
+
+        steps.run_tool = fail_cap
+        step = steps.Shapes()
+        record = step.run(self.ctx)
+        self.assertTrue(record['failed'])
+        self.assertFalse(step.current(self.ctx, record))
+        steps.run_tool = successful
+        record = step.run(self.ctx)
+        self.assertFalse(record['failed'])
+        self.assertTrue(step.current(self.ctx, record))
+        self.assertIn('romfs-patches-pc-3840x1080-hud16x9', record['folders'])
+
+    def test_pc_prompts_writes_only_the_16_9_folder(self):
+        (self.dest / 'totk.ini').write_text('[input]\nbind_attack = key:f\n')
+        self.assertEqual(steps.PcPrompts().run(self.ctx), {})
+        self.assertEqual([p.name for p in self.dest.iterdir() if p.is_dir()], ['romfs-patches-pc'])
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0][-2:], ['--binds', str(self.dest / 'totk.ini')])
 
 
 class FontsTest(unittest.TestCase):
@@ -575,7 +1395,8 @@ class FontsTest(unittest.TestCase):
 
     def test_all_steps_order(self):
         self.assertEqual([s.id for s in steps.all_steps()],
-                         ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'dlss', 'cleanup'])
+                         ['check', 'kit', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss',
+                          'fsr', 'cleanup'])
 
     def test_extracts_into_the_install_folder(self):
         self.fake_tool()
@@ -811,6 +1632,238 @@ class SplitGameTest(unittest.TestCase):
             with self.assertRaises(SystemExit) as e, mock.patch.object(sys, 'stdout', io.StringIO()):
                 cli.main(argv)
             self.assertEqual(e.exception.code, 2)
+
+
+class HostProbeTest(unittest.TestCase):
+    """Check.probe_host: the host check's crashes and refusals (issues #875, #1345)."""
+    GOOD = '{"x86_64_v2": true, "x86_64_v3": true, "loader": true, "instance": 0, "devices": [' \
+           '{"name": "Intel(R) UHD Graphics", "api": [1, 3, 215], "type": 1}]}\n'
+    CRASHED_IN_VULKAN = '{"x86_64_v2": true, "x86_64_v3": true, "loader": true, '
+    ACCESS_VIOLATION = 0xC0000005
+    LAYERS = [('VK_LAYER_VALVE_steam_overlay_64', Path('C:/Steam/SteamOverlayVulkanLayer64.json')),
+              ('VK_LAYER_BAD_overlay', Path('C:/Bad/BadOverlay64.json'))]
+
+    def setUp(self):
+        self.ctx = SimpleNamespace(reporter=Reporter(out=io.StringIO()))
+        self.calls = []
+
+    def tearDown(self):
+        self.ctx.reporter.close()
+
+    def probe(self, *results, layers=()):
+        """Runs probe_host with subprocess.run answering each call with the next of results (an exception is raised,
+        a callable gets the run's VK_LOADER_LAYERS_DISABLE)."""
+        answers = iter(results)
+
+        def run(command, **kwargs):
+            env = kwargs.get('env')
+            self.calls.append(env)
+            r = next(answers)
+            if callable(r):
+                r = r((env or {}).get('VK_LOADER_LAYERS_DISABLE'))
+            if isinstance(r, BaseException):
+                raise r
+            return subprocess.CompletedProcess(command, r[0], r[1], '')
+
+        with mock.patch.object(steps.subprocess, 'run', run), \
+                mock.patch.object(steps, 'implicit_vulkan_layers', lambda: list(layers)):
+            return steps.Check().probe_host(self.ctx, Path('hostcheck.exe'))
+
+    def bad_layer(self, disabled):
+        """The probe on a PC whose VK_LAYER_BAD_overlay is broken, with the layers in disabled turned off."""
+        if disabled in ('~implicit~', 'VK_LAYER_BAD_overlay'):
+            return 0, self.GOOD
+        return self.ACCESS_VIOLATION, self.CRASHED_IN_VULKAN
+
+    def only_all_off(self, disabled):
+        """The probe on a PC whose broken layer is not in the list (a driver's, under its adapter key)."""
+        if disabled == '~implicit~':
+            return 0, self.GOOD
+        return self.ACCESS_VIOLATION, self.CRASHED_IN_VULKAN
+
+    def events(self, kind):
+        return [e for e in map(json.loads, self.ctx.reporter.out.getvalue().splitlines()) if e['type'] == kind]
+
+    def test_a_good_probe_runs_once(self):
+        host = self.probe((0, self.GOOD))
+        self.assertEqual(host['devices'][0]['api'], [1, 3, 215])
+        self.assertEqual(self.calls, [None])
+        self.assertEqual(self.events('warning'), [])
+
+    def test_a_crashing_layer_is_named_and_stops_the_install(self):
+        # totk.exe --prepare-shaders and the game load the same layer, so going on would fail after lift and compile
+        with self.assertRaises(steps.InstallError) as e:
+            self.probe(*[self.bad_layer] * 4, layers=self.LAYERS)
+        self.assertEqual(e.exception.id, 'check.vulkan_layer_crash')
+        self.assertEqual(e.exception.params['disable'], 'VK_LAYER_BAD_overlay')
+        self.assertIn('VK_LAYER_BAD_overlay (', e.exception.params['layers'])
+        self.assertNotIn('steam', e.exception.params['layers'])
+        self.assertEqual([c and c['VK_LOADER_LAYERS_DISABLE'] for c in self.calls],
+                         [None, '~implicit~', 'VK_LAYER_VALVE_steam_overlay_64', 'VK_LAYER_BAD_overlay'])
+        if os.name == 'nt':
+            self.assertEqual(e.exception.params['code'], '0xC0000005')
+
+    def test_a_crashing_layer_that_cannot_be_singled_out_lists_the_installed_ones(self):
+        with self.assertRaises(steps.InstallError) as e:
+            self.probe(*[self.only_all_off] * 4, layers=self.LAYERS)
+        self.assertEqual(e.exception.id, 'check.vulkan_layers_crash')
+        self.assertIn('VK_LAYER_VALVE_steam_overlay_64', e.exception.params['layers'])
+        self.assertIn('VK_LAYER_BAD_overlay', e.exception.params['layers'])
+        with self.assertRaises(steps.InstallError) as e:
+            self.probe(self.only_all_off, self.only_all_off)
+        self.assertEqual((e.exception.id, e.exception.params['layers']), ('check.vulkan_layers_crash', '?'))
+
+    def test_a_driver_that_crashes_without_the_layers_too_stops_the_install(self):
+        with self.assertRaises(steps.InstallError) as e:
+            self.probe((self.ACCESS_VIOLATION, self.CRASHED_IN_VULKAN), (self.ACCESS_VIOLATION, self.CRASHED_IN_VULKAN),
+                       layers=self.LAYERS)
+        self.assertEqual(e.exception.id, 'check.vulkan_crash')
+        self.assertEqual(len(self.calls), 2)
+
+    def test_a_crash_before_vulkan_is_not_run_again(self):
+        with self.assertRaises(steps.InstallError) as e:
+            self.probe((self.ACCESS_VIOLATION, ''))
+        self.assertEqual(e.exception.id, 'check.host_probe_failed')
+        self.assertEqual(len(self.calls), 1)
+        if os.name == 'nt':
+            self.assertEqual(e.exception.params['code'], '0xC0000005')
+
+    @unittest.skipUnless(os.name == 'nt', 'winerror is set on Windows only')
+    def test_a_probe_blocked_by_smart_app_control_names_the_policy(self):
+        for code in (4551, 4559, 1260, 225):
+            with self.subTest(code=code):
+                blocked = OSError(None, 'An Application Control policy has blocked this file', None, code)
+                with self.assertRaises(steps.InstallError) as e:
+                    self.probe(blocked)
+                self.assertEqual(e.exception.id, 'check.host_blocked')
+                self.assertIn('Application Control', e.exception.params['detail'])
+                self.assertTrue(e.exception.params['path'].endswith('hostcheck.exe'))
+
+    def test_another_start_failure_is_reported_not_raised(self):
+        with self.assertRaises(steps.InstallError) as e:
+            self.probe(OSError(2, 'The system cannot find the file specified'))
+        self.assertEqual(e.exception.id, 'check.host_probe_failed')
+        self.assertIn('cannot find', e.exception.params['code'])
+
+    def test_a_failed_host_check_runs_once_per_install(self):
+        # key() probes first and run() reports: the crashing probe and its retries must not run twice
+        check, ctx = steps.Check(), SimpleNamespace()
+        failure = steps.InstallError('check.vulkan_crash', code='1')
+        with mock.patch.object(steps.Check, 'check_host', side_effect=failure) as probe:
+            check.key(ctx)
+            with self.assertRaises(steps.InstallError) as e:
+                check.host(ctx)
+        self.assertEqual(e.exception.id, 'check.vulkan_crash')
+        self.assertEqual(probe.call_count, 1)
+
+    def test_layer_names_come_from_the_manifests_the_loader_reads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            (folder / 'one.json').write_text(json.dumps({'file_format_version': '1.1.2', 'layer': {
+                'name': 'VK_LAYER_TEST_one', 'library_path': 'one.dll'}}), encoding='utf-8-sig')
+            (folder / 'two.json').write_text(json.dumps({'file_format_version': '1.0.1', 'layers': [
+                {'name': 'VK_LAYER_TEST_a'}, {'name': 'VK_LAYER_TEST_b'}]}), encoding='utf-8')
+            (folder / 'broken.json').write_text('{', encoding='utf-8')
+            with mock.patch.dict(os.environ, {'VK_ADD_IMPLICIT_LAYER_PATH': tmp}):
+                mine = [(n, p.name) for n, p in steps.implicit_vulkan_layers() if p.parent == folder]
+        self.assertEqual(mine, [('VK_LAYER_TEST_one', 'one.json'), ('VK_LAYER_TEST_a', 'two.json'),
+                                ('VK_LAYER_TEST_b', 'two.json')])
+
+    def test_messages_in_every_language(self):
+        need = {'check.host_blocked': ('{path}', '{detail}'), 'check.vulkan_crash': ('{code}',),
+                'check.vulkan_layer_crash': ('{code}', '{layers}', '{disable}', 'VK_LOADER_LAYERS_DISABLE'),
+                'check.vulkan_layers_crash': ('{code}', '{layers}', 'VK_LOADER_LAYERS_DISABLE', '~implicit~')}
+        for path in sorted((ROOT / 'installer' / 'text').glob('*.json')):
+            text = json.loads(path.read_text(encoding='utf-8'))
+            self.assertNotIn('warn.vulkan_layer_crash', text, path.name)
+            for key, parts in need.items():
+                for part in parts:
+                    self.assertIn(part, text[key], f'{path.name} {key}')
+
+
+@unittest.skipUnless(steps.os.name == 'nt', 'FSR is Windows-only')
+class FsrTest(unittest.TestCase):
+    """The FSR step: off without --fsr, Windows-only, keeps a player's libraries, installs both files or none."""
+
+    NAMES = ('amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll')
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.dest, temp, src = base / 'dest', base / 'temp', base / 'src'
+        for d in (self.dest, temp, src):
+            d.mkdir()
+        files = []
+        for i, name in enumerate(self.NAMES):
+            (src / name).write_bytes(bytes([65 + i]) * (1000 + i))
+            files.append((name, 1000 + i, steps.file_sha256(src / name)))
+        self.src = src
+        self.saved = steps.FSR_BASE, steps.FSR_FILES
+        steps.FSR_BASE = src.as_uri() + '/'   # urllib reads file: URLs as it reads https: ones
+        steps.FSR_FILES = tuple(files)
+        amd = {'devices': [{'name': 'AMD Radeon RX 9070 XT', 'api': [1, 4, 0], 'type': 2}]}
+        self.ctx = SimpleNamespace(dest=self.dest, temp=temp, host=amd, reporter=Reporter(out=io.StringIO()),
+                                   options=SimpleNamespace(fsr=True))
+
+    def tearDown(self):
+        steps.FSR_BASE, steps.FSR_FILES = self.saved
+        self.ctx.reporter.close()
+        self.tmp.cleanup()
+
+    def warnings(self):
+        return [json.loads(line)['id'] for line in self.ctx.reporter.out.getvalue().splitlines()
+                if json.loads(line)['type'] == 'warning']
+
+    def test_off_without_the_option(self):
+        self.ctx.options.fsr = False
+        self.assertEqual(steps.Fsr().run(self.ctx), {})
+        self.assertFalse(any((self.dest / n).exists() for n in self.NAMES))
+        self.assertNotEqual(steps.Fsr().key(self.ctx), steps.Fsr().key(SimpleNamespace(options=SimpleNamespace(fsr=True))))
+
+    def test_downloads_and_checks_both_libraries(self):
+        rec = steps.Fsr().run(self.ctx)
+        self.assertEqual(rec, {'installed': steps.FSR_VERSION})
+        for n in self.NAMES:
+            self.assertEqual((self.dest / n).read_bytes(), (self.src / n).read_bytes())
+        self.assertFalse(list(self.ctx.temp.iterdir()))
+        self.assertTrue(steps.Fsr().current(self.ctx, rec))
+        (self.dest / self.NAMES[1]).unlink()
+        self.assertFalse(steps.Fsr().current(self.ctx, rec))
+
+    def test_a_wrong_file_installs_neither(self):
+        name, size, _ = steps.FSR_FILES[1]
+        steps.FSR_FILES = (steps.FSR_FILES[0], (name, size, '0' * 64))
+        rec = steps.Fsr().run(self.ctx)
+        self.assertEqual(rec, {'failed': True})
+        self.assertFalse(any((self.dest / n).exists() for n in self.NAMES))
+        self.assertFalse(list(self.ctx.temp.iterdir()))
+        self.assertEqual(self.warnings(), ['warn.fsr_download_failed'])
+        self.assertFalse(steps.Fsr().current(self.ctx, rec))
+
+    def test_keeps_the_players_libraries(self):
+        (self.dest / self.NAMES[1]).write_bytes(b'newer')
+        self.assertEqual(steps.Fsr().run(self.ctx), {'kept': True})
+        self.assertEqual((self.dest / self.NAMES[1]).read_bytes(), b'newer')
+        self.assertFalse((self.dest / self.NAMES[0]).exists())
+        self.assertEqual(self.warnings(), ['warn.fsr_kept'])
+
+    def test_downloads_on_an_nvidia_gpu(self):
+        self.ctx.host = {'devices': [{'name': 'NVIDIA GeForce GTX 1050', 'api': [1, 3, 0], 'type': 2}]}
+        rec = steps.Fsr().run(self.ctx)
+        self.assertEqual(rec, {'installed': steps.FSR_VERSION})
+        for name in self.NAMES:
+            self.assertEqual((self.dest / name).read_bytes(), (self.src / name).read_bytes())
+
+    def test_old_no_amd_skip_record_is_retried(self):
+        old_key = steps.fingerprint('fsr-1', steps.FSR_VERSION,
+                                    *(sha for _, _, sha in steps.FSR_FILES))
+        state = {'format': 1, 'release': 'old', 'inputs': {},
+                 'steps': {'fsr': {'key': old_key, 'release': 'old', 'skipped': 'no_amd'}}}
+        ctx = runner.Context(SimpleNamespace(release='new'), self.dest, self.ctx.temp, self.ctx.reporter,
+                             self.ctx.options, state=state)
+        ctx.steps = [steps.Fsr()]
+        ctx.plan()
+        self.assertTrue(ctx.runs['fsr'])
 
 
 if __name__ == '__main__':

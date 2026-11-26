@@ -14,6 +14,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "memx.h"
 #include "vk.h"
 #include "platform/platform.h"
 
@@ -175,11 +176,16 @@ static void *put(uint32_t op, size_t bytes) {
 // cost the producer an event set and the recorder a wake-up. Savage Wind Recomp measured that at 6.7% of its render
 // thread's busy time on 4 cores and moved to 64 KiB there (runtime/nvn/vulkan/record.c rec_init, publish_every).
 // TOTK_REC_PUB=<words> sets the batch; =ab: 64 words in the A blocks of TOTK_AB, 8192 in the B blocks.
+// The wake goes through wake(), whose full fence orders the head store before the read of Q.sleeping. rec_main sets
+// Q.sleeping and then reads head; without the fence x86 may read Q.sleeping before the head store is visible, both
+// sides miss each other and the recorder sleeps out its 2 ms timeout with the packets waiting. Since rec_submit returns
+// without a drain (TOTK_REC_ASYNC=1), its publish is the last one of a submission, and every queue user then waited in
+// rec_queue_wait for that timeout (issue #1174: 1.6 to 3.4 ms a wait on an RX 9070 XT).
 static int pub_ab;
 static void pub_now(void) {
     Q.pub_h = Q.put_h;
     __atomic_store_n(&Q.head, Q.put_h, __ATOMIC_RELEASE);
-    if (__atomic_load_n(&Q.sleeping, __ATOMIC_RELAXED)) plat_event_set(&wake_ev), RS_.wakes++;
+    wake();
 }
 
 static void pub(void) {
@@ -318,8 +324,14 @@ int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n) {
     return 1;
 }
 
-// At most two command buffers and one signal: the shape vk_sync.c submits.
-typedef struct { uint32_t ncb, nsig; VkCommandBufferSubmitInfo cbi[2]; VkSemaphoreSubmitInfo sig; } A_Submit;
+// At most two command buffers and one signal: the shape vk_sync.c submits. The only pNext it chains is Reflex's
+// VkLatencySubmissionPresentIdNV (vk_sync_submit), carried as its present ID.
+typedef struct {
+    uint32_t ncb, nsig, has_pid;
+    uint64_t present_id;
+    VkCommandBufferSubmitInfo cbi[2];
+    VkSemaphoreSubmitInfo sig;
+} A_Submit;
 VkResult rec_submit(const VkSubmitInfo2 *si) {
     if (!sub_pending) {
         vk_queue_lock();
@@ -328,12 +340,16 @@ VkResult rec_submit(const VkSubmitInfo2 *si) {
         return r;
     }
     sub_pending = 0;
-    if (si->commandBufferInfoCount > 2 || si->signalSemaphoreInfoCount > 1 || si->waitSemaphoreInfoCount || si->pNext)
+    const VkBaseInStructure *nx = si->pNext;
+    int pid = nx && nx->sType == VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV && !nx->pNext;
+    if (si->commandBufferInfoCount > 2 || si->signalSemaphoreInfoCount > 1 || si->waitSemaphoreInfoCount ||
+        (nx && !pid))
         rt_fatal("vk_rec: a submission of %u command buffers, %u waits and %u signals the recorder cannot carry",
                  si->commandBufferInfoCount, si->waitSemaphoreInfoCount, si->signalSemaphoreInfoCount);
     A_Submit *a = put(R_Submit, sizeof *a);
     memset(a, 0, sizeof *a);
     a->ncb = si->commandBufferInfoCount, a->nsig = si->signalSemaphoreInfoCount;
+    if (pid) a->has_pid = 1, a->present_id = ((const VkLatencySubmissionPresentIdNV *)nx)->presentID;
     for (uint32_t i = 0; i < a->ncb; i++) a->cbi[i] = si->pCommandBufferInfos[i];
     if (a->nsig) a->sig = si->pSignalSemaphoreInfos[0];
     __atomic_store_n(&q_subs, q_subs + 1, __ATOMIC_RELEASE);
@@ -354,7 +370,10 @@ VkResult rec_submit(const VkSubmitInfo2 *si) {
 }
 
 static void submit_run(const A_Submit *a) {
-    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = a->ncb,
+    VkLatencySubmissionPresentIdNV lsid = {.sType = VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV,
+                                           .presentID = a->present_id};
+    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .pNext = a->has_pid ? &lsid : NULL,
+                        .commandBufferInfoCount = a->ncb,
                         .pCommandBufferInfos = a->cbi, .signalSemaphoreInfoCount = a->nsig,
                         .pSignalSemaphoreInfos = a->nsig ? &a->sig : NULL};
     vk_queue_lock();
@@ -460,7 +479,7 @@ int rec_owns(VkCommandBuffer cb) { return OWNED(cb); }
 static void *tail_copy(uint8_t **at, const void *arr, size_t bytes) {
     if (!arr || !bytes) return NULL;
     void *d = *at;
-    memcpy(d, arr, bytes);
+    MX_CPY(d, arr, bytes);
     *at += (bytes + 7) & ~(size_t)7;
     return d;
 }

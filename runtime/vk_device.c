@@ -8,9 +8,13 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "memx.h"
 #include "vk.h"
 #include "platform/platform.h"
 #include "vk_dlaa.h"
+#include "vk_fg.h"
+#include "vk_ffx.h"
+#include "vk_fsr3.h"
 
 static VkCtx g_vk;
 static int g_ready;
@@ -21,7 +25,10 @@ static PlatMutex g_lock = PLAT_MUTEX_INIT;
 // the debug messenger. The newest AB_N events stay in a ring written without a lock (one atomic add each), so a device
 // fault names the object behind its address and whether it was unbound before the fault, which is memory freed while
 // a submission still used it. One event per image, buffer or memory block made or freed, none per draw.
-// TOTK_ADDR_REPORT=0 turns it off.
+// Off by default; TOTK_ADDR_REPORT=1 turns it on for a run that chases a device fault. Our callback is cheap, but with
+// the feature on AMD's Windows driver (26.10.1) tracks every bound range in a chained hash map it searches on nearly
+// every recorded command: the chains grow as textures stream in and out, and recording a submission cost 3-4 times
+// more after minutes of play in a busy area (#1174).
 #define AB_N (1u << 15)
 typedef struct { uint64_t seq, base, size, handle, issued, done; int32_t type; uint32_t unbind; } AbEvent;
 static AbEvent *ab_ring;
@@ -136,8 +143,7 @@ static int create_instance(void) {
         rt_log("vk: TOTK_VK_VALIDATION set but %s is not installed; continuing without", layers[0]);
         validate = 0;
     }
-    const char *ar = cfg_get("TOTK_ADDR_REPORT");
-    ab_want = !(ar && !strcmp(ar, "0")) && instance_ext_present(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    ab_want = cfg_bool("TOTK_ADDR_REPORT") && instance_ext_present(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     if (ab_want && !ab_ring && !(ab_ring = calloc(AB_N, sizeof *ab_ring))) ab_want = 0;
     if (validate || ab_want) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     if (vk_hdr_wanted() && instance_ext_present(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME))   // HDR10 surface formats
@@ -169,8 +175,7 @@ static int create_instance(void) {
 }
 
 static const char *const k_required_ext[] = {
-    VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME,
-    VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME};
 
 // Name of the first missing required extension, or NULL.
 static const char *missing_required(VkPhysicalDevice pd) {
@@ -258,7 +263,6 @@ static int pick_device(void) {
         }
     free(qp);
     rt_log("vk: using gpu %d: %s", best, g_vk.props.deviceName);
-    vk_mem_class_log(&g_vk.props, &g_vk.mem_props);
     return 1;
 }
 
@@ -283,6 +287,12 @@ typedef struct {
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT fbl;
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr;
     VkPhysicalDeviceAddressBindingReportFeaturesEXT abr;
+    VkPhysicalDevicePresentIdFeaturesKHR pid;
+    VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop;   // FSR 4 (vk_ffx.c)
+#ifdef VK_EXT_SHADER_FLOAT8_EXTENSION_NAME
+    VkPhysicalDeviceShaderFloat8FeaturesEXT f8;          // FSR 4 (vk_ffx.c)
+#endif
+    VkPhysicalDeviceAntiLagFeaturesAMD al;
 } FeatureChain;
 
 static int create_device(void) {
@@ -290,9 +300,16 @@ static int create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-    const char *ext[48];
+    const char *ext[52];
     uint32_t n_ext = 0;
     for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext; i++) ext[n_ext++] = k_required_ext[i];
+    // VK_EXT_external_memory_host is optional: without it (or with TOTK_VK_NO_HOST_IMPORT=1, which tests that path on
+    // any GPU) CPU-visible pools get shadow storage (vk_memory.c mirror_mode).
+    const char *no_import = cfg_get("TOTK_VK_NO_HOST_IMPORT");
+    g_vk.has_external_memory_host = has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME) &&
+                                   !(no_import && *no_import && strcmp(no_import, "0"));
+    if (g_vk.has_external_memory_host) ext[n_ext++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
+    vk_mem_class_log(&g_vk.props, &g_vk.mem_props, g_vk.has_external_memory_host);
 
     FeatureChain *c = calloc(1, sizeof *c);
     void **tail = &c->f2.pNext;
@@ -334,7 +351,16 @@ static int create_device(void) {
         CHAIN(fbl, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT);
         CHAIN(lr, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR);
     }
-    vk_dlaa_device_exts(ep, ne, ext, &n_ext, 40);   // NGX's; the eight slots after it stay for the seven below
+    vk_dlaa_device_exts(ep, ne, ext, &n_ext, 40);   // NGX's or FSR 4's; the twelve slots after it stay for the nine below
+    // FSR 4's shader extensions (vk_ffx_device_exts) are enabled with their features, as far as the driver reports them
+    for (uint32_t i = 0; i < n_ext; i++) {
+        if (!strcmp(ext[i], VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME))
+            CHAIN(coop, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR);
+#ifdef VK_EXT_SHADER_FLOAT8_EXTENSION_NAME
+        else if (!strcmp(ext[i], VK_EXT_SHADER_FLOAT8_EXTENSION_NAME))
+            CHAIN(f8, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT);
+#endif
+    }
     if (has_ext(ep, ne, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) { g_vk.has_memory_budget = 1; ext[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME; }
     // GPU timestamps on the CPU clock (vk_sync.c): the perf line splits GPU idle time into waiting for a submission or not.
     if (has_ext(ep, ne, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)) { g_vk.has_calibrated = 2; ext[n_ext++] = VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME; }
@@ -350,6 +376,28 @@ static int create_device(void) {
     if (vk_pass_marks_want_nv() && has_ext(ep, ne, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME)) {
         g_vk.has_nv_checkpoints = 1;
         ext[n_ext++] = VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME;
+    }
+    // Low latency (the reflex setting). on and boost: NVIDIA Reflex (VK_NV_low_latency2, which requires
+    // VK_KHR_present_id), as before Anti-Lag came in, so a GPU without Reflex still gets nothing new from them. auto:
+    // Reflex, or AMD Anti-Lag 2 (VK_AMD_anti_lag: RADV and AMD's Windows driver) on a GPU without Reflex. Only one of
+    // the two runs. off (the default) enables neither extension.
+    const char *rv = cfg_value("TOTK_REFLEX");
+    if (strcmp(rv, "off") != 0 && strcmp(rv, "0") != 0) {
+        int want_antilag = !strcmp(rv, "auto");
+        if (has_ext(ep, ne, VK_KHR_PRESENT_ID_EXTENSION_NAME) && has_ext(ep, ne, "VK_NV_low_latency2")) {
+            g_vk.has_nv_reflex = 1;
+            ext[n_ext++] = VK_KHR_PRESENT_ID_EXTENSION_NAME;
+            ext[n_ext++] = "VK_NV_low_latency2";
+            CHAIN(pid, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR);
+        } else if (want_antilag && has_ext(ep, ne, VK_AMD_ANTI_LAG_EXTENSION_NAME)) {
+            g_vk.has_amd_antilag = 1;
+            ext[n_ext++] = VK_AMD_ANTI_LAG_EXTENSION_NAME;
+            CHAIN(al, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ANTI_LAG_FEATURES_AMD);
+        } else if (want_antilag) {
+            rt_log("Low latency: neither VK_NV_low_latency2 nor VK_AMD_anti_lag is available");
+        } else {
+            rt_log("Reflex: VK_NV_low_latency2 not available");
+        }
     }
     // Graphics pipeline library: chained last so it can be dropped again when vk_caps_gpl declines it.
     void **gpl_link = NULL;
@@ -387,11 +435,24 @@ static int create_device(void) {
     else if (!h->textureCompressionBC) miss = "textureCompressionBC";
     if (miss) { rt_log("vk: required feature missing on %s: %s", g_vk.props.deviceName, miss); free(c); return 0; }
     if (!c->fault.deviceFault) g_vk.has_device_fault = 0;   // vkGetDeviceFaultInfoEXT needs the feature, not just the extension
+    // Vulkan 1.3 requires the feature, and the chain goes to vkCreateDevice as the driver filled it, so it is enabled
+    // wherever reported; vk_pipeline.c spirv_demote emits OpDemoteToHelperInvocation only when it is.
+    vk_caps.demote = c->f13.shaderDemoteToHelperInvocation;
     rt_log("vk: GPU address map for device faults: %s",
-           has_abr && c->abr.reportAddressBinding ? "on (VK_EXT_device_address_binding_report; TOTK_ADDR_REPORT=0 turns it off)"
-           : !ab_want ? "off (TOTK_ADDR_REPORT=0 or no VK_EXT_debug_utils)"
+           has_abr && c->abr.reportAddressBinding ? "on (VK_EXT_device_address_binding_report, TOTK_ADDR_REPORT=1)"
+           : !ab_want ? "off (TOTK_ADDR_REPORT=1 turns it on; it slows recording on some drivers)"
                       : "unavailable (no VK_EXT_device_address_binding_report)");
     g_vk.has_buffer_device_address = c->f12.bufferDeviceAddress;
+    // VkPresentIdKHR on a present needs the presentId feature, not just the extension
+    if (g_vk.has_nv_reflex && !c->pid.presentId) {
+        g_vk.has_nv_reflex = 0;
+        rt_log("Reflex: VK_NV_low_latency2 not available (no presentId feature)");
+    }
+    if (g_vk.has_amd_antilag && !c->al.antiLag) {
+        g_vk.has_amd_antilag = 0;
+        rt_log("Anti-Lag: VK_AMD_anti_lag not available (no antiLag feature)");
+    }
+    if (g_vk.has_amd_antilag) rt_log("Anti-Lag: AMD Anti-Lag 2 on (VK_AMD_anti_lag)");
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
     {
         const char *e = cfg_get("TOTK_FEEDBACK");
@@ -424,7 +485,8 @@ static int create_device(void) {
     else { g_vk.xfer_queue = g_vk.gfx_queue; g_vk.xfer_shared = 1; }
 
     VkPhysicalDeviceExternalMemoryHostPropertiesEXT emh = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
-    VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &emh};
+    VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                     .pNext = g_vk.has_external_memory_host ? &emh : NULL};
     vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
     g_vk.min_imported_host_alignment = (uint32_t)emh.minImportedHostPointerAlignment;
     vk_caps_init(&g_vk);
@@ -458,9 +520,13 @@ static long g_errors_total;     // outlives the device so the probe can print it
 static void destroy_all(void) {
     gfx_window_release_vk();
     if (g_vk.device) vkDeviceWaitIdle(g_vk.device);
+    if (g_vk.device) vk_fg_release();
+    if (g_vk.device) fsr3_release();
+    if (g_vk.device) vk_ffx_release();
     if (g_vk.device) vk_astc_release();
     if (g_vk.device) vk_deswz_release();
     if (g_vk.device) vk_crumbs_release();
+    if (g_vk.device) vk_exec_null_attach_release();
     if (g_vk.timeline) vkDestroySemaphore(g_vk.device, g_vk.timeline, NULL);
     vk_headroom_stop();
     if (g_vk.vma) vmaDestroyAllocator(g_vk.vma);
@@ -479,10 +545,11 @@ long vk_validation_errors_total(void) { return g_errors_total + (g_ready ? g_vk.
 
 int vk_init(void) {
     plat_mutex_lock(&g_lock);
+    vk_memx_init();
     if (!g_ready) {
         memset(&g_vk, 0, sizeof g_vk);
         if (create_instance() && pick_device() && create_device())
-            g_ready = 1, vk_mem_host_probe(), vk_upload_pools_init(), vk_headroom_start(), vk_dlaa_init();
+            g_ready = 1, vk_mem_host_probe(), vk_upload_pools_init(), vk_headroom_start(), vk_dlaa_init(), vk_fg_init();
         else destroy_all();
     }
     int ok = g_ready;
@@ -523,6 +590,7 @@ void vk_device_fault_report(VkResult r) {
     vk_crumbs_report();
     vk_pass_marks_report();
     vk_mem_fault_log();
+    vk_exec_pool_journal_log();
     VkCtx *c = vk_ctx();
     PFN_vkGetDeviceFaultInfoEXT get =
         c && c->has_device_fault ? (PFN_vkGetDeviceFaultInfoEXT)vkGetDeviceProcAddr(c->device, "vkGetDeviceFaultInfoEXT")

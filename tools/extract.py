@@ -3,7 +3,9 @@
 Steps, each skipped when its verified output already exists:
 
 1. ExeFS (code modules) of the base game and of the update.
-2. Base RomFS, verified through all six IVFC levels.
+2. Base RomFS, verified through all six IVFC levels. --skip-base-romfs leaves this out: no other tool in the
+   repository reads it, and the merge of step 3 takes the base Program NCA from the base game file and verifies all
+   six IVFC levels of what it merges, so damage in the base game is still found, only later.
 3. Update RomFS: hactool merges the base Program NCA with the update's BKTR section.
 
 Steps 1 and 3 run for every file in `input.updates`. Each update's version is identified by the SHA-256 of its `main`,
@@ -37,9 +39,9 @@ from extract_update_romfs import copy_range, hactool_prod_keys  # noqa: E402
 DATA = ROOT / 'tools' / 'data'
 EXEFS_CODE = ('main', 'sdk', 'subsdk0', 'rtld')
 LONG_HEX = re.compile(r'[0-9A-Fa-f]{32,}')
-# hactool checks two signatures with Nintendo public keys it does not ship, so these two lines always read (FAIL) and
-# say nothing about the data. The IVFC levels and the image hash decide.
-UNSIGNED = re.compile(r'\s*(?:Fixed-Key Signature|NPDM Signature) \(FAIL\)')
+# Signature warnings can occur on dumps whose data is intact. hactool's npdm.c npdm_print labels the ACID check simply
+# "Signature", alongside nca.c nca_print's Fixed-Key and NPDM signatures. The IVFC levels and image hash still decide.
+UNSIGNED = re.compile(r'\s*(?:Fixed-Key Signature|NPDM Signature|Signature) \(FAIL\):')
 HACTOOL_ERROR = re.compile(r'\(FAIL\)|\(INVALID\)|Failed to|Error:')
 # hactool lines of a hash check that failed: a RomFS level, a section's superblock or its hash table.
 HACTOOL_HASH_FAIL = re.compile(r'^\s*(?:Level \d|Superblock Hash|Hash Table) \(FAIL\)', re.M)
@@ -274,6 +276,28 @@ def merge_update_romfs(base, update, keys_path, hactool, output, logs, phase=lam
         result.rename(output)
 
 
+def extract_base(base, keys, out, logs, expected, *, skip_romfs=False):
+    """The base game's ExeFS, and its RomFS unless skip_romfs.
+
+    The ExeFS identifies the base game as TotK 1.0.0: extract_update matches every update against the base game file
+    and reports a damaged one itself. skip_romfs leaves out the 17 GB image nothing reads, see the module docstring.
+    """
+    if exefs_problems(out / 'exefs', expected):
+        say('  extracting ExeFS')
+        extract_exefs(base, keys, out, logs, update=False)
+    problems = exefs_problems(out / 'exefs', expected)
+    require(not problems, f'Base game is not TotK {expected["display_version"]}: {", ".join(problems)} differ')
+    say(f'  ExeFS {expected["display_version"]}: main, sdk, subsdk0, rtld match')
+    report_npdm(out / 'exefs', expected)
+    if skip_romfs:
+        say('  RomFS skipped (--skip-base-romfs)')
+        return
+    if not romfs_verified(out / 'romfs', expected):
+        say('  extracting RomFS (17 GB)')
+        extract_base_romfs(out, keys, logs, base)
+    check_romfs(out / 'romfs', expected)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--config', type=Path, default=ROOT / 'config.local.toml')
@@ -285,6 +309,9 @@ def main():
     parser.add_argument('--keys', type=Path, help='prod.keys (default: input.keys of the config)')
     parser.add_argument('--work', type=Path, help='output directory with extracted/ and logs/ (default: work.dir of '
                                                   'the config, else build)')
+    parser.add_argument('--skip-base-romfs', action='store_true',
+                        help="do not extract the base game's 17 GB RomFS: no other tool reads it, and the update merge "
+                             'verifies all six IVFC levels of what it takes from the base game file')
     args = parser.parse_args()
 
     config = {}
@@ -300,18 +327,7 @@ def main():
     v0 = versions['1.0.0']
 
     say('Base game')
-    base_out = extracted / 'v0'
-    if exefs_problems(base_out / 'exefs', v0):
-        say('  extracting ExeFS')
-        extract_exefs(base, keys, base_out, logs, update=False)
-    problems = exefs_problems(base_out / 'exefs', v0)
-    require(not problems, f'Base game is not TotK 1.0.0: {", ".join(problems)} differ')
-    say('  ExeFS 1.0.0: main, sdk, subsdk0, rtld match')
-    report_npdm(base_out / 'exefs', v0)
-    if not romfs_verified(base_out / 'romfs', v0):
-        say('  extracting RomFS (17 GB)')
-        extract_base_romfs(base_out, keys, logs, base)
-    check_romfs(base_out / 'romfs', v0)
+    extract_base(base, keys, extracted / 'v0', logs, v0, skip_romfs=args.skip_base_romfs)
 
     for update in updates:
         extract_update(base, Path(update), keys, args.hactool, extracted, logs, versions)

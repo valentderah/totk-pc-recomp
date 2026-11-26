@@ -11,6 +11,10 @@
 // layout with a set-then-get round trip before anything relies on it.
 //
 // Where DLAA runs in the frame, the jitter and the motion vectors: see the sections below.
+//
+// The scene upscaler (scene_upscaler) is DLSS, AMD FSR 3.1 (vk_fsr3.cpp, built from the FidelityFX SDK 1.1.4 sources)
+// or AMD FSR 4 (vk_ffx.c, AMD's FSR SDK 2.4 libraries, Windows): the arming, the jitter, the motion vectors and the
+// copy of the result below are shared, and only the call that upscales differs (evaluate, fsr_evaluate).
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,7 +26,12 @@
 #include "platform/platform.h"
 #include "vk.h"
 #include "vk_dlaa.h"
+#include "input.h"
+#include "nvn_api.h"
 #include "vk_exec.h"
+#include "vk_ffx.h"
+#include "vk_fg.h"
+#include "vk_fsr3.h"
 #include "vk_rec.h"
 #include "dlaa_mv_spv.h"
 
@@ -100,12 +109,47 @@ static int p_getp(const NgxParam *p, const char *n, void **v) { return NGX_OK(((
 #define DLSS_MODEL "libnvidia-ngx-dlss.so.<version>"
 #endif
 
-// NGX is brought up only when dlaa is on at start: its device extensions can only be asked for at device creation, and
-// loading the driver's NGX core on every NVIDIA machine would cost start time and change the device with DLAA off. So
-// dlaa applies after a restart; switched off, nothing else of DLAA runs.
+// The scene upscaler picked at start (scene_upscaler; without it dlaa = 1 is DLSS): a restart applies another. AMD FSR
+// 3.1 (vk_fsr3.cpp) and FSR 4 (vk_ffx.c) take the same inputs at the same point of the frame as DLSS; FSR 3.1 runs on
+// any GPU, FSR 4 on Windows where AMD's libraries offer it for the GPU (vk_ffx_init). AMD ships those libraries for
+// Windows only, so elsewhere fsr4 is off.
+int vk_upscaler_engine(void) {
+    static int e = -1;
+    if (e < 0) {
+        const char *v = cfg_scene_upscaler();
+        e = !strcmp(v, "dlss") ? UPSCALER_DLSS : !strcmp(v, "fsr3") ? UPSCALER_FSR3
+          : !strcmp(v, "fsr4") ? UPSCALER_FSR4 : UPSCALER_OFF;
+#ifndef _WIN32
+        if (e == UPSCALER_FSR4) {
+            rt_log("dlaa: scene_upscaler = fsr4 runs on Windows only (AMD's FSR SDK has no Linux libraries): off");
+            e = UPSCALER_OFF;
+        }
+#endif
+    }
+    return e;
+}
+
+// The setting's name of an engine, and the name the log gives it.
+static const char *engine_value(int e) {
+    return e == UPSCALER_DLSS ? "dlss" : e == UPSCALER_FSR3 ? "fsr3" : e == UPSCALER_FSR4 ? "fsr4" : "off";
+}
+static const char *engine_name(int e) {
+    return e == UPSCALER_DLSS ? "DLSS" : e == UPSCALER_FSR3 ? "FSR 3.1" : e == UPSCALER_FSR4 ? "FSR 4" : "none";
+}
+
+// The engine picked at start while the settings still name it (the menu turns it off at once, as dlaa did).
+int vk_upscaler_on(void) {
+    int e = vk_upscaler_engine();
+    return e && !strcmp(cfg_scene_upscaler(), engine_value(e));
+}
+
+// NGX is brought up only when DLSS is the scene upscaler at start: its device extensions can only be asked for at
+// device creation, and loading the driver's NGX core on every NVIDIA machine would cost start time and change the device
+// with DLSS off. So the choice applies after a restart; with DLSS not picked (off or FSR), nothing of NGX runs. FSR
+// 4's device extensions are chosen at device creation as well (vk_ffx_device_exts).
 int vk_dlaa_wanted(void) {
     static int wanted = -1;
-    if (wanted < 0) wanted = cfg_bool("TOTK_DLAA");
+    if (wanted < 0) wanted = vk_upscaler_engine() == UPSCALER_DLSS;
     return wanted;
 }
 
@@ -161,6 +205,7 @@ void vk_dlaa_device_exts(const VkExtensionProperties *have, uint32_t nhave, cons
                          uint32_t max) {
     unsigned ni = 0, nd = 0;
     const char **ie = NULL, **de = NULL;
+    vk_ffx_device_exts(have, nhave, ext, n, max);   // FSR 4's, when it is the engine
     if (!vk_dlaa_wanted() || !core_load() || !NGX_OK(N.req_ext(&ni, &ie, &nd, &de))) return;
     for (unsigned i = 0; i < nd; i++) {
         int ok = 0;
@@ -188,7 +233,19 @@ static int vtable_ok(void) {
     return ok;
 }
 
+// The upscaler's half of the per-object motion's gate (vk_objmv_wanted, below the frame state): DLSS once NGX came up
+// with it (vk_dlaa_available), FSR 3.1 whenever it is the scene upscaler picked at start, FSR 4 once AMD's libraries
+// offered it for the device (vk_ffx_available). Latched in vk_dlaa_init, before the first frame: with no upscaler, or
+// one that did not come up, it stays 0.
+static int objmv;
+
 void vk_dlaa_init(void) {
+    objmv = vk_upscaler_engine() == UPSCALER_FSR3;
+    if (vk_upscaler_engine() == UPSCALER_FSR4) {
+        vk_ffx_init();
+        objmv = vk_ffx_available();
+        return;
+    }
     if (!vk_dlaa_wanted() || !core_load()) return;
     // The executable's folder, where NGX looks for the DLSS model library and writes its logs.
     wchar_t wdir[PLAT_PATH_MAX];
@@ -212,6 +269,7 @@ void vk_dlaa_init(void) {
         p_geti(caps, "SuperSampling.NeedsUpdatedDriver", &driver);
     }
     N.available = avail != 0;
+    objmv = N.available;   // vk_dlaa_available: wanted, and DLSS came up
     rt_log("dlaa: NGX up; DLSS %s%s", avail ? "available" : "NOT available (is " DLSS_MODEL " next to the executable?)",
            driver ? "; the driver needs an update" : "");
 }
@@ -227,7 +285,8 @@ int vk_dlaa_available(void) { return vk_dlaa_wanted() && N.available; }
 // So: after the G-buffer, a pass at the scene size with exactly one colour target (R11G11B10F or RGBA16F) and the D32F
 // depth arms the frame with that pair; the next pass at most a quarter as wide ends the scene (no jitter after it) and,
 // when the scene is as wide as the output, runs DLAA on the armed target first. Bloom, tonemap, post and HUD then all
-// work on the anti-aliased picture.
+// work on the anti-aliased picture. With DLAA the scene ends before that, at the first pass into the light target after
+// the lighting: the fog and the particles then go over DLAA's picture (effects_point).
 // Upscaling (a scene smaller than the output: TOTK_DLSS quality/balanced/performance, or the game's own 5/6): measured
 // at a 960x536 scene, 1920x1080 output, the bloom and its composite write back into the light target at the scene size,
 // then one full-screen draw (the FXAA shader below, which also scales) reads it into an output-sized R11G11B10F target
@@ -262,7 +321,14 @@ static struct {
     VkImage last_color;          // the target DLAA ran on last frame: another one means a new history
     NgxParam *params;
     int failed, reset;
-    uint64_t evals, frames_missed;
+    uint64_t evals, frames_missed, fx_frames;   // fx_frames: DLAA ran before the effects (effects_point)
+    VkImage glight;              // this frame: the light target among the G-buffer's targets (gbuf_light)
+    VkExecTarget glight_z;       // that G-buffer's depth, the scene depth
+    VkImage light_z;             // this frame: the D16 depth the lighting draws into the light target with
+    int fx_on;                   // dlaa_effects_after, read at each present while DLSS runs
+    int fx_seen, fx_open, fx_bad;   // this frame: the point found / the scene not ended since / drawn on after it
+    int fx_comp;                 // this frame: a full-size pass into the light target without depth after the lighting
+    uint32_t fx_steady;          // DLSS frames in a row with the point found and nothing of the scene after it
     // jitter (vk_dlaa_viewport)
     VkImage jdepth;              // the scene depth of the last frame DLAA ran on: passes drawing with it are jittered
     float jx, jy;                // the offset the next scene draws take, render pixels (window x right, y down)
@@ -289,16 +355,76 @@ static struct {
     uint64_t why[3];             // history resets: scene size changed, no camera, scene target changed
     int on;                      // the dlaa setting, read at each present (the menu switches it live)
     int preset, preset_dirty;    // the DLSS model features are created with (preset_value); a change pending
+    int fixed_exposure;          // dlss_fixed_exposure the features are created with (preset_check)
     VkExecTarget ids;            // this frame's G-buffer target 0 (object classes in green), valid with ids_ok
     int ids_ok;
     unsigned cfg_seen;           // cfg_version when preset was read
     uint64_t last_eval_ns;       // plat_now_ns of the previous evaluation (FrameTimeDeltaInMsec)
+    // frame generation with DLSS off (vk_fg.cpp): the scene is followed for it alone ("frame generation" below)
+    int fg;                      // frame generation follows the scene this frame (vk_fg_wanted), read at each present
+    int bloom;                   // this frame: the bloom chain began after the scene ended
+    int hud, hud_wait, fin, gen; // this frame: the picture before the HUD was taken / hud_t is the scaling pass's
+                                 // target and its scaling draw came / the copy into the window texture came / the
+                                 // generation ran (vk_dlaa_sub_end)
+    VkExecTarget hud_t, win;     // the output-sized target the scene is scaled into; the window texture
+    float cam_dr[2];             // the viewport depth range of the draw cam_addr was noted at
+    int fg_mv_ok;                // the frame's motion is in the motion image (fg_motion)
+    int fsr;                     // the AMD FSR engine (UPSCALER_FSR3 or UPSCALER_FSR4, picked at start), 0: DLSS
 } D = {.mv_ok = -1, .cfg_seen = ~0u};
+#define DLSS_SIZES (sizeof D.sizes / sizeof D.sizes[0])
 
 const VkTexImage *vk_dlaa_swap_img;
 VkImageView vk_dlaa_swap_view;
 
-static int dl_active(void) { return N.available && !D.failed && D.on; }
+// DLSS needs NGX and its model, FSR 4 AMD's libraries with FSR 4 for the GPU, FSR 3.1 runs on any GPU the back end
+// runs on: on already says the engine is there (vk_dlaa_frame).
+static int dl_active(void) { return !D.failed && D.on; }
+// The scene is followed (its G-buffer, light target, end and camera): for DLSS, or with DLSS off for frame generation.
+static int track(void) { return dl_active() || D.fg; }
+int vk_dlaa_fg_on;               // D.fg for vk_exec_draw.c's per-draw test (vk_dlaa_hud)
+
+int vk_upscaler_running(void) {
+    return dl_active() && D.evals ? (D.fsr ? D.fsr : UPSCALER_DLSS) : UPSCALER_OFF;
+}
+
+// For the menu. DLSS: after a start with it picked, what NGX said; before, an NVIDIA GPU and the DLL (an NVIDIA GPU
+// without RTX shows only once NGX came up). FSR 4 likewise: Windows, AMD's two libraries, then after a start with it
+// picked what they offered for the device (vk_ffx_init), before one an AMD GPU (the libraries decide which Radeons get
+// FSR 4, so another Radeon shows only after that start). FSR 3.1 is built in.
+int vk_upscaler_missing(int engine) {
+    if (engine == UPSCALER_FSR4) {
+#ifndef _WIN32
+        return UPSCALER_MISSING_OS;
+#else
+        if (!res_ffx_dlls()) return UPSCALER_MISSING_DLL;
+        if (vk_ffx_tried()) return vk_ffx_available() ? 0 : UPSCALER_MISSING_GPU;
+        return vk_ctx()->props.vendorID == 0x1002 ? 0 : UPSCALER_MISSING_GPU;
+#endif
+    }
+    if (engine != UPSCALER_DLSS) return 0;
+    if (!res_dlss_dll()) return UPSCALER_MISSING_DLL;
+    if (N.tried) return N.available ? 0 : UPSCALER_MISSING_GPU;
+    return vk_ctx()->props.vendorID == 0x10de ? 0 : UPSCALER_MISSING_GPU;
+}
+
+// TOTK_FG_OBJECTS (default 1, read once): frame generation's motion image gets the per-object pass over the camera's,
+// as DLSS's does. The camera follows Link, so with the camera's motion alone his pixels carry the world's motion and
+// the interpolation drew him twice (a soft second outline) and left a trail where he had been. 0 keeps the camera's
+// motion alone (stage 2's vectors), for comparisons.
+static int fg_objects(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("FG_OBJECTS", "1");
+    return on;
+}
+
+int vk_fg_objects_on(void) { return D.fg && fg_objects(); }
+
+// The per-object motion's gates (vk_mvprev.c's tables, vk_usnap.c's host copy, vk_exec_draw.c's motion draws and
+// lock): the upscaler that reads the motion image (objmv: DLSS once NGX came up, FSR 3.1 picked at start, or FSR 4
+// once it came up), or frame
+// generation following the scene with its objects. Frame generation is off with either upscaler, so the second term is
+// 0 whenever one runs.
+int vk_objmv_wanted(void) { return objmv || vk_fg_objects_on(); }
 
 static void dl_fail(const char *what, NgxResult r) {
     rt_log("dlaa: %s failed (%08x): DLAA off for this run", what, (unsigned)r);
@@ -341,29 +467,11 @@ static void free_size(struct Size *e) {
 // the target) and motion vectors (RG16F at the scene size, render pixels), both kept in GENERAL like every image of the
 // back end. TotK's dynamic resolution switches between a few sizes; each keeps its feature, the least recently used
 // goes for a new one.
-static struct Size *size_for(VkCommandBuffer cb, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh) {
-    struct Size *e = NULL, *lru = &D.sizes[0];
-    for (int i = 0; i < 5; i++) {
-        if (D.sizes[i].w == w && D.sizes[i].h == h && D.sizes[i].ow == ow && D.sizes[i].oh == oh) return &D.sizes[i];
-        if (!D.sizes[i].out && !e) e = &D.sizes[i];
-        if (D.sizes[i].used < lru->used) lru = &D.sizes[i];
-    }
-    if (!e) {
-        if (D.last == lru) D.last = NULL;
-        free_size(e = lru);
-    }
-    VkImageUsageFlags u = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                          VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    VkImageUsageFlags u8 = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    if (!image2d(ow, oh, VK_FORMAT_R16G16B16A16_SFLOAT, u, &e->out, &e->out_mem, &e->out_view) ||
-        !image2d(w, h, VK_FORMAT_R16G16_SFLOAT, u | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, &e->mv, &e->mv_mem, &e->mv_view) ||
-        !image2d(w, h, VK_FORMAT_R8_UNORM, u8, &e->mask, &e->mask_mem, &e->mask_view) ||
-        !image2d(w, h, VK_FORMAT_R8_UNORM, u8, &e->chars[0], &e->chars_mem[0], &e->chars_view[0]) ||
-        !image2d(w, h, VK_FORMAT_R8_UNORM, u8, &e->chars[1], &e->chars_mem[1], &e->chars_view[1]))
-        return NULL;
+// An entry is taken once it has its motion image. out: DLSS will write the output image; frame generation without DLSS
+// (fg_motion) needs none, and an entry it made gets one when DLSS first runs at that size.
+static void to_general(VkCommandBuffer cb, const VkImage *im, uint32_t n) {
     VkImageMemoryBarrier2 ib[5];
-    VkImage im[5] = {e->out, e->mv, e->mask, e->chars[0], e->chars[1]};
-    for (int i = 0; i < 5; i++)
+    for (uint32_t i = 0; i < n; i++)
         ib[i] = (VkImageMemoryBarrier2){.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                                         .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                         .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -372,9 +480,42 @@ static struct Size *size_for(VkCommandBuffer cb, uint32_t w, uint32_t h, uint32_
                                         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = im[i],
                                         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 5,
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = n,
                            .pImageMemoryBarriers = ib};
     vkCmdPipelineBarrier2(cb, &di);
+}
+
+static struct Size *size_for(VkCommandBuffer cb, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh, int out) {
+    VkImageUsageFlags u = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                          VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    VkImageUsageFlags u8 = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    struct Size *e = NULL, *lru = &D.sizes[0];
+    for (size_t i = 0; i < DLSS_SIZES; i++) {
+        struct Size *z = &D.sizes[i];
+        if (z->mv && z->w == w && z->h == h && z->ow == ow && z->oh == oh) {
+            if (out && !z->out) {
+                if (!image2d(ow, oh, VK_FORMAT_R16G16B16A16_SFLOAT, u, &z->out, &z->out_mem, &z->out_view)) return NULL;
+                to_general(cb, &z->out, 1);
+            }
+            return z;
+        }
+        if (!z->mv && !e) e = z;
+        if (z->used < lru->used) lru = z;
+    }
+    if (!e) {
+        if (D.last == lru) D.last = NULL;
+        free_size(e = lru);
+    }
+    if ((out && !image2d(ow, oh, VK_FORMAT_R16G16B16A16_SFLOAT, u, &e->out, &e->out_mem, &e->out_view)) ||
+        !image2d(w, h, VK_FORMAT_R16G16_SFLOAT, u | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, &e->mv, &e->mv_mem, &e->mv_view) ||
+        !image2d(w, h, VK_FORMAT_R8_UNORM, u8, &e->mask, &e->mask_mem, &e->mask_view) ||
+        !image2d(w, h, VK_FORMAT_R8_UNORM, u8, &e->chars[0], &e->chars_mem[0], &e->chars_view[0]) ||
+        !image2d(w, h, VK_FORMAT_R8_UNORM, u8, &e->chars[1], &e->chars_mem[1], &e->chars_view[1])) {
+        free_size(e);   // the slot is free again, not an entry without its images
+        return NULL;
+    }
+    VkImage im[5] = {e->mv, e->mask, e->chars[0], e->chars[1], e->out};
+    to_general(cb, im, out ? 5 : 4);
     e->w = w, e->h = h, e->ow = ow, e->oh = oh;
     return e;
 }
@@ -458,6 +599,10 @@ static void times_begin(VkCommandBuffer cb) {
 }
 
 // ---------------------------------------------------------------- motion vectors
+static int cam_mode(void);   // the jitter in the game's camera (below, "jitter in the game's camera")
+static int cam_offset(uint64_t blk, float *sx, float *sy);
+static int unj_put(VkCommandBuffer cb, const float *blk, float sx, float sy, VkBuffer buf, VkDeviceSize off);
+static int unj_rows(VkCommandBuffer cb, const float *blk, float sx, float sy, VkBuffer buf, VkDeviceSize off, int keep);
 // The camera's motion first (runtime/shaders/dlaa_mv.comp): this frame's scene camera block is copied out of the
 // replay's uniform snapshot (vk_usnap.c, as of the submit call) into one slot of camb, last frame's stays in the other,
 // and the compute pass reprojects every pixel's depth through the two (inv4 and mv_pass below). Then the per-object
@@ -554,9 +699,10 @@ static int inv4(const double m[16], double o[16]) {
 }
 
 // The pass, recorded through the recorder like the replay's own commands. 0: no camera this frame (the vectors stay
-// zero and DLSS starts a new history). bias > 0 with this frame's G-buffer classes (D.ids) also writes e->mask, the
-// bias mask (dlaa_mv.comp); *masked says whether it did.
-static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float jy, float bias, int *masked) {
+// zero and DLSS starts a new history). objects: the per-object pass and the TOTK_MV_CHECK hooks after the camera's
+// (DLSS and FSR 3.1, and frame generation unless TOTK_FG_OBJECTS=0). bias > 0 with this frame's G-buffer classes (D.ids)
+// also writes e->mask, the bias mask (dlaa_mv.comp); *masked says whether it did.
+static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float jy, float bias, int *masked, int objects) {
     *masked = 0;
     VkCommandBuffer cb = ex->cb;
     uint32_t w = e->w, h = e->h;
@@ -571,8 +717,11 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
     const float *cr = (const float *)vk_usnap_bytes(D.cam_addr + 48, 64);
     double cur_vp[16], m[16], ci[16];
     int have_m = 0;
+    float osx = 0.0f, osy = 0.0f;
+    if (cam_mode()) cam_offset(D.cam_addr, &osx, &osy);
     if (cr) {
         for (int i = 0; i < 16; i++) cur_vp[i] = cr[i];
+        for (int k = 0; k < 4; k++) cur_vp[k] -= osx * cr[12 + k], cur_vp[4 + k] -= osy * cr[12 + k];
         if (D.cam_prev_ok && inv4(cur_vp, ci)) {
             for (int r = 0; r < 4; r++)
                 for (int k = 0; k < 4; k++) {
@@ -587,6 +736,8 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
     VkBufferCopy bc = {cam.offset, (VkDeviceSize)s * CAM_SLOT, CAM_BLOCK};
     vkCmdCopyBuffer(cb, cam.buffer, D.camb, 1, &bc);
     full_barrier(cb);
+    const float *cb_bytes = osx != 0.0f || osy != 0.0f ? (const float *)vk_usnap_bytes(D.cam_addr, 0xb0) : NULL;
+    if (cb_bytes && unj_put(cb, cb_bytes, osx, osy, D.camb, (VkDeviceSize)s * CAM_SLOT)) full_barrier(cb);
     D.cam_slot ^= 1, D.cam_prev_ok = cr != NULL;
     if (cr) memcpy(D.cam_prev, cur_vp, sizeof cur_vp);
     if (!had_prev || !have_m) {   // nothing to reproject into: zero motion, new history
@@ -642,10 +793,24 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
     vkCmdDispatch(cb, (w + 7) / 8, (h + 7) / 8, 1);
     full_barrier(cb);
     times_mark(cb, T_MV1);
+    if (!objects) {
+        D.mv_frames++;
+        e->chars_ok = 0;
+        return 1;
+    }
     vk_mvcheck_camera(cb, e->mv, w, h, jx, jy);   // TOTK_MV_CHECK (test)
     // the characters' own motion over the camera's (vk_exec_draw.c, per-object motion)
     uint64_t c0 = T.on > 0 ? kern_now_ns() : 0;
+    // The motion draws rasterise this frame's position through the scene camera's snapshot, and their fragment shader
+    // takes the jitter back off (vk_mvobj_fs.h). By now cam_unjitter has written that snapshot back without the jitter
+    // (it runs from the scene's end, for the effects), so the draws landed a jitter away from the scene's depth and
+    // their vectors carried the jitter: TOTK_MV_CHECK measured the object part equal to this frame's jitter in every
+    // check on a still Link, which moved the upscaler's history of characters by up to a pixel each frame (shaking,
+    // softness). The jittered rows go back for these draws and come off again after them.
+    int rejit = cb_bytes && unj_rows(cb, cb_bytes, 0.0f, 0.0f, cam.buffer, cam.offset, 1);
+    if (rejit) full_barrier(cb);
     if (vk_mvobj_execute(ex, D.cam_addr, e->mv_view, zv, D.depth.format, w, h)) full_barrier(cb);
+    if (rejit && unj_put(cb, cb_bytes, osx, osy, cam.buffer, cam.offset)) full_barrier(cb);
     if (T.on > 0) T.cpu_mv += kern_now_ns() - c0;
     times_mark(cb, T_OBJ);
     if (T.on > 0) T.used[T.slot] = 1;   // the DLSS marks follow in evaluate
@@ -660,9 +825,10 @@ static int mv_pass(VkExec *ex, struct Size *e, VkImageView zv, float jx, float j
 // Last frame's camera block for the per-object motion pass, recorded before this frame's mv_pass: that pass writes
 // this frame's into slot cam_slot and leaves the other slot, last frame's, as it is. 0: none (no history).
 int vk_dlaa_prev_camera(VkDescriptorBufferInfo *out, float jitter[2]) {
-    if (!dl_active() || !D.cam_prev_ok || !D.camb) return 0;
+    if (!track() || !D.cam_prev_ok || !D.camb) return 0;   // the upscaler, or frame generation (no jitter: D.jit_* stay 0)
     *out = (VkDescriptorBufferInfo){D.camb, (VkDeviceSize)(D.cam_slot ^ 1) * CAM_SLOT, CAM_BLOCK};
-    jitter[0] = D.jit_ok ? D.jx : 0.0f, jitter[1] = D.jit_ok ? D.jy : 0.0f;
+    if (cam_mode()) jitter[0] = D.jit_used ? D.ux : 0.0f, jitter[1] = D.jit_used ? D.uy : 0.0f;
+    else jitter[0] = D.jit_ok ? D.jx : 0.0f, jitter[1] = D.jit_ok ? D.jy : 0.0f;
     return 1;
 }
 
@@ -822,7 +988,8 @@ static struct Snap *mask_pass(VkCommandBuffer cb, VkImageView cv, uint32_t w, ui
 }
 
 // ---------------------------------------------------------------- jitter
-// The scene's draws (every pass drawing with the scene depth, until the DLAA point) have their viewport moved by a
+// On 1.4.3 the game's camera carries the jitter instead (below, "jitter in the game's camera"); on the other versions
+// the scene's draws (every pass drawing with the scene depth, until the DLAA point) have their viewport moved by a
 // sub-pixel Halton(2,3) offset, which shifts what they rasterise as a jittered projection would; full-screen passes
 // that shade by window position are unaffected. Jitter only follows a frame DLSS ran on: a jittered frame that DLSS
 // does not resolve shakes on screen, so a missed DLAA point stops the jitter for a second.
@@ -841,6 +1008,7 @@ static int ended_at(const VkExec *ex) {
 }
 
 void vk_dlaa_viewport(VkExec *ex, VkViewport *v) {
+    if (cam_mode()) return;   // the camera carries the jitter
     if (!D.jit_ok || !ex->depth.image || ex->depth.image != D.jdepth || ended_at(ex)) return;
     v->x += D.jx, v->y += D.jy;
     D.ux = D.jx, D.uy = D.jy;
@@ -853,12 +1021,20 @@ static void note_camera(const VkExec *ex) {
     const p_bind_buf *b = &ex->ubo[0][1];   // constant bank c4: the replay keeps user banks from c3 on
     const VkExecTarget *z = &ex->depth;
     if (b->size == 0x940 && b->addr && z->image && z->width >= DLAA_SCENE_MIN_W && z->format == VK_FORMAT_D32_SFLOAT &&
-        (!D.jdepth || z->image == D.jdepth))
+        (!D.jdepth || z->image == D.jdepth)) {
+        if (cam_mode() && b->addr != D.cam_addr) {
+            float sx, sy;
+            int j = cam_offset(b->addr, &sx, &sy);
+            D.ux = sx * (float)z->width * 0.5f, D.uy = -sy * (float)z->height * 0.5f;
+            __atomic_store_n(&D.jit_used, j, __ATOMIC_RELAXED);
+        }
         D.cam_addr = b->addr;
+        D.cam_dr[0] = ex->depth_range[0], D.cam_dr[1] = ex->depth_range[1];
+    }
 }
 
 void vk_dlaa_draw(VkExec *ex) {
-    if (!dl_active() || ended_at(ex)) return;
+    if (!track() || ended_at(ex)) return;
     static int survey = -1;   // TOTK_DLAA_SURVEY=1 (test): what is drawn into the armed light target
     if (survey < 0) survey = rt_knob("DLAA_SURVEY", "0");
     static uint64_t dfn[16];   // scene draws writing depth, by depth test (reversed depth: GREATER/GEQUAL)
@@ -893,7 +1069,7 @@ void vk_dlaa_draw(VkExec *ex) {
 }
 
 void vk_dlaa_scan_draw(const VkExec *ex) {
-    if (dl_active() && !D.ended) note_camera(ex);
+    if (track() && !D.ended) note_camera(ex);
 }
 
 // The jitter moves on right after DLAA ran, not at the present: the replay can record the next frame's scene before
@@ -911,6 +1087,224 @@ static void next_jitter(uint32_t w, uint32_t ow) {
     uint32_t i = D.jframe++ % phases + 1;
     D.jx = halton(i, 2) - 0.5f, D.jy = halton(i, 3) - 0.5f;
     D.jit_ok = !D.hold && !nj;
+}
+
+// ---------------------------------------------------------------- jitter in the game's camera (1.4.3)
+// Moving the viewport jitters what the scene draws rasterise, but not the camera the game reconstructs positions with:
+// its full-screen passes rebuild each pixel's view ray from the camera block (the half-size lighting's vertex shaders
+// read the projection's centre terms, P[0][2] and P[1][2], with its tangents) and its depth, so with the depth half a
+// pixel off they put a surface's points off the surface by half a pixel of its depth slope. On water seen at a low
+// angle that decides whether a screen-space reflection ray hits or misses, and whole patches of a pond flipped between
+// the trees' reflection and the sky's with the jitter's phase (a period of three frames), more than DLSS could resolve;
+// measured without DLSS with the same jitter, the pond's brightness swung 2.3-3.0 levels with the viewport moved and
+// 0.03-0.04 with the camera moved, the edges shimmering alike. So on 1.4.3 the jitter goes into the camera itself, where
+// the game copies its matrices into each camera's uniform block (f_70000e31d4: the projection, rows 7-10, then the
+// view-projection, rows 3-6, each a 64-byte memcpy, which ov_memcpy hands over): a perspective camera with the scene's
+// aspect, the main one and its half-size copy among them, gets the offset in its projection's centre terms and the same
+// in its view-projection, x_clip += sx w and y_clip += sy w. Its shadow cascades are orthographic and stay as they are.
+// The offset moves on at the first projection copied after each of the game's presents (vk_dlaa_game_present): the game
+// fills two sets of blocks in turn, one per frame, so a block written again is not a new frame.
+// The replay reads the offset back from the snapshot of the scene camera's block (cam_offset, the snapshot is the block
+// as of the submit) for DLSS, the motion vectors and the per-object pass, which reproject with the camera unjittered;
+// after the DLSS point the snapshots of the jittered blocks are written back unjittered (cam_unjitter), so the effects
+// drawn over DLSS's picture stay unjittered as before. A block's centre terms count as an offset only when they are one
+// this code gave that block (CJ.given): the game has off-centre projections of its own, such as the inventory's camera,
+// which draws Link right of the screen's centre with P[0][2] about -0.6, and read as a jitter that sent DLSS an offset
+// of 1152 pixels, smearing the world behind the inventory into horizontal streaks. TOTK_DLAA_CAM_JITTER=0 (test) moves
+// the viewport as on the other game versions.
+#define CAMJ_P_LR 0x70000e3688ull    // the return address of the projection's copy (rows 7-10)
+#define CAMJ_VP_LR 0x70000e36f4ull   // and of the view-projection's (rows 3-6)
+#define CAMJ_BLOCKS 16
+#define CAMJ_GIVEN 256               // offsets given lately, by block: about 40 frames' worth, the replay is a few behind
+#define UNJ_SLOTS 4096u              // 64-byte patches in flight (cam_unjitter, mv_pass): about 60 frames' worth
+
+static struct {
+    PlatMutex lk;
+    uint64_t presents, moved;        // the game's presents, and their count when the offset last moved on
+    struct { uint64_t blk; float sx, sy; } cur[CAMJ_BLOCKS];   // this frame's blocks and the offset each projection took
+    int ncur;
+    struct { uint64_t blk; float sx, sy; } given[CAMJ_GIVEN];  // each offset given and its block, a ring
+    uint32_t ngiven;
+    uint32_t idx;                    // phases handed out
+    float sx, sy;                    // this frame's offset, clip units (0: none)
+    VkBuffer unj;                    // UNJ_SLOTS host-visible patches the replay copies from
+    VmaAllocation unj_mem;
+    uint8_t *unj_map;
+    uint32_t unj_slot;
+} CJ = {.lk = PLAT_MUTEX_INIT};
+
+static int cam_mode(void) {
+    static int on = -1;
+    if (on < 0) on = rt_game_version == 143 && rt_knob("DLAA_CAM_JITTER", "1") && rt_knob("UBO_SNAPSHOT", "1");
+    return on;
+}
+
+static int in_list(const uint64_t *l, int n, uint64_t a) {
+    for (int i = 0; i < n; i++)
+        if (l[i] == a) return 1;
+    return 0;
+}
+
+void vk_dlaa_game_present(void) {
+    __atomic_add_fetch(&CJ.presents, 1, __ATOMIC_RELEASE);
+    // frame generation stops while a menu's background (the map, the pause menu; AppMap_00 is open all through play:
+    // the minimap) or a loading or event fade is up (the game's screens, read on its thread);
+    // the frame after it starts without history
+    if (!vk_fg_active()) return;
+    static const char *const ui[] = {"AppMenuBG_00", "LoadingFade_00", "EventFade_00"};
+    static int last = -1;
+    int m = 0;
+    for (int i = 0; i < 3; i++) m |= menu_ui_open(ui[i]) << i;
+    if (m != last) rt_log("fg: screens open: %s%s%s%s", m & 1 ? "menu background (map, pause menu) " : "", m & 2 ? "loading fade " : "",
+                          m & 4 ? "event fade" : "", m ? "" : "none (frame generation may run)");
+    last = m;
+    vk_fg_menu(m != 0);
+}
+
+// The game's thread, after a 64-byte memcpy: lr is the copy's return address into the game, dst where it copied to, off
+// the member's offset in the block. f_70000e31d4 takes each offset from the shader's layout of the block (x8 at both
+// copies, dst = the block's base + x8), so a block takes the offset only with its matrices where the rest of this
+// code reads and writes them, the projection at 0x70 and the view-projection at 0x30, as in the scene camera's block.
+void vk_dlaa_camera_copied(uint64_t lr, uint64_t dst, uint64_t off) {
+    if ((lr != CAMJ_P_LR && lr != CAMJ_VP_LR) || !cam_mode() || !dl_active()) return;
+    if (lr == CAMJ_P_LR && off != 0x70) return;
+    float *m = (float *)(uintptr_t)dst;
+    uint64_t blk = dst - off;
+    plat_mutex_lock(&CJ.lk);
+    if (lr == CAMJ_P_LR) {
+        unsigned o[2], s[2];
+        res_sizes(o, s);
+        float asp = s[1] ? (float)s[0] / (float)s[1] : 0.0f;
+        // perspective (w = -z), symmetric, with the scene's aspect
+        if (m[14] != -1.0f || m[15] != 0.0f || m[2] != 0.0f || m[6] != 0.0f || !(m[0] > 0.0f) ||
+            fabsf(m[5] / m[0] - asp) > 0.01f * asp) {
+            plat_mutex_unlock(&CJ.lk);
+            return;
+        }
+        uint64_t pf = __atomic_load_n(&CJ.presents, __ATOMIC_ACQUIRE);
+        if (pf != CJ.moved) {   // the first projection of a new frame
+            static int nj = -1;
+            if (nj < 0) nj = !rt_knob("DLAA_JITTER", "1");
+            CJ.moved = pf, CJ.ncur = 0, CJ.sx = CJ.sy = 0.0f;
+            if (dl_active() && !__atomic_load_n(&D.hold, __ATOMIC_RELAXED) && !nj && s[0] && s[1]) {
+                double r = (double)o[0] / s[0];
+                uint32_t ph = (uint32_t)ceil(8.0 * r * r - 1e-6);
+                ph = ph < 16 ? 16 : ph > 72 ? 72 : ph;
+                uint32_t i = CJ.idx++ % ph + 1;
+                CJ.sx = 2.0f * (halton(i, 2) - 0.5f) / (float)s[0];    // content right by the offset in pixels
+                CJ.sy = -2.0f * (halton(i, 3) - 0.5f) / (float)s[1];   // and down: NDC +y is the top row
+            }
+        }
+        int i = 0;
+        while (i < CJ.ncur && CJ.cur[i].blk != blk) i++;
+        if ((CJ.sx != 0.0f || CJ.sy != 0.0f) && i < CAMJ_BLOCKS) {   // no room: no offset, its view-projection takes none
+            m[2] -= CJ.sx, m[6] -= CJ.sy;
+            CJ.cur[i].blk = blk, CJ.cur[i].sx = CJ.sx, CJ.cur[i].sy = CJ.sy, CJ.ncur += i == CJ.ncur;
+        }
+    } else {   // the view-projection takes the offset its block's projection took this frame
+        for (int i = 0; i < CJ.ncur; i++)
+            if (CJ.cur[i].blk == blk) {
+                if (off != 0x30) {   // elsewhere in this block: the projection goes back to its centre terms of 0
+                    float *pm = (float *)(uintptr_t)(blk + 0x70);
+                    pm[2] += CJ.cur[i].sx, pm[6] += CJ.cur[i].sy;
+                    CJ.cur[i] = CJ.cur[--CJ.ncur];
+                    break;
+                }
+                for (int k = 0; k < 4; k++) m[k] += CJ.cur[i].sx * m[12 + k], m[4 + k] += CJ.cur[i].sy * m[12 + k];
+                // Given only now that both matrices carry it: a block whose view-projection did not take it is never
+                // read back as jittered, nor written back by cam_unjitter.
+                uint32_t g = CJ.ngiven++ % CAMJ_GIVEN;
+                CJ.given[g].blk = blk, CJ.given[g].sx = CJ.cur[i].sx, CJ.given[g].sy = CJ.cur[i].sy;
+                break;
+            }
+    }
+    plat_mutex_unlock(&CJ.lk);
+}
+
+// The offset a camera block took (clip units), from its snapshot, else from guest memory: a chunked replay's scan can
+// come before the snapshot, and the block holds this frame's bytes until the game's next frame. Centre terms this code
+// did not give the block are the game's own and read as no offset.
+static int cam_offset(uint64_t blk, float *sx, float *sy) {
+    *sx = *sy = 0.0f;
+    if (!blk) return 0;
+    const float *p = (const float *)vk_usnap_bytes(blk + 0x70, 32);
+    if (!p) p = (const float *)(uintptr_t)(blk + 0x70);
+    float x = -p[2], y = -p[6];
+    if (x == 0.0f && y == 0.0f) return 0;
+    int ours = 0;
+    plat_mutex_lock(&CJ.lk);
+    for (uint32_t i = 0, n = CJ.ngiven < CAMJ_GIVEN ? CJ.ngiven : CAMJ_GIVEN; i < n && !ours; i++)
+        ours = CJ.given[i].blk == blk && CJ.given[i].sx == x && CJ.given[i].sy == y;
+    plat_mutex_unlock(&CJ.lk);
+    if (ours) *sx = x, *sy = y;
+    return ours;
+}
+
+// Records copies that write a block's view-projection rows 3-4 and projection rows 7-8 back without the offset (blk:
+// the block's bytes as the snapshot holds them) into buf at off, the block's place there. keep: the rows as they are,
+// with the offset (rejit). 0: no room.
+static int unj_rows(VkCommandBuffer cb, const float *blk, float sx, float sy, VkBuffer buf, VkDeviceSize off, int keep) {
+    if (!CJ.unj) {
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = UNJ_SLOTS * 64u,
+                                 .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                                      .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                               VMA_ALLOCATION_CREATE_MAPPED_BIT};
+        VmaAllocationInfo inf;
+        if (vmaCreateBuffer(vk_ctx()->vma, &bi, &ai, &CJ.unj, &CJ.unj_mem, &inf) != VK_SUCCESS) return CJ.unj = 0, 0;
+        CJ.unj_map = inf.pMappedData;
+    }
+    uint32_t sl = __atomic_fetch_add(&CJ.unj_slot, 1, __ATOMIC_RELAXED) % UNJ_SLOTS;
+    float v[16];
+    for (int k = 0; k < 4; k++) v[k] = blk[12 + k] - sx * blk[24 + k], v[4 + k] = blk[16 + k] - sy * blk[24 + k];
+    memcpy(v + 8, blk + 28, 32);
+    if (keep) memcpy(v, blk + 12, 32);
+    else v[10] = 0.0f, v[14] = 0.0f;
+    memcpy(CJ.unj_map + (size_t)sl * 64, v, sizeof v);
+    vmaFlushAllocation(vk_ctx()->vma, CJ.unj_mem, (VkDeviceSize)sl * 64, 64);
+    VkBufferCopy r[2] = {{(VkDeviceSize)sl * 64, off + 0x30, 32}, {(VkDeviceSize)sl * 64 + 32, off + 0x70, 32}};
+    vkCmdCopyBuffer(cb, CJ.unj, buf, 2, r);
+    return 1;
+}
+
+static int unj_put(VkCommandBuffer cb, const float *blk, float sx, float sy, VkBuffer buf, VkDeviceSize off) {
+    return unj_rows(cb, blk, sx, sy, buf, off, 0);
+}
+
+// After the DLSS point, once in each command buffer of the frame: the snapshots of the blocks that took an offset are
+// written back without it, so the effects drawn over DLSS's picture use the camera unjittered, as before the move.
+static void cam_unjitter(VkExec *ex) {
+    if (!cam_mode() || !dl_active() || !ended_at(ex)) return;
+    static PlatMutex lk = PLAT_MUTEX_INIT;
+    static VkCommandBuffer done[32];
+    static int nd;
+    static uint64_t done_frame = UINT64_MAX;
+    uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    plat_mutex_lock(&lk);
+    if (f != done_frame) done_frame = f, nd = 0;
+    int dup = 0;
+    for (int i = 0; i < nd && !dup; i++) dup = done[i] == ex->cb;
+    if (!dup && nd < 32) done[nd++] = ex->cb;
+    plat_mutex_unlock(&lk);
+    if (dup) return;
+    uint64_t blocks[CAMJ_BLOCKS];   // the blocks given an offset lately, newest first
+    int n = 0;
+    plat_mutex_lock(&CJ.lk);
+    for (uint32_t k = 0, m = CJ.ngiven < CAMJ_GIVEN ? CJ.ngiven : CAMJ_GIVEN; k < m && n < CAMJ_BLOCKS; k++) {
+        uint64_t blk = CJ.given[(CJ.ngiven - 1 - k) % CAMJ_GIVEN].blk;
+        if (!in_list(blocks, n, blk)) blocks[n++] = blk;
+    }
+    plat_mutex_unlock(&CJ.lk);
+    int any = 0;
+    for (int i = 0; i < n; i++) {
+        VkDescriptorBufferInfo bi;
+        float sx, sy;
+        const float *b = (const float *)vk_usnap_bytes(blocks[i], 0xb0);
+        if (!b || !cam_offset(blocks[i], &sx, &sy) || !vk_usnap_find(blocks[i], 0xb0, UINT32_MAX, 4, &bi)) continue;
+        if (!any) full_barrier(ex->cb);   // the scene's draws read the jittered rows until here
+        any |= unj_put(ex->cb, b, sx, sy, bi.buffer, bi.offset);
+    }
+    if (any) full_barrier(ex->cb), ex->recorded += 3;
 }
 
 // The DLSS model (TOTK_DLSS_PRESET, live): default takes NVIDIA's model per mode (evaluate: K for DLAA, Quality and
@@ -941,6 +1335,70 @@ static int perf_quality(uint32_t w, uint32_t ow) {
     return k >= 0.66 ? 2 : k >= 0.57 ? 1 : k >= 0.49 ? 0 : 3;
 }
 
+// A target of the scene's shape (resolution.c's scene size, within 5 %; the dynamic resolution tiers keep it). In the
+// inventory the game renders the items' icons as the slots fill in, each through a G-buffer and a light target of its
+// own with a D32F depth, square (432x432 or 426x426 at a 3840x2160 scene) and with no wider G-buffer before it in the
+// frame; DLSS armed on that, scaled it to the output and wrote it over the menu, so a weapon filled the screen on the
+// frames an icon was drawn.
+static int scene_shaped(const VkExecTarget *c) {
+    unsigned o[2], s[2];
+    res_sizes(o, s);
+    uint64_t a = (uint64_t)c->width * s[1], b = (uint64_t)c->height * s[0];
+    return a * 20 >= b * 19 && b * 20 >= a * 19;
+}
+
+// FSR's half of evaluate (FSR 3.1: vk_fsr3.cpp, FSR 4: vk_ffx.c), after the motion vectors and the recorder's drain:
+// the camera, the time step and the history reset, then the dispatch into e->out. Both engines get the same inputs.
+// 0 when it failed (DLAA is then off for the run). The camera comes from the scene camera block's rows 0-10 (vk_fg.cpp
+// vk_fg_camera, which frame generation reads too: FSR wants the near and far planes and the vertical field of view
+// for its depth tests); a cut there (a cutscene's camera jump) starts a new history. The block's bytes are the
+// snapshot's host copy, which vk_usnap.c keeps while the per-object motion runs (vk_objmv_wanted, so with FSR).
+static int fsr_evaluate(VkExec *ex, struct Size *e, const VkExecTarget *t, const VkExecTarget *z, uint32_t ow,
+                        uint32_t oh, float jx, float jy, int timed) {
+    static VkFgScene cam = {.near_m = 0.1f, .far_m = 25000.0f, .fov_y = 0.8727f};   // until the first camera read
+    // the SDK takes whole images: the scene's targets are level 0, layer 0 of their own images
+    if (t->level || t->base_layer || z->level || z->base_layer || z->format != VK_FORMAT_D32_SFLOAT)
+        return dl_fail("FSR input (not level 0, layer 0 of a colour and a D32F depth image)", 0), 0;
+    const float *rows = D.cam_addr ? (const float *)vk_usnap_bytes(D.cam_addr, 11 * 16) : NULL;
+    int cut = rows && vk_fg_camera(rows, nvn_depth_minus_w(), D.cam_dr, &cam);
+    if (D.last_color != t->image) D.reset = 1, D.why[2]++, D.last_color = t->image;
+    if (cut) D.reset = 1, D.why[1]++;
+    uint64_t now = plat_now_ns();
+    double dt = D.last_eval_ns ? (now - D.last_eval_ns) / 1e6 : 0;
+    D.last_eval_ns = now;
+    // FSR's own sharpening (fsr_sharpness, live): the game's sharpening is part of its FXAA, which FSR's frames go
+    // without (vk_dlaa_skip_draw), so without it FSR's picture is softer than the game's own
+    int sharp = cfg_int("TOTK_FSR_SHARPNESS");
+    sharp = sharp < 0 ? 0 : sharp > 100 ? 100 : sharp;
+    float far_m = cam.infinite || cam.far_m <= cam.near_m ? 1e5f : cam.far_m;
+    float dt_ms = dt > 0 && dt < 100 ? (float)dt : 16.67f;
+    uint64_t c0 = timed ? kern_now_ns() : 0;
+    int ok;
+    if (D.fsr == UPSCALER_FSR4) {
+        VkFfxDispatch fd = {.color = {t->image, t->format, t->width, t->height},
+                            .depth = {z->image, z->format, t->width, t->height},
+                            .mv = {e->mv, VK_FORMAT_R16G16_SFLOAT, t->width, t->height},
+                            .out = {e->out, VK_FORMAT_R16G16B16A16_SFLOAT, ow, oh}, .jx = jx, .jy = jy,
+                            .dt_ms = dt_ms, .cam_near = cam.near_m, .cam_far = far_m, .fov_y = cam.fov_y,
+                            .sharpness = sharp / 100.0f, .reset = D.reset, .fence = ex->fence};
+        ok = vk_ffx_dispatch(ex->cb, &fd);
+    } else {
+        Fsr3Frame fr = {.color = t->image, .color_format = t->format, .depth = z->image, .mv = e->mv, .out = e->out,
+                        .w = t->width, .h = t->height, .ow = ow, .oh = oh, .jx = jx, .jy = jy, .near_m = cam.near_m,
+                        .far_m = far_m, .fov_y = cam.fov_y, .dt_ms = dt_ms, .reset = D.reset,
+                        .sharpness = sharp / 100.0f, .fence = ex->fence};
+        ok = fsr3_dispatch(ex->cb, &fr);
+    }
+    if (timed) T.cpu_ngx += kern_now_ns() - c0;
+    if (!ok) {
+        // the SDK may have bound a pipeline or descriptor sets of its own before it failed: the next draw binds
+        // everything again, and the game's own scaling and FXAA run from the next frame (DLAA off for the run)
+        vk_exec_draw_new_cb(ex);
+        return dl_fail(D.fsr == UPSCALER_FSR4 ? "FSR 4 dispatch" : "FSR 3.1 dispatch", 0), 0;
+    }
+    return 1;
+}
+
 // dst: the target DLSS's picture goes to, NULL for the light target itself (DLAA in place).
 static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     const VkExecTarget *t = &D.color, *z = &D.depth;
@@ -949,14 +1407,14 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     VkCommandBuffer cb = ex->cb;
     vk_exec_barrier(ex);   // what drew the scene is done (no pass is open here)
     if (D.preset_dirty) {   // another model: features are created with it, so every size gets a new one
-        for (int i = 0; i < 3; i++)
-            if (D.sizes[i].out) free_size(&D.sizes[i]);
+        for (size_t i = 0; i < DLSS_SIZES; i++)
+            if (D.sizes[i].mv) free_size(&D.sizes[i]);
         D.last = NULL, D.preset_dirty = 0;
     }
-    struct Size *e = size_for(cb, w, h, ow, oh);
+    struct Size *e = size_for(cb, w, h, ow, oh, 1);
     if (!e) return dl_fail("work image creation", 0);
     if (e != D.last) D.reset = 1, D.why[0]++, e->chars_ok = 0;   // another size's history is from another moment
-    if (!D.params && !NGX_OK(N.alloc_params(&D.params))) return dl_fail("parameter allocation", 0);
+    if (!D.fsr && !D.params && !NGX_OK(N.alloc_params(&D.params))) return dl_fail("parameter allocation", 0);
     NgxParam *p = D.params;
     VkImageView zv = vk_exec_target_view(z->img, z->format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT, z->level,
                                          z->base_layer, 1, 0);
@@ -964,7 +1422,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     static int no_mv = -1;
     if (no_mv < 0) no_mv = !rt_knob("DLAA_MV", "1");   // TOTK_DLAA_MV=0: zero motion (test)
     int masked = 0;
-    if (no_mv || !mv_pass(ex, e, zv, jx, jy, char_bias(), &masked)) {
+    if (no_mv || !mv_pass(ex, e, zv, jx, jy, D.fsr ? 0.0f : char_bias(), &masked, 1)) {
         VkClearColorValue zero = {{0, 0, 0, 0}};
         VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         vkCmdClearColorImage(cb, e->mv, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &all);
@@ -973,12 +1431,16 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     }
     VkImageView cv = vk_exec_target_view(t->img, t->format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, t->level,
                                          t->base_layer, 1, 0);
-    struct Snap *mk = D.mv_samp ? mask_pass(cb, cv, w, h) : NULL;
+    struct Snap *mk = !D.fsr && D.mv_samp ? mask_pass(cb, cv, w, h) : NULL;   // a bias mask is DLSS's only
     int timed = T.on > 0 && T.used[T.slot];   // mv_pass began this frame's slot
     if (timed) times_mark(cb, T_DL0);
     uint64_t c0 = timed ? kern_now_ns() : 0;
-    rec_drain();   // NGX records into the command buffer itself: the recorder thread must have made every call so far
+    rec_drain();   // NGX and FSR record into the command buffer themselves: the recorder thread must have made every call
     if (timed) T.cpu_drain += kern_now_ns() - c0;
+    if (D.fsr) {
+        if (!fsr_evaluate(ex, e, t, z, ow, oh, jx, jy, timed)) return;
+        goto engine_done;
+    }
     if (!e->feat) {
         p_setu(p, "CreationNodeMask", 1);
         p_setu(p, "VisibilityNodeMask", 1);
@@ -987,8 +1449,13 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
         p_setu(p, "OutWidth", ow);
         p_setu(p, "OutHeight", oh);
         p_seti(p, "PerfQualityValue", perf_quality(w, ow));
-        // IsHDR | MVLowRes | AutoExposure: linear scene light, motion vectors at the render size, no exposure texture
-        p_seti(p, "DLSS.Feature.Create.Flags", (1 << 0) | (1 << 1) | (1 << 6));
+        // IsHDR | MVLowRes: linear scene light, motion vectors at the render size, no exposure texture; AutoExposure
+        // (1 << 6) unless dlss_fixed_exposure. With AutoExposure DLSS estimates the exposure from each frame itself, and
+        // in the Depths, where the whole scene is dark, the estimate moved with the camera; distant blocks under uniform
+        // fog came out up to 0.7 levels (of 255) darker or brighter for a frame, where the game's own picture held one
+        // value (a 64x64 patch at 30.79 without DLAA read 30.09-30.79 frame to frame with AutoExposure and 30.4-30.7,
+        // steady, without it). Without it DLSS takes the exposure as 1.
+        p_seti(p, "DLSS.Feature.Create.Flags", (1 << 0) | (1 << 1) | (D.fixed_exposure ? 0 : 1 << 6));
         p_seti(p, "DLSS.Enable.Output.Subrects", 0);
         // The model per mode (NVSDK_NGX_DLSS_Hint_Render_Preset: 1 A ... 11 K, 12 L, 13 M), as NVIDIA recommends for
         // DLSS 4.5 (310.x): K (transformer) for DLAA, Quality and Balanced, M for Performance, L for Ultra Performance.
@@ -1044,7 +1511,8 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     NgxResult r = N.evaluate(cb, e->feat, p, NULL);
     if (timed) T.cpu_ngx += kern_now_ns() - c0;
     if (!NGX_OK(r)) return dl_fail("DLSS evaluation", r);
-    if (timed) times_mark(cb, T_DL1);   // through the recorder, after NGX's own commands
+engine_done:
+    if (timed) times_mark(cb, T_DL1);   // through the recorder, after NGX's or FSR's own commands
     D.reset = 0;
     D.last = e, e->used = D.evals + 1;
     full_barrier(cb);
@@ -1070,23 +1538,138 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     vk_exec_draw_new_cb(ex);   // NGX bound pipelines and descriptor sets of its own: the next draw binds everything again
     D.jdepth = z->image;
     next_jitter(w, ow);
+    cam_unjitter(ex);
     if (++D.evals == 1 || D.evals == 300 || D.evals % 3600 == 0)   // 300: one early line with the frames counted
-        rt_log("dlaa: %llu frames anti-aliased (scene %ux%u, output %ux%u; %llu frames without the DLAA point, %llu with camera "
-               "motion, %llu with the characters' mask, %llu without a camera, %llu jitter holds; resets: %llu size, %llu "
-               "camera, %llu target; reactive mask %llu, without its copy %llu)",
-               (unsigned long long)D.evals, w, h, ow, oh, (unsigned long long)D.frames_missed,
+        rt_log("dlaa: %llu frames anti-aliased%s (scene %ux%u, output %ux%u; %llu before the effects, %llu frames without the "
+               "DLAA point, %llu with camera motion, %llu with the characters' mask, %llu without a camera, %llu jitter "
+               "holds; resets: %llu size, %llu camera, %llu target; reactive mask %llu, without its copy %llu)",
+               (unsigned long long)D.evals, D.fsr == UPSCALER_FSR4 ? " by FSR 4" : D.fsr ? " by FSR 3.1" : "", w, h, ow, oh, (unsigned long long)D.fx_frames, (unsigned long long)D.frames_missed,
                (unsigned long long)D.mv_frames, (unsigned long long)D.masked, (unsigned long long)D.mv_none,
                (unsigned long long)D.holds, (unsigned long long)D.why[0], (unsigned long long)D.why[1],
                (unsigned long long)D.why[2], (unsigned long long)R.made, (unsigned long long)R.missed);
+}
+
+// More than half the scene size resolution.c set, on each side (the dynamic resolution tiers go down to 80 %). Around
+// the quick weapon menu the only G-buffer before the scene's end is at times the half-size one (1920x1080 at a
+// 3840x2160 scene), and the half-size RGBA16F effects target with its D32F depth armed; DLSS scaled the effects to the
+// output in place of the scene, which showed dark and blurred for that frame.
+static int scene_large(const VkExecTarget *c) {
+    unsigned o[2], s[2];
+    res_sizes(o, s);
+    return c->width * 2 > s[0] && c->height * 2 > s[1];
 }
 
 static int scene_color(VkFormat f) {
     return f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || f == VK_FORMAT_R16G16B16A16_SFLOAT;
 }
 
+// The bloom chain's first pass: at most a quarter of the scene's width, into level 0 of a scene colour target. At some
+// views (seen in the yard of Lookout Landing) the game draws a full-screen pass without depth into the light target,
+// then a half-size scene colour target and its mips, and only then the light target with the scene depth. Level 1 of
+// those mips is a quarter of the scene's width; taken for the bloom it ended the scene before anything was armed, DLSS
+// skipped those frames, and the picture flickered between anti-aliased frames and plain ones as the view changed.
+// The pass also has the scene's shape (resolution.c's scene size, within 5 %) and no depth. In rain by a waterfall the
+// game drew two transparents into the light target with the scene depth before its sky lookups (25x25 and 256x256
+// RGBA16F) and its quarter-size particles (960x540 RGBA16F with a depth of their own), which then ended the armed
+// scene: DLSS ran before the mist and most transparents, which were drawn over its picture unprocessed, on runs of
+// frames, and the mist in the distance darkened or brightened for a frame wherever a frame in between came out whole.
+static int bloom_start(const VkExec *ex, uint32_t scene_w) {
+    const VkExecTarget *c = &ex->color[0];
+    if (!ex->pass_w || ex->pass_w * 4 > scene_w || !c->image || !scene_color(c->format) || c->level || ex->depth.image)
+        return 0;
+    unsigned o[2], s[2];
+    res_sizes(o, s);
+    uint64_t a = (uint64_t)ex->pass_w * s[1], b = (uint64_t)ex->pass_h * s[0];
+    return a * 20 >= b * 19 && b * 20 >= a * 19;
+}
+
+// The light target is one of the G-buffer's targets (the emissive surfaces go into it there), the only one of a scene
+// colour format and the depth's size. NULL when that is not so.
+static void gbuf_light(const VkExec *ex) {
+    const VkExecTarget *z = &ex->depth, *l = NULL;
+    for (uint32_t i = 0; i < ex->pass_ncolor && i < 8; i++) {
+        const VkExecTarget *t = &ex->color[i];
+        if (!t->image || !scene_color(t->format) || t->width != z->width || t->height != z->height || t->level ||
+            t->samples > 1 || t->is3d)
+            continue;
+        if (l) return (void)(D.glight = VK_NULL_HANDLE);
+        l = t;
+    }
+    D.glight = l ? l->image : VK_NULL_HANDLE, D.glight_z = *z, D.light_z = VK_NULL_HANDLE;
+}
+
+// DLAA (the scene as wide as the output) runs on the solid scene alone, before the effects. Measured in a shrine and
+// in the yard of Lookout Landing (3840x2160, frame dumps and a log of the passes into the light target): after the
+// G-buffer the deferred lighting draws into the light target with a D16 depth of its own, and from there on every draw
+// into the light target blends: in the shrine a fog layer with the scene depth, the volumetric fog drawn at half size
+// and blended over the whole picture by a full-screen draw without depth (79 % of the pixels change), and the dust with
+// the scene depth (dots of 1-3 pixels and soft discs); in the yard the field's effects composite without depth, then
+// the particles with the scene depth; with an ability's targeting view open, the highlight of the objects it can take,
+// with a D16 depth of its own, another one than the lighting's. Run at the bloom, DLSS took the dust and the fog in
+// with the motion of the walls behind them and no jitter of their own, and wiped out the smallest motes. So the first
+// pass into the light target after the lighting runs DLSS before it, and the effects are drawn over its picture without
+// jitter, as the game draws them without DLSS. The lighting is the first pass into the light target with a D16 depth
+// after the G-buffer, and its depth tells the lighting from the effects: the order of the effects changes from frame
+// to frame (the yard's half-size effects pass is there in some frames only; the ability highlight comes before the
+// fog layer in some frames and after it in others), and every rule that waited for one of them, or took any D16 pass
+// for the lighting, ran DLSS before some effects in one frame and after them in the next, and the picture flickered.
+// The point is also taken only where it held for FX_STEADY frames in a row with nothing of the scene drawn after it
+// (fx_watch: a G-buffer pass, or the lighting's depth into the light target again, up to the bloom): a frame that
+// breaks it puts DLSS back at the bloom until it holds again, so a frame the rule does not fit changes the picture at
+// most once a second instead of from frame to frame.
+// dlaa_effects_after = 0 (the Screen tab, read each frame): DLSS at the bloom, effects included.
+// The point waits for the first full-size pass into the light target without depth after the lighting (the composite
+// of the half-size clouds outdoors, of the volumetric fog in shrines, of the field's effects in the yard) and runs DLSS
+// before the next pass with a depth, the particles or the dust. Run at the first pass after the lighting, it left the
+// fog layer and those composites over its picture: they decide per pixel from the scene depth whether a pixel is sky
+// or a surface, and that depth is still this frame's jittered one while DLSS's picture is not, so on a silhouette
+// against clouds or fog a pixel the picture shows as sky took the surface's side of the test in some frames. No clouds
+// or fog there that frame: a brighter dot along distant ridges at night and at dawn, flickering with the jitter's
+// phase and never resolved, since it came after DLSS. Measured at 2560x1440 with FSR 4 (frame dumps, a ridge against
+// the night sky): a ridge pixel brighter than the sky and the mountain beside it in 34 % of the columns with the point
+// before the fog layer, 15 % with it after the composite (6 % with the upscaler off). These layers are smooth and
+// follow the scene, so DLSS takes them with the scene's motion; the particles and the dust still go over its picture.
+// A frame without such a composite before the bloom runs DLSS at the bloom, and the FX_STEADY count holds the point
+// back as for any frame the rule does not fit.
+#define FX_STEADY 60u
+
+static int effects_point(const VkExec *ex) {
+    const VkExecTarget *c = &ex->color[0], *z = &ex->depth;
+    if (!D.fx_on || D.fx_bad || !D.glight || D.ended || ex->pass_ncolor != 1 || c->image != D.glight || c->level) return 0;
+    if (!D.light_z) {
+        if (z->image && z->format == VK_FORMAT_D16_UNORM) D.light_z = z->image;
+        return 0;
+    }
+    if (z->image == D.light_z) return 0;
+    unsigned o[2], s[2];
+    res_sizes(o, s);
+    if (c->width < o[0] || !scene_shaped(c) || !scene_large(c)) return 0;
+    if (!z->image) D.fx_comp = 1;   // asked again at the same pass: the same answer
+    if (!D.fx_comp || !z->image) return 0;
+    D.fx_seen = D.fx_open = 1;
+    return D.fx_steady >= FX_STEADY;
+}
+
+static void fx_watch(const VkExec *ex) {
+    const VkExecTarget *z = &ex->depth;
+    if (bloom_start(ex, D.glight_z.width)) {
+        D.fx_open = 0;
+        return;
+    }
+    int light = 0;
+    for (uint32_t i = 0; i < ex->pass_ncolor && i < 8; i++) light |= ex->color[i].image == D.glight;
+    int geometry = ex->pass_ncolor >= 3 && z->image && z->format == VK_FORMAT_D32_SFLOAT && z->width >= D.gbuf_w;
+    if (geometry || (light && z->image && z->image == D.light_z)) D.fx_seen = D.fx_open = 0, D.fx_bad = 1;
+}
+
 int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
     const VkExecTarget *c = &ex->color[0], *z = &ex->depth;
-    if (!dl_active() || D.done) return 0;
+    if (D.fx_open && dl_active()) fx_watch(ex);
+    // frame generation's picture before the HUD comes after the bloom chain (vk_dlaa_hud): with DLAA before the effects
+    // the scene ends earlier, and the volumetric fog's composite, a full-screen pass without depth into the light
+    // target, would pass for the HUD's first
+    if (D.fg && D.armed && D.ended && !D.bloom && bloom_start(ex, D.color.width)) D.bloom = 1;
+    if (!track() || D.done) return 0;
     // The G-buffer: several colour targets with a D32F depth of at least DLAA_SCENE_MIN_W wide. Only the light target drawn after it
     // arms the frame; at night the game draws into the light target alone with the scene depth before the G-buffer too,
     // and DLAA then ran at a small pass ahead of the whole scene, which reached the screen jittered.
@@ -1098,7 +1681,16 @@ int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
         if (c->image && c->format == VK_FORMAT_R8G8B8A8_UNORM && c->width == z->width && c->height == z->height &&
             c->samples <= 1 && !c->is3d && (!D.ids_ok || c->width >= D.ids.width))
             D.ids = *c, D.ids_ok = 1;
+        if (z->width >= D.gbuf_w) gbuf_light(ex);
         return 0;
+    }
+    if (effects_point(ex)) {
+        D.color = *c, D.depth = D.glight_z, D.armed = 1;
+        D.end_fence = ex->fence, D.end_pos = ex->pos;
+        __atomic_store_n(&D.ended, 1, __ATOMIC_RELEASE);
+        D.done = 1, D.fx_frames++;
+        *j = (VkExecJob){.kind = VK_JOB_DLSS};   // DLAA in place
+        return 1;
     }
     // A pass into one scene colour target of the G-buffer's size or larger without depth while nothing is armed ends
     // the scene once the bloom chain follows with still nothing armed: in the inventory (1.4.3) the preview's light
@@ -1115,8 +1707,7 @@ int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
     if (D.gbuf && !D.armed && !D.ended && !z->image && ex->pass_ncolor == 1 && c->image && scene_color(c->format) &&
         c->width >= D.gbuf_w && !c->level)
         D.nodepth = c->image;
-    if (D.nodepth && !D.armed && !D.ended && ex->pass_w && ex->pass_w * 4 <= D.gbuf_w && c->image &&
-        scene_color(c->format)) {
+    if (D.nodepth && !D.armed && !D.ended && bloom_start(ex, D.gbuf_w)) {
         D.end_fence = ex->fence, D.end_pos = ex->pos;
         __atomic_store_n(&D.ended, 1, __ATOMIC_RELEASE);
     }
@@ -1129,29 +1720,30 @@ int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
     // first pair to arm; DLSS then scaled the effects into the light target, which filled the lens with garbage in the
     // DLAA mode.
     if (D.gbuf && !D.ended && ex->pass_ncolor == 1 && c->image && scene_color(c->format) && z->image && z->format == VK_FORMAT_D32_SFLOAT &&
-        c->width == z->width && c->height == z->height && c->width >= DLAA_SCENE_MIN_W && c->width >= D.gbuf_w &&
+        c->width == z->width && c->height == z->height && c->width >= DLAA_SCENE_MIN_W && c->width >= D.gbuf_w && scene_shaped(c) &&
         (!D.armed || (c->width >= D.color.width && c->height >= D.color.height)) &&
-        c->samples <= 1 && !c->is3d) {
+        c->samples <= 1 && !c->is3d && scene_large(c)) {
         int first = !D.armed;
         D.color = *c, D.depth = *z, D.armed = 1, D.nodepth = VK_NULL_HANDLE;
-        if (!first) return 0;
+        if (!first || !dl_active()) return 0;
         *j = (VkExecJob){.kind = VK_JOB_DLSS_MASK, .scene = *c};   // the lit scene, before the transparents (reactive mask)
         return 1;
     }
     if (!D.armed) return 0;
     if (!D.ended) {
-        // The bloom chain's first pass ends the scene: a pass at most a quarter of the scene's width into a scene
-        // colour target. With the camera rune or the scope open the game draws a 160-wide depth-only pass and 160x90
-        // RG16F and RGBA8 passes right after the lighting, then more geometry and the transparents; DLSS ended the
-        // scene at those, the next G-buffer pass disarmed it and the scaling pass found nothing to evaluate.
-        if (!ex->pass_w || ex->pass_w * 4 > D.color.width || !c->image || !scene_color(c->format)) return 0;
+        // The bloom chain's first pass ends the scene (bloom_start). With the camera rune or the scope open the game
+        // draws a 160-wide depth-only pass and 160x90 RG16F and RGBA8 passes right after the lighting, then more
+        // geometry and the transparents; DLSS ended the scene at those, the next G-buffer pass disarmed it and the
+        // scaling pass found nothing to evaluate.
+        if (!bloom_start(ex, D.color.width)) return 0;
         D.end_fence = ex->fence, D.end_pos = ex->pos;
         __atomic_store_n(&D.ended, 1, __ATOMIC_RELEASE);
+        D.bloom = 1;
         unsigned o[2], s[2];
         res_sizes(o, s);
-        if (D.color.width < o[0]) return 0;   // wait for the scaling pass
+        if (dl_active() && D.color.width < o[0]) return 0;   // wait for the scaling pass
         D.done = 1;
-        *j = (VkExecJob){.kind = VK_JOB_DLSS};   // DLAA in place
+        *j = (VkExecJob){.kind = VK_JOB_DLSS};   // DLAA in place; without DLSS frame generation's motion, at any size
         return 1;
     }
     // the game's scaling pass: one colour target of the output size, no depth
@@ -1164,6 +1756,124 @@ int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
         return 1;
     }
     return 0;
+}
+
+// ---------------------------------------------------------------- frame generation (vk_fg.cpp), DLSS off
+// The scene is followed as for DLSS (vk_dlaa_plan: armed on the light target, ended at the bloom chain's first pass),
+// without the jitter, the reactive mask or NGX. Three points of the frame, in the sequential replay:
+// 1. The scene's end (fg_motion, the VK_JOB_DLSS point): the motion vectors at the scene's size (mv_pass: the camera's
+//    reprojection, as Savage Wind's fg_mv.frag does, then the per-object pass over it unless TOTK_FG_OBJECTS=0) and
+//    the SDK's prepare, which reads them with the scene depth while that still holds the scene.
+// 2. The picture before the HUD (vk_dlaa_hud, before a draw): measured in a frame dump of 1.4.3 (PR #1089, a 1920x1080
+//    scene and output), after the bloom chain the game draws its bloom composite and FXAA into the light target with
+//    the scene depth attached; then the HUD, in passes on the light target alone without depth, with the HUD's own
+//    small targets in between; and one last draw copies the light target into the 8-bit window texture. With a scene
+//    smaller than the output the game's scaling draw comes first, alone, into an output-sized target without depth,
+//    and the HUD is drawn over that. So, after the scene's end and the bloom chain's start, the picture is what the
+//    HUD's target holds before the first draw into the light target in a pass without depth (the scene as large as
+//    the output), before the second draw into the scaling pass's target (smaller), or, in a frame without HUD (a
+//    cutscene), before the draw into an 8-bit target of the output's size, the copy into the window texture.
+//    (The rule is PR #1089's vk_dlaa_hud_plan, by xellow78-lgtm.)
+// 3. The submission's end after the copy into the window texture (vk_dlaa_sub_end): the optical flow and the
+//    interpolation, which read the window texture as the picture with the HUD.
+static void fg_motion(VkExec *ex) {
+    const VkExecTarget *t = &D.color, *z = &D.depth;
+    uint32_t w = t->width, h = t->height;
+    VkCommandBuffer cb = ex->cb;
+    uint64_t c0 = kern_now_ns();
+    D.done = 1;
+    vk_exec_barrier(ex);   // what drew the scene is done (no pass is open here)
+    D.jdepth = z->image;   // the scene depth note_camera knows the scene's draws by in the next frame
+    static int said;
+    if (z->level || z->base_layer || z->format != VK_FORMAT_D32_SFLOAT || z->width != w || z->height != h) {
+        if (!said) said = 1, rt_log("fg: the scene depth is not the first level and layer of a D32F image of the light "
+                                    "target's size (format %d, level %u, layer %u): no frame generation",
+                                    (int)z->format, z->level, z->base_layer);
+        return;
+    }
+    struct Size *e = size_for(cb, w, h, w, h, 0);
+    if (!e) {
+        if (!said) said = 1, rt_log("fg: no memory for the motion image at %ux%u: no frame generation", w, h);
+        return;
+    }
+    e->used = D.evals + 1;
+    VkImageView zv = vk_exec_target_view(z->img, z->format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT, z->level,
+                                         z->base_layer, 1, 0);
+    unsigned o[2], sc[2];
+    res_sizes(o, sc);
+    VkFgScene s = {.depth = z->image, .mv = e->mv, .w = w, .h = h, .ow = o[0], .oh = o[1]};
+    // the camera as the snapshot holds it (rows 0-10: view, view-projection, projection), read before mv_pass keeps
+    // this frame's view-projection as last frame's
+    const float *cam = D.cam_addr ? (const float *)vk_usnap_bytes(D.cam_addr, 11 * 16) : NULL;
+    int cut = cam ? vk_fg_camera(cam, nvn_depth_minus_w(), D.cam_dr, &s) : 1;
+    vk_fg_mark(cb, FG_T_MV0);
+    int masked = 0, have = cam && mv_pass(ex, e, zv, 0.0f, 0.0f, 0.0f, &masked, fg_objects());
+    if (!have) {   // no camera or no last frame: zero motion, and the SDK starts over
+        VkClearColorValue zero = {{0, 0, 0, 0}};
+        VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(cb, e->mv, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &all);
+        full_barrier(cb);
+    }
+    vk_fg_mark(cb, FG_T_MV1);
+    s.reset = !have || cut;
+    D.fg_mv_ok = vk_fg_prepare(cb, &s);
+    ex->recorded += 6;
+    vk_exec_draw_new_cb(ex);   // the passes bound pipelines and descriptors of their own: the next draw binds everything again
+    vk_fg_cpu(kern_now_ns() - c0);
+}
+
+static int rgba8(VkFormat f) {
+    return f == VK_FORMAT_R8G8B8A8_SRGB || f == VK_FORMAT_R8G8B8A8_UNORM || f == VK_FORMAT_B8G8R8A8_SRGB ||
+           f == VK_FORMAT_B8G8R8A8_UNORM;
+}
+
+void vk_dlaa_hud(VkExec *ex) {
+    if (!D.fg_mv_ok || !D.armed || !D.ended || !D.bloom || D.fin || ex->chunked) return;
+    const VkExecTarget *c = &ex->color[0];
+    if (ex->pass_ncolor != 1 || !c->image || ex->depth.image || c->level || c->is3d || c->samples > 1) return;
+    unsigned o[2], sc[2];
+    res_sizes(o, sc);
+    if (c->width != o[0] || c->height != o[1]) return;
+    if (D.hud) {   // after the picture: the copy into the window texture
+        if (rgba8(c->format)) D.win = *c, D.fin = 1;
+        return;
+    }
+    int scaled = D.color.width < o[0];
+    const VkExecTarget *pic = scaled ? &D.hud_t : &D.color;
+    if (scene_color(c->format)) {
+        if (scaled && !D.hud_wait) {   // the scaling draw
+            D.hud_t = *c, D.hud_wait = 1;
+            return;
+        }
+        if (c->image != pic->image) return;
+    } else if (!rgba8(c->format) || (scaled && !D.hud_wait) || D.color.width > o[0]) {
+        return;
+    }
+    D.hud = 1;
+    if (rgba8(c->format)) D.win = *c, D.fin = 1;   // no HUD this frame: this draw is the copy
+    uint64_t c0 = kern_now_ns();
+    VkExecTarget p = *pic;
+    vk_exec_pass_end(ex);
+    vk_exec_barrier(ex);   // what drew the picture is done
+    vk_fg_hudless(ex->cb, p.image, p.format, p.level, p.base_layer, p.width, p.height);
+    ex->recorded += 4;
+    ex->dirty = VK_EXEC_DIRTY_ALL;
+    vk_exec_pass_begin(ex);
+    vk_fg_cpu(kern_now_ns() - c0);
+}
+
+void vk_dlaa_sub_end(VkExec *ex) {
+    if (!D.fin || D.gen || ex->chunked) return;
+    D.gen = 1;
+    uint64_t c0 = kern_now_ns();
+    vk_exec_barrier(ex);   // the window texture is drawn
+    const VkExecTarget *w = &D.win;
+    if (!w->level && !w->base_layer)
+        vk_fg_generate(ex->cb, ex->fence, __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1, w->image, w->format,
+                       w->width, w->height);
+    ex->recorded += 4;
+    vk_exec_draw_new_cb(ex);   // the SDK bound pipelines and descriptor sets of its own
+    vk_fg_cpu(kern_now_ns() - c0);
 }
 
 // The scan resolved its targets without making entries (vk_texture_revive); a record made on a chunk takes their images
@@ -1180,66 +1890,95 @@ void vk_dlaa_exec(VkExec *ex, const VkExecJob *j) {
         if (D.ids_ok) target_now(&D.ids);
     }
     if (j->kind == VK_JOB_DLSS_MASK) return mask_snapshot(ex, &t);
+    if (!dl_active()) return fg_motion(ex);
     if (!t.tex) return evaluate(ex, NULL);
     D.up = 1;
     evaluate(ex, &t);
 }
 
 void vk_dlaa_pass(VkExec *ex) {
+    cam_unjitter(ex);
     VkExecJob j;
     if (!ex->chunked && vk_dlaa_plan(ex, &j)) vk_dlaa_exec(ex, &j);
 }
 
 // TOTK_DLSS, read at each present (the menu switches it live): the scene size of the mode (resolution.c) and the
-// texture bias that goes with it while DLSS runs.
+// texture bias that goes with it while the upscaler runs. DLSS takes NVIDIA's log2(scene / output); FSR 3.1 and FSR 4
+// take AMD's log2(scene / output) - 1 (FidelityFX FSR 3 upscaler docs, "Mipmap biasing"), so -1 also in place. The
+// bias follows the mode and the upscaler going on or off; the engine is fixed for the run.
 static void dlss_mode(void) {
     static char mode[32];
-    static int bias_on = -1;
+    static float bias;   // what the material samplers have (vk_texture.c starts at 0)
     const char *m = cfg_value("TOTK_DLSS");
     if (strcmp(m, mode)) {
         snprintf(mode, sizeof mode, "%s", m);
         res_dlss_mode(m);
-        bias_on = -1;
     }
-    int b = dl_active();
-    if (b != bias_on) bias_on = b, vk_sampler_dlss_bias(b ? res_dlss_lod_bias() : 0.0f);
+    float b = 0.0f;
+    int e = vk_upscaler_engine();
+    if (dl_active()) b = res_dlss_lod_bias() - (e == UPSCALER_FSR3 || e == UPSCALER_FSR4 ? 1.0f : 0.0f);
+    if (b != bias) bias = b, vk_sampler_dlss_bias(b);
 }
 
 
-// The preset, read again when a setting changed (the menu); a different one recreates the features at the next DLAA run.
+// The preset and dlss_fixed_exposure, read again when a setting changed (the menu); a different one recreates the
+// features at the next DLAA run.
 static void preset_check(void) {
     unsigned v = cfg_version();
     if (v == D.cfg_seen) return;
     D.cfg_seen = v;
-    int p = preset_value();
-    if (p == D.preset) return;
-    if (D.evals) {
+    int p = preset_value(), x = cfg_bool("TOTK_DLSS_FIXED_EXPOSURE");
+    if (p == D.preset && x == D.fixed_exposure) return;
+    if (D.evals && p != D.preset) {
         if (p) rt_log("dlaa: DLSS preset %c in every mode; the features are created again", 'A' + p - 1);
         else rt_log("dlaa: DLSS presets per mode; the features are created again");
     }
-    D.preset = p, D.preset_dirty = 1, D.reset = 1;
+    if (D.evals && x != D.fixed_exposure)
+        rt_log("dlaa: DLSS %s; the features are created again", x ? "exposure fixed at 1" : "auto exposure");
+    D.preset = p, D.fixed_exposure = x, D.preset_dirty = 1, D.reset = 1;
 }
 
 void vk_dlaa_frame(void) {
     vk_dlaa_swap_img = NULL, vk_dlaa_swap_view = VK_NULL_HANDLE;
     dlss_mode();
     preset_check();
-    int on = N.available && cfg_bool("TOTK_DLAA");
-    if (on != D.on) {
-        rt_log("dlaa: %s", on ? "on" : "off");
-        D.on = on;
+    // the engine is fixed for the run: D.fsr never changes while on. FSR 4 runs once AMD's libraries offered it for
+    // the device (vk_ffx_init said why not otherwise, and the upscaler stays off)
+    int e = vk_upscaler_engine();
+    int fsr = e == UPSCALER_FSR3 || e == UPSCALER_FSR4 ? e : 0;
+    int ready = e == UPSCALER_FSR3 || (e == UPSCALER_FSR4 ? vk_ffx_available() : N.available);
+    int on = ready && vk_upscaler_on();
+    vk_fg_frame();
+    // frame generation with an upscaler is not built yet: with FSR picked it stays off (said once)
+    static int fg_said;
+    if (fsr && on && vk_fg_engine() != VK_FG_OFF && !fg_said++)
+        rt_log("fg: frame generation off while %s upscales the scene (scene_upscaler = %s)", engine_name(fsr),
+               engine_value(fsr));
+    int fg = fsr && on ? 0 : vk_fg_wanted(on && !D.failed);
+    D.bloom = D.hud = D.hud_wait = D.fin = D.gen = D.fg_mv_ok = 0;
+    if (on != D.on || fg != D.fg) {
+        if (on != D.on)
+            rt_log("dlaa: %s%s%s", on ? "on" : "off", on && fsr ? " with " : "",
+                   on && fsr == UPSCALER_FSR4 ? vk_ffx_version() : on && fsr ? "FSR 3.1" : "");
+        if (fg != D.fg) rt_log("dlaa: the scene is %s for frame generation", fg ? "followed" : "no longer followed");
+        D.on = on, D.fg = vk_dlaa_fg_on = fg, D.fsr = fsr;
         // either way the next DLAA frame starts a new history from an unjittered frame
         D.reset = 1, D.cam_prev_ok = 0, D.jit_ok = D.jit_used = D.armed = D.done = D.gbuf = D.ended = D.up = 0;
-        D.nodepth = VK_NULL_HANDLE;
+        D.fx_seen = D.fx_open = D.fx_bad = D.fx_comp = 0, D.fx_steady = 0;
+        D.nodepth = D.glight = D.light_z = VK_NULL_HANDLE;
         D.hold = 0;
         return;
     }
-    if (!dl_active()) return;
+    if (!track()) return;
+    D.fx_on = dl_active() && cfg_bool("TOTK_DLAA_EFFECTS_AFTER");   // DLSS's point alone
     if (!D.done) D.frames_missed++;
+    else D.fx_steady = D.fx_seen ? D.fx_steady + (D.fx_steady < FX_STEADY) : 0;
+    D.fx_seen = D.fx_open = D.fx_bad = D.fx_comp = 0;
     if (D.jit_used && !D.done) D.hold = 60, D.holds++;   // jittered but not resolved: that frame shook
     else if (D.hold) D.hold--;
     if (!D.done) D.jit_ok = 0;
-    D.armed = D.done = D.jit_used = D.gbuf = D.ended = D.up = D.ids_ok = 0, D.nodepth = VK_NULL_HANDLE;
+    D.armed = D.done = D.jit_used = D.gbuf = D.ended = D.up = D.ids_ok = 0;
+    D.nodepth = D.glight = D.light_z = VK_NULL_HANDLE;
     D.cam_addr = 0;
 }
 
@@ -1254,11 +1993,20 @@ void vk_dlaa_frame(void) {
 // is always drawn, whatever fxaa says (skipping it would leave the 3D picture out), unless DLSS already wrote that
 // target this frame.
 // The stock translator's hash, the one with tools/xlate patch 0010 (PCSS, PR #89) applied, the one with patches 0010
-// and 0011 (the shadow filter spread) applied, and that one with the zero_locals job flag (Mesa, vk_caps.c).
-// A scaling draw this list misses still scales DLSS's picture, not
-// the jittered scene: after DLSS ran, passes larger than the light target sample DLSS's output (vk_dlaa_swap_img).
+// and 0011 (the shadow filter spread) applied, and that one with the zero_locals job flag (Mesa, vk_caps.c). Patch 0017
+// (soft shadows per cascade) adds two support buffer fields, which every translated shader declares, so the last two
+// change with it: the two after them. A scaling draw this list misses still scales DLSS's picture, not the jittered
+// scene: after DLSS ran, passes larger than the light target sample DLSS's output (vk_dlaa_swap_img). That draw then
+// scales an output-sized picture as if it were the scene, and the screen shows the scene's share of it, the top left,
+// stretched over the whole screen.
 static const uint64_t FXAA_FS[] = {0xf450003ebeb3dc52ull, 0x0a12f4bc2a9a4fbeull, 0x5c43ae18948d52cbull,
-                                   0xaad42238801d31d8ull};
+                                   0xaad42238801d31d8ull, 0xde20aef90fea4ce6ull, 0x755964e8dce7f34dull};
+// The fragment shader of the FXAA's first pass, the copy of the scene target into the scratch target (another hash
+// leaves the draw alone): this build's translator, seen in 1.4.3 frame logs, and the one with patch 0017, whose two
+// support buffer fields change every fragment shader's hash (as with FXAA_FS above), read by codexx-dev from a 1.4.3
+// run with FSR on (pull request #1245). See vk_dlaa_skip_draw for why FSR's frames skip it where it copies the scene
+// target onto itself.
+static const uint64_t FXAA_COPY_FS[] = {0xa0fd34391f2af811ull, 0x9d065204aac9766bull};
 
 // Chunks of one submission look shaders up side by side: an entry's hash is stored before its shader, and entries are
 // added under the lock.
@@ -1303,11 +2051,53 @@ int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
                    "FXAA_FS): the FXAA stays on", (unsigned long long)fx_off_frames);
         }
     }
-    if (fxaa && !D.up) return 0;   // nothing to skip: no shader lookup per draw at the defaults
+    // FSR 3.1 or FSR 4 in place (the scene as large as the output, so no scaling draw follows) goes without the game's
+    // FXAA and its copy of the scene target onto itself on every frame, as codexx-dev found for FSR (pull request
+    // #1245, vk_dlaa.c vk_dlaa_skip_draw there). Measured there on 1.4.3 at a 2560x1440 scene and output: with the
+    // upscaler on the game ran its FXAA, which also sharpens, on 17 frames in every 96 and on the others drew its copy
+    // shader from the scene target onto itself, so the picture went soft and sharp in turns. Here the dynamic
+    // resolution stays at 100 % while FSR runs (resolution.c res_dynres_live) and FSR sharpens its own output
+    // (fsr_sharpness, fsr_evaluate) in place of the FXAA's sharpening. Scaled frames (D.up) need nothing more: there
+    // FSR's picture already replaces the scaling FXAA draw below.
+    int fsr_in_place = D.done && !D.up && D.fsr;
+    if (fxaa && !D.up && !fsr_in_place) return 0;   // nothing to skip: no shader lookup per draw at the defaults
     if (!fs) return 0;
+    // 1.2.1 scales the light target to the output with an upscaler of its own (12 texelFetch taps around the source
+    // pixel, fragment shader e6f7ae35b8479ef3 with this build's translator), not with the FXAA one, in a pass without
+    // depth. It addresses its source in the scene's pixels (constant bank 3), so DLSS's output-sized picture swapped in
+    // (tex_info) showed only its top-left part, the scene's share of the output (two thirds at DLSS quality), over
+    // the whole screen (#1106). DLSS already wrote its picture into that pass's target
+    // (evaluate), so on 1.2.1 a draw there that samples the light target is skipped instead; the HUD drawn later into
+    // the same target samples other textures and stays. On 1.4.3 a tonemap can be the draw that scales (the comment
+    // above struct D), and it keeps the swap.
+    if (D.up && !RT_V143 && !ex->depth.image && vk_dlaa_swap_img && ex->pass_w > vk_dlaa_swap_img->width + 1 &&
+        vk_exec_draw_samples(ex, fs, vk_dlaa_swap_img)) {
+        static int logged;
+        if (!logged) logged = 1, rt_log("dlaa: DLSS replaces the game's scaling draw (fragment shader %016llx)",
+                                        (unsigned long long)spirv_hash(fs));
+        return 1;
+    }
     uint64_t h = spirv_hash(fs);
     int known = 0;
     for (size_t i = 0; i < sizeof FXAA_FS / sizeof FXAA_FS[0]; i++) known |= h == FXAA_FS[i];
+    if (fsr_in_place) {
+        static int logged_fxaa, logged_copy;
+        if (known && ex->depth.image) {
+            if (!logged_fxaa)
+                logged_fxaa = 1, rt_log("dlaa: FSR skips the game's FXAA (fragment shader %016llx) and sharpens its "
+                                        "own picture (fsr_sharpness)", (unsigned long long)h);
+            return 1;
+        }
+        int copy = 0;
+        for (size_t i = 0; i < sizeof FXAA_COPY_FS / sizeof FXAA_COPY_FS[0]; i++) copy |= h == FXAA_COPY_FS[i];
+        if (copy && ex->color[0].image == D.color.image && vk_exec_draw_samples(ex, fs, D.color.img)) {
+            if (!logged_copy)
+                logged_copy = 1, rt_log("dlaa: FSR skips the game's copy of the scene target onto itself (fragment "
+                                        "shader %016llx)", (unsigned long long)h);
+            return 1;
+        }
+        if (fxaa) return 0;
+    }
     if (!known) return 0;
     if (!ex->depth.image) return D.up;   // the scaling pass, which DLSS replaced
     if (!fxaa && !fx_found) {

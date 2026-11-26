@@ -220,6 +220,9 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
 // A write that faulted on a read-only page at addr goes to fn first; fn returns 1 when it made the page writable and
 // the write should run again, 0 to let the fault go on (to the crash handler). One hook per process.
 void plat_mem_fault_hook(int (*fn)(uint64_t addr));
+// Read faults go to the hook too (memory.c heap_fault, TOTK_HEAP_LAZY): Windows only, before the game starts; a no-op
+// on Linux, which commits on first use by itself.
+void plat_mem_fault_reads(int on);
 // Starts this program again with the same arguments and ends this process with the new one's exit code (Windows), or
 // replaces this process with it (Linux). Environment changes made before the call are passed on.
 _Noreturn void plat_reexec(void);
@@ -354,6 +357,10 @@ void plat_fs_sync_dir(const char *path);                  // a directory's entri
 void plat_fs_busy_reason(const char *dir, char *out, size_t cap);
 // cb(name, kind, size, ctx) for each entry of dir but "." and ".."; cb returns 0 to stop. The listing's error.
 int plat_fs_list(const char *dir, int (*cb)(const char *name, int kind, uint64_t size, void *ctx), void *ctx);
+// The free bytes this process may use and the total bytes of the volume holding path. 0 on failure.
+int plat_fs_space(const char *path, uint64_t *free_bytes, uint64_t *total_bytes);
+// The last write time of the file or directory at path in seconds since 1970-01-01 UTC. 0 on failure.
+int plat_fs_mtime(const char *path, int64_t *posix_seconds);
 // An existing file for reading and, with write, writing; *err (may be NULL) gets the reason on failure.
 PlatFile *plat_fs_open(const char *path, int write, int *err);
 PlatFile *plat_fs_create(const char *path, int *err);     // a new file for writing; PLAT_FS_EXISTS when there
@@ -379,6 +386,17 @@ static inline char *plat_last_sep(const char *path) {
         if (*p == '/' || *p == '\\') last = (char *)p;
     return last;
 }
+// 1 when path does not depend on the working directory: it starts with a separator (a root or UNC path) or, on
+// Windows, with a drive letter and a separator.
+static inline int plat_path_absolute(const char *path) {
+    if (path[0] == '/' || path[0] == '\\') return 1;
+#ifdef _WIN32
+    char c = path[0];
+    return ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) && path[1] == ':' && (path[2] == '/' || path[2] == '\\');
+#else
+    return 0;
+#endif
+}
 // Environment variable as UTF-8 into out; its length, or 0 when unset, empty or too long for cap.
 size_t plat_getenv(const char *name, char *out, size_t cap);
 // The user's UI language as a BCP-47 tag ("ru-RU", "en-US"); "" when the system gives none. Valid for the process.
@@ -387,7 +405,9 @@ const char *plat_ui_language(void);
 const char *plat_user_locale(void);
 uint32_t plat_thread_id(void);                            // id of the calling thread, for unique file names
 // A system font file with the glyphs of a catalog language ("ja", "ko", "zh-Hans", "zh-Hant"): the menu shows each
-// language's name in its own script. Copies the UTF-8 path into out; 0 when the system has none.
+// language's name in its own script. Copies the UTF-8 path into out; 0 when the system has none. On Linux the file is
+// the one fontconfig picks for that language (so a sandbox that installs a font where its fontconfig finds it needs no
+// code change), with TOTK_MENU_FONT overriding it and the usual distribution paths as the fallback.
 int plat_font_path(const char *lang, char *out, size_t cap);
 // The operating system and its build ("Windows 10.0.28000") into out; 0 when unknown.
 int plat_os_version(char *out, size_t cap);

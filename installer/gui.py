@@ -3,11 +3,11 @@
 A front end over the CLI (docs/installer.md): it collects the game files, the keys file path, the optional firmware
 folder, the game language and the install folder, runs `python -m installer ...` as a subprocess and shows its JSON
 events. Decisions live in guilogic.py; this file only draws. The window text is in
-installer/text/<en|ru|pt-BR|zh-Hans>.json under "ui.*" and "launcher.*" ids. On Windows the window follows the
+installer/text/<lang>.json under "ui.*" and "launcher.*" ids. On Windows the window follows the
 display's DPI (installer/dpi.py): fonts and paddings grow with the scale, so Windows does not stretch it.
 
     --selftest [--shots DIR]   build every screen in every language and close by itself (PNG per screen with --shots)
-    --lang en|ru|pt-BR|zh-Hans window language (default: the Windows display language)
+    --lang en|ru|pt-BR|zh-Hans|de|fr|es|it|nl|ja|ko window language (default: the Windows display language)
     --rebuild DIR              rebuild the install folder DIR for its mods (totk.exe starts this, build-cache/rebuild.txt):
                                the run starts at once with that folder, and the game starts again when it succeeds
 """
@@ -28,6 +28,7 @@ dpi.enable()
 
 import tkinter as tk                       # noqa: E402  (after dpi.enable, see above)
 from tkinter import filedialog, messagebox, ttk   # noqa: E402
+from tkinter import font as tkfont                 # noqa: E402
 
 try:
     from PIL import ImageGrab   # only the screenshots of --selftest --shots need it; the release has no PIL
@@ -37,17 +38,23 @@ except ImportError:
 from . import ini
 from . import layout as layouts
 from . import recent
+from . import screens
 from .guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGE_LABELS, UI_LANGUAGES, Catalog, Form, Model,
-                       Process, amount, default_game_language, describe_event, parse_line, windows_ui_language)
+                       Process, amount, default_game_language, describe_event, fsr_default, parse_line,
+                       windows_ui_language)
 
 POLL_MS = 100
 GLYPH = {PENDING: '\u25cb', RUNNING: '\u25b6', DONE: '\u2714', SKIPPED: '\u2013', FAILED: '\u2716'}
 COLOR = {PENDING: '#808080', RUNNING: '#1a5fb4', DONE: '#26a269', SKIPPED: '#808080', FAILED: '#c01c28'}
+HEADING = '#303030'  # section titles, the details link and the update line: dark grey, no accent colour
+MUTED = '#6b6b6b'    # secondary text: the details and the footer notice
 # The window's pixels at 100%: Tk scales the fonts by itself (tk scaling), these through installer/dpi.py.
 PAD = dpi.px(14)      # padding of the window and its frames
 WRAP = dpi.px(620)    # wrap width of the long labels
 
 RECENT_WAIT = 1.5   # seconds the window waits for the recorded paths
+# Sun Valley, the Windows 11 look for ttk (sv-ttk 2.6.1, MIT, unmodified; THIRD_PARTY_NOTICES.md)
+SUN_VALLEY = Path(__file__).resolve().parent / 'vendor' / 'sv_ttk' / 'sv.tcl'
 
 
 def load_recent(wait=RECENT_WAIT):
@@ -67,6 +74,113 @@ def fix_tcl_paths():
         for lib, var in (('tcl9.0', 'TCL_LIBRARY'), ('tk9.0', 'TK_LIBRARY')):
             if (tcl / lib).is_dir():
                 os.environ[var] = str(tcl / lib)
+
+
+def use_sun_valley(root, ui_font):
+    """Switch the window to the light Sun Valley theme; False leaves the platform theme when it does not load.
+
+    The theme sizes its fonts in pixels, which Tk does not scale with the display; they are turned into points (96 DPI
+    pixels * 0.75) so they grow with tk scaling like the rest of the window. Its Segoe UI Variable families exist on
+    Windows 11 only; elsewhere the fonts take `ui_font`, bold where the theme asked for Semibold. The theme's images
+    (check boxes, button and field borders) stay at their 100% pixel size.
+
+    sv.tcl answers <<ThemeChanged>> with configure_colors, whose tk_setPalette writes the theme's text and background
+    colour into every widget and into the option database, over the colours of our label styles (errors, notices,
+    muted text). The binding is dropped before the switch and the ttk half of configure_colors is done here."""
+    try:
+        root.tk.call('source', str(SUN_VALLEY))
+        root.bind_class('Tk', '<<ThemeChanged>>', '')
+        style = ttk.Style(root)
+        style.theme_use('sun-valley-light')
+        c = {k: root.tk.call('set', f'ttk::theme::sv_light::colors(-{k})') for k in ('fg', 'bg', 'disfg', 'selfg', 'selbg')}
+        style.configure('.', background=c['bg'], foreground=c['fg'], troughcolor=c['bg'], focuscolor=c['selbg'],
+                        selectbackground=c['selbg'], selectforeground=c['selfg'], insertwidth=1, insertcolor=c['fg'],
+                        fieldbackground=c['bg'], font='SunValleyBodyFont', borderwidth=0, relief='flat')
+        style.map('.', foreground=[('disabled', c['disfg'])])
+        root.configure(background=c['bg'])
+        for cls in ('TEntry', 'TCombobox'):   # config_entry_font sets this only on fields that exist at the switch
+            root.option_add(f'*{cls}.font', 'SunValleyBodyFont')
+    except (tk.TclError, OSError):
+        return False
+    families = set(root.tk.splitlist(root.tk.call('font', 'families')))
+    for name in root.tk.splitlist(root.tk.call('font', 'names')):
+        if not str(name).startswith('SunValley'):
+            continue
+        f = tkfont.nametofont(str(name), root=root)
+        size = int(f.cget('size'))
+        if size < 0:
+            f.configure(size=round(-size * 0.75))
+        family = f.cget('family')
+        if family not in families:
+            f.configure(family=ui_font, weight='bold' if 'Semibold' in family else 'normal')
+    return True
+
+
+class ScrollArea(ttk.Frame):
+    """A screen's content scrolls while its action bar stays outside the viewport."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        background = ttk.Style(parent).lookup('TFrame', 'background') or parent.winfo_toplevel().cget('background')
+        self.canvas = tk.Canvas(self, width=1, height=1, borderwidth=0, highlightthickness=0, background=background)
+        self.scrollbar = ttk.Scrollbar(self, orient='vertical', command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.pack(side='left', fill='both', expand=True)
+        self.content = ttk.Frame(self.canvas)
+        self.window = self.canvas.create_window((0, 0), window=self.content, anchor='nw')
+        self.content.bind('<Configure>', lambda _e: self.canvas.configure(scrollregion=self.canvas.bbox('all')))
+        self.canvas.bind('<Configure>', lambda e: self.canvas.itemconfigure(self.window, width=e.width))
+        root = self.winfo_toplevel()
+        root.bind('<FocusIn>', self.reveal_focus, add='+')
+        for sequence in ('<MouseWheel>',) + (('<Button-4>', '<Button-5>') if sys.platform.startswith('linux') else ()):
+            root.bind(sequence, self.wheel, add='+')
+
+    def contains(self, widget):
+        return widget is self.canvas or str(widget).startswith(str(self.content) + '.') or widget is self.content
+
+    def natural(self):
+        width = self.content.winfo_reqwidth()
+        if int(self.canvas.cget('width')) == width:
+            return False
+        self.canvas.configure(width=width)
+        return True
+
+    def limit_height(self, height):
+        height = max(1, height)
+        scroll = height < self.content.winfo_reqheight()
+        changed = bool(self.scrollbar.winfo_manager()) != scroll
+        if changed:
+            if scroll:
+                self.scrollbar.pack(side='right', fill='y', before=self.canvas)
+            else:
+                self.scrollbar.pack_forget()
+        if int(self.canvas.cget('height')) != height:
+            self.canvas.configure(height=height)
+            changed = True
+        return changed
+
+    def reveal_focus(self, event):
+        if not self.contains(event.widget) or event.widget is self.canvas:
+            return
+        top = event.widget.winfo_rooty() - self.content.winfo_rooty()
+        bottom = top + event.widget.winfo_height()
+        visible = self.canvas.canvasy(0)
+        height = self.canvas.winfo_height()
+        if top < visible:
+            self.canvas.yview_moveto(top / max(1, self.content.winfo_height()))
+        elif bottom > visible + height:
+            self.canvas.yview_moveto((bottom - height) / max(1, self.content.winfo_height()))
+
+    def wheel(self, event):
+        if not self.contains(event.widget) or event.widget.winfo_class() in ('Text', 'Listbox', 'TCombobox'):
+            return
+        if self.canvas.yview() == (0.0, 1.0):
+            return
+        units = -1 if event.num == 4 else 1 if event.num == 5 else -int(event.delta / 120)
+        if not units and event.delta:
+            units = -1 if event.delta > 0 else 1
+        self.canvas.yview_scroll(units, 'units')
+        return 'break'
 
 
 class App:
@@ -102,11 +216,21 @@ class App:
         root.protocol('WM_DELETE_WINDOW', self.on_close)
         self.ui_font = 'Segoe UI' if os.name == 'nt' else 'DejaVu Sans'
         self.mono_font = 'Consolas' if os.name == 'nt' else 'DejaVu Sans Mono'
+        self.sun_valley = use_sun_valley(root, self.ui_font)
+        # A read-only combobox selects its text when a value is picked (ttk::combobox::SelectEntry), which draws the
+        # value as highlighted text; the pick clears that selection once ttk has made it
+        root.bind_class('TCombobox', '<<ComboboxSelected>>',
+                        lambda e: e.widget.after_idle(e.widget.selection_clear), add='+')
         style = ttk.Style(root)
         style.configure('Title.TLabel', font=(self.ui_font, 15, 'bold'))
         style.configure('Notice.TLabel', background='#fff3cd', foreground='#664d03', padding=dpi.px(8))
         style.configure('Err.TLabel', foreground='#c01c28')
         style.configure('Version.TLabel', foreground='#808080')
+        style.configure('Section.TLabel', foreground=HEADING, font=(self.ui_font, 10, 'bold'))
+        style.configure('Muted.TLabel', foreground=MUTED)
+        style.configure('Link.TLabel', foreground=HEADING)
+        style.configure('Status.TLabel', foreground=HEADING)
+        style.configure('Main.TButton', padding=(dpi.px(16), dpi.px(4)))   # Start: the native button, larger
 
         top = ttk.Frame(root, padding=(PAD, PAD, PAD, 0))
         top.pack(fill='x')
@@ -125,6 +249,7 @@ class App:
         self.ui_box.pack(side='left')
         self.body = ttk.Frame(root, padding=PAD)
         self.body.pack(fill='both', expand=True)
+        self.scroll_areas = {}
         self.frames = {'form': self.build_form(), 'run': self.build_run(), 'finish': self.build_finish()}
         self.vars['lang'].set(self.lang_label(self.lang_code))
         self.vars['dest'].trace_add('write', lambda *_: self.refresh_form())
@@ -179,7 +304,7 @@ class App:
         code = self.selected_lang()
         self.retext()
         self.vars['lang'].set(self.lang_label(code))
-        self.fit()
+        self.fit(shrink=True)
 
     def lang_label(self, code):
         return self.cat('lang.' + code)
@@ -205,80 +330,145 @@ class App:
             f.pack_forget()
         self.frames[name].pack(fill='both', expand=True)
         self.screen = name
-        self.fit()
+        self.fit(shrink=True)
 
-    def fit(self):
-        """Size the window to its largest screen (an unpacked frame still reports the size its children ask for), so
-        a screen or language switch neither cuts text nor moves the buttons. The window only grows: opening the log
-        makes it taller, and a size the user dragged it to stays. Every text change that can add lines calls it again,
-        or pack takes the missing height from the button bars."""
+    def fit(self, shrink=False):
+        """Size the window: the width of the widest screen (an unpacked frame still reports the size its children ask
+        for), so a screen or language switch does not move the buttons sideways, and the height of the shown screen,
+        so no screen carries the empty band of a taller one. Every text change that can add lines calls it again, or
+        pack takes the missing height from the button bars. Without `shrink` the window only grows and a size the user
+        dragged it to stays; a screen or language switch and closing the details or the log shrink it to fit. A screen
+        taller than the display scrolls its content while its action bar remains outside the viewport."""
         self.root.update_idletasks()
-        sizes = [(f.winfo_reqwidth(), f.winfo_reqheight()) for f in self.frames.values()]
+        widths_changed = [area.natural() for area in self.scroll_areas.values()]
+        if any(widths_changed):
+            self.root.update_idletasks()
+        widths = [f.winfo_reqwidth() for f in self.frames.values()]
+        shown = self.frames[self.screen] if self.screen else max(self.frames.values(), key=lambda f: f.winfo_reqheight())
         chrome = self.root.winfo_reqheight() - self.body.winfo_reqheight()   # the title row above the body
-        w = max(self.root.winfo_reqwidth(), max(s[0] for s in sizes) + 2 * PAD)
-        h = chrome + max(s[1] for s in sizes) + 2 * PAD
-        if (w, h) == self.fitted:   # refresh_run calls it on every poll: leave the window alone while nothing grew
+        w = max(self.root.winfo_reqwidth(), max(widths) + 2 * PAD)
+        h = chrome + shown.winfo_reqheight() + 2 * PAD
+        area = self.scroll_areas.get(self.screen)
+        if area:
+            h += area.content.winfo_reqheight() - area.canvas.winfo_reqheight()
+        # Leave room for window decorations and the desktop's panels. Content scrolls; the footer stays visible.
+        limit = max(1, self.root.winfo_screenheight() - dpi.px(80))
+        if area:
+            changed = area.limit_height(area.content.winfo_reqheight() - max(0, h - limit))
+            h = min(h, limit)
+            if changed:
+                self.root.update_idletasks()
+                w = max(w, shown.winfo_reqwidth() + 2 * PAD)
+        # refresh_run calls it on every poll: leave the window alone while nothing grew
+        if (w, h) == self.fitted and (not shrink or self.root.winfo_height() == h):
             return
         self.fitted = (w, h)
         self.root.minsize(w, h)
-        self.root.geometry(f'{max(w, self.root.winfo_width())}x{max(h, self.root.winfo_height())}')
+        self.root.geometry(f'{max(w, self.root.winfo_width())}x{h if shrink else max(h, self.root.winfo_height())}')
+
+    def scroll_content(self, parent, name):
+        area = ScrollArea(parent)
+        area.pack(fill='both', expand=True)
+        self.scroll_areas[name] = area
+        return area.content
 
     def notice(self, parent):
         w = ttk.Label(parent, style='Notice.TLabel', wraplength=WRAP, justify='left')
         self.bind_text(w, 'text', 'ui.notice')
         return w
 
+    def section(self, grid, row, id, top):
+        """A section title across the form grid with a rule after it."""
+        head = ttk.Frame(grid)
+        head.grid(row=row, column=0, columnspan=3, sticky='ew', pady=(top, dpi.px(2)))
+        self.label(head, id, style='Section.TLabel').pack(side='left')
+        ttk.Separator(head).pack(side='left', fill='x', expand=True, padx=(dpi.px(8), 0), pady=(dpi.px(2), 0))
+
     def build_form(self):
         f = ttk.Frame(self.body)
         gap = dpi.px(4)   # between the form's rows
-        bar = ttk.Frame(f)   # packed first so pack shrinks the text above it, never the buttons
+        # The footer goes first so pack shrinks the text above it, never the button. The notice sits next to Start,
+        # where the player looks before the build begins, in quiet text instead of a banner over the form.
+        bar = ttk.Frame(f)
         bar.pack(side='bottom', fill='x', pady=(dpi.px(12), 0))
-        self.start_button = self.button(bar, 'ui.start', self.start)
-        self.start_button.pack(side='right')
-        self.form_intro = self.label(f, 'ui.intro', wraplength=WRAP, justify='left')
-        self.form_intro.pack(anchor='w', pady=(0, dpi.px(8)))
-        self.notice(f).pack(fill='x', pady=(0, dpi.px(10)))
-        grid = ttk.Frame(f)
+        self.start_button = self.button(bar, 'ui.start', self.start, style='Main.TButton')
+        self.start_button.pack(side='right', anchor='s')
+        self.label(bar, 'ui.notice', style='Muted.TLabel', wraplength=dpi.px(470),
+                   justify='left').pack(side='left', anchor='w', padx=(0, dpi.px(12)))
+        ttk.Separator(f).pack(side='bottom', fill='x', pady=(dpi.px(10), 0))
+        # The status lines sit on the footer: a window taller than the form leaves its spare height above them
+        self.form_error = ttk.Label(f, style='Err.TLabel', wraplength=WRAP, justify='left')
+        self.form_error.pack(side='bottom', anchor='w', pady=(dpi.px(4), 0))
+        self.update_hint = ttk.Label(f, style='Status.TLabel', wraplength=WRAP, justify='left')
+        self.update_hint.pack(side='bottom', anchor='w', pady=(dpi.px(8), 0))
+        content = self.scroll_content(f, 'form')
+        self.form_intro = self.label(content, 'ui.intro', wraplength=WRAP, justify='left')
+        self.form_intro.pack(anchor='w', pady=(0, dpi.px(4)))
+        grid = ttk.Frame(content)
         grid.pack(fill='x')
         grid.columnconfigure(1, weight=1)
+        self.section(grid, 0, 'ui.section_files', dpi.px(6))
         rows = (('base', 'ui.base', 'ui.pick_game'), ('update', 'ui.update', 'ui.pick_update'),
                 ('keys', 'ui.keys', 'ui.pick_keys'))
         self.form_rows = {}
-        for i, (name, label_id, pick_id) in enumerate(rows):
+        for i, (name, label_id, pick_id) in enumerate(rows, start=1):
             lab = self.label(grid, label_id)
-            lab.grid(row=i, column=0, sticky='w', pady=gap, padx=(0, dpi.px(10)))
+            lab.grid(row=i, column=0, sticky='w', pady=gap, padx=(0, dpi.px(12)))
             ttk.Entry(grid, textvariable=self.vars[name]).grid(row=i, column=1, sticky='ew', pady=gap)
             b = self.button(grid, 'ui.browse', lambda n=name, p=pick_id: self.pick_file(n, p))
             b.grid(row=i, column=2, padx=(dpi.px(8), 0))
             self.form_rows[name] = lab
-        i = len(rows)
-        self.label(grid, 'ui.firmware').grid(row=i, column=0, sticky='w', pady=gap)
+        i = len(rows) + 1
+        self.label(grid, 'ui.firmware').grid(row=i, column=0, sticky='w', pady=gap, padx=(0, dpi.px(12)))
         ttk.Entry(grid, textvariable=self.vars['firmware']).grid(row=i, column=1, sticky='ew', pady=gap)
         self.button(grid, 'ui.browse', self.pick_firmware).grid(row=i, column=2, padx=(dpi.px(8), 0))
-        i += 1
-        self.label(grid, 'ui.game_language').grid(row=i, column=0, sticky='w', pady=gap)
+        self.section(grid, i + 1, 'ui.section_install', dpi.px(12))
+        i += 2
+        self.label(grid, 'ui.game_language').grid(row=i, column=0, sticky='w', pady=gap, padx=(0, dpi.px(12)))
         self.lang_box = ttk.Combobox(grid, textvariable=self.vars['lang'], state='readonly', width=30)
         self.lang_box.grid(row=i, column=1, sticky='w', pady=gap)
         self.lang_touched = False
         self.lang_box.bind('<<ComboboxSelected>>', lambda _e: setattr(self, 'lang_touched', True))
         self.fill_languages()
-        self.label(grid, 'ui.dest').grid(row=i + 1, column=0, sticky='w', pady=gap)
+        self.label(grid, 'ui.dest').grid(row=i + 1, column=0, sticky='w', pady=gap, padx=(0, dpi.px(12)))
         ttk.Entry(grid, textvariable=self.vars['dest']).grid(row=i + 1, column=1, sticky='ew', pady=gap)
         self.button(grid, 'ui.browse', self.pick_dest).grid(row=i + 1, column=2, padx=(dpi.px(8), 0))
-        self.label(f, 'ui.compressed_help', wraplength=WRAP, justify='left').pack(anchor='w', pady=(dpi.px(8), 0))
-        self.label(f, 'ui.firmware_help', wraplength=WRAP, justify='left').pack(anchor='w', pady=(dpi.px(8), 0))
-        # On by default and named with its source and licence: the player sees what is downloaded and can untick it
+        # On by default and named with its source and licence: the player sees what is downloaded and can untick it.
+        # The source and licence line is the first one under More details.
         self.dlss_var = tk.BooleanVar(value=True)
-        dlss = ttk.Checkbutton(f, variable=self.dlss_var)
+        dlss = ttk.Checkbutton(content, variable=self.dlss_var)
         self.bind_text(dlss, 'text', 'ui.dlss')
-        dlss.pack(anchor='w', pady=(dpi.px(8), 0))
-        self.label(f, 'ui.dlss_help', wraplength=WRAP, justify='left').pack(anchor='w', padx=(dpi.px(22), 0))
-        self.update_hint = ttk.Label(f, wraplength=WRAP, justify='left')
-        self.update_hint.pack(anchor='w', pady=(dpi.px(8), 0))
-        self.form_error = ttk.Label(f, style='Err.TLabel', wraplength=WRAP, justify='left')
-        self.form_error.pack(anchor='w', pady=(dpi.px(8), 0))
-        self.label(f, 'ui.keys_private', wraplength=WRAP, justify='left').pack(anchor='w', pady=(dpi.px(8), 0))
+        dlss.pack(anchor='w', pady=(dpi.px(12), 0))
+        # Ticked by default with an AMD display adapter only (guilogic.fsr_default); the player can tick it on any GPU.
+        # Its source and licence line follows DLSS's under More details.
+        self.fsr_var = tk.BooleanVar(value=fsr_default(screens.windows_adapter_names()))
+        fsr = ttk.Checkbutton(content, variable=self.fsr_var)
+        self.bind_text(fsr, 'text', 'ui.fsr')
+        fsr.pack(anchor='w', pady=(dpi.px(4), 0))
+        # The explanations stay out of the way until asked for: a link opens them under it
+        self.details_toggle = ttk.Label(content, style='Link.TLabel', cursor='hand2', takefocus=True)
+        self.bind_text(self.details_toggle, 'text', 'ui.more_details')
+        for seq in ('<Button-1>', '<Return>', '<space>'):
+            self.details_toggle.bind(seq, lambda _e: self.toggle_details())
+        self.details_toggle.pack(anchor='w', pady=(dpi.px(8), 0))
+        self.details = ttk.Frame(content)   # packed after the link when open; no holder frame, as an emptied Tk frame keeps
+        # the height its last child gave it
+        for id in ('ui.dlss_help', 'ui.fsr_help', 'ui.formats_help', 'ui.compressed_help', 'ui.firmware_help',
+                   'ui.keys_private'):
+            self.label(self.details, id, style='Muted.TLabel', wraplength=WRAP - dpi.px(16),
+                       justify='left').pack(anchor='w', pady=(dpi.px(6), 0))
+        self.details_open = False
         return f
+
+    def toggle_details(self):
+        self.details_open = not self.details_open
+        if self.details_open:
+            self.details.pack(after=self.details_toggle, fill='x', padx=(dpi.px(16), 0))
+        else:
+            self.details.pack_forget()
+        self.bound = [b for b in self.bound if b[0] is not self.details_toggle]
+        self.bind_text(self.details_toggle, 'text', 'ui.fewer_details' if self.details_open else 'ui.more_details')
+        self.fit(shrink=not self.details_open)
 
     def build_run(self):
         f = ttk.Frame(self.body)
@@ -288,14 +478,15 @@ class App:
         self.cancel_button.pack(side='right')
         self.log_toggle = self.button(bar, 'ui.show_log', self.toggle_log)
         self.log_toggle.pack(side='left')
-        self.run_header = ttk.Label(f, font=(self.ui_font, 11, 'bold'))
+        content = self.scroll_content(f, 'run')
+        self.run_header = ttk.Label(content, font=(self.ui_font, 11, 'bold'))
         self.run_header.pack(anchor='w')
         self.step_rows = {}
-        self.steps_box = ttk.Frame(f)
+        self.steps_box = ttk.Frame(content)
         self.steps_box.pack(fill='x', pady=dpi.px(8))
-        self.phase_label = ttk.Label(f, wraplength=WRAP, justify='left')
+        self.phase_label = ttk.Label(content, wraplength=WRAP, justify='left')
         self.phase_label.pack(anchor='w')
-        bar_holder = ttk.Frame(f)
+        bar_holder = ttk.Frame(content)
         bar_holder.pack(fill='x', pady=(dpi.px(4), dpi.px(6)))
         self.bar = ttk.Progressbar(bar_holder, mode='determinate', maximum=1000)
         self.bar.pack(fill='both', expand=True)
@@ -305,11 +496,11 @@ class App:
             # holder follows it.
             bar_holder.pack_propagate(False)
             bar_holder.configure(height=dpi.px(22))
-        self.space_label = ttk.Label(f, wraplength=WRAP, justify='left')
+        self.space_label = ttk.Label(content, wraplength=WRAP, justify='left')
         self.space_label.pack(anchor='w')
-        self.warn_label = ttk.Label(f, wraplength=WRAP, justify='left', foreground='#9a6700')
+        self.warn_label = ttk.Label(content, wraplength=WRAP, justify='left', foreground='#9a6700')
         self.warn_label.pack(anchor='w')
-        self.log_frame = ttk.Frame(f)
+        self.log_frame = ttk.Frame(content)
         self.log = tk.Text(self.log_frame, height=10, wrap='word', state='disabled', font=(self.mono_font, 9))
         scroll = ttk.Scrollbar(self.log_frame, command=self.log.yview)
         self.log.configure(yscrollcommand=scroll.set)
@@ -329,13 +520,14 @@ class App:
         self.back_button.pack(side='left')
         if self.rebuild:   # a failed or cancelled rebuild: the game starts with the code it has
             self.button(bar, 'ui.start_game', self.start_game).pack(side='right', padx=(0, dpi.px(8)))
-        self.finish_title = ttk.Label(f, style='Title.TLabel', wraplength=WRAP, justify='left')
+        content = self.scroll_content(f, 'finish')
+        self.finish_title = ttk.Label(content, style='Title.TLabel', wraplength=WRAP, justify='left')
         self.finish_title.pack(anchor='w')
-        self.finish_text = ttk.Label(f, wraplength=WRAP, justify='left')
+        self.finish_text = ttk.Label(content, wraplength=WRAP, justify='left')
         self.finish_text.pack(anchor='w', pady=dpi.px(8))
-        self.finish_steps = ttk.Frame(f)
+        self.finish_steps = ttk.Frame(content)
         self.finish_steps.pack(fill='x', pady=(0, dpi.px(8)))
-        self.finish_notice = self.notice(f)
+        self.finish_notice = self.notice(content)
         self.finish_notice.pack(fill='x', pady=(dpi.px(8), 0))
         return f
 
@@ -344,7 +536,7 @@ class App:
     def form(self):
         return Form(base=self.vars['base'].get(), update=self.vars['update'].get(), keys=self.vars['keys'].get(),
                     firmware=self.vars['firmware'].get(), lang=self.selected_lang(), dest=self.vars['dest'].get(),
-                    dlss=self.dlss_var.get())
+                    dlss=self.dlss_var.get(), fsr=self.fsr_var.get())
 
     def set_prefill(self, name, value):
         self.programmatic = True
@@ -530,7 +722,7 @@ class App:
             self.log_frame.pack_forget()
         self.bound = [b for b in self.bound if b[0] is not self.log_toggle]
         self.bind_text(self.log_toggle, 'text', 'ui.hide_log' if self.log_open else 'ui.show_log')
-        self.fit()
+        self.fit(shrink=not self.log_open)
 
     def clear_log(self):
         self.log_entries = []
@@ -596,6 +788,7 @@ class App:
             self.open_button.state(['!disabled'])
         else:
             self.open_button.state(['disabled' if not Path(m.dest or '.').is_dir() else '!disabled'])
+        self.fit()   # an error text can be longer than the screen it replaces
 
     def start_game(self):
         """Starts the game of the install folder and closes the window."""
@@ -619,7 +812,7 @@ class App:
 # ---- self test ---------------------------------------------------------------------------------------------------
 
 SAMPLE_START = {'type': 'start', 'release': 'selftest', 'mode': 'install', 'dest': 'Z:/selftest/TotK', 'log': 'D:\\log.txt',
-                'steps': ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'dlss', 'cleanup']}
+                'steps': ['check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss', 'fsr', 'cleanup']}
 SAMPLE_RUN = [
     SAMPLE_START,
     {'type': 'plan', 'run': ['check', 'fonts', 'extract'], 'skip': {}},
@@ -687,6 +880,9 @@ def selftest(layout, shots=None):
             app.start()   # missing files: shows the problems
             steps.append(app.form_error.cget('text'))
             shot(f'form-{tag}')
+            app.toggle_details()
+            shot(f'form-details-{tag}')
+            app.toggle_details()
             app.model = Model()
             app.clear_log()
             app.build_step_rows(app.model.steps)
@@ -746,7 +942,9 @@ def main(argv=None):
         return selftest(layout, args.shots)
     fix_tcl_paths()
     root = tk.Tk()
-    App(root, args.lang or windows_ui_language(), layout, rebuild=args.rebuild)
+    # resolved now: the game starts the build kit's rebuild with the install folder as '.' and the working folder
+    rebuild = args.rebuild.resolve() if args.rebuild else None
+    App(root, args.lang or windows_ui_language(), layout, rebuild=rebuild)
     root.mainloop()
     return 0
 

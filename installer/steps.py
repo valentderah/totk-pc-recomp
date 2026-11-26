@@ -1,4 +1,5 @@
-"""The eight setup steps of docs/installer.md: check, fonts, extract, lift, compile, prepare, dlss, cleanup.
+"""The twelve setup steps of docs/installer.md: check, kit, fonts, extract, lift, compile, prepare, pc_prompts,
+shapes, dlss, fsr, cleanup.
 
 Extraction runs in this process through tools/extract.py (the package's sibling tools/, which ships with it); fonts
 runs the vendored extract_shared_fonts.py on the firmware folder; lift, compile and prepare run the bundled Python on
@@ -7,20 +8,25 @@ recomp/gen.py, tools/build_game.py, tools/make_romfs_patches.py and tools/prepar
 with the bundled clang (hostcheck.c).
 
 Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, shared-fonts/ (Chinese and Korean text), totk.exe
-and its DLLs, nvngx_dlss.dll (with --dlss), romfs-index.bin, romfs-patches/, romfs-patches-xbox/,
-romfs-patches-xbox-label/, romfs-patches-pc/, romfs-patches-<style>-<w>x<h>/ (each of the three for each shaped size),
-totk_xlate.exe, the
-shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json.
-Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), unpacked/ (the NSP of an NSZ
-or XCZ input until the extraction is done), gen/ (C), build/ (objects), logs/. The cleanup keeps gen/, build/ and
-logs/: the next run lifts into the same gen/, where recomp/gen.py rewrites only the chunks whose C changed, and Ninja
-in build/ recompiles only those. A change of the mods' code cheats then costs the lift (about a minute) and the chunks
-it touches, not a full compile.
+and its DLLs, nvngx_dlss.dll (with --dlss), amd_fidelityfx_loader_vk.dll and amd_fidelityfx_upscaler_vk.dll (with
+--fsr), romfs-index.bin, romfs-patches/, romfs-patches-xbox/,
+romfs-patches-xbox-label/, romfs-patches-pc/, romfs-patches-<w>x<h>/ and romfs-patches-<style>-<w>x<h>/ (for the
+screen shapes and the prompts style this player needs, installer/screens.py), totk_xlate.exe, the
+shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json, and on Windows build-kit/ (Kit): the release
+folder the steps after the kit step run from, and the game's rebuild with them.
+Temp folder (build-cache/work in the install folder on Windows, .setup-temp there on Linux, <temp>/<dest name>-<hash>
+with --temp or in a repository; installer/layout.py temp_for): check/ (ExeFS of both inputs, the host check),
+unpacked/ (the NSP of an NSZ or XCZ input until the extraction is done), gen/ (C), build/ (objects), logs/. The cleanup keeps gen/, build/ and
+logs/: the next run lifts into the same gen/, where recomp/gen.py lifts again only the chunks whose inputs changed (its
+lift cache, gen/<mod>/lift_cache.json) and rewrites only those whose C changed, and Ninja in build/ recompiles only
+those. A change of the mods' code cheats then costs a few seconds of lift and the chunks holding its sites, not a full
+lift or compile.
 
-Install folder build-cache/: cheats.status (tools/cheats.py), exefs.status and exefs.data (tools/exefs_patches.py) and
+Install folder build-cache/: cheats.status (tools/cheats.py), exefs.status and exefs.data (tools/exefs_patches.py),
+plugins.status (tools/exefs_plugins.py; plugins.stale is the game's list of plugins whose start differed) and
 rebuild.txt, the command that starts this setup in its rebuild mode on the install folder (installer/gui.py --rebuild),
-one argument per line; totk.exe runs it at start when an enabled mod has code cheats the build lacks
-(runtime/cheats.c).
+one argument per line, relative to the install folder for the build kit; totk.exe runs it at start when an enabled mod
+has code cheats the build lacks (runtime/cheats.c).
 """
 import hashlib
 import http.client
@@ -36,7 +42,13 @@ import time
 import urllib.request
 from pathlib import Path
 
-from . import ini
+if os.name == 'nt':
+    import winreg
+else:
+    winreg = None
+
+from . import ini, screens
+from . import layout as layouts
 from .layout import EXE, SUPPORTED, version_tag
 from .runner import InstallError, Step
 
@@ -50,8 +62,10 @@ from extract_exefs import (common_tickets, container_entries, load_keys, nca_ctr
 GiB = 1 << 30
 DEST_EXTRA = 4 * GiB      # beside the RomFS: shader and pipeline caches (about 2 GB), exefs, totk.exe, seed files
 TEMP_NEED = 3 * GiB       # generated C (about 0.9 GB) and objects
+KIT_NEED = 1 * GiB        # the build kit (Kit), about 0.65 GB
 HOSTCHECK = Path(__file__).resolve().parent / 'hostcheck.c'
 STAMP = '.install-key'
+PLUGIN_ENTRY_ROUNDS = 4   # plugin lifts at most: each finds where an init called into main past a function start
 
 
 # ---- helpers
@@ -117,6 +131,79 @@ def kill_tree(proc):
         proc.kill()
 
 
+def parse_host(text):
+    """The host check's JSON object, or None when it did not finish (a crash leaves the parts it flushed)."""
+    try:
+        host = json.loads(text)
+    except ValueError:
+        return None
+    return host if isinstance(host, dict) and 'devices' in host else None
+
+
+def exit_code(code):
+    """A process exit code as Windows reports crashes (0xC0000005 for an access violation), else as a number."""
+    if os.name == 'nt' and code is not None and (code < 0 or code >= 0xC0000000):
+        return f'0x{code & 0xFFFFFFFF:08X}'
+    return str(code)
+
+
+def layer_manifests():
+    """Implicit Vulkan layer manifests where the Khronos loader looks for them (its docs, LoaderLayerInterface.md,
+    "Layer Discovery"): the folders in VK_IMPLICIT_LAYER_PATH or VK_ADD_IMPLICIT_LAYER_PATH, then on Windows the
+    manifests HKLM and HKCU\\SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers enable with a DWORD 0, read in the 64-bit view
+    the 64-bit probe and game use; elsewhere the implicit_layer.d folders. Layers a driver registers under its display
+    adapter's key are not listed."""
+    found = []
+    for var in ('VK_IMPLICIT_LAYER_PATH', 'VK_ADD_IMPLICIT_LAYER_PATH'):
+        for part in filter(None, os.environ.get(var, '').split(os.pathsep)):
+            p = Path(part)
+            found += sorted(p.glob('*.json')) if p.is_dir() else [p]
+    if winreg:
+        for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            try:
+                key = winreg.OpenKey(root, r'SOFTWARE\Khronos\Vulkan\ImplicitLayers', 0,
+                                     winreg.KEY_READ | winreg.KEY_WOW64_64KEY)
+            except OSError:
+                continue
+            with key:
+                i = 0
+                while True:
+                    try:
+                        path, enabled, _ = winreg.EnumValue(key, i)
+                    except OSError:
+                        break
+                    i += 1
+                    if enabled == 0:   # a DWORD 0 enables the manifest, anything else skips it
+                        found.append(Path(path))
+    else:
+        home = Path.home()
+        config = [os.environ.get('XDG_CONFIG_HOME') or home / '.config',
+                  *(os.environ.get('XDG_CONFIG_DIRS') or '/etc/xdg').split(':'), '/usr/local/etc', '/etc']
+        data = [os.environ.get('XDG_DATA_HOME') or home / '.local' / 'share',
+                *(os.environ.get('XDG_DATA_DIRS') or '/usr/local/share:/usr/share').split(':')]
+        for base in filter(None, config + data):
+            found += sorted((Path(base) / 'vulkan' / 'implicit_layer.d').glob('*.json'))
+    return found
+
+
+def implicit_vulkan_layers():
+    """(layer name, manifest path) of each readable implicit Vulkan layer manifest of layer_manifests(), for the
+    search for the layer that crashes the host check. A manifest the loader cannot read loads no layer and is left
+    out; a manifest listed twice counts once."""
+    layers = []
+    for path in dict.fromkeys(layer_manifests()):
+        try:
+            manifest = json.loads(path.read_text(encoding='utf-8-sig'))
+        except (OSError, ValueError):
+            continue
+        entries = (manifest.get('layers') or [manifest.get('layer')]) if isinstance(manifest, dict) else []
+        for entry in entries:
+            name = entry.get('name') if isinstance(entry, dict) else None
+            if isinstance(name, str) and (name, path) not in layers:
+                layers.append((name, path))
+    return layers
+
+
 def linux_glibc():
     """(major, minor) of the C library this Linux process runs on, None elsewhere or when it is not glibc."""
     try:
@@ -131,6 +218,60 @@ def linux_glibc():
 # GLIBC_FLOOR); on an older one they cannot start
 GLIBC_NEEDED = (2, 34)
 
+# The libraries the release puts next to the game (libSDL3.so.0 from the Steam Runtime sysroot) link system libraries
+# that a minimal system may lack: libXss.so.1 on AnataseOS (#1315, #1428), libdecor-0.so.0 on Batocera (#1419). The
+# loader then stops the game before it runs, after the half hour of lift and compile, as `totk --prepare-shaders`
+# with exit code 127. The package that provides a common one, by distribution family.
+LIBRARY_PACKAGES = {
+    'libXss.so.1': ('libXScrnSaver', 'libxss1', 'libxss'),
+    'libdecor-0.so.0': ('libdecor', 'libdecor-0-0', 'libdecor'),
+    'libXi.so.6': ('libXi', 'libxi6', 'libxi'),
+    'libXrandr.so.2': ('libXrandr', 'libxrandr2', 'libxrandr'),
+    'libXcursor.so.1': ('libXcursor', 'libxcursor1', 'libxcursor'),
+    'libXinerama.so.1': ('libXinerama', 'libxinerama1', 'libxinerama'),
+    'libXext.so.6': ('libXext', 'libxext6', 'libxext'),
+    'libXfixes.so.3': ('libXfixes', 'libxfixes3', 'libxfixes'),
+    'libX11.so.6': ('libX11', 'libx11-6', 'libx11'),
+    'libxkbcommon.so.0': ('libxkbcommon', 'libxkbcommon0', 'libxkbcommon'),
+    'libwayland-client.so.0': ('libwayland-client', 'libwayland-client0', 'wayland'),
+    'libasound.so.2': ('alsa-lib', 'libasound2', 'alsa-lib'),
+}
+LDD_NOT_FOUND = re.compile(r'^\s*(\S+) => not found', re.M)
+LOADER_NOT_FOUND = re.compile(r'error while loading shared libraries: (\S+?): cannot open shared object file')
+
+
+def library_packages(libraries):
+    """The packages that provide the known ones of libraries, as " (Fedora: ..., Debian/Ubuntu: ..., Arch: ...)" for
+    the message; "" when none is known."""
+    known = [LIBRARY_PACKAGES[n] for n in libraries if n in LIBRARY_PACKAGES]
+    if not known:
+        return ''
+    return ' (' + ', '.join(f'{family}: {" ".join(p[i] for p in known)}'
+                            for i, family in enumerate(('Fedora', 'Debian/Ubuntu', 'Arch'))) + ')'
+
+
+def loader_missing(log):
+    """The libraries the system's loader could not find in a tool's log ("error while loading shared libraries"), in
+    order, each once."""
+    log = Path(log)
+    text = log.read_text(encoding='utf-8', errors='replace') if log.is_file() else ''
+    return list(dict.fromkeys(LOADER_NOT_FOUND.findall(text)))
+
+
+def missing_libraries(paths):
+    """Linux: the shared libraries `ldd` reports as not found for paths, in order, each once; [] elsewhere, when ldd
+    cannot run, or when nothing is missing."""
+    if not sys.platform.startswith('linux'):
+        return []
+    found = []
+    for p in paths:
+        try:
+            r = subprocess.run(['ldd', str(p)], capture_output=True, text=True, errors='replace', timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            return []
+        found += [n for n in LDD_NOT_FOUND.findall(r.stdout) if n not in found]
+    return found
+
 
 def linux_kernel():
     """(major, minor) of the running Linux kernel, None elsewhere."""
@@ -138,6 +279,17 @@ def linux_kernel():
         return None
     m = re.match(r'(\d+)\.(\d+)', os.uname().release)
     return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def link_output_locked(log):
+    """Whether a build failed because another program holds the exe the linker writes: ld.lld cannot write it and clang
+    cannot remove it (Permission denied). A game started from the temp build folder does that, and so does an
+    antivirus that flagged or quarantined the new totk.exe there (#1122)."""
+    try:
+        text = Path(log).read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return False
+    return 'failed to write output' in text and 'Permission denied' in text
 
 
 def run_tool(ctx, step, script, args, parse=None, cwd=None):
@@ -405,8 +557,19 @@ class Check(Step):
         return {}
 
     def host(self, ctx):
+        """Builds and runs the host check once per run: key() asks first and run() reports, so a failure is kept on
+        ctx and raised again rather than a crashing probe and its retries running twice."""
         if getattr(ctx, 'host', None) is not None:
             return
+        if getattr(ctx, 'host_error', None) is not None:
+            raise ctx.host_error
+        try:
+            self.check_host(ctx)
+        except InstallError as e:
+            ctx.host_error = e
+            raise
+
+    def check_host(self, ctx):
         layout, work = ctx.layout, ctx.temp / 'check'
         glibc = linux_glibc()
         if glibc and glibc < GLIBC_NEEDED and not layout.dev:
@@ -425,14 +588,15 @@ class Check(Step):
         if r.returncode:
             ctx.reporter.log(r.stdout + r.stderr)
             raise InstallError('check.toolchain_broken', detail=(r.stderr or r.stdout).strip()[-400:])
-        r = subprocess.run([str(exe)], capture_output=True, text=True, errors='replace')
-        try:
-            host = json.loads(r.stdout)
-        except ValueError:
-            raise InstallError('check.host_probe_failed', code=r.returncode) from None
-        ctx.reporter.log(f'host: {r.stdout.strip()}')
+        host = self.probe_host(ctx, exe)
         if not host['x86_64_v2']:
             raise InstallError('check.cpu_too_old')
+        # Before lift and compile: the game would not start without these (LIBRARY_PACKAGES); a repository build links
+        # the system's own libraries
+        missing = [] if layout.dev else missing_libraries(layout.dlls)
+        if missing:
+            raise InstallError('check.libraries_missing', libraries=', '.join(missing),
+                               packages=library_packages(missing))
         # v3 is the faster build; v2 runs on CPUs without AVX2/FMA (runtime/fma.c supplies the fused multiply-add).
         ctx.cpu = 'v3' if host['x86_64_v3'] else 'v2'
         if not host['loader']:
@@ -449,6 +613,60 @@ class Check(Step):
             # pools to the GPU at each submit and its texture checks see every page as changed (docs/building.md, Linux)
             ctx.reporter.warning('warn.kernel_old', version='.'.join(map(str, kernel)))
         ctx.host = host
+
+    # Windows refuses to start a program a policy does not trust (issue #875): Smart App Control and other App Control
+    # policies (4551 "An Application Control policy has blocked this file"; 4556-4559 and 4580-4583 the same with the
+    # reputation verdict, among them 4559 "Unable to contact reputation service for unknown file"), group policy (1260
+    # "This program is blocked by group policy") and an antivirus that flags or removes the file (225, 226). hostcheck
+    # is the first program the setup builds on this PC; totk.exe is built the same way and unsigned too, so the install
+    # cannot go on.
+    BLOCKED_WINERRORS = {225, 226, 1260, 4551, 4556, 4557, 4558, 4559, 4580, 4581, 4582, 4583}
+    LAYER_TRIES = 16   # implicit layers tried one by one in the search for the one that crashes the probe
+
+    def probe_host(self, ctx, exe):
+        """Runs the host check check_host() built and returns its JSON. A probe that crashes inside Vulkan is run again
+        with the implicit Vulkan layers off (VK_LOADER_LAYERS_DISABLE=~implicit~, Vulkan loader 1.3.234 or later):
+        overlays, recorders and tuning tools install such layers, and a broken one kills every Vulkan program at
+        vkCreateInstance (issue #1345, exit code 0xC0000005 after "Checking the processor and the graphics card").
+        When that run passes, each listed layer is turned off alone to name the one that crashes. The install stops
+        either way: totk.exe --prepare-shaders in the prepare step and the game itself load the same layers
+        (runtime/vk_device.c create_instance), so going on would fail after lift and compile."""
+        rep = ctx.reporter
+        r = self.run_probe(exe)
+        host = parse_host(r.stdout)
+        if host is not None:
+            rep.log(f'host: {r.stdout.strip()}')
+            return host
+        code = exit_code(r.returncode)
+        rep.log(f'host: the check stopped with exit code {code}; it printed {r.stdout.strip()!r}')
+        if '"loader": true' not in r.stdout:
+            raise InstallError('check.host_probe_failed', code=code)
+        retry = self.run_probe(exe, dict(os.environ, VK_LOADER_LAYERS_DISABLE='~implicit~'))
+        if parse_host(retry.stdout) is None:
+            rep.log(f'host: without implicit Vulkan layers too: exit code {exit_code(retry.returncode)}, '
+                    f'{retry.stdout.strip()!r}')
+            raise InstallError('check.vulkan_crash', code=code)
+        layers = implicit_vulkan_layers()
+        rep.log(f'host: passes with the implicit Vulkan layers off; installed: '
+                f'{", ".join(f"{n} ({p})" for n, p in layers) or "none listed"}')
+        culprits = [(name, path) for name, path in layers[:self.LAYER_TRIES]
+                    if parse_host(self.run_probe(exe, dict(os.environ, VK_LOADER_LAYERS_DISABLE=name)).stdout)]
+        if culprits:
+            rep.log(f'host: passes without {", ".join(n for n, _ in culprits)}')
+            raise InstallError('check.vulkan_layer_crash', code=code,
+                               layers=', '.join(f'{n} ({p})' for n, p in culprits),
+                               disable=','.join(n for n, _ in culprits))
+        raise InstallError('check.vulkan_layers_crash', code=code,
+                           layers=', '.join(f'{n} ({p})' for n, p in layers) or '?')
+
+    def run_probe(self, exe, env=None):
+        try:
+            return subprocess.run([str(exe)], capture_output=True, text=True, errors='replace', env=env)
+        except OSError as e:
+            if getattr(e, 'winerror', None) in self.BLOCKED_WINERRORS:
+                raise InstallError('check.host_blocked', path=str(exe), detail=e.strerror or str(e)) from None
+            raise InstallError('check.host_probe_failed',
+                               code=f'{getattr(e, "winerror", None) or e.errno}: {e.strerror or e}') from None
 
     def inputs(self, ctx):
         """Open both files with the keys as the extraction will. Returns the bytes of both Program NCAs."""
@@ -584,6 +802,8 @@ class Check(Step):
                 dest_need -= romfs.stat().st_size
         if ctx.will_run('fonts'):
             dest_need += FONTS_NEED
+        if ctx.will_run('kit') and layouts.uses_kit(ctx.layout):
+            dest_need += KIT_NEED
         if ctx.will_run('prepare') or ctx.will_run('extract'):
             dest_need += DEST_EXTRA
         if ctx.will_run('lift') or ctx.will_run('compile'):
@@ -634,6 +854,114 @@ class Check(Step):
             ctx.keys = {}
             ctx.plan(ctx.forced | {'extract', 'lift', 'compile', 'prepare'})
         ctx.state['version'] = found
+
+
+# ---- 1b. build kit
+
+class Kit(Step):
+    """The build kit (installer/layout.py, Windows release): the release folder without TotK-Setup.exe, copied into
+    <install>/build-kit. Every step after this one runs its tools from there (settle), and the game's rebuild for its
+    mods starts the setup window from there, so the setup folder can go once the install is done and the install
+    folder can move. A newer setup replaces the kit; the kit's own rebuild keeps it. The steps' keys fingerprint file
+    contents, not paths, so the kit, a copy of the setup's files, keeps every step the setup recorded."""
+
+    id = 'kit'
+
+    def key(self, ctx):
+        return fingerprint('kit-1', ctx.layout.release if layouts.uses_kit(ctx.layout) else 'none')
+
+    def current(self, ctx, record):
+        if not layouts.uses_kit(ctx.layout):
+            return True
+        kit = layouts.kit_folder(ctx.dest)
+        if not layouts.is_release(kit):
+            return False
+        found = layouts.release_layout(kit)
+        return found.release == ctx.layout.release and not found.missing(getattr(ctx, 'cpu', 'v3'))
+
+    def run(self, ctx):
+        layout, rep = ctx.layout, ctx.reporter
+        if not layouts.uses_kit(layout):
+            return {}
+        kit = layouts.kit_folder(ctx.dest)
+        if layout.root.resolve() == kit.resolve():   # the kit's own rebuild: it is in place
+            return {}
+        new, old = kit.with_name(layouts.KIT + '.new'), kit.with_name(layouts.KIT + '.old')
+        try:
+            remove(new)   # what a cancelled or failed run left
+            remove(old)
+        except OSError as e:
+            raise InstallError('kit.in_use', path=str(e.filename or old)) from None
+        files = []
+        for name in layouts.KIT_ITEMS:
+            src = layout.root / name
+            if src.is_dir():
+                files += [f for f in sorted(src.rglob('*')) if f.is_file() and '__pycache__' not in f.parts]
+            elif src.is_file():
+                files.append(src)
+        total, done = size_of(files), 0
+        rep.progress('kit', 'copy', 0, total, 'bytes', force=True)
+        try:
+            for f in files:
+                dst = new / f.relative_to(layout.root)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, dst)
+                done += f.stat().st_size
+                rep.progress('kit', 'copy', done, total, 'bytes')
+        except OSError as e:
+            raise InstallError('kit.copy_failed', path=str(e.filename or new), detail=str(e)) from None
+        # An open rebuild window, or a layout generator the game's settings menu started, holds files of the old kit:
+        # then nothing is replaced, and the message asks to close the game and run the setup again
+        moved = False
+        try:
+            if kit.exists():
+                os.replace(kit, old)
+                moved = True
+            os.replace(new, kit)
+        except OSError:
+            if moved and not kit.exists():
+                os.replace(old, kit)   # the game keeps the kit it had
+            raise InstallError('kit.in_use', path=str(kit)) from None
+        try:
+            remove(old)
+        except OSError as e:
+            rep.log(f'kit: the old kit stays until the next run: {e}')
+        rep.log(f'kit: {len(files)} files, {total / GiB:.2f} GiB in {kit}')
+        return {'bytes': total}
+
+    def settle(self, ctx):
+        if not layouts.uses_kit(ctx.layout):
+            return
+        kit = layouts.kit_folder(ctx.dest).resolve()
+        if ctx.layout.root.resolve() != kit:
+            ctx.layout = layouts.release_layout(kit)
+            ctx.reporter.log(f'kit: the next steps run from {kit}')
+
+
+def adopt_old_temp(layout, dest, temp):
+    """An install by a setup before the build kit has its temp folder (generated C, lift cache, objects) in that
+    setup's folder: <setup>/temp/<install name>-<hash>, the setup build-cache/rebuild.txt names. The first run of a
+    setup with the build kit moves it into the install folder when both are on one disk, and the steps' keys decide
+    what of it still holds. On another disk the new temp folder starts empty: an update recompiles everything anyway
+    (the compiler's path is in every compile command), so a copy would save only part of the lift.
+    Runs before the run's log opens in temp; returns the line for the log, None when there was nothing to move."""
+    if not layouts.uses_kit(layout) or temp != dest / layouts.TEMP_IN_DEST or temp.exists():
+        return None
+    try:
+        lines = (dest / 'build-cache' / 'rebuild.txt').read_text(encoding='utf-8').splitlines()
+    except OSError:
+        return None
+    if len(lines) < 4 or lines[1] != '-c' or not os.path.isabs(lines[3]):
+        return None
+    old = layouts.temp_folder(Path(lines[3]) / 'temp', dest)
+    if not (old / 'gen').is_dir():
+        return None
+    try:
+        temp.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(old, temp)
+        return f'temp: moved the temp folder of the setup in {lines[3]} to {temp}'
+    except OSError as e:
+        return f'temp: the temp folder {old} stays where it is ({e}); {temp} starts empty'
 
 
 # ---- 2. fonts
@@ -853,6 +1181,54 @@ def exefs_files(ctx):
     return sorted(out)
 
 
+def plugin_files(ctx):
+    """The exlaunch plugins of the mods folder (each mod's exefs/subsdk*, in the first ExeFS place, as
+    tools/exefs_plugins.py finds them), by mod name, for the lift key and the plugin stage."""
+    mods = ctx.dest / 'mods'
+    if not mods.is_dir():
+        return []
+    out = []
+    for mod in sorted((m for m in mods.iterdir() if m.is_dir()), key=lambda m: m.name):
+        exefs = next((mod / w for w in EXEFS_PLACES if (mod / w).is_dir()), None)
+        if exefs:
+            out += sorted((f for f in exefs.iterdir() if f.is_file() and f.name.lower().startswith('subsdk')),
+                          key=lambda f: f.name.lower())
+    return out
+
+
+def plugins_status(ctx):
+    """The build's plugin status file (tools/exefs_plugins.py --status), which runtime/mods.c reads."""
+    return ctx.dest / 'build-cache' / 'plugins.status'
+
+
+def plugins_stale(ctx):
+    """True when the game listed a plugin whose start differed from the build (build-cache/plugins.stale, runtime/mods.c
+    mods_plugin_off): the plugin's record comes from the lift's service run and the exe's patch sets from the compile,
+    so both are out of date, while their keys, made of the files the steps read, are unchanged. Only Lift.run clears
+    the file."""
+    try:
+        return bool((ctx.dest / 'build-cache' / 'plugins.stale').read_text(encoding='utf-8', errors='replace').strip())
+    except OSError:
+        return False
+
+
+def built_plugins(status, files, mods):
+    """The files of the plugins the status file lists as built (kind `plugin`), in the order of files. The key is
+    FNV-1a 32 of "<mod folder>/<path in the mod>", as tools/exefs_plugins.py and runtime/mods.c compute it."""
+    if not status.is_file():
+        return []
+    built = {line.split('\t')[0] for line in status.read_text(encoding='utf-8').splitlines()
+             if len(line.split('\t')) >= 3 and line.split('\t')[2] == 'plugin'}
+
+    def key(f):
+        rel = f.relative_to(mods).as_posix()
+        h = 0x811C9DC5
+        for b in rel.encode():
+            h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
+        return f'{h:08X}'
+    return [f for f in files if key(f) in built]
+
+
 def exefs_status(ctx):
     """The build's ExeFS patch status file (tools/exefs_patches.py --status), which runtime/mods.c reads."""
     return ctx.dest / 'build-cache' / 'exefs.status'
@@ -877,19 +1253,25 @@ class Lift(Step):
     def key(self, ctx):
         # fingerprint takes a file's name and content only; the paths under mods/ go in too, because tools/cheats.py
         # and tools/exefs_patches.py name each patch set after its mod folder, so a renamed folder needs a lift
-        files = cheat_files(ctx) + exefs_files(ctx)
+        # A mod plugin is built by running its init on a totk.exe of this build (tools/exefs_plugins.py), so the
+        # runtime is in the key too when there is one, and this file, which runs that stage: a plugin stage that failed
+        # (warn.plugins_skipped, the game built without the plugins) runs again once a release changes it.
+        files = cheat_files(ctx) + exefs_files(ctx) + plugin_files(ctx)
+        extra = [ctx.layout.tools / 'exefs_plugins.py', Path(__file__), runtime_key(ctx)] if plugin_files(ctx) else []
         return fingerprint('lift-5', ctx.keys['extract'], ctx.layout.recomp, ctx.layout.patches(game_version(ctx)),
-                           ctx.layout.tools / 'cheats.py', ctx.layout.tools / 'exefs_patches.py', *files,
+                           ctx.layout.tools / 'cheats.py', ctx.layout.tools / 'exefs_patches.py', *extra, *files,
                            *(f.relative_to(ctx.dest / 'mods').as_posix() for f in files))
 
     def current(self, ctx, record):
         gen = ctx.temp / 'gen'
         stamp = gen / STAMP
-        return (gen / 'layout.json').is_file() and stamp.is_file() and stamp.read_text().strip() == ctx.keys['lift']
+        return ((gen / 'layout.json').is_file() and stamp.is_file() and stamp.read_text().strip() == ctx.keys['lift']
+                and not plugins_stale(ctx))
 
     def run(self, ctx):
-        # gen/ of the last run stays: gen.py rewrites only the chunks whose C changed (and removes the ones a smaller
-        # partition no longer has), so Ninja recompiles only those
+        # gen/ of the last run stays: gen.py lifts again only the chunks whose inputs changed
+        # (gen/<mod>/lift_cache.json; TOTK_LIFT_CACHE=0 lifts all), rewrites only those whose C changed (and removes
+        # the ones a smaller partition no longer has), so Ninja recompiles only those
         layout, rep, gen = ctx.layout, ctx.reporter, ctx.temp / 'gen'
         (gen / STAMP).unlink(missing_ok=True)
         rep.progress('lift', 'discover', force=True)
@@ -929,12 +1311,69 @@ class Lift(Step):
             else:
                 patches = ctx.temp / out
         args = ['--exefs', ctx.dest / 'exefs', '--out', gen]
+        # The mods' exlaunch plugins (tools/exefs_plugins.py, after the design in #845 by itaskaev2): a lift with the
+        # plugins in the layout, a totk.exe of it in build/ (the compile step's folder, so it recompiles only what
+        # the hook sites change after), the plugin service run, and the plugins' patch sets for the lift below. A
+        # refused plugin gets its reason in plugins.status; a failed stage costs the plugins, not the install.
+        plugins = plugin_files(ctx)
+        drop([plugins_status(ctx), ctx.dest / 'build-cache' / 'plugins.stale'])
+        lift_plugins = []
+        if plugins:
+            listed = ['--plugins', ','.join(str(f) for f in plugins)]
+            # An init that calls into main where the lift has no function start crashes its service run; the tool
+            # names those addresses (--entries-out), and one more lift with them as `entry` lines lets the init go on
+            # (Zonai Fieldworks calls the second word of a 1.4.3 function). Each round adds what the last one found.
+            lift_patches, found = patches, []
+            for _ in range(PLUGIN_ENTRY_ROUNDS):
+                code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py', args + ['--patches', lift_patches] + listed,
+                                     parse)
+                if not code:
+                    code, log = run_tool(ctx, 'lift', layout.tools / 'build_game.py', build_args(ctx, gen))
+                if not code:
+                    # the service run's totk.exe loads its DLLs from its own folder, as the installed one does
+                    for dll in layout.dlls:
+                        replace_file(dll, ctx.temp / 'build' / dll.name)
+                    entries_file = ctx.temp / 'plugin-entries.txt'
+                    entries_file.unlink(missing_ok=True)
+                    code, log = run_tool(ctx, 'lift', layout.tools / 'exefs_plugins.py', [
+                        '--exe', ctx.temp / 'build' / ('totk' + EXE), '--out', ctx.temp / 'plugins', '--mods',
+                        ctx.dest / 'mods', '--exefs', ctx.dest / 'exefs', '--patches', lift_patches,
+                        '--patches-out', ctx.temp / 'patches-plugins.txt', '--status', plugins_status(ctx),
+                        '--entries-out', entries_file])
+                    # exit 1 with a status file: refused plugins, their reasons in it; the rest goes on
+                    if plugins_status(ctx).is_file() and (ctx.temp / 'patches-plugins.txt').is_file():
+                        code = 0
+                if code:
+                    break
+                new = [line for line in (entries_file.read_text(encoding='utf-8').splitlines()
+                                         if entries_file.is_file() else []) if line and line not in found]
+                if not new:
+                    break
+                found += new
+                lift_patches = ctx.temp / 'patches-entries.txt'
+                lift_patches.write_text(Path(patches).read_text(encoding='utf-8') + '\n' + '\n'.join(found) + '\n',
+                                        encoding='utf-8')
+            if code:
+                drop([plugins_status(ctx)])
+                skipped['warn.plugins_skipped'] = log
+            else:
+                patches = ctx.temp / 'patches-plugins.txt'
+                # With one plugin built, the layout keeps every plugin of the service runs: the records hold addresses
+                # of that layout. A refused plugin stays loaded at play, its init never runs (no patch set).
+                if built_plugins(plugins_status(ctx), plugins, ctx.dest / 'mods'):
+                    lift_plugins = plugins
+        if lift_plugins:
+            args += ['--plugins', ','.join(str(f) for f in lift_plugins)]
         code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py', args + ['--patches', patches], parse)
         if code and patches != plain:
             for tool, out, outputs, inputs, warn in stages:
                 if inputs and warn not in skipped:
                     drop(outputs)
                     skipped[warn] = log
+            if lift_plugins:
+                drop([plugins_status(ctx)])
+                skipped.setdefault('warn.plugins_skipped', log)
+            args = ['--exefs', ctx.dest / 'exefs', '--out', gen]
             code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py', args + ['--patches', plain], parse)
         if code:
             raise InstallError('lift.failed', code=code, log=str(log))
@@ -962,22 +1401,47 @@ def runtime_key(ctx):
     """Fingerprint of what totk.exe is built from besides the lifted code: the runtime, the toolchain and the build
     tools. Shader preparation depends on these, not on the code cheats a lift adds."""
     layout, cpu = ctx.layout, getattr(ctx, 'cpu', 'v3')
-    clang = subprocess.run([str(layout.clang), '--version'], capture_output=True, text=True).stdout
+    # without the lines that name clang's folder: the build kit of a moved install folder is the same toolchain
+    clang = '\n'.join(line for line in subprocess.run([str(layout.clang), '--version'], capture_output=True,
+                                                       text=True).stdout.splitlines()
+                      if not line.startswith(('InstalledDir:', 'Configuration file:')))
     tools = [layout.tools / n for n in ('build_game.py', 'romfs_index.py', 'check_content.py', 'check_isa.py')]
     return fingerprint('runtime-1', cpu, layout.runtime_lib_for(cpu), layout.runtime, layout.deps or 'system',
                        layout.sysroot or 'host', *tools, clang, *[d.name for d in layout.dlls])
+
+
+def build_args(ctx, gen):
+    """tools/build_game.py's arguments for a totk.exe of the lifted C in gen, built in <temp>/build."""
+    layout, dest = ctx.layout, ctx.dest
+    cpu = getattr(ctx, 'cpu', 'v3')
+    lib = layout.runtime_lib_for(cpu)
+    pgo = layout.pgo(game_version(ctx))
+    return ['--gen', gen, '--out', ctx.temp / 'build', '--toolchain', layout.llvm, '--cpu', cpu,
+            *(['--deps', layout.deps] if layout.deps else []), *(['--sysroot', layout.sysroot] if layout.sysroot else []),
+            '--runtime', layout.runtime, *(['--runtime-lib', lib] if lib else ()), *(['--pgo', pgo] if pgo else ()),
+            '--ninja', layout.ninja,
+            '--version', version_tag(game_version(ctx)), '--expected', layout.expected(game_version(ctx)),
+            '--exefs', dest / 'exefs', '--romfs', dest / 'romfs',
+            '--profile', dest / 'profile',
+            # the build kit and the temp folder move with the install folder: Ninja's paths relative to the kit
+            *(['--portable'] if layouts.uses_kit(layout) else [])]
 
 
 class Compile(Step):
     id = 'compile'
 
     def key(self, ctx):
-        return fingerprint('compile-3', ctx.keys['lift'], runtime_key(ctx),
+        # The release string too: build_game.py bakes the VERSION of the tools' folder into totk.exe (the menu's title
+        # line), and a release that leaves the lift and the runtime alone would otherwise keep the old exe and its
+        # old version.
+        return fingerprint('compile-4', ctx.keys['lift'], runtime_key(ctx), ctx.layout.release,
                            ctx.layout.pgo(game_version(ctx)) or 'no profile')
 
     def current(self, ctx, record):
         exe = ctx.dest / ('totk' + EXE)
         if not exe.is_file() or not (ctx.dest / 'romfs-index.bin').is_file():
+            return False
+        if plugins_stale(ctx):   # the lift runs (Lift.current), and a transient step runs only with the step after it
             return False
         if not all((ctx.dest / d.name).is_file() for d in ctx.layout.dlls):
             return False
@@ -998,17 +1462,10 @@ class Compile(Step):
 
         rep.progress('compile', 'compile', force=True)
         cpu = getattr(ctx, 'cpu', 'v3')
-        lib = layout.runtime_lib_for(cpu)
-        pgo = layout.pgo(game_version(ctx))
-        code, log = run_tool(ctx, 'compile', layout.tools / 'build_game.py', [
-            '--gen', ctx.temp / 'gen', '--out', build, '--toolchain', layout.llvm, '--cpu', cpu,
-            *(['--deps', layout.deps] if layout.deps else []), *(['--sysroot', layout.sysroot] if layout.sysroot else []),
-            '--runtime', layout.runtime, *(['--runtime-lib', lib] if lib else ()), *(['--pgo', pgo] if pgo else ()),
-            '--ninja', layout.ninja,
-            '--version', version_tag(game_version(ctx)), '--expected', layout.expected(game_version(ctx)),
-            '--exefs', dest / 'exefs', '--romfs', dest / 'romfs',
-            '--profile', dest / 'profile'], parse)
+        code, log = run_tool(ctx, 'compile', layout.tools / 'build_game.py', build_args(ctx, ctx.temp / 'gen'), parse)
         exe = build / ('totk' + EXE)
+        if code and link_output_locked(log):
+            raise InstallError('compile.exe_locked', path=str(exe), log=str(log))
         if code or not exe.is_file():
             raise InstallError('compile.failed', code=code, log=str(log))
         try:
@@ -1029,12 +1486,7 @@ TRANSLATED = re.compile(r'gfx_shader: prepare: (\d+) of (\d+) pairs')
 SKIPPED = re.compile(r'prepare-shaders: (\d+) variants skipped: the graphics driver crashed')
 
 
-# The game resolutions of another shape than 16:9 that runtime/ui/menu.cpp row_output_res lists: 21:9 and 32:9 monitors,
-# 16:10 screens (the Steam Deck's 1280x800, handhelds and laptops) and 3:2 screens (Surface and Framework laptops and
-# tablets)
-ASPECT_SIZES = ('2560x1080', '3440x1440', '3840x1600', '5120x2160', '3840x1080', '5120x1440',
-                '1280x800', '1680x1050', '1920x1200', '2560x1600',
-                '1920x1280', '2160x1440', '2256x1504', '2880x1920', '3000x2000')
+ASPECT_SIZES = screens.ASPECT_SIZES
 
 
 class Prepare(Step):
@@ -1084,24 +1536,15 @@ class Prepare(Step):
                               dest / 'romfs-patches'])
         if code:
             raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
-        # The same overlay with the UI laid out for each game resolution of another shape the settings menu offers
-        # (runtime/romfs.c overlay_init picks the one that matches; the camera's side is the patch set aspect,
-        # recomp/patches-v<ver>.txt).
-        for size in ASPECT_SIZES:
-            remove(dest / f'romfs-patches-{size}')
-            code, log = run_tool(ctx, 'prepare', layout.tools / 'make_romfs_patches.py',
-                                 ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--out',
-                                  dest / f'romfs-patches-{size}', '--aspect', size])
-            if code:
-                raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
-        # The same with Xbox button icons in the prompts, for prompts = xbox (make_romfs_patches.py --prompts):
-        # romfs-patches-xbox for the Nintendo pad layout, romfs-patches-xbox-label for xbox and auto (runtime/input_map.c
-        # input_prompts_folder). Both are written on every install, so the menu choices work without another run of
+        # The same with Xbox and PlayStation button icons in the prompts, for prompts = xbox and playstation
+        # (make_romfs_patches.py --prompts): romfs-patches-xbox for the Nintendo pad layout, romfs-patches-xbox-label
+        # for xbox and auto, and romfs-patches-playstation / -playstation-xbox likewise (runtime/input_map.c
+        # input_prompts_folder). All are written on every install, so the menu choices work without another run of
         # the setup. Optional: when one fails, the game keeps the Switch prompts with that layout and the menu says the
-        # files are missing, so the setup warns once and goes on. romfs-patches-pc likewise, with keyboard and mouse
-        # prompts for prompts = pc.
+        # files are missing, so the setup warns once and goes on. The keyboard and mouse prompts are the PcPrompts
+        # step's: they follow totk.ini's bindings.
         failed = None
-        for style in ('xbox', 'xbox-label', 'pc'):
+        for style in screens.PAD_PROMPTS:
             out = dest / f'romfs-patches-{style}'
             remove(out)
             code, log = run_tool(ctx, f'prepare-{style}', layout.tools / 'make_romfs_patches.py',
@@ -1110,25 +1553,6 @@ class Prepare(Step):
             if code:
                 remove(out)
                 failed = failed or (code, log)
-        # Each prompts' folder once more for each shape of ASPECT_SIZES, romfs-patches-<style>-<w>x<h> with that
-        # shape's UI layout (--prompts <style> --aspect), which runtime/romfs.c overlay_init loads in place of
-        # romfs-patches-<w>x<h>: without it a player with Xbox or PC prompts on a screen that is not 16:9 chose between
-        # the prompts and the screen's shape. Only the Common archive differs from romfs-patches-<style>; --reuse links
-        # the fonts, messages and size table from there instead of compressing them again, so each folder takes
-        # seconds and a few MiB. Optional like romfs-patches-<style>, and skipped without it.
-        for style in ('xbox', 'xbox-label', 'pc'):
-            plain = dest / f'romfs-patches-{style}'
-            for size in ASPECT_SIZES:
-                out = dest / f'romfs-patches-{style}-{size}'
-                remove(out)
-                if not (plain / 'manifest.tsv').is_file():
-                    continue
-                code, log = run_tool(ctx, f'prepare-{style}-{size}', layout.tools / 'make_romfs_patches.py',
-                                     ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--out',
-                                      out, '--prompts', style, '--aspect', size, '--reuse', plain])
-                if code:
-                    remove(out)
-                    failed = failed or (code, log)
         if failed:
             rep.warning('warn.xbox_prompts_failed', code=failed[0], log=str(failed[1]))
 
@@ -1155,6 +1579,11 @@ class Prepare(Step):
                              [dest, '--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--exefs',
                               dest / 'exefs', '--list', shader_list], parse)
         if code or not (dest / 'shader-prepared.bin').is_file():
+            # The loader stopped the game before it ran: name the library rather than exit code 127
+            missing = loader_missing(log)
+            if missing:
+                raise InstallError('prepare.libraries_missing', libraries=', '.join(missing),
+                                   packages=library_packages(missing), log=str(log))
             raise InstallError('prepare.shaders_failed', code=code, log=str(log))
         if skipped[0]:
             rep.warning('warn.shaders_skipped', count=skipped[0], log=str(log))
@@ -1165,6 +1594,176 @@ class Prepare(Step):
         if code:
             raise InstallError('prepare.pack_failed', code=code, log=str(log))
         return {'xlate_sha256': file_sha256(xlate)}
+
+
+# ---- 6b. Keyboard and mouse prompts
+
+def bind_lines(dest):
+    """The bind_ lines of the install's totk.ini (the Controls tab writes them), '' without the file."""
+    try:
+        text = (dest / 'totk.ini').read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return ''
+    return '\n'.join(s for s in (line.split('#')[0].split(';')[0].strip() for line in text.splitlines())
+                     if s.lower().startswith('bind_'))
+
+
+def pc_binds(dest):
+    """make_romfs_patches.py's --binds argument for the keyboard and mouse prompts: totk.ini when it has bind_ lines."""
+    return ['--binds', dest / 'totk.ini'] if bind_lines(dest) else []
+
+
+class PcPrompts(Step):
+    """romfs-patches-pc (16:9), for prompts = pc: the prompts drawn as the keys and mouse buttons of totk.ini's bind_
+    lines (make_romfs_patches.py --prompts pc --binds), the keyboard defaults without them. Its own step, keyed by those
+    lines, so running the setup again after a change of the bindings draws the prompts again and leaves the shaders
+    alone. The shaped romfs-patches-pc-<w>x<h> are the Shapes step's, which follows this key. Optional like the Xbox
+    prompts: a failure warns, and the game keeps the Switch prompts."""
+    id = 'pc_prompts'
+
+    def key(self, ctx):
+        layout = ctx.layout
+        tools = [layout.tools / n for n in ('make_romfs_patches.py', 'ultrawide_layout.py', 'button_icons.py')]
+        return fingerprint('pc-prompts-1', ctx.keys['extract'], *tools, bind_lines(ctx.dest))
+
+    def current(self, ctx, record):
+        return record.get('failed') or (ctx.dest / 'romfs-patches-pc' / 'manifest.tsv').is_file()
+
+    def run(self, ctx):
+        layout, rep, dest = ctx.layout, ctx.reporter, ctx.dest
+        rep.progress('pc_prompts', 'draw', force=True)
+        plain = dest / 'romfs-patches-pc'
+        remove(plain)
+        code, log = run_tool(ctx, 'prepare-pc', layout.tools / 'make_romfs_patches.py',
+                             ['--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--out', plain,
+                              '--prompts', 'pc', *pc_binds(dest)])
+        if code:
+            remove(plain)
+            rep.warning('warn.xbox_prompts_failed', code=code, log=str(log))
+            return {'failed': True}
+        return {}
+
+
+# ---- 6b. screen shapes
+
+SHAPED_FOLDER = re.compile(r'^romfs-patches(?:-(?:%s))?-\d+x\d+(?:-hud(?:16|21)x9)?$'
+                           % '|'.join(map(re.escape, screens.PROMPTS_STYLES)))
+# make_romfs_patches.py writes <folder>.part-<pid> and renames it to <folder> when it is complete. A run that was
+# stopped (the PC turned off under a generator the game started, runtime/romfs.c romfs_folders_prepare) leaves its
+# folder behind: one whose files did not change for PART_STALE_S is such a leftover, a younger one may belong to a
+# generator running now. SHAPED_FOLDER matches neither.
+PART_FOLDER = re.compile(r'^romfs-patches[\w.-]*\.part-[\w-]+$')
+PART_STALE_S = 3600
+
+
+def stale_parts(dest, now=None):
+    """The leftover .part folders of make_romfs_patches.py runs in dest."""
+    now = time.time() if now is None else now
+    found = []
+    for folder in dest.iterdir() if dest.is_dir() else ():
+        if not (folder.is_dir() and not folder.is_symlink() and PART_FOLDER.match(folder.name)):
+            continue
+        try:
+            newest = max([folder.stat().st_mtime] + [f.stat().st_mtime for f in folder.rglob('*')])
+        except OSError:
+            continue
+        if now - newest > PART_STALE_S:
+            found.append(folder)
+    return found
+
+
+def hud_width(dest):
+    """The selected HUD cap, with the same default as runtime/cfg.c."""
+    try:
+        text = (dest / 'totk.ini').read_text(encoding='utf-8-sig', errors='replace')
+    except OSError:
+        text = ''
+    value = (screens.ini_value(text, 'hud_width') or 'full').lower()
+    return value if value in ('16:9', '21:9') else 'full'
+
+
+def shape_hud(size, hud):
+    """The selected cap when at least 1% narrower than the shape, as make_romfs_patches.py requires."""
+    w, h = (int(v) for v in size.split('x'))
+    cap = {'16:9': 16 / 9, '21:9': 21 / 9}.get(hud)
+    return hud if cap and cap < w / h * 0.99 else None
+
+
+class Shapes(Step):
+    """romfs-patches-<w>x<h> (the UI laid out for a shape, make_romfs_patches.py --aspect) and, with Xbox, PlayStation or
+    PC prompts
+    in totk.ini, romfs-patches-<style>-<w>x<h> (that layout with those prompts), for the shapes this player needs:
+    those of the connected displays and of the totk.ini output_res, one folder per shape (installer/screens.py; the
+    game maps its resolution to the folder in runtime/romfs.c overlay_init). A setup before this step wrote all 15
+    sizes for every prompts style, 64 folders. The key holds the shapes, prompts style and selected HUD width, so a run after a
+    monitor or settings change (or its rebuild mode) writes only these again; the game also starts the generator for a
+    folder its settings need and the install lacks, at start and from its menu (runtime/romfs.c romfs_folders_prepare,
+    make_romfs_patches.py --background), whose unfinished .part folders the clean-up below leaves alone."""
+
+    id = 'shapes'
+
+    def wanted(self, ctx):
+        if not hasattr(ctx, 'shapes_wanted'):
+            ctx.shapes_wanted = screens.wanted(ctx.dest)
+        return ctx.shapes_wanted
+
+    def key(self, ctx):
+        sizes, style = self.wanted(ctx)
+        # The pc prompts' shaped folders are drawn from the same bindings as romfs-patches-pc, so they follow its key
+        prompts = ctx.keys.get('pc_prompts', '') if style == 'pc' else ''
+        # Without a capped folder to write (hud_width full, or no shape wider than the cap) the key stays the one a
+        # setup before hud_width wrote, so an existing install does not prepare its shaped folders again
+        hud = hud_width(ctx.dest)
+        if not any(shape_hud(size, hud) for size in sizes):
+            return fingerprint('shapes-2', ctx.keys.get('prepare', ''), prompts, style or 'nintendo', *sizes)
+        return fingerprint('shapes-3', ctx.keys.get('prepare', ''), prompts, style or 'nintendo', hud, *sizes)
+
+    def current(self, ctx, record):
+        return not record.get('failed') and all((ctx.dest / name / 'manifest.tsv').is_file()
+                                               for name in record.get('folders', []))
+
+    def run(self, ctx):
+        layout, rep, dest = ctx.layout, ctx.reporter, ctx.dest
+        sizes, style = self.wanted(ctx)
+        rep.log(f'shapes: displays {screens.displays()}, layouts for {sizes or "none"}, prompts {style or "nintendo"}')
+        for old in dest.iterdir() if dest.is_dir() else ():
+            if old.is_dir() and SHAPED_FOLDER.match(old.name):
+                remove(old)
+        version = version_tag(game_version(ctx))
+        plain = dest / f'romfs-patches-{style}' if style else None
+        folders, failed = [], None
+        hud = hud_width(dest)
+        for i, size in enumerate(sizes):
+            rep.progress('shapes', 'layouts', i, len(sizes), 'shapes', force=True)
+            cap = shape_hud(size, hud)
+            # Keep the full layout as a fallback, plus only the cap this player selected for this shape.
+            for variant in (None, cap) if cap else (None,):
+                suffix = '-hud' + variant.replace(':', 'x') if variant else ''
+                hud_args = ['--hud', variant] if variant else []
+                out = dest / f'romfs-patches-{size}{suffix}'
+                code, log = run_tool(ctx, 'shapes', layout.tools / 'make_romfs_patches.py',
+                                     ['--version', version, '--romfs', dest / 'romfs', '--out', out, '--aspect', size,
+                                      *hud_args])
+                if code:
+                    raise InstallError('prepare.romfs_patches_failed', code=code, log=str(log))
+                folders.append(out.name)
+                # Reuse the selected prompts' fonts/messages/table; PC layouts retain the player's bindings.
+                if not plain or not (plain / 'manifest.tsv').is_file():
+                    continue
+                out = dest / f'romfs-patches-{style}-{size}{suffix}'
+                code, log = run_tool(ctx, f'shapes-{style}', layout.tools / 'make_romfs_patches.py',
+                                     ['--version', version, '--romfs', dest / 'romfs', '--out', out, '--prompts', style,
+                                      '--aspect', size, *hud_args, '--reuse', plain,
+                                      *(pc_binds(dest) if style == 'pc' else ())])
+                if code:
+                    remove(out)
+                    failed = failed or (code, log)
+                else:
+                    folders.append(out.name)
+        rep.progress('shapes', 'layouts', len(sizes), len(sizes), 'shapes', force=True)
+        if failed:
+            rep.warning('warn.xbox_prompts_failed', code=failed[0], log=str(failed[1]))
+        return {'folders': folders, 'sizes': sizes, 'style': style, 'hud': hud, 'failed': bool(failed)}
 
 
 # ---- 7. NVIDIA DLSS
@@ -1242,7 +1841,87 @@ class Dlss(Step):
         return {'installed': DLSS_VERSION}
 
 
-# ---- 8. clean up
+# ---- 8. AMD FSR
+
+# AMD's FSR 4 for scene_upscaler = fsr4 (runtime/vk_ffx.c): the ffx-api loader and the upscaler effect, which the
+# loader finds next to itself. AMD's FSR SDK license lets them be redistributed in binary form with its notice
+# (THIRD_PARTY_NOTICES.md); the setup still does not ship them: with --fsr it downloads AMD's signed copies from the SDK
+# repository at a pinned tag and checks their hashes. The game runs without them; scene_upscaler = fsr4 then does
+# nothing.
+FSR_VERSION = '2.4.0'   # the FSR SDK release; the upscaler DLL is FSR 4.1.2 (FSR 3.1.6 inside goes unused)
+FSR_BASE = (f'https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/v{FSR_VERSION}/'
+            'Kits/FidelityFX/signedbin/')
+FSR_FILES = (   # name, size, SHA-256
+    ('amd_fidelityfx_loader_vk.dll', 39184, '38a56a01fb3565c0757d9f5c1e4e69de4b65e5f2e5769b323b200dc1f142bab9'),
+    ('amd_fidelityfx_upscaler_vk.dll', 36135696, '4a7e895af6e0b615d40a84d59eb8c2b1054ad91cdd0c739567940270d51bdab7'),
+)
+FSR_LICENSE = f'https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/v{FSR_VERSION}/docs/license.md'
+
+
+class Fsr(Step):
+    """With --fsr on Windows: AMD's FSR loader and upscaler next to totk.exe; the game pins FSR 4 where they offer it
+    for the GPU. Libraries the player put there (other versions) are kept. A failed download warns and is tried again
+    on the next run; the game runs without them."""
+
+    id = 'fsr'
+
+    def key(self, ctx):
+        if not getattr(ctx.options, 'fsr', False):
+            return fingerprint('fsr-2', 'off')
+        return fingerprint('fsr-2', FSR_VERSION, *(sha for _, _, sha in FSR_FILES))
+
+    def current(self, ctx, record):
+        if record.get('failed'):
+            return False
+        return not record.get('installed') or all((ctx.dest / name).is_file() for name, _, _ in FSR_FILES)
+
+    def run(self, ctx):
+        if not getattr(ctx.options, 'fsr', False):
+            return {}
+        if os.name != 'nt':
+            return {'skipped': 'not_windows'}
+        rep = ctx.reporter
+        present = [ctx.dest / name for name, _, _ in FSR_FILES if (ctx.dest / name).is_file()]
+        if present:
+            if all((ctx.dest / name).is_file() and file_sha256(ctx.dest / name) == sha for name, _, sha in FSR_FILES):
+                return {'installed': FSR_VERSION}
+            # A set the player put there (or half of one): kept as it is, the loader and its effect belong together
+            rep.warning('warn.fsr_kept', path=str(present[0]))
+            return {'kept': True}
+        total, done = sum(size for _, size, _ in FSR_FILES), 0
+        rep.progress('fsr', 'download', 0, total, 'bytes', force=True)
+        rep.log(f'fsr: {FSR_BASE} (license {FSR_LICENSE})')
+        parts = []
+        try:
+            for name, size, sha in FSR_FILES:
+                url, part = FSR_BASE + name, ctx.temp / (name + '.part')
+                parts.append(part)
+                part.parent.mkdir(parents=True, exist_ok=True)
+                h, got = hashlib.sha256(), 0
+                with urllib.request.urlopen(url, timeout=60) as r, open(part, 'wb') as f:
+                    while block := r.read(1 << 20):
+                        f.write(block)
+                        h.update(block)
+                        got += len(block)
+                        rep.progress('fsr', 'download', min(done + got, total), total, 'bytes')
+                if got != size or h.hexdigest() != sha:
+                    raise OSError(f'{name}: {got} bytes, SHA-256 {h.hexdigest()[:16]}, not the expected file')
+                done += size
+            # both downloaded and checked: only then into the install folder, so it never holds half a set
+            for (name, _, _), part in zip(FSR_FILES, parts):
+                replace_file(part, ctx.dest / name)
+                remove(part)
+        # urllib's errors, timeouts and a bad file; a connection cut mid-file raises http.client.IncompleteRead,
+        # which is not an OSError
+        except (OSError, http.client.HTTPException) as e:
+            for part in parts:
+                remove(part)
+            rep.warning('warn.fsr_download_failed', url=FSR_BASE, detail=str(e)[:300])
+            return {'failed': True}
+        return {'installed': FSR_VERSION}
+
+
+# ---- 9. clean up
 
 class Cleanup(Step):
     id = 'cleanup'
@@ -1258,7 +1937,7 @@ class Cleanup(Step):
         ctx.state['lang'] = ctx.lang
         (dest / 'profile').mkdir(exist_ok=True)
         rep.progress('cleanup', 'temp', force=True)
-        for stale in dest.glob('update-merge-*'):
+        for stale in [*dest.glob('update-merge-*'), *stale_parts(dest)]:
             remove(stale)
         for name in ('check', 'unpacked', 'shader_list.tsv', 'shared-fonts'):   # gen/ and build/ stay for the next rebuild
             remove(ctx.temp / name)
@@ -1267,22 +1946,36 @@ class Cleanup(Step):
         return {}
 
 
-# Puts the release folder (the argument after -c) on sys.path and runs installer.gui with the rest. `-m installer.gui`
-# finds the package only through the release Python's ._pth: the Linux release's Python and the dev-mode embeddable one
-# lack that entry, and totk.exe starts the command in the install folder.
-REBUILD_BOOT = ('import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); '
+# Puts the release folder or the build kit (the argument after -c, made absolute: the kit's is relative to the install
+# folder) on sys.path and runs installer.gui with the rest. `-m installer.gui` finds the package only through the
+# release Python's ._pth: the Linux release's Python and the dev-mode embeddable one lack that entry, and totk.exe
+# starts the command in the install folder.
+REBUILD_BOOT = ('import os, runpy, sys; sys.path.insert(0, os.path.abspath(sys.argv.pop(1))); '
                 "runpy.run_module('installer.gui', run_name='__main__', alter_sys=True)")
 
 
 def rebuild_command(ctx):
     """The command that starts the setup window in its rebuild mode on this install folder (installer/gui.py
     --rebuild): pythonw beside the setup's Python on Windows, so no console opens. In a repository that is the Python
-    running this setup: the tools' embeddable Python there has no tkinter."""
+    running this setup: the tools' embeddable Python there has no tkinter.
+    In the Linux AppImage the release folder is the AppImage's mount (/tmp/.mount_*), which goes away when the setup
+    exits, so a path into it would fail to start later and the game would keep its old code. The command starts the
+    AppImage file itself instead ($APPIMAGE, set by the AppImage runtime); its AppRun passes the arguments to
+    installer.gui."""
     layout = ctx.layout
+    appimage = os.environ.get('APPIMAGE', '')
+    if not layout.dev and appimage and Path(appimage).is_file():
+        return [str(Path(appimage).resolve()), '--rebuild', str(ctx.dest)]
     python = Path(sys.executable) if layout.dev else layout.python
     if os.name == 'nt' and python.with_name('pythonw.exe').is_file():
         python = python.with_name('pythonw.exe')
-    return [str(python), '-c', REBUILD_BOOT, str(layout.root), '--root', str(layout.root), '--rebuild', str(ctx.dest)]
+    root, dest = str(layout.root), str(ctx.dest)
+    if layouts.uses_kit(layout) and layout.root.resolve() == layouts.kit_folder(ctx.dest).resolve():
+        # the build kit: paths relative to the install folder, which totk.exe resolves against its own folder and
+        # starts the command in, so a moved install folder keeps its rebuild
+        python = Path(layouts.KIT) / python.relative_to(layout.root)
+        root, dest = layouts.KIT, '.'
+    return [str(python), '-c', REBUILD_BOOT, root, '--root', root, '--rebuild', dest]
 
 
 def write_rebuild_command(ctx):
@@ -1310,4 +2003,5 @@ def romfs_problem(romfs, expected):
 
 
 def all_steps():
-    return [Check(), Fonts(), Extract(), Lift(), Compile(), Prepare(), Dlss(), Cleanup()]
+    return [Check(), Kit(), Fonts(), Extract(), Lift(), Compile(), Prepare(), PcPrompts(), Shapes(), Dlss(), Fsr(),
+            Cleanup()]

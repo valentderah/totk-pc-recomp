@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "fs.h"
 #include "host.h"
 #include "input.h"
 #include "input_map.h"
@@ -135,6 +136,9 @@ int probe_cfg(void) {
     CHECK(m && EQ(m->def, "1") && m->live, "meta: fps60 defaults to 1 and is live");
     m = cfg_meta("ASYNC_PREEMPT");
     CHECK(m && EQ(m->values, "0|1|2") && !m->live, "meta: async_preempt takes 0|1|2 and needs a restart");
+    m = cfg_meta("HUD_WIDTH");
+    CHECK(m && EQ(m->def, "full") && EQ(m->values, "full|21:9|16:9") && !m->live,
+          "meta: HUD width defaults to full and changes after restart");
     m = cfg_meta("totk_vk_present");
     CHECK(m && EQ(m->key, "VK_PRESENT") && EQ(m->values, "mailbox|fifo|immediate") && m->live,
           "meta: prefix and case are accepted");
@@ -142,6 +146,8 @@ int probe_cfg(void) {
     CHECK(m && EQ(m->def, "130") && EQ(m->values, "0..300"), "meta: rumble strength 130 in 0..300");
     m = cfg_meta("PERF_OVERLAY");
     CHECK(m && EQ(m->def, "off") && EQ(m->values, "off|fps|full") && m->live, "meta: perf_overlay is live, off by default");
+    m = cfg_meta("VERT_PLUS");
+    CHECK(m && EQ(m->def, "0") && m->live, "meta: vert_plus is live, off by default");
     CHECK(cfg_meta("BIND_A") == NULL && cfg_meta("FPS_COUNTER") == NULL && cfg_meta("NO_SUCH") == NULL,
           "meta: keys the menu does not show are NULL");
 
@@ -311,6 +317,12 @@ int probe_cfg(void) {
     CHECK(input_pad_layout_pick("xbox_prompts", 0) == PAD_LAYOUT_NINTENDO &&
               input_pad_layout_pick("Xbox_Prompts", 1) == PAD_LAYOUT_NINTENDO,
           "pad layout: 0.1.9's xbox_prompts keeps the Nintendo positions (only the prompts change, romfs.c overlay_init)");
+    // Gamepad events behind other windows (input_map.c, input.c start)
+    CHECK(input_pad_background_pick("auto", 0) && !input_pad_background_pick("auto", 1) &&
+              input_pad_background_pick(NULL, 0) && !input_pad_background_pick(NULL, 1),
+          "pad background: automatic is on, off when Steam started the game (its overlay takes the gamepad, #1462)");
+    CHECK(input_pad_background_pick("1", 1) && !input_pad_background_pick("0", 0),
+          "pad background: 1 and 0 win over the Steam check");
     // Button prompts (input_map.c)
     CHECK(input_prompts_pick(NULL, "auto") == PROMPTS_NINTENDO && input_prompts_pick("", "xbox") == PROMPTS_NINTENDO &&
               input_prompts_pick("Xbox", "nintendo") == PROMPTS_XBOX && input_prompts_pick("nintendo", "xbox") == PROMPTS_NINTENDO,
@@ -330,14 +342,124 @@ int probe_cfg(void) {
               EQ(input_prompts_folder(PROMPTS_XBOX, "auto"), "romfs-patches-xbox-label") &&
               EQ(input_prompts_folder(PROMPTS_XBOX, NULL), "romfs-patches-xbox-label"),
           "prompts: the face buttons by position for the Nintendo layout, by label for xbox and auto");
+    CHECK(input_prompts_pick("PlayStation", "nintendo") == PROMPTS_PLAYSTATION &&
+              input_prompts_pick("playstation", "xbox") == PROMPTS_PLAYSTATION &&
+              input_prompts_pick("ps", "auto") == PROMPTS_PLAYSTATION,
+          "prompts: PlayStation, any case");
+    CHECK(EQ(input_prompts_folder(PROMPTS_PLAYSTATION, "nintendo"), "romfs-patches-playstation") &&
+              EQ(input_prompts_folder(PROMPTS_PLAYSTATION, "xbox_prompts"), "romfs-patches-playstation") &&
+              EQ(input_prompts_folder(PROMPTS_PLAYSTATION, "xbox"), "romfs-patches-playstation-xbox") &&
+              EQ(input_prompts_folder(PROMPTS_PLAYSTATION, "auto"), "romfs-patches-playstation-xbox") &&
+              EQ(input_prompts_folder(PROMPTS_PLAYSTATION, NULL), "romfs-patches-playstation-xbox"),
+          "prompts: the PlayStation shapes by position for the Nintendo layout, by label for xbox and auto");
     // romfs-patches-xbox shows A as B (tests/romfs_prompts_test.py checks the folders' contents). It is right exactly
-    // where the layout puts A on the east button, which an Xbox pad labels B.
+    // where the layout puts A on the east button, which an Xbox pad labels B. The PlayStation folder shows A as the
+    // circle there, so its name follows the same split.
     input_map_reset();
     static const char *const layouts[] = {"nintendo", "xbox", "auto", "xbox_prompts"};
     for (int i = 0; i < 4; i++) {
         int a_east = input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_EAST] = 1}, input_pad_layout_pick(layouts[i], 0)) == 1ull << B_A;
         CHECK(a_east == EQ(input_prompts_folder(PROMPTS_XBOX, layouts[i]), "romfs-patches-xbox"),
               "prompts: the folder names A as B exactly when the layout puts A on the button labelled B");
+        CHECK(a_east == EQ(input_prompts_folder(PROMPTS_PLAYSTATION, layouts[i]), "romfs-patches-playstation"),
+              "prompts: the PlayStation folder puts A on the circle exactly when the layout puts A on the east button");
+    }
+    // One folder per screen shape (cfg.c cfg_shape_size, installer/screens.py shape_size): the closest aspect ratio of
+    // SHAPED within 1%, the first of equal ones; an unlisted shape from 4:3 to 32:9 its own size; 16:9, portrait and
+    // shapes narrower than 4:3 none.
+    unsigned sz[2] = {0, 0};
+    CHECK(cfg_shape_size(5120, 2160, sz) && sz[0] == 2560 && sz[1] == 1080, "shape: 5120x2160 takes 2560x1080's folder");
+    CHECK(cfg_shape_size(3440, 1440, sz) && sz[0] == 3440 && sz[1] == 1440, "shape: 3440x1440 keeps its own (0.8% off 2560x1080)");
+    CHECK(cfg_shape_size(1920, 800, sz) && sz[0] == 3840 && sz[1] == 1600, "shape: 1920x800 takes 3840x1600's folder");
+    CHECK(cfg_shape_size(2560, 1600, sz) && sz[0] == 1280 && sz[1] == 800 && cfg_shape_size(3000, 2000, sz) &&
+              sz[0] == 1920 && sz[1] == 1280 && cfg_shape_size(5120, 1440, sz) && sz[0] == 3840 && sz[1] == 1080 &&
+              cfg_shape_size(7680, 2160, sz) && sz[0] == 3840 && sz[1] == 1080,
+          "shape: 16:10, 3:2 and 32:9 take their first size");
+    CHECK(cfg_shape_size(1024, 768, sz) && sz[0] == 1440 && sz[1] == 1080 && cfg_shape_size(2048, 1536, sz) &&
+              sz[0] == 1440 && sz[1] == 1080 && cfg_shape_size(3120, 1440, sz) && sz[0] == 2340 && sz[1] == 1080,
+          "shape: 4:3 and 19.5:9 take their first size");
+    CHECK(cfg_shape_size(2560, 1200, sz) && sz[0] == 2560 && sz[1] == 1200 && cfg_shape_size(2000, 1080, sz) &&
+              sz[0] == 2000 && sz[1] == 1080,
+          "shape: an unlisted shape between 4:3 and 32:9 keeps its own size");
+    CHECK(!cfg_shape_size(1920, 1080, sz) && !cfg_shape_size(2560, 1440, sz) && !cfg_shape_size(1280, 1024, sz) &&
+              !cfg_shape_size(1080, 1920, sz) && !cfg_shape_size(7680, 1440, sz),
+          "shape: none for 16:9, narrower than 4:3, portrait and wider than 32:9");
+    // romfs.c shaped_name: the exact size's folder (an older setup wrote every size) wins, else the shape's
+    {
+        char dir[1100], f[1200];
+        snprintf(dir, sizeof dir, "%.*scfg-probe-shapes", (int)(cut + 1 - path), path);
+        static const char *const made[] = {"romfs-patches-2560x1080", "romfs-patches-xbox-5120x2160"};
+        for (int i = 0; i < 2; i++) {
+            snprintf(f, sizeof f, "%s/%s", dir, made[i]);
+            plat_file_mkdir_p(f);
+            snprintf(f, sizeof f, "%s/%s/manifest.tsv", dir, made[i]);
+            plat_file_write(f, "#\n", 2);
+        }
+        snprintf(f, sizeof f, "%s/romfs-index.bin", dir);
+        plat_setenv("TOTK_ROMFS_INDEX", f);
+        plat_setenv("TOTK_HUD_WIDTH", NULL);
+        static const char *const capped[] = {"romfs-patches-2560x1080-hud16x9",
+                                             "romfs-patches-xbox-2560x1080-hud16x9",
+                                             "romfs-patches-3840x1080-hud21x9"};
+        for (size_t i = 0; i < sizeof capped / sizeof *capped; i++) {
+            snprintf(f, sizeof f, "%s/%s/manifest.tsv", dir, capped[i]);
+            plat_file_delete(f);
+        }
+        cfg_set("TOTK_HUD_WIDTH", "full");
+        CHECK(romfs_shaped_ready(2560, 1080) && romfs_shaped_ready(5120, 2160) && !romfs_shaped_ready(3440, 1440),
+              "shape: 5120x2160 finds 2560x1080's layout folder, 3440x1440 does not");
+        CHECK(romfs_shaped_prompts_ready("romfs-patches-xbox", 5120, 2160) &&
+                  !romfs_shaped_prompts_ready("romfs-patches-xbox", 2560, 1080) &&
+                  !romfs_shaped_prompts_ready("romfs-patches-pc", 5120, 2160),
+              "shape: an older install's exact-size prompts folder serves that size only");
+        cfg_set("TOTK_HUD_WIDTH", "16:9");
+        CHECK(romfs_shaped_ready(5120, 2160) && romfs_folders_missing(5120, 2160, NULL) == ROMFS_NEED_LAYOUT,
+              "HUD: a full layout allows wide output but does not hide a missing selected cap");
+        for (size_t i = 0; i < sizeof capped / sizeof *capped; i++) {
+            snprintf(f, sizeof f, "%s/%s", dir, capped[i]);
+            plat_file_mkdir_p(f);
+            snprintf(f, sizeof f, "%s/%s/manifest.tsv", dir, capped[i]);
+            plat_file_write(f, "#\n", 2);
+        }
+        CHECK(romfs_folders_missing(5120, 2160, "romfs-patches-xbox") == ROMFS_NEED_PROMPTS &&
+                  romfs_folders_missing(5120, 2160, "romfs-patches-pc") ==
+                      (ROMFS_NEED_PROMPTS | ROMFS_NEED_SHAPED_PROMPTS),
+              "HUD: canonical capped layouts serve aliases, including Xbox; missing PC prompts still need preparation");
+        cfg_set("TOTK_HUD_WIDTH", "21:9");
+        CHECK(romfs_folders_missing(5120, 2160, NULL) && !romfs_folders_missing(5120, 1440, NULL),
+              "HUD: a different cap needs a different folder; 5120x1440 uses the 3840x1080 shape");
+        cfg_set("TOTK_HUD_WIDTH", "full");
+        CHECK(!romfs_shaped_ready(5120, 1440), "HUD: switching to full does not reuse a capped-only layout");
+        cfg_set("TOTK_HUD_WIDTH", "21:9");
+        CHECK(!romfs_folders_missing(1920, 1080, NULL), "HUD: 16:9 output ignores a wider cap");
+        // The 16:9 prompts' folder is needed at every shape (an older setup or a failed step left it out); at 16:9
+        // nothing shaped is
+        CHECK(romfs_folders_missing(1920, 1080, "romfs-patches-playstation") == ROMFS_NEED_PROMPTS &&
+                  romfs_folders_missing(2560, 1440, "romfs-patches-playstation") == ROMFS_NEED_PROMPTS,
+              "folders: missing 16:9 prompts are asked for at 16:9, without a shaped folder");
+        snprintf(f, sizeof f, "%s/romfs-patches-playstation", dir);
+        plat_file_mkdir_p(f);
+        snprintf(f, sizeof f, "%s/romfs-patches-playstation/manifest.tsv", dir);
+        plat_file_write(f, "#\n", 2);
+        CHECK(!romfs_folders_missing(1920, 1080, "romfs-patches-playstation") &&
+                  (romfs_folders_missing(5120, 2160, "romfs-patches-playstation") &
+                   (ROMFS_NEED_PROMPTS | ROMFS_NEED_SHAPED_PROMPTS)) == ROMFS_NEED_SHAPED_PROMPTS,
+              "folders: present 16:9 prompts leave only the shaped folder to make");
+        plat_file_delete(f);
+        plat_setenv("TOTK_ROMFS_PATCHES", "0");
+        CHECK(!romfs_folders_missing(5120, 2160, NULL) && !romfs_folders_missing(1920, 1080, "romfs-patches-pc"),
+              "HUD: explicit overlay overrides do not request generated layouts or prompts");
+        plat_setenv("TOTK_ROMFS_PATCHES", NULL);
+        // Without build-cache/rebuild.txt (a source build) nothing starts: the menu's notes keep "run the setup
+        // again" and the start spawns nothing (romfs.c overlay_init)
+        CHECK(!romfs_folders_can_prepare() && !romfs_folders_prepare(5120, 2160, "romfs-patches-pc"),
+              "folders: no setup's tools, no generator");
+        cfg_set("TOTK_HUD_WIDTH", "full");
+        for (size_t i = 0; i < sizeof capped / sizeof *capped; i++) {
+            snprintf(f, sizeof f, "%s/%s/manifest.tsv", dir, capped[i]);
+            plat_file_delete(f);
+        }
+        plat_setenv("TOTK_ROMFS_INDEX", NULL);
     }
     uint8_t pd[PAD_COUNT] = {0};
     pd[PAD_SOUTH] = pd[PAD_NORTH] = 1;
@@ -359,6 +481,14 @@ int probe_cfg(void) {
               input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_RPADDLE1] = 1}, PAD_LAYOUT_NINTENDO) == 1ull << B_ZL &&
               input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_ZL] = 1}, PAD_LAYOUT_NINTENDO) == 1ull << B_ZL,
           "bind: pad:rpaddle1 adds a back paddle, pad:default keeps the trigger");
+    input_map_reset();
+    CHECK(input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_TOUCHPAD] = 1}, PAD_LAYOUT_NINTENDO) == 0 &&
+              input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_TOUCHPAD] = 1}, PAD_LAYOUT_XBOX) == 0,
+          "pad layout: the touchpad click is unbound by default");
+    CHECK(input_map_bind("MINUS", "pad:default, pad:touchpad") &&
+              input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_TOUCHPAD] = 1}, PAD_LAYOUT_XBOX) == 1ull << B_MINUS &&
+              input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_BACK] = 1}, PAD_LAYOUT_XBOX) == 1ull << B_MINUS,
+          "bind: pad:touchpad adds the touchpad click, pad:default keeps the button");
     input_map_reset();
     // Bind lines for stick directions and default parts; the remapping rows' edits (input_map.c)
     memset(dn, 0, sizeof dn);
@@ -456,7 +586,11 @@ int probe_cfg(void) {
         char name[96];
         snprintf(name, sizeof name, "TOTK_%s", m->key);
         plat_setenv(name, "");
-        CHECK(EQ(cfg_value(name), m->def), "cfg_value returns the table default");
+        // cfg_get may supply a display or device-profile default (notably OUTPUT_RES on an ultrawide monitor).
+        // The metadata default is used only when those leave the setting unset.
+        const char *effective = cfg_get(name);
+        CHECK(EQ(cfg_value(name), effective && *effective ? effective : m->def),
+              "cfg_value uses the effective default, falling back to the metadata table");
         int ok = 0;
         if (!m->values) ok = 1;
         else if (strstr(m->values, "..")) {

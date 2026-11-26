@@ -687,6 +687,10 @@ NVN_API(nvnWindowAcquireTexture) {
         sleep_until(at);
         perf_end(PERF_PACE, p0);
     }
+    vk_reflex_sleep();
+    uint64_t fid = vk_reflex_frame_begin();
+    vk_reflex_marker(0, fid);   // VK_LATENCY_MARKER_SIMULATION_START_NV: a new frame and its ID
+    vk_antilag_input(fid);
     // The sync means "the display no longer reads this image". Presents are copies queued in submit order, so it is
     // already satisfied: fenced = 3 with fence 0.
     if (s) {
@@ -710,6 +714,7 @@ NVN_API(nvnQueuePresentTexture) {
     if (o->magic != NVN_WIN_MAGIC || idx < 0 || idx >= o->ntex || idx >= 4 || !o->tex[idx])
         rt_fatal("nvn: QueuePresentTexture of image %d on window %p", idx, (void *)o);
     o->presents++;
+    vk_reflex_marker(1, vk_reflex_frame());   // VK_LATENCY_MARKER_SIMULATION_END_NV
     const tex_t *t = (const tex_t *)o->tex[idx];
     uint64_t period = present_period(o), now = kern_now_ns();
     uint64_t slot = now + pace(&o->pace, now, period);

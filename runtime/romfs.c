@@ -25,7 +25,8 @@
 //
 // The resource size table: with a player mod enabled, the game's table is rebuilt at start with the tables the mods
 // ship merged in and the entries of the mods' files raised to what they need (restbl_overlay), the members of their
-// packs too (restbl_packs), and served from <profile>/mods/ in place of the game's or a mod's table.
+// packs too (restbl_packs), and served from <profile>/mods/ in place of the game's or a mod's table. TOTK_RESTBL_CACHE=1
+// serves the table of the last start instead when every input of the build is the same (restbl_cache_key).
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +39,7 @@
 #include "mods.h"
 #include "romfs_config.h"
 #include "romfs_path.h"
+#include "audio_cat.h"
 #include "platform/platform.h"
 #include "restbl.h"
 #include "sha256.h"
@@ -64,11 +66,13 @@ static PlatFile *image;
 static const uint8_t *image_map;
 static char image_file[2048];
 static char index_dir[2048];         // the directory of romfs-index.bin: the proof file's default place
-static char mount_name[32];
+// The RomFS mount names, under lock: [0] is the first MountRom (the game's), which stays mounted; "" is a free slot.
+static char mount_names[ROMFS_MOUNTS][32];
 static PlatMutex lock = PLAT_MUTEX_INIT;
 static uint64_t handles[NH];         // file index + 1; 0 is free
 static uint32_t handle_ovl[NH];      // overlay slot + 1 of an open handle, 0 = original
 static PlatFile *handle_file[NH];    // the handle's open overlay file, when handle_ovl is set
+static uint8_t handle_audio_cat[NH];  // the open file's sound category (audio_cat.c), AUDIO_CAT_UNKNOWN when not audio
 static Overlay *overlays;            // sorted by RomFS index after overlay_init
 static size_t noverlay, overlay_cap;
 static char **added;                 // RomFS paths of the added files, sorted; added[k] is index file_count + k
@@ -340,7 +344,8 @@ static void overlay_push(Overlay o) {
 }
 
 // 1 when path names a file of one game version only (Product.<n> in a name: the resource size table, the actor
-// database and other version-bound files); the RomFS lacking it means it is another version's.
+// database and other version-bound files); the RomFS lacking it means it is another version's, or a name this version
+// still asks for (mod_walk_cb).
 static int other_version(const char *path) {
     for (const char *p = strstr(path, ".Product."); p; p = strstr(p + 1, ".Product.")) {
         const char *d = p + strlen(".Product.");
@@ -420,9 +425,18 @@ static int mod_walk_cb(const char *leaf, int kind, uint64_t size, void *ctx) {
     }
     uint64_t i = index_any_case(path);
     if (i == UINT64_MAX && other_version(path)) {
-        if (is_restbl(path)) shipped_add(file, w->k + 1, 1);   // its entries for this mod's files still apply
         m->other_version++;
-        return 1;
+        // Another version's resource size table is no file this game opens; its entries for this mod's files still
+        // apply.
+        if (is_restbl(path)) {
+            shipped_add(file, w->k + 1, 1);
+            return 1;
+        }
+        // Any other file is served under its own name below, as an added file, the way LayeredFS shows a console every
+        // file of a mod: the game does ask for names its RomFS lacks. Measured on 1.4.3 with mods on (trace = fs): it
+        // opened Sound/Resource/Pack_MasterSword.Product.110.bars.zs, where its RomFS holds Product.140 and the
+        // unversioned file only. A sound mod that ships its pack under all those names stayed silent while this file
+        // was left out.
     }
     PlatFile *f = open_read(file);
     if (!f) {
@@ -455,7 +469,8 @@ static const char *owner_name(const Overlay *o) {
     return o->mod ? mods_at(o->mod - 1)->name : o->prio ? "romfs_mods" : "the port's patches";
 }
 
-// One overlay per path: the highest prio serves it; the others are dropped and counted on their mod.
+// One overlay per path: the highest prio serves it; the others are dropped and counted on their mod, and a file one
+// mod takes from another goes into the conflict table (mods_conflict).
 static void overlay_contest(void) {
     if (!noverlay) return;
     qsort(overlays, noverlay, sizeof *overlays, contest_order);
@@ -466,7 +481,7 @@ static void overlay_contest(void) {
             if (o->mod) {
                 ModInfo *m = mods_at(o->mod - 1);
                 m->overridden++;
-                if (!m->overridden_by[0]) snprintf(m->overridden_by, sizeof m->overridden_by, "%s", owner_name(w));
+                if (w->mod) mods_conflict(mods_at(w->mod - 1)->id, m->id, MOD_PART_FILES, 1);
             } else if (w->mod) {
                 rt_log("RomFS overlay: %s from mod %s replaces the one of %s", o->name, owner_name(w), owner_name(o));
             }
@@ -497,10 +512,10 @@ static void mods_overlay_log(void) {
     for (int k = 0; k < mods_count(); k++) {
         const ModInfo *m = mods_at(k);
         if (!m->enabled || !(m->kind & MOD_ROMFS) || m->problem != MOD_OK) continue;
-        rt_log("mods: %s: %u files served (%u replaced, %u added), %u overridden%s%s, %u for another game version",
-               m->name, m->replaced + m->added, m->replaced, m->added, m->overridden, m->overridden ? " by " : "",
-               m->overridden_by, m->other_version);
+        rt_log("mods: %s: %u files served (%u replaced, %u added), %u overridden, %u for another game version",
+               m->name, m->replaced + m->added, m->replaced, m->added, m->overridden, m->other_version);
     }
+    mods_conflicts_log(MOD_PART_FILES);
 }
 
 static int overlay_order(const void *a, const void *b) {
@@ -748,6 +763,127 @@ static int restbl_packs(Restbl *out, const Restbl *base, int *packs, int *lines)
     return raised;
 }
 
+// ---- the merged table across starts (TOTK_RESTBL_CACHE=1, off by default). Building it opens every mod file and
+// unpacks the mods' packs. A start whose inputs are the same as the last one's serves the table that start wrote.
+// The key is a SHA-256 over every input restbl_overlay reads:
+// - the running totk.exe's path and identity: a new build may merge differently, and it carries the port version, the
+//   game version and the RomFS index's SHA-256 (romfs_config.h);
+// - the RomFS image's path and identity and the game table's index entry: the base table, the game's copies of the
+//   mods' packs and Pack/ZsDic.pack.zs come from the image;
+// - every shipped table (restbl_collect, mod_walk_cb; also the ones overlay_contest drops) with its owner and identity;
+// - every overlay overlay_contest kept (player mods, the TOTK_ROMFS_MODS manifest, the port's folders) with its RomFS
+//   path, file path, place in the order (index, prio, mod) and identity.
+// Identity is the volume, file id, size, last write and creation time. A file's bytes are not hashed: identity is
+// what the overlay layer already trusts (romfs_open stops the game on a file whose identity changed after the start
+// check), and hashing a texture pack would cost more than the merge does. <profile>/mods/<table>.key holds the key,
+// what the build gave (a table or none) and the SHA-256 of the table it wrote; it is replaced atomically after the
+// table is written. A key file of another size, magic or version, another key, or a table of another SHA-256 is a
+// miss: the table is built again and both files are replaced, so the cache stays two files.
+#define RESTBL_CACHE_VERSION 3
+typedef struct { char magic[8]; uint32_t version, outcome; uint8_t key[32], table[32]; } RestblCache;
+enum { RESTBL_NONE = 1, RESTBL_TABLE = 2 };
+
+static void restbl_cache_paths(char *key, size_t key_cap, char *table, size_t table_cap) {
+    const char *leaf = strrchr(restbl_rel, '/') ? strrchr(restbl_rel, '/') + 1 : restbl_rel;
+    need(snprintf(table, table_cap, "%s/mods/%s", rt_config()->profile, leaf) < (int)table_cap, "table path");
+    need(snprintf(key, key_cap, "%s.key", table) < (int)key_cap, "table key path");
+}
+
+static void hash_identity(Sha256 *h, const char *path, const Identity *id) {
+    sha256_update(h, path, strlen(path) + 1);
+    sha256_update(h, id, sizeof *id);
+}
+
+// 0 when path cannot be opened.
+static int hash_file_id(Sha256 *h, const char *path) {
+    PlatFile *f = open_read(path);
+    Identity id = {0};
+    if (f) id = identity_of(f), plat_file_close(f);
+    hash_identity(h, path, &id);
+    return f != NULL;
+}
+
+// The key of this start's inputs into out; 0 when the running exe cannot be opened (no key: the table is built).
+static int restbl_cache_key(uint64_t gi, uint8_t out[32]) {
+    char exe[2100];
+    Sha256 h;
+    sha256_init(&h);
+    static const char tag[] = "totk restbl cache";
+    uint32_t v = RESTBL_CACHE_VERSION;
+    sha256_update(&h, tag, sizeof tag);
+    sha256_update(&h, &v, sizeof v);
+    sha256_update(&h, rt_port_version, strlen(rt_port_version) + 1);
+    if (!plat_exe_path(exe, sizeof exe) || !hash_file_id(&h, exe)) return 0;
+    Identity img = identity_of(image);
+    hash_identity(&h, image_file, &img);
+    Entry ge = entry(gi);
+    sha256_update(&h, &ge, sizeof ge);
+    uint64_t n = nshipped;
+    sha256_update(&h, &n, sizeof n);
+    for (size_t s = 0; s < nshipped; s++) {
+        int32_t m[2] = {shipped[s].mod, shipped[s].other};
+        sha256_update(&h, m, sizeof m);
+        hash_file_id(&h, shipped[s].file);
+    }
+    n = noverlay;
+    sha256_update(&h, &n, sizeof n);
+    for (size_t k = 0; k < noverlay; k++) {
+        const Overlay *o = &overlays[k];
+        int64_t place[3] = {o->index == ADDED ? -1 : (int64_t)o->index, o->prio, o->mod};
+        sha256_update(&h, o->name, strlen(o->name) + 1);
+        sha256_update(&h, place, sizeof place);
+        hash_identity(&h, o->path, &o->id);
+    }
+    sha256_final(&h, out);
+    return 1;
+}
+
+// Records the build's result for key: RESTBL_NONE, or RESTBL_TABLE with the SHA-256 of the table it wrote.
+static void restbl_cache_store(const uint8_t key[32], int outcome, const uint8_t table[32]) {
+    char kp[2300], tp[2300];
+    restbl_cache_paths(kp, sizeof kp, tp, sizeof tp);
+    RestblCache c = {.magic = {'T', 'O', 'T', 'K', 'R', 'S', 'Z', 'C'}, .version = RESTBL_CACHE_VERSION,
+                     .outcome = (uint32_t)outcome};
+    memcpy(c.key, key, 32);
+    if (table) memcpy(c.table, table, 32);
+    if (!plat_file_write_atomic(kp, &c, sizeof c))
+        rt_log("RomFS: cannot write %s; the resource size table is built at every start", kp);
+}
+
+// 1 when the last start's result fits: its table is served again (or none, as then). A miss logs why.
+static int restbl_cache_use(const uint8_t key[32], Overlay *served, const char *keeps, double t0) {
+    char kp[2300], tp[2300];
+    restbl_cache_paths(kp, sizeof kp, tp, sizeof tp);
+    uint64_t n = 0;
+    RestblCache *c = (RestblCache *)plat_file_read(kp, &n);
+    const char *miss = NULL;
+    if (!c || n != sizeof *c || memcmp(c->magic, "TOTKRSZC", 8) || c->version != RESTBL_CACHE_VERSION ||
+        (c->outcome != RESTBL_NONE && c->outcome != RESTBL_TABLE))
+        miss = "no usable key from an earlier start";
+    else if (memcmp(c->key, key, 32))
+        miss = "the mods, the game files or the build changed since the last start";
+    if (!miss && c->outcome == RESTBL_TABLE) {
+        uint64_t zn = 0;
+        uint8_t *z = plat_file_read(tp, &zn), sum[32];
+        if (z) sha256(z, (size_t)zn, sum);
+        if (!z || memcmp(sum, c->table, 32)) {
+            free(z);
+            miss = "the kept table is missing or damaged";
+        } else if (!serve_generated(restbl_rel, served, z, (size_t)zn, "mods",   // frees z
+                                    "merged resource sizes, kept from the last start", keeps)) {
+            miss = "the kept table cannot be served";
+        }
+    }
+    if (miss)
+        rt_log("RomFS: resource size table: built again: %s", miss);
+    else
+        rt_log("RomFS: resource size table: the mods' files are the ones of the last start: %s (%.0f ms)",
+               c->outcome == RESTBL_TABLE ? "its merged table is used" : "they fit the game's entries",
+               (now_s() - t0) * 1000);
+    free(c);
+    return !miss;
+}
+
 // With a player mod (or the TOTK_ROMFS_MODS manifest) serving files: the game's table with every shipped table of this
 // version merged in (an entry larger than the game's wins), the entries a mod's table for another version gives for
 // that mod's files, and each served mod file's entry raised to what its size needs (restbl_grow for a file the game
@@ -760,6 +896,12 @@ static void restbl_overlay(void) {
     static const char keeps[] = "mod files that grew may fail to load";
     double t0 = now_s();
     uint64_t gi = lower(restbl_rel);
+    uint8_t cache_key[32];
+    Overlay *served_now = NULL;
+    for (size_t k = 0; k < noverlay; k++)
+        if (overlays[k].index == gi) served_now = &overlays[k];
+    int cached = rt_knob("RESTBL_CACHE", "0") && restbl_cache_key(gi, cache_key);
+    if (cached && restbl_cache_use(cache_key, served_now, keeps, t0)) return;
     Entry ge = entry(gi);
     void *gz = ge.size < (64u << 20) ? malloc((size_t)ge.size) : NULL;
     Restbl *base = NULL, *out = NULL;
@@ -825,6 +967,7 @@ static void restbl_overlay(void) {
     if (!merged && !raised && !members && !served) {
         restbl_free(out);
         rt_log("RomFS: resource size table: the mods' files fit the game's entries (%.0f ms)", (now_s() - t0) * 1000);
+        if (cached) restbl_cache_store(cache_key, RESTBL_NONE, NULL);
         return;
     }
     size_t rn = 0, zn = 0;
@@ -839,10 +982,14 @@ static void restbl_overlay(void) {
         rt_log("RomFS: cannot pack the merged resource size table; %s", keeps);
         return;
     }
-    if (serve_generated(restbl_rel, served, z, zn, "mods", "merged resource sizes", keeps))
+    uint8_t sum[32];
+    if (cached) sha256(z, zn, sum);   // before serve_generated frees z
+    if (serve_generated(restbl_rel, served, z, zn, "mods", "merged resource sizes", keeps)) {
         rt_log("RomFS: resource size table: %d tables merged (%d entries), %d entries raised for mod files (%d "
                "added files estimated), %d for members of %d mod packs, %.0f ms", tables, merged, raised, estimated,
                members, packs, (now_s() - t0) * 1000);
+        if (cached) restbl_cache_store(cache_key, RESTBL_TABLE, sum);
+    }
 }
 
 // The HeapDef table a bigger game resolution or TOTK_TEX_HEAP_EXTRA_MB needs (resolution.c): its texture heaps and
@@ -878,7 +1025,7 @@ static void *plain_mod_heapdef(size_t *n, const char **who) {
     return NULL;
 }
 static void heapdef_overlay(void) {
-    if (!res_heap_extra_kib() && !res_tex_heap_extra_bytes()) return;
+    if (!res_heap_extra_kib() && !res_tex_heap_extra_bytes() && !res_grass_heap_extra_kib()) return;
     static const char keeps[] = "the game keeps its own resolution";
     Overlay *base;
     size_t n;
@@ -921,14 +1068,15 @@ static void camera_overlay(void) {
 // did not load (ROMFS_PROMPTS_*). The menu compares them with the settings in effect (ui/menu.cpp prompts_note).
 // Each folder keeps its name, but at a game resolution of another shape than 16:9 its files come from dir,
 // <name>-<w>x<h> (overlay_init), and ready is that one's.
-static struct { const char *name; int ready; char dir[64]; } prompts_folders[3];
+#define PROMPTS_FOLDERS 5   // the two Xbox folders, the two PlayStation ones, the PC one (overlay_init)
+static struct { const char *name; int ready; char dir[64]; } prompts_folders[PROMPTS_FOLDERS];
 static const char *prompts_wanted, *prompts_loaded;
 static int prompts_off;
 
 const char *romfs_prompts(void) { return prompts_loaded; }
 
 int romfs_prompts_ready(const char *folder) {
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < PROMPTS_FOLDERS; i++)
         if (folder && prompts_folders[i].name && !strcmp(prompts_folders[i].name, folder)) return prompts_folders[i].ready;
     return 0;
 }
@@ -957,53 +1105,113 @@ static void overlay_drop(size_t a, size_t b) {
     noverlay -= b - a;
 }
 
+// The HUD cap for the canonical shape. An inapplicable cap is full, as in installer/steps.py shape_hud. The generator
+// takes that same shape, so a resolution alias near the one-percent boundary cannot ask for an invalid variant.
+static const char *hud_suffix(unsigned w, unsigned h) {
+    unsigned shape[2] = {w, h};
+    cfg_shape_size(w, h, shape);
+    const char *value = cfg_value("TOTK_HUD_WIDTH");
+    double cap = !strcmp(value, "21:9") ? 21.0 / 9 : !strcmp(value, "16:9") ? 16.0 / 9 : 0;
+    return cap && shape[1] && cap < (double)shape[0] / shape[1] * 0.99
+               ? (cap > 2 ? "-hud21x9" : "-hud16x9") : "";
+}
+
+// The folder <prefix>-<w>x<h><suffix> the game resolution w x h takes in base: that exact size when it has a manifest (an
+// install by a setup that wrote every size, or make_romfs_patches.py --aspect <w>x<h> in a source build), else the
+// size of its shape (cfg.c cfg_shape_size), the one folder per shape installer/steps.py Shapes writes. name gets the
+// folder found, or the shape's one when neither has a manifest (for the log). 1 when found.
+static int shaped_name(const char *base, const char *prefix, unsigned w, unsigned h, const char *suffix,
+                       char *name, size_t cap) {
+    char path[2400];
+    unsigned s[2] = {w, h};
+    for (int pass = 0; pass < 2; pass++) {
+        if (pass && !cfg_shape_size(w, h, s)) break;
+        if (pass && s[0] == w && s[1] == h) break;
+        if (snprintf(name, cap, "%s-%ux%u%s", prefix, s[0], s[1], suffix) >= (int)cap) return 0;
+        if (snprintf(path, sizeof path, "%s/%s/manifest.tsv", base, name) < (int)sizeof path && plat_file_exists(path))
+            return 1;
+    }
+    return 0;
+}
+
+// Prefer the selected HUD at both exact and canonical sizes. Boot may fall back to the full HUD, but preparation
+// and the menu's missing-layout note use strict lookup so a full layout cannot hide a missing capped variant.
+static int selected_shape(const char *base, const char *prefix, unsigned w, unsigned h, char *name, size_t cap,
+                          int fallback) {
+    const char *suffix = hud_suffix(w, h);
+    if (shaped_name(base, prefix, w, h, suffix, name, cap)) return 1;
+    return fallback && *suffix && shaped_name(base, prefix, w, h, "", name, cap);
+}
+
 static void overlay_init(void) {
     // TOTK_ROMFS_PATCHES unset: romfs-patches next to romfs-index.bin if it has a manifest (tools/make_romfs_patches.py).
-    // A game resolution that is not 16:9 takes romfs-patches-<w>x<h> instead when it is there: the same overlay with
-    // the UI laid out for that shape (make_romfs_patches.py --aspect), when the game version has the camera aspect patch
-    // the layout goes with (res_wants_wide_overlay).
-    // With prompts = xbox, the Xbox prompts' folder for the pad layout in its place (input_prompts_folder): the same
-    // patches with Xbox button icons (make_romfs_patches.py --prompts); prompts = pc takes romfs-patches-pc whatever
-    // the pad layout. The game reads the archives once at boot, so the prompts stay until restart even though the
-    // layout itself changes live. Each folder replaces romfs-patches as a whole. At a game resolution of another shape
-    // the prompts come from <folder>-<w>x<h> (make_romfs_patches.py --prompts <style> --aspect): it carries that
-    // shape's UI layout too, so it replaces romfs-patches-<w>x<h> as the folder replaces romfs-patches. Without it the
-    // Switch prompts stay with the shape's layout. So they do when a RomFS mod (the TOTK_ROMFS_MODS manifest or a
-    // player mod) replaces one of the prompts' fonts: romfs-patches loads in their place, so the mod's file is not
-    // served beside prompts files made for the game's own. A mod's resource size table is no clash: restbl_overlay
-    // merges it with the prompts' one.
+    // A game resolution that is not 16:9 takes romfs-patches-<w>x<h> instead when it is there (shaped_name: the exact
+    // size, else the folder of its shape): the same overlay with the UI laid out for that shape
+    // (make_romfs_patches.py --aspect), when the game version has the camera aspect patch the layout goes with
+    // (res_wants_wide_overlay).
+    // With prompts = xbox or playstation, that controller's prompts' folder for the pad layout in its place
+    // (input_prompts_folder): the same patches with Xbox or PlayStation button icons (make_romfs_patches.py
+    // --prompts); prompts = pc takes romfs-patches-pc whatever the pad layout. The game reads the archives once at
+    // boot, so the prompts stay until restart even though the layout itself changes live. Each folder replaces
+    // romfs-patches as a whole. At a game resolution of another shape the prompts come from <folder>-<w>x<h>
+    // (make_romfs_patches.py --prompts <style> --aspect): it carries that shape's UI layout too, so it replaces
+    // romfs-patches-<w>x<h> as the folder replaces romfs-patches. Without it the Switch prompts stay with the shape's
+    // layout. So they do when a RomFS mod (the TOTK_ROMFS_MODS manifest or a player mod) replaces one of the prompts'
+    // fonts: romfs-patches loads in their place, so the mod's file is not served beside prompts files made for the
+    // game's own. A mod's resource size table is no clash: restbl_overlay merges it with the prompts' one.
     char def[2100], path[2100];
     const char *patches = cfg_get("TOTK_ROMFS_PATCHES"), *mods = cfg_get("TOTK_ROMFS_MODS");
     int wide = 0;
     unsigned out[2];
     res_wanted(out);
+    unsigned shape[2] = {out[0], out[1]};   // the --aspect of the folder made for this shape
+    cfg_shape_size(out[0], out[1], shape);
     if (!patches && res_wants_wide_overlay(out)) {
-        if (snprintf(def, sizeof def, "%s/romfs-patches-%ux%u/manifest.tsv", index_dir, out[0], out[1]) < (int)sizeof def &&
-            plat_file_exists(def)) {
-            def[strlen(def) - strlen("/manifest.tsv")] = 0;
+        char name[128];
+        if (selected_shape(index_dir, "romfs-patches", out[0], out[1], name, sizeof name, 1) &&
+            snprintf(def, sizeof def, "%s/%s", index_dir, name) < (int)sizeof def) {
             patches = def, wide = 1;
+            rt_log("RomFS overlay: the UI layout for %ux%u from %s", out[0], out[1], name);
+            const char *suffix = hud_suffix(out[0], out[1]);
+            if (*suffix && !ends_with(name, suffix))
+                rt_log("RomFS overlay: the selected HUD layout is missing; using the full HUD (an install makes it "
+                       "in the background below; a source build: tools/make_romfs_patches.py --aspect %ux%u --hud %s)",
+                       shape[0], shape[1], cfg_value("TOTK_HUD_WIDTH"));
         } else {
-            rt_log("RomFS overlay: no romfs-patches-%ux%u for this game resolution, the UI keeps its 16:9 layout "
-                   "(tools/make_romfs_patches.py --aspect %ux%u)", out[0], out[1], out[0], out[1]);
+            rt_log("RomFS overlay: no %s for this game resolution, the UI keeps its 16:9 layout (run the setup again, "
+                   "or tools/make_romfs_patches.py --aspect %ux%u)", name, shape[0], shape[1]);
         }
     }
-    static const char *const layouts[2] = {"nintendo", "xbox"};   // one of each Xbox folder, then the PC one
-    for (int i = 0; i < 3; i++) {
-        const char *name = i < 2 ? input_prompts_folder(PROMPTS_XBOX, layouts[i]) : input_prompts_folder(PROMPTS_PC, 0);
+    // one of each Xbox and PlayStation folder, then the PC one
+    static const char *const layouts[2] = {"nintendo", "xbox"};
+    for (int i = 0; i < PROMPTS_FOLDERS; i++) {
+        const char *name = i < 2 ? input_prompts_folder(PROMPTS_XBOX, layouts[i])
+                          : i < 4 ? input_prompts_folder(PROMPTS_PLAYSTATION, layouts[i - 2])
+                                  : input_prompts_folder(PROMPTS_PC, 0);
         char *dir = prompts_folders[i].dir;
-        if (wide) snprintf(dir, sizeof prompts_folders[i].dir, "%s-%ux%u", name, out[0], out[1]);
-        else snprintf(dir, sizeof prompts_folders[i].dir, "%s", name);
         prompts_folders[i].name = name;
+        if (wide) {
+            prompts_folders[i].ready = selected_shape(index_dir, name, out[0], out[1], dir,
+                                                      sizeof prompts_folders[i].dir, 1);
+            continue;
+        }
+        snprintf(dir, sizeof prompts_folders[i].dir, "%s", name);
         prompts_folders[i].ready =
             snprintf(path, sizeof path, "%s/%s/manifest.tsv", index_dir, dir) < (int)sizeof path && plat_file_exists(path);
     }
     const char *layout = cfg_value("TOTK_PAD_LAYOUT");
     int pick = input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout);
-    const char *style = pick == PROMPTS_PC ? "keyboard and mouse" : "Xbox";
+    const char *style = pick == PROMPTS_PC            ? "keyboard and mouse"
+                        : pick == PROMPTS_PLAYSTATION ? "PlayStation"
+                                                      : "Xbox";
     prompts_wanted = input_prompts_folder(pick, layout);
     const char *wanted_dir = prompts_wanted;   // the folder its files come from
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < PROMPTS_FOLDERS; i++)
         if (prompts_wanted && !strcmp(prompts_folders[i].name, prompts_wanted)) wanted_dir = prompts_folders[i].dir;
+    const char *suffix = hud_suffix(out[0], out[1]);
+    if (wide && prompts_wanted && romfs_prompts_ready(prompts_wanted) && *suffix && !ends_with(wanted_dir, suffix))
+        rt_log("RomFS overlay: the %s prompts have no selected HUD layout; their full HUD loads instead (an "
+               "install makes it in the background below)", style);
     prompts_off = !prompts_wanted                         ? ROMFS_PROMPTS_OK
                   : patches && !wide                      ? ROMFS_PROMPTS_PATCHES
                   : !romfs_prompts_ready(prompts_wanted)  ? (wide ? ROMFS_PROMPTS_SHAPE : ROMFS_PROMPTS_MISSING)
@@ -1025,13 +1233,23 @@ static void overlay_init(void) {
         char why[256];
         if (prompts_off == ROMFS_PROMPTS_SHAPE)
             snprintf(why, sizeof why, "the game resolution has no %s (tools/make_romfs_patches.py --prompts %s "
-                     "--aspect %ux%u)", wanted_dir, prompts_wanted + strlen("romfs-patches-"), out[0], out[1]);
+                     "--aspect %ux%u)", wanted_dir, prompts_wanted + strlen("romfs-patches-"), shape[0], shape[1]);
         else
             snprintf(why, sizeof why, "%s", prompts_off == ROMFS_PROMPTS_PATCHES
                                                 ? "TOTK_ROMFS_PATCHES is set"
                                                 : "their folder has no manifest.tsv (run the setup again)");
-        rt_log("RomFS overlay: prompts = %s, but %s; Switch prompts stay", pick == PROMPTS_PC ? "pc" : "xbox", why);
+        rt_log("RomFS overlay: prompts = %s, but %s; Switch prompts stay",
+               pick == PROMPTS_PC ? "pc" : pick == PROMPTS_PLAYSTATION ? "playstation" : "xbox", why);
     }
+    // A folder the settings in effect ask for and the install lacks (an older setup, a failed setup step, a display
+    // of another shape): its generator starts in the background for the next start when the setup's tools are next to
+    // the game (romfs_folders_prepare). The size is the one output_res asks for: without its shape's layout the game
+    // draws 16:9 this time (resolution.c shape_fallback). Without an output_res it is the display's shape, which the
+    // default keeps only while that shape has the prompts' folder (cfg.c cfg_screen_size). Nothing with
+    // TOTK_ROMFS_PATCHES set; a source build has no build-cache/rebuild.txt and keeps the lines above.
+    unsigned asked[2];
+    if (!cfg_screen_size(asked)) res_asked(asked);
+    romfs_folders_prepare(asked[0], asked[1], prompts_wanted);
     size_t prompts_end = noverlay;
     char plain[2100];   // romfs-patches, when it has a manifest
     int plain_ok = snprintf(plain, sizeof plain, "%s/romfs-patches/manifest.tsv", index_dir) < (int)sizeof plain &&
@@ -1081,25 +1299,178 @@ static void index_path(char *out, size_t cap) {
     strcpy(out + k, "romfs-index.bin");
 }
 
-// 1 when <prefix>-<w>x<h> has a manifest next to romfs-index.bin. Works before fs_init: index_dir is not set that early
-// (cfg_init, res_init and resolution.c decide run first), so the index path is worked out again here.
-static int shaped_folder_ready(const char *prefix, unsigned w, unsigned h) {
-    char dir[2100], path[2200];
-    index_path(dir, sizeof dir);
+// The folder of romfs-index.bin. Works before fs_init: index_dir is not set that early (cfg_init, res_init and
+// resolution.c decide run first), so the index path is worked out again here.
+static void index_folder(char *dir, size_t cap) {
+    index_path(dir, cap);
     char *sep = plat_last_sep(dir);
     if (sep) *sep = 0;
     else strcpy(dir, ".");
-    return snprintf(path, sizeof path, "%s/%s-%ux%u/manifest.tsv", dir, prefix, w, h) < (int)sizeof path &&
-           plat_file_exists(path);
 }
 
-// 1 when the game resolution w x h has the UI layout of its shape: romfs-patches-<w>x<h>, the folder overlay_init
-// looks for.
-int romfs_shaped_ready(unsigned w, unsigned h) { return shaped_folder_ready("romfs-patches", w, h); }
+// 1 when the folder overlay_init takes for <prefix> at w x h (shaped_name) has a manifest next to romfs-index.bin.
+static int shaped_folder_ready(const char *prefix, unsigned w, unsigned h, int fallback) {
+    char dir[2100], name[128];
+    index_folder(dir, sizeof dir);
+    return selected_shape(dir, prefix, w, h, name, sizeof name, fallback);
+}
+
+// 1 when the game resolution w x h has the UI layout of its shape: romfs-patches-<w>x<h> of that size or of its shape,
+// the folder overlay_init looks for.
+int romfs_shaped_ready(unsigned w, unsigned h) { return shaped_folder_ready("romfs-patches", w, h, 1); }
 
 // 1 when it has a prompts' folder (input_prompts_folder) with that layout too: <folder>-<w>x<h>, which overlay_init
 // loads in its place with those prompts.
-int romfs_shaped_prompts_ready(const char *folder, unsigned w, unsigned h) { return shaped_folder_ready(folder, w, h); }
+int romfs_shaped_prompts_ready(const char *folder, unsigned w, unsigned h) { return shaped_folder_ready(folder, w, h, 1); }
+
+// ---- missing folders, made in the background (the settings menu, ui/menu.cpp folders_tick, and the start,
+// overlay_init)
+// The setup writes the 16:9 prompts' folders on every install (installer/steps.py Prepare, PcPrompts) and the shaped
+// folders for the displays connected when it ran (Shapes). An install by an older setup, a failed setup step, a
+// monitor change or a change of resolution, HUD width, prompts or pad layout can ask for a folder it did not write.
+// The game then starts the same generator: the setup's Python and tools/make_romfs_patches.py, which
+// build-cache/rebuild.txt names (installer/steps.py write_rebuild_command: line 1 the Python, pythonw on Windows, so
+// no console opens; line 4 the setup's folder; both relative to the install folder for the build kit,
+// installer/layout.py), on the install folder's romfs/. Child processes the game does not wait for. With --background
+// the generator writes into a folder of its own beside the output and renames it into place at the end, unless a
+// folder with a manifest is there by then: a folder this game or another start loaded is never written into, and two
+// generators for one folder (the menu and the start, or a restart while the last one runs) do not mix their files.
+// The next start loads the finished folder.
+static int prepare_tools(char *python, size_t pcap, char *script, size_t scap, char *dir, size_t dcap) {
+    char path[2400];
+    index_folder(dir, dcap);
+    uint64_t n = 0;
+    snprintf(path, sizeof path, "%s/build-cache/rebuild.txt", dir);
+    char *text = (char *)plat_file_read(path, &n);
+    if (!text) return 0;
+    char *lines[5] = {0};
+    int k = 0;
+    for (char *p = text; k < 5 && p < text + n;) {
+        char *e = memchr(p, '\n', (size_t)(text + n - p));
+        if (!e) e = text + n;
+        if (e > p && e[-1] == '\r') e[-1] = 0;
+        *e = 0;
+        lines[k++] = p;
+        p = e + 1;
+    }
+    int ok = k >= 4 && !strcmp(lines[1], "-c");
+    if (ok) {   // the build kit's lines are relative to the install folder
+        const char *at0 = plat_path_absolute(lines[0]) ? "" : dir, *at3 = plat_path_absolute(lines[3]) ? "" : dir;
+        ok = snprintf(python, pcap, "%s%s%s", at0, *at0 ? "/" : "", lines[0]) < (int)pcap &&
+             snprintf(script, scap, "%s%s%s/tools/make_romfs_patches.py", at3, *at3 ? "/" : "", lines[3]) < (int)scap;
+    }
+    free(text);
+    snprintf(path, sizeof path, "%s/romfs/romfs.bin", dir);
+    return ok && plat_file_exists(python) && plat_file_exists(script) && plat_file_exists(path);
+}
+
+// 1 when folder (a name next to romfs-index.bin) has a manifest.
+static int plain_folder_ready(const char *folder) {
+    char dir[2100], path[2400];
+    index_folder(dir, sizeof dir);
+    return snprintf(path, sizeof path, "%s/%s/manifest.tsv", dir, folder) < (int)sizeof path && plat_file_exists(path);
+}
+
+int romfs_folders_missing(unsigned w, unsigned h, const char *prompts_folder) {
+    unsigned out[2] = {w, h};
+    if (cfg_get("TOTK_ROMFS_PATCHES")) return 0;
+    int need = prompts_folder && !plain_folder_ready(prompts_folder) ? ROMFS_NEED_PROMPTS : 0;
+    if (!res_wants_wide_overlay(out)) return need;
+    if (!shaped_folder_ready("romfs-patches", w, h, 0)) need |= ROMFS_NEED_LAYOUT;
+    if (prompts_folder && !shaped_folder_ready(prompts_folder, w, h, 0)) need |= ROMFS_NEED_SHAPED_PROMPTS;
+    return need;
+}
+
+int romfs_folders_can_prepare(void) {
+    static int known = -1;
+    if (known < 0) {
+        char python[1024], script[1100], dir[2100];
+        known = prepare_tools(python, sizeof python, script, sizeof script, dir, sizeof dir);
+    }
+    return known;
+}
+
+// The folders a generator was started for in this process, under shape_lock: the start (overlay_init) and the menu
+// thread both start them. The game picks its overlay at start, so a folder is not started twice before the next start,
+// even when its generator has ended: the same setting chosen again starts no second generator for it.
+static PlatMutex shape_lock = PLAT_MUTEX_INIT;
+static char (*shape_started)[160];
+static int shape_started_n, shape_started_cap;
+
+static int shape_was_started(const char *folder) {
+    for (int i = 0; i < shape_started_n; i++)
+        if (!strcmp(shape_started[i], folder)) return 1;
+    return 0;
+}
+
+// Starts the generator for folder (a name in dir) unless one was started for it before. 1 when one runs for it, 0 when
+// it could not start. plat_spawn starts it detached and closes its handles without waiting, so a start costs the
+// calling thread one CreateProcess.
+static int shape_spawn(const char *const *argv, const char *dir, const char *folder) {
+    plat_mutex_lock(&shape_lock);
+    int ok = 1;
+    if (!shape_was_started(folder)) {
+        if (shape_started_n == shape_started_cap) {
+            int cap = shape_started_cap ? shape_started_cap * 2 : 8;
+            void *grown = realloc(shape_started, (size_t)cap * sizeof *shape_started);
+            if (grown) shape_started = grown, shape_started_cap = cap;
+        }
+        // never start a writer whose folder cannot be remembered for deduplication
+        ok = shape_started_n < shape_started_cap && plat_spawn(argv, dir);
+        if (ok) snprintf(shape_started[shape_started_n++], sizeof *shape_started, "%s", folder);
+    }
+    plat_mutex_unlock(&shape_lock);
+    return ok;
+}
+
+int romfs_folders_prepare(unsigned w, unsigned h, const char *prompts_folder) {
+    char python[1024], script[1100], dir[2100], romfs[2200], out[2300], reuse[2300], binds[2300], size[32], version[8],
+        folder[160];
+    int need = romfs_folders_missing(w, h, prompts_folder);
+    if (!need || !prepare_tools(python, sizeof python, script, sizeof script, dir, sizeof dir)) return 0;
+    unsigned s[2] = {w, h};
+    int shaped = cfg_shape_size(w, h, s);
+    snprintf(size, sizeof size, "%ux%u", s[0], s[1]);
+    snprintf(version, sizeof version, "v%d", rt_game_version);
+    snprintf(romfs, sizeof romfs, "%s/romfs", dir);
+    const char *suffix = shaped ? hud_suffix(w, h) : "", *hud = *suffix ? cfg_value("TOTK_HUD_WIDTH") : "full";
+    const char *style = prompts_folder ? prompts_folder + strlen("romfs-patches-") : NULL;
+    // The keyboard and mouse prompts are drawn from totk.ini's bind_ lines, as the setup's PcPrompts and Shapes steps
+    // draw them (installer/steps.py pc_binds); a file without such lines gives the keyboard defaults.
+    snprintf(binds, sizeof binds, "%s/totk.ini", dir);
+    int pc = style && !strcmp(style, "pc") && plat_file_exists(binds);
+    static const int order[3] = {ROMFS_NEED_PROMPTS, ROMFS_NEED_LAYOUT, ROMFS_NEED_SHAPED_PROMPTS};
+    int started = 0, failed = 0;
+    for (int k = 0; k < 3; k++) {
+        int what = order[k];
+        if (!(need & what) || (what != ROMFS_NEED_PROMPTS && !shaped)) continue;
+        if (what == ROMFS_NEED_PROMPTS) snprintf(folder, sizeof folder, "%s", prompts_folder);
+        else if (what == ROMFS_NEED_LAYOUT) snprintf(folder, sizeof folder, "romfs-patches-%s%s", size, suffix);
+        else snprintf(folder, sizeof folder, "%s-%s%s", prompts_folder, size, suffix);
+        snprintf(out, sizeof out, "%s/%s", dir, folder);
+        const char *argv[24] = {python, script, "--version", version, "--romfs", romfs, "--out", out, "--background"};
+        int argc = 9;
+        if (what != ROMFS_NEED_LAYOUT) argv[argc++] = "--prompts", argv[argc++] = style;
+        if (what != ROMFS_NEED_PROMPTS) {
+            argv[argc++] = "--aspect", argv[argc++] = size;
+            argv[argc++] = "--hud", argv[argc++] = hud;
+        }
+        // The shaped prompts differ from their 16:9 folder in the UI archive alone, so its fonts are linked, not
+        // compressed again; a 16:9 folder still being made has nothing to link yet.
+        if (what == ROMFS_NEED_SHAPED_PROMPTS && !(need & ROMFS_NEED_PROMPTS)) {
+            snprintf(reuse, sizeof reuse, "%s/%s", dir, prompts_folder);
+            argv[argc++] = "--reuse", argv[argc++] = reuse;
+        }
+        if (pc && what != ROMFS_NEED_LAYOUT) argv[argc++] = "--binds", argv[argc++] = binds;
+        argv[argc] = NULL;
+        if (shape_spawn(argv, dir, folder)) started++;
+        else failed++;
+    }
+    rt_log("RomFS overlay: making %d missing folder%s for %ux%u%s%s in the background (%d failed to start; %s)",
+           started + failed, started + failed == 1 ? "" : "s", w, h, style ? ", prompts " : "", style ? style : "",
+           failed, script);
+    return started && !failed;
+}
 
 static void load_index(void) {
     char path[2100];
@@ -1212,30 +1583,92 @@ const char *romfs_overlay(size_t k, const char **file, uint64_t *size, int *is_a
     return overlays[k].name;
 }
 
+// The RomFS mount whose name path starts with ("<name>:"), copied into name; 0 when none.
+static int mount_of(const char *path, char name[32]) {
+    int found = 0;
+    if (!path) return 0;
+    plat_mutex_lock_shared(&lock);
+    for (int k = 0; k < ROMFS_MOUNTS && !found; k++) {
+        size_t n = strlen(mount_names[k]);
+        if (n && !strncmp(path, mount_names[k], n) && path[n] == ':') found = 1, memcpy(name, mount_names[k], 32);
+    }
+    plat_mutex_unlock_shared(&lock);
+    return found;
+}
+
 int romfs_owns(const char *path) {
-    size_t n = strlen(mount_name);
-    return n && path && !strncmp(path, mount_name, n) && path[n] == ':';
+    char name[32];
+    return mount_of(path, name);
+}
+
+// The RomFS path of "<mount>:/<path>" on any RomFS mount (romfs_path.h romfs_path_relative), or NULL.
+static const char *relative(const char *path) {
+    char name[32];
+    return mount_of(path, name) ? romfs_path_relative(name, path) : NULL;
+}
+
+// The RomFS folder path names, into out without a trailing '/': "" for the mount's root ("<mount>:/",
+// "<mount>://"). 0 when path is on no RomFS mount or is no valid RomFS path.
+static int folder_of(const char *path, char *out, size_t cap) {
+    char name[32];
+    if (!mount_of(path, name)) return 0;
+    size_t n = strlen(name);
+    if (path[n + 1] != '/') return 0;
+    const char *p = path + n + 1;
+    while (*p == '/') p++;
+    size_t len = strlen(p);
+    while (len && p[len - 1] == '/') len--;
+    if (len >= cap) return 0;
+    memcpy(out, p, len);
+    out[len] = 0;
+    return !len || romfs_path_valid_relative(out);
 }
 
 int romfs_handle(uint64_t h) { return h > ROMFS_HANDLE_BASE && h < ROMFS_HANDLE_BASE + NH; }
 
 uint32_t romfs_mount(const char *name) {
     fs_init();
-    if (!name || !romfs_path_valid_relative(name) || strlen(name) >= sizeof mount_name || strchr(name, '/') ||
+    if (!name || !romfs_path_valid_relative(name) || strlen(name) >= sizeof mount_names[0] || strchr(name, '/') ||
         strchr(name, ':'))
         return FS_R_INVALID;
+    if (fs_host_mounted(name)) return FS_R_ALREADY_EXISTS;   // a storage mount has the name
+    int slot = -1;
     plat_mutex_lock(&lock);
-    if (*mount_name && strcmp(name, mount_name)) rt_fatal("second RomFS mount %s (%s is mounted)", name, mount_name);
-    strcpy(mount_name, name);
+    for (int k = 0; k < ROMFS_MOUNTS; k++) {
+        if (!strcmp(mount_names[k], name)) {   // mounted already: the game mounts "content" once, the probe twice
+            plat_mutex_unlock(&lock);
+            return 0;
+        }
+        if (!*mount_names[k] && slot < 0) slot = k;
+    }
+    // slot 0 is taken first and never freed (romfs_unmount), so the game's mount stays [0]
+    if (slot < 0) rt_fatal("RomFS mount table full (%d names): %s", ROMFS_MOUNTS, name);
+    strcpy(mount_names[slot], name);
     plat_mutex_unlock(&lock);
     rt_log("fs mount %s: -> RomFS", name);
     return 0;
 }
 
+// The first RomFS mount is the game's and stays: the run time never unmounted it, and its paths are opened on every
+// thread. A mod's further names go at Unmount; their open handles stay valid (a handle names an index row, no mount).
+int romfs_unmount(const char *name) {
+    int found = 0, kept = 0;
+    if (!name) return 0;
+    plat_mutex_lock(&lock);
+    for (int k = 0; k < ROMFS_MOUNTS && !found; k++)
+        if (*mount_names[k] && !strcmp(mount_names[k], name)) {
+            found = 1, kept = !k;
+            if (k) *mount_names[k] = 0;
+        }
+    plat_mutex_unlock(&lock);
+    if (found) rt_log("fs unmount %s (RomFS)%s", name, kept ? ": kept, the game's mount" : "");
+    return found;
+}
+
 uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
     fs_trace("rom", path);
     if (!out || mode != FS_OPEN_READ) return FS_R_UNSUPPORTED_OPEN;
-    const char *p = romfs_path_relative(mount_name, path);
+    const char *p = relative(path);
     if (!p) return FS_R_PATH_NOT_FOUND;
     uint64_t i = file_index(p);
     if (i == UINT64_MAX) return FS_R_PATH_NOT_FOUND;
@@ -1249,12 +1682,21 @@ uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
         if (!f || memcmp(&id, &o->id, sizeof id))
             rt_fatal("RomFS overlay %s is missing or changed since the start check (restart the game)", o->path);
     }
+    // The handle keeps its sound category (audio_cat.c) even while the volume settings are at 100, so a stream opened
+    // before a setting moves is classified by its later reads. A stream may start reading past its header (the
+    // header came with the BARS bank), so the coefficients are taken from the image here.
+    int cat = audio_cat_from_path(p);
+    if (cat != AUDIO_CAT_UNKNOWN && !ov && image_map && audio_cat_active()) {
+        Entry e = entry(i);
+        if (e.size >= 0x40) audio_cat_scan_bwav(image_map + e.offset, e.size < 4096 ? e.size : 4096, cat);
+    }
     plat_mutex_lock(&lock);
     for (unsigned j = 1; j < NH; j++)
         if (!handles[j]) {
             handles[j] = i + 1;
             handle_ovl[j] = ov;
             handle_file[j] = f;
+            handle_audio_cat[j] = (uint8_t)cat;
             *out = ROMFS_HANDLE_BASE + j;
             plat_mutex_unlock(&lock);
             return 0;
@@ -1304,6 +1746,11 @@ uint32_t romfs_read(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uin
         done += (uint64_t)r;
     }
     *out = done;
+    uint64_t j = h - ROMFS_HANDLE_BASE;
+    if (handle_audio_cat[j] != AUDIO_CAT_UNKNOWN && done && audio_cat_active()) {
+        if (offset == 0) audio_cat_scan_bwav(buffer, done, handle_audio_cat[j]);
+        audio_cat_tag_range((uint64_t)(uintptr_t)buffer, done, handle_audio_cat[j]);
+    }
     return 0;
 }
 
@@ -1326,30 +1773,103 @@ void romfs_close(uint64_t h) {
     handles[j] = 0;
     handle_ovl[j] = 0;
     handle_file[j] = NULL;
+    handle_audio_cat[j] = 0;
     plat_mutex_unlock(&lock);
     if (of) plat_file_close(of);
 }
 
+// A path with a trailing '/' names a folder only; the mount's root ("<mount>:/") is a folder.
 uint32_t romfs_entry_type(int *out, const char *path) {
     if (!out) return FS_R_INVALID;
-    const char *p = romfs_path_relative(mount_name, path);
-    if (!p) return FS_R_PATH_NOT_FOUND;
-    if (file_index(p) != UINT64_MAX) {
+    const char *p = relative(path);
+    if (p && file_index(p) != UINT64_MAX) {
         *out = FS_ENTRY_FILE;
         return 0;
     }
     char dir[4096];
-    if (snprintf(dir, sizeof dir, "%s/", p) >= (int)sizeof dir) return FS_R_INVALID;
-    if (folder_exists(dir)) {
+    if (!folder_of(path, dir, sizeof dir - 1)) return FS_R_PATH_NOT_FOUND;
+    size_t n = strlen(dir);
+    dir[n] = '/', dir[n + 1] = 0;
+    if (!n || folder_exists(dir)) {
         *out = FS_ENTRY_DIRECTORY;
         return 0;
     }
     return FS_R_PATH_NOT_FOUND;
 }
 
+// ---- folder listings (romfs_list), made from the sorted index and the sorted added files at each OpenDirectory
+typedef struct { const char *name; uint64_t size; } Child;
+typedef struct { Child *e; size_t n, cap; } Children;
+
+static void child_add(Children *c, const char *name, uint64_t size) {
+    if (c->n == c->cap) {
+        c->cap = c->cap ? c->cap * 2 : 64;
+        c->e = realloc(c->e, c->cap * sizeof *c->e);
+        need(c->e != NULL, "RomFS folder listing");
+    }
+    c->e[c->n++] = (Child){name, size};
+}
+
+static int child_order(const void *a, const void *b) { return strcmp(((const Child *)a)->name, ((const Child *)b)->name); }
+
+// RomFS path p (index row or added file i) under the folder prefix of n bytes: a file right under the folder goes to
+// files with the size it is served with (the overlay's when one replaces or adds it), the first component of a deeper
+// path to dirs as a malloc'd copy, once per run of equal components (paths that share it are adjacent when sorted).
+static void child_of(const char *p, uint64_t i, size_t n, Children *dirs, Children *files, const char **last,
+                     size_t *last_n) {
+    const char *rest = p + n, *slash = strchr(rest, '/');
+    if (!slash) {
+        uint32_t ov = overlay_slot(i);
+        child_add(files, rest, ov ? overlays[ov - 1].size : entry(i).size);
+        return;
+    }
+    size_t len = (size_t)(slash - rest);
+    if (*last && *last_n == len && !memcmp(*last, rest, len)) return;
+    *last = rest, *last_n = len;
+    char *name = malloc(len + 1);
+    need(name != NULL, "RomFS folder listing");
+    memcpy(name, rest, len);
+    name[len] = 0;
+    child_add(dirs, name, 0);
+}
+
+uint32_t romfs_list(const char *path, int (*cb)(const char *name, int kind, uint64_t size, void *ctx), void *ctx) {
+    char pre[4096];
+    if (!folder_of(path, pre, sizeof pre - 1)) return FS_R_PATH_NOT_FOUND;
+    size_t n = strlen(pre);
+    if (n) pre[n++] = '/', pre[n] = 0;
+    // a file or a missing folder: the sdk's RomFsFileSystem::DoOpenDirectory answers both with path not found
+    if (n && !folder_exists(pre)) return FS_R_PATH_NOT_FOUND;
+    Children dirs = {0}, files = {0};
+    const char *last = NULL;
+    size_t last_n = 0;
+    for (uint64_t i = lower(pre); i < file_count; i++) {
+        const char *p = entry_name(entry(i));
+        if (strncmp(p, pre, n)) break;
+        child_of(p, i, n, &dirs, &files, &last, &last_n);
+    }
+    last = NULL;
+    for (size_t k = added_lower(pre); k < nadded && !strncmp(added[k], pre, n); k++)
+        child_of(added[k], file_count + k, n, &dirs, &files, &last, &last_n);
+    // the RomFS's folders and the added files' may share a name: sorted, a name given twice is adjacent. Folders come
+    // first, as the sdk's RomFS directory reads them (RomFsFileSystem::DoOpenDirectory's directory, its read).
+    if (dirs.n) qsort(dirs.e, dirs.n, sizeof *dirs.e, child_order);
+    if (files.n) qsort(files.e, files.n, sizeof *files.e, child_order);
+    int go = 1;
+    for (size_t k = 0; k < dirs.n && go; k++)
+        if (!k || strcmp(dirs.e[k].name, dirs.e[k - 1].name)) go = cb(dirs.e[k].name, PLAT_FS_DIR, 0, ctx);
+    for (size_t k = 0; k < files.n && go; k++) go = cb(files.e[k].name, PLAT_FS_FILE, files.e[k].size, ctx);
+    for (size_t k = 0; k < dirs.n; k++) free((void *)dirs.e[k].name);
+    free(dirs.e);
+    free(files.e);
+    return 0;
+}
+
 // ---- overrides
 // nn::Result nn::fs::MountRom(const char *name, void *cache, size_t cache_size)
 static void ov_mount_rom(Cpu *c) { ret_x(c, romfs_mount(arg_p(c, 0))); }
+// nn::Result nn::fs::MountRom(const char *name): the same without a cache buffer (the sdk runs one mount routine)
+static void ov_mount_rom_nocache(Cpu *c) { ret_x(c, romfs_mount(arg_p(c, 0))); }
 // nn::Result nn::fs::QueryMountRomCacheSize(size_t *out): no cache needed, the host reads the image directly
 static void ov_query_cache(Cpu *c) {
     uint64_t *out = arg_p(c, 0);
@@ -1363,5 +1883,6 @@ static void ov_initialize(Cpu *c) {
 }
 
 HOST_OVERRIDE("_ZN2nn2fs8MountRomEPKcPvm", ov_mount_rom);
+HOST_OVERRIDE("_ZN2nn2fs8MountRomEPKc", ov_mount_rom_nocache);
 HOST_OVERRIDE("_ZN2nn2fs22QueryMountRomCacheSizeEPm", ov_query_cache);
 HOST_OVERRIDE("_ZN2nn2fs24InitializeForApplicationEv", ov_initialize);

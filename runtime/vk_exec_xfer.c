@@ -38,6 +38,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cfg.h"
 #include "host.h"
 #include "nvn_api.h"
 #include "nvn_tex.h"
@@ -92,9 +93,11 @@ static void event_cb(void *arg) {
 }
 
 // NVNcounterData = {counter, timestamp}; timestamps are Tegra 19.2 MHz ticks (the base of GetSystemTick).
+static uint64_t counter_last;   // the newest timestamp written (completion thread), for the bound below
 static void write_counter(uint64_t addr, uint64_t counter) {
     uint64_t rec[2] = {counter, (uint64_t)((unsigned __int128)kern_now_ns() * 12 / 625)};
     memcpy((void *)(uintptr_t)addr, rec, sizeof rec);
+    __atomic_store_n(&counter_last, rec[1], __ATOMIC_RELEASE);
 }
 
 static void counter_cb(void *arg) {
@@ -104,10 +107,20 @@ static void counter_cb(void *arg) {
 }
 
 // Reports queued by the replay that the GPU has not finished. The condition of RENDER_COND reads a timestamp one as 0
-// and a samples-passed one as unknown.
+// and a samples-passed one as unknown. The replay thread writes the ring; game threads read it too
+// (vk_counter_timestamp): an entry's fence is stored before its address, so a reader that finds the address sees its
+// fence or a newer one, and an entry caught in between is judged by the newer fence (pending, the safe side).
 #define PENDING 256
 static struct { uint64_t addr, fence; int unknown; } pending[PENDING];
 static unsigned pending_head;
+
+static void pending_add(uint64_t addr, uint64_t fence, int unknown) {
+    unsigned i = pending_head % PENDING;
+    __atomic_store_n(&pending[i].fence, fence, __ATOMIC_RELAXED);
+    pending[i].unknown = unknown;
+    __atomic_store_n(&pending[i].addr, addr, __ATOMIC_RELEASE);
+    __atomic_store_n(&pending_head, pending_head + 1, __ATOMIC_RELEASE);
+}
 
 // ---- occlusion counts (samples passed)
 //
@@ -277,6 +290,7 @@ static void signal_event(VkExec *ex, const p_signal_event *p) {
     EventWrite *e = malloc(sizeof *e);
     if (!e) rt_fatal("vk: out of memory");
     *e = (EventWrite){p->val, p->mode, p->value};
+    if (vk_ahead_on) vk_ahead_gpu_write((uintptr_t)p->val, sizeof *p->val, AHW_EVENT, ex->fence);
     vk_completion_add(ex->fence, event_cb, e);
 }
 
@@ -290,6 +304,8 @@ static void report_counter(VkExec *ex, const p_report_counter *p) {
     if (!vk_mem_resolve(p->addr, sizeof(NVNcounterData), &m))
         rt_fatal("vk: counter report at %#llx is in no memory pool", (unsigned long long)p->addr);
     vk_mem_count(m.cls, VK_MUSE_GPU_WRITE, sizeof(NVNcounterData));
+    if (vk_ahead_on) vk_ahead_gpu_write(p->addr, sizeof(NVNcounterData), samples ? AHW_SAMPLES : AHW_COUNTER, ex->fence);
+    if (samples && vk_ahead_g.queries) vk_ahead_query(ex->fence);   // the in-place frame wait waits up to it
     if (samples) oq_report(ex, p->addr);
     else {
         uint64_t *a = malloc(sizeof *a);
@@ -297,7 +313,84 @@ static void report_counter(VkExec *ex, const p_report_counter *p) {
         *a = p->addr;
         vk_completion_add(ex->fence, counter_cb, a);
     }
-    if (!ex->chunked) pending[pending_head++ % PENDING] = (typeof(pending[0])){p->addr, ex->fence, samples};   // else the scan's
+    if (!ex->chunked) pending_add(p->addr, ex->fence, samples);   // else the scan's
+}
+
+// ---- timestamps read one frame early (TOTK_SYNC_AHEAD)
+//
+// A report lands in guest memory when its submission's fence completes (write_counter). With the frame wait one frame
+// late the game reads timestamps of work the GPU may not have finished. TotK's GPU time for its dynamic resolution
+// controller (1.4.3 main+0xa1a50, 1.2.1 main+0x972bac) converts the end and then the begin report of a pair it issued
+// two updates before, subtracts them unsigned and zeroes both reports. An end not written yet reads 0, and one written
+// after the zeroing leaves the value of the report before it for the next read: either way the difference wraps to
+// about 2^64, the controller sees an over-budget frame, and two of those in a row drop the game to its lowest quality
+// level until 60 good frames bring it back (the half-second blur of #1123). Measured on 1.4.3 (islands): 12-20
+// wrapped pairs in 40 s with the late wait, none without it.
+//
+// Every read is kept consistent with the order of the reports. At each frame wait the bound B becomes the newest
+// timestamp written so far. A read of a report that holds 0, holds a time after B, or whose newest replayed report is
+// not done yet reads B instead. Every report done before B was taken is written and holds at most B, so of two reports
+// in submission order the first never reads later than the second: the difference lies between 0 and what the exact
+// wait gives, never wrapped. Reports the exact wait would also have covered read as they are. Only the converted value
+// changes (nvnDeviceGetTimestampInNanoseconds); guest memory, RENDER_COND and samples-passed counts stay as they were.
+// TOTK_SYNC_AHEAD_TIMESTAMPS: 1 (default; acts only with the frame wait late), 0 off, check: counts what it would
+// replace and leaves the reads as they are.
+static uint64_t ts_bound;   // 0: off
+static int ts_mode = -1;    // 0 off, 1 on, 2 check
+static struct { uint64_t reads, zero, later, pending, last_log; } ts_stat;   // game threads, approximate counts
+
+static int ts_on(void) {
+    if (ts_mode < 0) {
+        const char *v = cfg_get("TOTK_SYNC_AHEAD_TIMESTAMPS");
+        ts_mode = !v || !*v ? 1 : !strcmp(v, "check") ? 2 : strcmp(v, "0") != 0;
+        rt_log("sync-ahead: timestamps the game reads before their frame is done read as the newest one written at "
+               "the frame wait: %s", ts_mode == 2 ? "check (counted, not replaced)" : ts_mode ? "on" : "off");
+    }
+    return ts_mode;
+}
+
+void vk_counter_frame(void) {
+    if (ts_on()) __atomic_store_n(&ts_bound, __atomic_load_n(&counter_last, __ATOMIC_ACQUIRE), __ATOMIC_RELEASE);
+}
+
+// 1: the newest replayed report to addr is not done
+static int report_pending(uint64_t addr) {
+    uint64_t done = vk_sync_fence_done();
+    unsigned head = __atomic_load_n(&pending_head, __ATOMIC_ACQUIRE);
+    for (unsigned k = 1; k <= PENDING; k++) {   // newest first: the last report to addr decides
+        unsigned i = (head - k) % PENDING;
+        if (__atomic_load_n(&pending[i].addr, __ATOMIC_ACQUIRE) == addr)
+            return __atomic_load_n(&pending[i].fence, __ATOMIC_RELAXED) > done;
+    }
+    return 0;
+}
+
+static void ts_log(const char *when) {
+    rt_log("sync-ahead: timestamps %s: %llu reads, %s %llu (zero %llu, after the bound %llu, report not done %llu)", when,
+           (unsigned long long)ts_stat.reads, ts_mode == 2 ? "would be replaced" : "replaced",
+           (unsigned long long)(ts_stat.zero + ts_stat.later + ts_stat.pending), (unsigned long long)ts_stat.zero,
+           (unsigned long long)ts_stat.later, (unsigned long long)ts_stat.pending);
+}
+
+uint64_t vk_counter_timestamp(uint64_t addr, uint64_t t) {
+    uint64_t b = __atomic_load_n(&ts_bound, __ATOMIC_ACQUIRE);
+    if (!b) return t;
+    ts_stat.reads++;
+    int why = !t ? 1 : t > b ? 2 : report_pending(addr) ? 3 : 0;
+    if (why == 1) ts_stat.zero++;
+    else if (why == 2) ts_stat.later++;
+    else if (why == 3) ts_stat.pending++;
+    uint64_t now = kern_now_ns();
+    if (now - ts_stat.last_log > 30000000000ull) {   // every 30 s of host time
+        if (ts_stat.last_log) ts_log("so far");
+        ts_stat.last_log = now;
+    }
+    return why && ts_mode == 1 ? b : t;
+}
+
+void vk_counter_log(void) {
+    static int once;
+    if (ts_mode > 0 && !__atomic_exchange_n(&once, 1, __ATOMIC_RELAXED)) ts_log("over the run");
 }
 
 // ---- conditional rendering
@@ -432,6 +525,7 @@ static void copy_buffer_image(VkExec *ex, const p_copy_b2t *p, int to_image) {
     VkBufferImageCopy c;
     VkMemSpan m;
     if (!buffer_side(ex, &s, p->src, &size, &c, &m)) return;
+    VK_AHEAD_READ(m, p->src, size, to_image ? VK_MUSE_COPY_SRC : VK_MUSE_GPU_WRITE);
     vk_mem_count(m.cls, to_image ? VK_MUSE_COPY_SRC : VK_MUSE_GPU_WRITE, size);
     vk_exec_pass_end(ex);
     vk_exec_barrier(ex);
@@ -497,6 +591,8 @@ static void copy_b2b(VkExec *ex, const p_copy_b2b *p) {
         if (n > d.avail) n = d.avail;
         VK_MEM_PICK(s);
         VK_MEM_PICK(d);
+        VK_AHEAD_READ(s, src, n, VK_MUSE_COPY_SRC);
+        VK_AHEAD_READ(d, dst, n, VK_MUSE_GPU_WRITE);
         if (s.buffer == d.buffer && s.offset < d.offset + n && d.offset < s.offset + n) {
             warn_once(W_OVERLAP, "buffer copy %#llx -> %#llx overlaps within one buffer: skipped",
                       (unsigned long long)p->src, (unsigned long long)p->dst);
@@ -537,6 +633,7 @@ static void clear_buf(VkExec *ex, const p_clear_buf *p) {
         if (!n) break;
         if (!started) vk_exec_pass_end(ex), vk_exec_barrier(ex), started = 1;
         VK_MEM_PICK(d);
+        VK_AHEAD_READ(d, dst, n, VK_MUSE_GPU_WRITE);
         vkCmdFillBuffer(ex->cb, d.buffer, d.offset, n, p->value);
         vk_mem_gpu_wrote(&d, n);
         ex->recorded++;
@@ -687,7 +784,7 @@ int vk_exec_xfer_scan(VkExec *ex, uint32_t op, const void *payload) {
         VkMemSpan m;
         if (!nvn_gpu_only(p->addr) && !vk_mem_resolve(p->addr, sizeof(NVNcounterData), &m)) break;   // the recording stops
         if (samples) oq_report_state(ex);
-        if (!nvn_gpu_only(p->addr)) pending[pending_head++ % PENDING] = (typeof(pending[0])){p->addr, ex->fence, samples};
+        if (!nvn_gpu_only(p->addr)) pending_add(p->addr, ex->fence, samples);
         break;
     }
     }

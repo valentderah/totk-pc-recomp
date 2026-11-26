@@ -721,10 +721,16 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
 
 static int (*fault_hook)(uint64_t addr);
 
-// A write access violation (ExceptionInformation[0] == 1) goes to the hook; registered first, before the crash handler.
+static ULONG_PTR fault_kinds = 1;   // highest ExceptionInformation[0] the hook takes: 1 writes, 0 also reads
+
+// A write access violation (ExceptionInformation[0] == 1) goes to the hook, and a read (0) too once
+// plat_mem_fault_reads asked for it; registered first, before the crash handler. Writes thaw frozen regions; with
+// TOTK_HEAP_LAZY reads and writes both commit heap pages on first use (memory.c, heap_fault). An execute fault (8) is
+// never the hook's.
 static LONG CALLBACK fault_veh(EXCEPTION_POINTERS *ep) {
     const EXCEPTION_RECORD *er = ep->ExceptionRecord;
-    if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2 || er->ExceptionInformation[0] != 1)
+    ULONG_PTR kind = er->NumberParameters >= 2 ? er->ExceptionInformation[0] : 8;
+    if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || kind > 1 || (kind == 0 && fault_kinds != 0))
         return EXCEPTION_CONTINUE_SEARCH;
     return fault_hook((uint64_t)er->ExceptionInformation[1]) ? EXCEPTION_CONTINUE_EXECUTION : EXCEPTION_CONTINUE_SEARCH;
 }
@@ -733,6 +739,8 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
     fault_hook = fn;
     AddVectoredExceptionHandler(1, fault_veh);
 }
+
+void plat_mem_fault_reads(int on) { fault_kinds = on ? 0 : 1; }
 
 static void (*crash_fn)(const PlatCrash *c);
 
@@ -1340,6 +1348,24 @@ void plat_fs_busy_reason(const char *dir, char *out, size_t cap) {
         if (k < 0) break;
         at += (size_t)k;
     }
+}
+
+int plat_fs_space(const char *path, uint64_t *free_bytes, uint64_t *total_bytes) {
+    wchar_t w[WPATH];
+    ULARGE_INTEGER avail, total;
+    if (!widen(path, w, WPATH) || !GetDiskFreeSpaceExW(w, &avail, &total, NULL)) return 0;
+    *free_bytes = avail.QuadPart, *total_bytes = total.QuadPart;
+    return 1;
+}
+
+int plat_fs_mtime(const char *path, int64_t *posix_seconds) {
+    wchar_t w[WPATH];
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    if (!widen(path, w, WPATH) || !GetFileAttributesExW(w, GetFileExInfoStandard, &a)) return 0;
+    // FILETIME counts 100 ns steps from 1601-01-01; 11644473600 s lie between that and 1970-01-01
+    uint64_t t = (uint64_t)a.ftLastWriteTime.dwHighDateTime << 32 | a.ftLastWriteTime.dwLowDateTime;
+    *posix_seconds = (int64_t)(t / 10000000u) - 11644473600ll;
+    return 1;
 }
 
 int plat_fs_list(const char *dir, int (*cb)(const char *name, int kind, uint64_t size, void *ctx), void *ctx) {

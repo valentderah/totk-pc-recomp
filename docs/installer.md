@@ -1,8 +1,9 @@
 # Installer
 
 A public release that turns the player's own game files into a playable TotK folder. The release carries no game
-data and no code derived from the game: the installer builds the game on the player's machine. The installed folder
-holds only the game; the installer and its tools stay outside it.
+data and no code derived from the game: the installer builds the game on the player's machine. On Windows the
+installed folder also holds the build kit, the installer's tools the game rebuilds itself with for code mods, so the
+setup folder can be deleted after the install and the install folder moved.
 
 ## What the player does
 
@@ -16,7 +17,8 @@ holds only the game; the installer and its tools stay outside it.
      needed for Chinese, Korean and Traditional Chinese text;
    - the game language and the install folder.
 3. Waits for the setup, one time. The window shows each step and its progress.
-4. Plays `totk.exe` from the install folder. The installer and the source NSP or XCI (or NSZ, XCZ) can be deleted.
+4. Plays `totk.exe` from the install folder. The setup folder and the source NSP or XCI (or NSZ, XCZ) can be deleted,
+   and the install folder can be moved: code mods rebuild the game with the build kit inside it.
 
 The install folder (`main.c` `portable_paths()` reads this layout; it stays portable):
 
@@ -24,6 +26,7 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
 <install folder>/
   totk.exe, SDL3.dll, libopus-0.dll, totk_xlate.exe
   nvngx_dlss.dll                 NVIDIA DLSS, downloaded by the setup's DLSS step when the player keeps it ticked
+  amd_fidelityfx_*_vk.dll        AMD FSR 4 (loader and upscaler), downloaded by the setup's FSR step likewise
   totk.ini                       language; the other keys as commented defaults (totk.ini.example)
   exefs/, romfs/                 extracted from the player's files
   shared-fonts/                  the Switch system fonts, with Chinese, Korean or Traditional Chinese text
@@ -32,16 +35,25 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
   logs/                          totk.log of the last run, totk.1.log to totk.4.log of the runs before it
   shader and pipeline caches     prepared by the setup; shader-cache/shader-cache.pack holds the translations
   totk-install.json              what built this folder: release version, input hashes, finished steps
+  build-kit/                     Windows: the release folder without TotK-Setup.exe (about 0.65 GB); the game's rebuild
+                                 for code mods runs the setup window from it
+  build-cache/                   what the rebuild built in (cheats.status, exefs.status, plugins.status), rebuild.txt,
+                                 and work/: the generated C, the lift cache and the objects (about 1.6 GB, Windows)
 ```
 
 ## Updating the port
 
 The player runs a newer installer on the same folder. It reads `totk-install.json`, keeps `romfs/`, `exefs/`,
-`shared-fonts/`, `profile/` and `totk.ini` after checking their hashes, rebuilds `totk.exe` and re-prepares the
-shaders. A newer release that changes nothing game-derived skips the rebuild. The window starts with the last install folder
-and the base, update, keys and firmware paths it ran with (paths only, never the keys file's contents), kept in
-`%LOCALAPPDATA%\TotK Recomp\setup.json` (`$XDG_STATE_HOME/totk-recomp/setup.json` elsewhere). Entries that no longer exist
-stay empty. A reinstall or a switch to another game version starts filled in.
+`shared-fonts/`, `profile/` and `totk.ini` after checking their hashes, replaces `build-kit/` with its own files,
+rebuilds `totk.exe` and re-prepares the shaders. The setup is an installer and updater: nothing after the install needs
+its folder. An install made by a setup before the build kit kept its temp folder in that setup's folder
+(`<setup>/temp/<install name>-<hash>`, the setup `build-cache/rebuild.txt` named); the first newer setup moves it into
+`build-cache/work` when both are on one disk (on another it starts empty) and writes the new `rebuild.txt`. Until then
+the old `rebuild.txt` keeps using the old setup folder. A newer release that changes nothing game-derived skips the
+rebuild. The window starts with the last install folder and the base, update, keys and firmware paths it ran with (paths
+only, never the keys file's contents), kept in `%LOCALAPPDATA%\TotK Recomp\setup.json`
+(`$XDG_STATE_HOME/totk-recomp/setup.json` elsewhere). Entries that no longer exist stay empty. A reinstall or a switch
+to another game version starts filled in.
 
 Given an update file other than the recorded one (1.1.0, then 1.2.1, then 1.4.3), the installer extracts and builds again from it
 and keeps `profile/`. Saves carry over both ways between 1.2.1 and 1.4.3: 1.4.3 converts a 1.2.1 save on load, and 1.2.1
@@ -53,60 +65,107 @@ loads the saves 1.4.3 wrote.
    `tools/extract.py`), the keys are new enough for the update, enough space is free on the target disk (about 36 GiB at the peak of a
    first install, 20 GiB after it), the CPU is at least x86-64-v2 (SSE4.2; with AVX2/FMA the faster `v3` build is used,
    otherwise the `v2` one), a Vulkan 1.3 GPU exists. Each failure is one clear message.
-2. **Fonts** with Chinese, Korean or Traditional Chinese text and a firmware folder: extract the Switch system fonts
+2. **Kit** (Windows): copy the release folder without `TotK-Setup.exe` into `build-kit/` in the install folder
+   (`installer/steps.py` `Kit`, `installer/layout.py` `KIT_ITEMS`); every step after it runs its tools from there, so
+   the commands the build records (the compiler's path in the Ninja file) are the ones the game's rebuild runs later.
+   A newer setup replaces the kit; the kit's own rebuild keeps it. The steps' keys fingerprint file contents, not
+   paths (`runtime_key` leaves out the lines of `clang --version` that name its folder), so a rebuild from the kit
+   or from a moved install folder keeps every step the setup recorded.
+3. **Fonts** with Chinese, Korean or Traditional Chinese text and a firmware folder: extract the Switch system fonts
    from the firmware into `shared-fonts/` (MacNativeGames' `extract_shared_fonts.py`, which verifies every NCA layer
    and BFTTF header). Without a firmware folder the setup warns and goes on; the game then lacks those glyphs.
-3. **Extract** ExeFS and RomFS into the install folder and verify the hashes.
-4. **Lift** the ExeFS to C (`recomp/gen.py`, `recomp/patches-v121.txt` or `patches-v143.txt`) into a temp folder next
-   to the installer. The code cheats of the mods' cheat files and the mods' ExeFS patch files become patch sets first
-   (`tools/cheats.py`, `tools/exefs_patches.py`, status in `build-cache/cheats.status` and `exefs.status`); a file the
-   tools refuse costs those cheats or patches, not the install. The patch files' writes into main's data go to
-   `build-cache/exefs.data`, which the game stores into main at start; after the lift they are checked against the
-   bytes the lifted code read as constants (`<gen>/main/folded.txt`, its jump tables).
-5. **Compile** the generated C, `modules.c`, `romfs.c`, `patches.c` and `ov_zstd.c` (they bake the per-install layout, RomFS
+4. **Extract** ExeFS and RomFS into the install folder and verify the hashes.
+5. **Lift** the ExeFS to C (`recomp/gen.py`, `recomp/patches-v121.txt` or `patches-v143.txt`) into the temp folder,
+   `build-cache/work` in the install folder (`.setup-temp` on Linux, `--temp DIR` elsewhere). The code cheats of the
+   mods' cheat files and the mods' ExeFS patch files become patch sets first (`tools/cheats.py`,
+   `tools/exefs_patches.py`, status in `build-cache/cheats.status` and `exefs.status`); a file the tools refuse costs
+   those cheats or patches, not the install. The patch files' writes into main's data go to `build-cache/exefs.data`,
+   which the game stores into main at start; after the lift they are checked against the bytes the lifted code read as
+   constants (`<gen>/main/folded.txt`, its jump tables).
+6. **Compile** the generated C, `modules.c`, `romfs.c`, `patches.c` and `ov_zstd.c` (they bake the per-install layout, RomFS
    hashes and the game version's patch page) and link
    them with the prebuilt runtime library for the host's level (`libtotkrt.a` or `libtotkrt-v2.a`) into `totk.exe`
    (`build_game.py --runtime-lib`; about 3 min on 24 cores).
-6. **Prepare** (only when the runtime, the translator or the game version changed, not for a new lift) the RomFS
+7. **Prepare** (only when the runtime, the translator or the game version changed, not for a new lift) the RomFS
    patches and the shaders (`tools/make_romfs_patches.py`, `tools/prepare_shaders.py`,
    `totk.exe --prepare-shaders`) in the install folder, then fold the shader cache's loose files (four per shader, about
    117,000) into `shader-cache/shader-cache.pack` (`tools/pack_shader_cache.py`). totk.exe reads the pack first and
    writes the translations it makes in play as loose files; running the tool again with the game closed folds those in.
-   The patches are written four times: `romfs-patches`, `romfs-patches-xbox` and `romfs-patches-xbox-label`
+   The patches are written five times: `romfs-patches`, `romfs-patches-xbox` and `romfs-patches-xbox-label`
    (`--prompts`: Xbox button prompts for `prompts = xbox`, the first for `pad_layout = nintendo`, the second for `xbox`
-   and `auto`), and `romfs-patches-pc` (keyboard and mouse prompts for `prompts = pc`). Each of the three prompt
-   folders is then laid out once more for each game resolution of another shape, `romfs-patches-<style>-<w>x<h>`
-   (`--prompts <style> --aspect`). Those differ from `romfs-patches-<style>` in the UI archive only, and `--reuse`
-   hard-links the other files from it, so the forty-five folders take seconds and a few MiB each. The prompt folders are optional: when one cannot be made, the
-   setup warns and finishes.
+   and `auto`), `romfs-patches-playstation` and `romfs-patches-playstation-xbox` (PlayStation prompts for
+   `prompts = playstation`, the same split). The prompt folders are optional: when one cannot be made, the setup warns
+   and finishes.
+   **PC prompts** (step `pc_prompts`): `romfs-patches-pc`, the keyboard and mouse prompts for `prompts = pc`, drawn
+   from the `bind_` lines of `totk.ini` (`--binds`). Its key holds those lines, so a setup run after a change of the
+   bindings draws only these again. Optional like the Xbox prompts. All six 16:9 folders are always written, so a
+   switch of the prompts style at 16:9 needs no setup run.
    When the graphics driver crashes while building the shaders, `prepare_shaders.py` runs that part again without the
    variants it was building ([building.md](building.md), step 6), and the setup finishes with a warning that names how
    many were left out.
-7. **DLSS** (the window's tick box, on by default, or `--dlss`; Windows with an NVIDIA RTX GPU): download
+8. **Shapes**: the UI laid out for each screen shape this player needs, `romfs-patches-<w>x<h>`
+   (`--aspect`), and with Xbox or PC prompts in `totk.ini` that layout with those prompts too,
+   `romfs-patches-<style>-<w>x<h>` (`--prompts <style> --aspect --reuse romfs-patches-<style>`, which hard-links every
+   file but the UI archive; for `pc` with the same `--binds` as the PC prompts step, whose key the step follows). The shapes are those of every connected display (Windows: `EnumDisplayDevices`; Linux:
+   `xrandr`, else the DRM connectors), of the `output_res` the game defaults to on each, and of the `totk.ini`
+   `output_res` (`installer/screens.py`). One folder per shape, named after the shape's size in `ASPECT_SIZES` (the
+   closest within 1%; `5120x2160` uses `2560x1080`), or for an unlisted shape from 4:3 to 32:9 its own size (a
+   `totk.ini` `output_res` of `2560x1200`, say; a display of an unlisted shape gets none, as the game keeps 1920x1080
+   there); `runtime/romfs.c` `overlay_init` maps the game resolution the
+   same way, and a folder of the exact size from an older setup still wins. A 16:9 player gets none. The step runs
+   again when the displays, the prompts or the patches change. At a game resolution whose shape has no folder the
+   game draws 16:9 with bars and starts the generator itself, in the background, for the next start: at start and
+   when the settings menu changes the resolution, the HUD width, the prompts or the pad layout
+   (`runtime/romfs.c`, `romfs_folders_prepare`, with the Python and tools that `build-cache/rebuild.txt` names; a
+   missing 16:9 prompts folder too). Those runs use `--background`: below-normal priority, and a folder that has a
+   manifest is never written into. Every `make_romfs_patches.py` run writes `<folder>.part-<pid>` and renames it into
+   place when complete; the clean-up step removes the `.part` folders of stopped runs once they are an hour old.
+9. **DLSS** (the window's tick box, on by default, or `--dlss`; Windows with an NVIDIA RTX GPU): download
    `nvngx_dlss.dll` from NVIDIA's own DLSS SDK repository (github.com/NVIDIA/DLSS, a pinned tag, NVIDIA RTX SDK
    license) into the install folder and check its size and SHA-256 (`steps.py`, `Dlss`). The release does not ship
    the library; NGX loads it from the folder of totk.exe for `dlaa` and the DLSS modes. A DLSS library already in the
    folder (a newer one the player put there) is kept. Without an RTX GPU the step only logs and does nothing; a failed
    download warns, the game runs without DLSS, and the next run of the setup tries again.
-8. **Clean up** the temp folder, except the generated C and the objects (about 1.3 GB), and write
+10. **FSR** (the window's tick box, on by default when Windows lists an AMD display adapter, `screens.py`
+   `windows_adapter_names`; or `--fsr`; Windows): download
+   `amd_fidelityfx_loader_vk.dll` and `amd_fidelityfx_upscaler_vk.dll` from AMD's FSR SDK repository
+   (github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK, tag `v2.4.0`, `Kits/FidelityFX/signedbin/`, AMD FSR SDK
+   license) into the install folder and check their sizes and SHA-256 (`steps.py`, `Fsr`). Both go in only when both
+   downloaded and matched. `scene_upscaler = fsr4` loads them from the folder of totk.exe and runs FSR 4 where they
+   offer it for the GPU. Libraries already in the folder are kept; a failed download warns, the game runs without FSR
+   4, and the next run tries again.
+11. **Clean up** the temp folder, except the generated C and the objects (about 1.3 GB), and write
    `build-cache/rebuild.txt` in the install folder.
 
 A cancelled or failed setup resumes from the last finished step (`totk-install.json`).
 
 ## Rebuilding for the mods
 
-The generated C and the objects stay in the temp folder, so the next lift rewrites only the chunks whose C changed and
-Ninja recompiles only those: a new or edited code cheat costs the lift (under a minute on 24 cores, a few minutes on 4)
-and a few dozen chunks, not a full compile, and the shaders stay prepared.
+The generated C and the objects stay in the temp folder, inside the install folder. The next lift lifts again only the
+chunks whose inputs changed (the lift cache of `recomp/gen.py`: the patch sites inside a chunk, with their set indices)
+and rewrites only those whose C changed, and Ninja recompiles only those. A new or edited code cheat costs a few seconds
+of lift (discovery and a hash of the kept chunks; 7 s for one changed cheat word on 12 cores, against 102 s for the
+whole lift) and the compile of the chunks that hold its sites, not a full compile, and the shaders stay prepared. A
+cheat set added or removed before others in the patch file moves their set indices, so the chunks of their sites are
+lifted too. A change to `recomp/*.py` lifts everything.
 
 `build-cache/rebuild.txt` holds the command that opens the setup window in its rebuild mode on the install folder
 (`installer/gui.py --rebuild <install folder>`, started through `python -c` so the release folder is on `sys.path`
-whatever the working folder), one argument per line. When an enabled mod has code cheats or ExeFS patch files the build
-lacks, `totk.exe` runs it at start and exits (`runtime/cheats.c` `rebuild_if_needed`); the
-window runs the setup on the folder at once and starts the game again when it succeeds. A failed or cancelled rebuild
-offers to start the game with the code it has; `build-cache/rebuild.skip` then keeps the same files from starting it
-again, until "Rebuild the game now" on the Cheats or Mods tab. `[mods] mods_rebuild = off` turns it off. The rebuild
-needs the release folder the setup ran from: a moved or deleted release folder means running a setup again.
+whatever the working folder), one argument per line. On Windows it names the build kit relative to the install folder
+(`build-kit\python\pythonw.exe`, `build-kit`, `--rebuild .`): `totk.exe` takes the program from its own folder and
+starts the command there, so no path of the setup or of the install folder is stored. When an enabled mod has code
+cheats or ExeFS patch files the build lacks, `totk.exe` runs it at start and exits (`runtime/cheats.c`
+`rebuild_if_needed`); the window runs the setup on the folder at once and starts the game again when it succeeds. A
+failed or cancelled rebuild offers to start the game with the code it has; `build-cache/rebuild.skip` then keeps the
+same files from starting it again, until "Rebuild the game now" on the Cheats or Mods tab. A command that does not start
+at all leaves no `rebuild.skip`, so the next start tries it again. `[mods] mods_rebuild = off` turns it off. A moved
+install folder keeps its incremental rebuild: the kit's builds run `tools/build_game.py --portable`, whose Ninja file
+and deps log name every path relative to the kit (3.5 s to rebuild after a move instead of a full compile). A build with
+a mod plugin names the plugin's file by its absolute path (`recomp/layout.py`), so after a move the game finds it gone
+and runs the rebuild once. On Linux the command starts the AppImage file itself (`$APPIMAGE --rebuild <install
+folder>`), because the AppImage's mounted folder is gone once the setup exits; a moved or deleted AppImage means running
+a setup again. Installs set up by an AppImage before this change hold a command into that mount: running the new setup
+once on the install folder writes the new one.
 
 ## Command line
 
@@ -134,13 +193,16 @@ python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR
   resume and update are one rule; output kept from another release is re-hashed first.
 - Peak space on the install disk is about 36 GiB, not 22: the extraction copies both Program NCAs (16.3 GiB) next to
   the merged RomFS (15.9 GiB) before it deletes them. The check computes the exact figure.
-- Window (`python -m installer.gui`, `installer/gui.py` draws, `installer/guilogic.py` decides): form, step list with
-  progress, space line, collapsible log, Cancel (Ctrl+Break to the CLI's process group, then it waits for the exit),
-  finish screen with Open folder. English, Russian, Brazilian Portuguese or Simplified Chinese, chosen from the Windows
-  display language (zh-CN and zh-SG give Chinese; the Traditional Chinese regions give English), switchable in the
-  window; every sentence is an id in `installer/text/<en|ru|pt-BR|zh-Hans>.json`. A Chinese window still starts with
-  English as the game language, because Chinese game text needs the Switch shared fonts, which the setup extracts only
-  from a firmware folder. A folder with
+- Window (`python -m installer.gui`, `installer/gui.py` draws, `installer/guilogic.py` decides): form (game files and
+  install sections, the explanations under More details, the share notice next to Start) in the Sun Valley ttk theme
+  (`installer/vendor/sv_ttk/`, the platform theme when it does not load), step list with progress, space line,
+  collapsible log, Cancel (Ctrl+Break to the CLI's process group, then it waits for the exit), finish screen with Open
+  folder. English, Russian, Brazilian Portuguese, Simplified Chinese, German, French, Spanish, Italian, Dutch, Japanese,
+  Korean or Vietnamese (`guilogic.UI_LANGUAGES`), chosen from the Windows display language (every Chinese, zh-TW and zh-HK
+  included, gives Simplified Chinese; pt-PT and languages without a catalog give English), switchable in the window;
+  every sentence is an id in `installer/text/<lang>.json`. The game language starts as the window's when the game has
+  it; a Chinese or Korean window still starts with English, because that game text needs the Switch shared fonts,
+  which the setup extracts only from a firmware folder. A folder with
   `totk-install.json` needs only the folder. `--selftest [--shots DIR]` builds every screen in every language and
   closes itself. The window is not stretched on a display whose scale is the system DPI: `installer/dpi.py` makes the
   process system DPI aware before Tk starts, Tk then draws the fonts at the display's scale and `dpi.px` sizes the
@@ -156,8 +218,9 @@ python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR
 The unpacked release; `tools/make_release.py` assembles it and `--zip` packs it:
 
 ```
-TotK-Setup.exe        starts python/pythonw.exe -m installer.gui (installer/launcher/launcher.c, no console)
-installer/            the installer: steps, CLI, window, en/ru/zh-Hans text catalog
+TotK-Setup.exe        starts python/pythonw.exe -m installer.gui (installer/launcher/launcher.c, no console); the
+                      rest is what the Kit step copies into the install folder's build-kit/
+installer/            the installer: steps, CLI, window, text catalogs (text/<lang>.json), Sun Valley theme (vendor/)
 python/               Python 3.14.9 embeddable + numpy, lz4, cryptography, cffi, pycparser (+ tkinter for the window)
 recomp/, tools/       the lifter and the build, extraction and shader scripts the steps run (copied from the repo)
 llvm/                 llvm-mingw, x86_64-only subset (Apache-2.0 with LLVM exception; mingw-w64 parts permissive)

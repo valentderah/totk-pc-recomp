@@ -10,6 +10,10 @@ set cloth    TOTK_CLOTH_REALTIME 1
 set bounce   TOTK_HIGHFPS_FIX    1
 set output   TOTK_PATCH_OUTPUT   0
 set scene    TOTK_PATCH_SCENE    0
+set shadow   TOTK_PATCH_SHADOW   0
+set cascade  TOTK_PATCH_CASCADE  0
+# Load-dependent quality (patches-v121.txt explains it): no sites found in this version yet, so the setting does nothing.
+set steady   TOTK_LOD_STEADY     0
 
 # 60 fps: the adaptive present-interval controller (main+0x8f26c8, 1.0.0 0x8f6bec) gets the minimum interval 1.
 site fps60 main 90e978 6b08015f 7100055f  # clamp: cmp w10, #1 (was cmp w10, w8 = minimum)
@@ -65,6 +69,72 @@ site output main cea5d0 f9400015 f94012b5  # ldr x21, [x0] -> ldr x21, [x21, #32
 site scene main cea5e0 5e21d900 @page:x9  # scvtf s0, s8 -> adrp x9, page
 site scene main cea5e8 bd0cc660 2d420520  # str s0, [x19, #0xcc4] -> ldp s0, s1, [x9, #16]
 site scene main cea5ec 5e21d921 bd0cc660  # scvtf s1, s9 -> str s0, [x19, #0xcc4]
+
+# Equipment-switch cooldown (issue #18): the player update tests state +0x109c against FLT_EPSILON,
+# while the equipment gate (main+0x7f0134) blocks changes above zero. Step every positive remainder through
+# main+0xa26bb0, including (0, FLT_EPSILON], so a measured frame ratio cannot leave equipment locked.
+site realtime main a20518 1e270101 1e2703e1   # fmov s1, w8 (FLT_EPSILON) -> fmov s1, wzr
+
+# Cursor and aim steps (MacNativeGames game_patches.c patch_cursor_speed, 363a6eb): use the same 30 Hz ratio
+# already read by these updates for smoothing. x9 / s16 are scratch at the map site; x20 holds the aim clock.
+set cursor   TOTK_HIGHFPS_FIX    1
+site cursor main f31e80 bd400361 f94002e9 bd400930 1e300800 bd400361   # map pan s0 *= [[x23] + 8]
+site cursor main 1d55f24 1e2a198c 1e2a198c bd400a90 1e30098c   # vertical ability aim s12 *= [x20 + 8]
+site cursor main 1d556a4 1e200923 1e200923 bd400a90 1e300863   # vertical gyro aim s3 *= [x20 + 8]
+
+# Camera aspect (Hor+): two camera projection updates and the two copies of the viewport projection routine.
+# The camera sites were matched against 1.0.0 by instruction windows; both viewport copies match the same
+# 193-word normalized window. Page +56 is set by runtime/resolution.c. Save x10 instead of assuming it dead.
+set aspect   TOTK_ASPECT_PATCH   0
+site aspect main cdbf30 bd414260 f81f0fea @page:x10 bd403940 f84107ea
+site aspect main 1261a64 bd414260 f81f0fea @page:x10 bd403940 f84107ea
+site aspect main 19c2260 1e211800 f81f0fea @page:x10 bd403940 f84107ea
+site aspect main 1ed8fa4 1e211800 f81f0fea @page:x10 bd403940 f84107ea
+
+# Field of view: load the camera's vertical angle as before and multiply by page +60. The following projection
+# setup overwrites s8 before reading it; s1 (the half-angle multiplier) stays intact. x10 is saved on the stack.
+set fov      TOTK_FOV_PATCH      0
+site fov main cdbef8 bd413e60 f81f0fea @page:x10 bd413e60 bd403d48 1e280800 f84107ea
+site fov main 1261a2c bd413e60 f81f0fea @page:x10 bd413e60 bd403d48 1e280800 f84107ea
+
+# Texture pool offsets above 2 GiB (MacNativeGames game_patches.c patch_pool_offset, ca311e2d): the loader
+# passes w25 to SetStorage and SetPackagedTextureData. Widen unsigned to cover the complete 32-bit pool offset.
+set pooloff  TOTK_POOL_OFFSET_PATCH 1
+site pooloff main 9b93a8 93407f22 2a1903e2
+site pooloff main 9b93c4 8b39c101 8b394101
+
+# Fixed scene tier: the 1.1.0 controller (main+0xce8d74, 1.2.1 main+0xcc26f4) returns its scale through w23 in
+# the shared epilogue. res_dynres_live enables this set when dynamic_res is off, preserving the configured render_scale.
+set fixres   TOTK_FIXED_RES_PATCH 0
+site fixres main ce9280 2a1703e9 52a7f009   # mov w9, w23 -> mov w9, #0x3f800000 (1.0f)
+
+# Sun shadow map: the size rounded here is used for width (+0x3d8), height (+0x3f8) and viewport together.
+# runtime/resolution.c shadow_init supplies the fixed size at page +92; the default remains the game's size.
+site shadow main d0760c 11001d6b @page:x11 b9405d6b 11001d6b
+
+# Sun shadow cascade parameter defaults: depth_shadow_near_0_1..3 and depth_shadow_far_0. The constructor
+# stores 20, 40, 80 and 160 metres; runtime/resolution.c res_shadow_range supplies page +64..+76.
+site cascade main 1157fb8 52a83408 @page:x8 b9404108
+site cascade main 1158040 52a84408 @page:x8 b9404508
+site cascade main 11580c8 52a85408 @page:x8 b9404908
+site cascade main 115814c 52a86408 @page:x8 b9404d08
+
+# High-frame-rate climbing (#35, #276, #1001): r is in s9 in the local 1.1.0 controller at main+0x1927948.
+# The shipping formula multiplies by -0.181, doubles with fadd, then adds 1.272; keep its rounding and [0.5, 1.5] clamp.
+# For r<1 use the 1.2.1 climb h(r,u), u=max(page+0,r); the normal 30 Hz factor stays unchanged.
+# runtime/frame_rate.c disables climb when realtime=0; TOTK_CLIMB_FIX=0 keeps the original instruction.
+# A 96-byte, 16-byte-aligned stack frame saves x8 and full q5/q6/q7/q16/q17; only s0/s1 are outputs.
+set climb    TOTK_CLIMB_FIX      1
+site climb main 19279f0 1e2f1001 d10183ff f90003e8 ad009be5 ad01c3e7 3d8017f1 @page:x8 bd400111 1e296a31 1e2e1005 1e3138a5 52862508 72a7e308 1e270106 1e2608a5 1e2528a5 529a1ca8 72a7f448 1e270106 1e2628a5 1e201006 1e2678a5 52946dc8 72a7e528 1e270106 1e3118c6 52828248 72a7dfe8 1e270107 1e2728c6 529573e8 72a7b5a8 1e270107 1f1118e6 1e283a27 2f00e410 1e3068e7 1e261010 1f1098e6 1e241010 1e3078c6 1e2668a5 1e256800 1e2f1001 1e256821 3dc017f1 ad41c3e7 ad409be5 f94003e8 910183ff
+
+# Gear rotation check (#330, #984): main+0x213eec4, vtable 0x347e8e8 slot +0x110.
+# AI dispatchers 0x1205b90 / 0x2ae29ac pass a context with frame delta at +8; keep it in the already-saved s12.
+# Scale RotateStartDeg/30 by that delta for all three angle compares: 0x213f10c/0x213f174/0x213f1b0.
+# The second site saves full q4 in a 16-byte stack slot, without relying on a later callee killing it.
+# This set does not read the patch page and works with realtime=0; TOTK_HIGHFPS_FIX=0 keeps both original sites.
+set gears    TOTK_HIGHFPS_FIX    1
+site gears main 213eee4 f9402001 bd40082c f9402001
+site gears main 213f0d4 1e24180c 3c9f0fe4 1e241804 1e2c088c 3cc107e4
 
 # Spin waits, from tools/spin_waits.py --exefs build/extracted/v110/exefs --patches recomp/patches-v110.txt: loops that only
 # another thread can end; their back-edges pass rt_spin_gate (runtime/kernel.c), TOTK_SPIN=0 keeps the core.

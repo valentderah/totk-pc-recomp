@@ -435,6 +435,7 @@ int probe_movie(void) {
     C = plat_aligned_alloc(sizeof(Cpu), 64);
     CHECK(C, "Cpu allocation");
     memset(C, 0, sizeof *C);
+    rt_fpcr_threshold(C);
 
     uint64_t obj_mem[2] = {0}, obj = U(obj_mem);
     volatile int32_t ev[4] = {0};

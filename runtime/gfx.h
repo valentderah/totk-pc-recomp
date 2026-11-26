@@ -23,7 +23,20 @@ uint64_t gfx_vsync_ticks(void);                            // ticks since start
 uint64_t gfx_vsync_time_ns(uint64_t tick);                 // kern_now_ns() time of a tick (pacing)
 double gfx_window_refresh_hz(void);                        // refresh rate of the window's monitor; 0 unknown
 int gfx_window_focused(void);
+uint64_t gfx_presents_shown(void);   // gfx_present.c: presents queued since the start (two a frame with frame generation)
+int gfx_frame_gen_live(void);        // vk_backend.c: the last frame was shown with a generated picture before it
 int gfx_picture_rect(float out[4]);   // where the last present put the picture, fractions of the swapchain (x, y, w, h); 0 before one
+void gfx_present_hold(int on);      // 1: the window keeps its last picture, nothing new is presented (quick load)
+// NVIDIA Reflex (gfx_present.c, VK_NV_low_latency2): the NVN front end and the input service mark a frame's stages.
+// The markers and the sleep return at once with Reflex off or unsupported.
+void vk_reflex_marker(int marker, uint64_t present_id);   // present_id: the frame's (vk_reflex_frame_begin)
+uint64_t vk_reflex_frame_begin(void);   // SIMULATION_START: the new frame's present ID
+uint64_t vk_reflex_frame(void);         // the ID of the frame the game simulates now
+void vk_reflex_sleep(void);             // before SIMULATION_START: the driver's latency sleep
+// AMD Anti-Lag 2 (gfx_present.c, VK_AMD_anti_lag): the driver paces the CPU from the INPUT call to the PRESENT call of a
+// frame. Both return at once unless reflex = auto turned Anti-Lag on at device creation (vk_device.c create_device).
+void vk_antilag_input(uint64_t frame);     // before the frame's input and simulation; may sleep
+void vk_antilag_present(uint64_t frame);   // right before the frame's vkQueuePresentKHR
 
 // ---- shader service client (gfx_shader.c)
 enum { GFX_STAGE_VS, GFX_STAGE_TCS, GFX_STAGE_TES, GFX_STAGE_GS, GFX_STAGE_FS, GFX_STAGE_CS };

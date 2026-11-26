@@ -44,7 +44,8 @@ static const char *const action_names[ACTION_COUNT] = {
     "LSTICK_LEFT", "LSTICK_UP", "LSTICK_RIGHT", "LSTICK_DOWN", "RSTICK_LEFT", "RSTICK_UP", "RSTICK_RIGHT", "RSTICK_DOWN", "SHAKE"};
 static const char *const pad_names[PAD_COUNT] = {
     NULL, "south", "east", "west", "north", "lstick", "rstick", "l", "r", "start", "back",
-    "dpad_left", "dpad_up", "dpad_right", "dpad_down", "zl", "zr", "lpaddle1", "rpaddle1", "lpaddle2", "rpaddle2"};
+    "dpad_left", "dpad_up", "dpad_right", "dpad_down", "zl", "zr", "lpaddle1", "rpaddle1", "lpaddle2", "rpaddle2",
+    "touchpad"};
 static const char *const key_names[KEY_COUNT] = {   // each group starts at its id; the ids of a group are consecutive
     [KEY_A] = "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u",
     "v", "w", "x", "y", "z",
@@ -65,13 +66,13 @@ const char *input_pad_name(int pad) { return pad > PAD_NONE && pad < PAD_COUNT ?
 
 void input_map_reset(void) { input_map = defaults; }
 
-static int key_id(const char *name) {
+int input_key_id(const char *name) {
     for (int k = KEY_A; k < KEY_COUNT; k++)
         if (key_names[k] && !strcasecmp(key_names[k], name)) return k;
     return KEY_NONE;
 }
 
-static int pad_id(const char *name) {
+int input_pad_id(const char *name) {
     for (int p = PAD_SOUTH; p < PAD_COUNT; p++)
         if (!strcasecmp(pad_names[p], name)) return p;
     return PAD_NONE;
@@ -132,12 +133,12 @@ int input_map_bind(const char *button, const char *list) {
         int ok = 0;
         if (!strncasecmp(tok, "pad:", 4) && action < B_SL_LEFT) {
             const char *name = trim(tok + 4);
-            int p = pad_id(name);
+            int p = input_pad_id(name);
             if (!strcasecmp(name, "default")) pad_def = ok = 1;
             else if (p && np < INPUT_PAD_BINDING_MAX) pads[np++] = (uint8_t)p, ok = 1;
         } else if (!strncasecmp(tok, "key:", 4)) {
             const char *name = trim(tok + 4);
-            int k = key_id(name);
+            int k = input_key_id(name);
             if (!strcasecmp(name, "default")) key_def = ok = 1;
             else if (k && nk < INPUT_BINDING_MAX) keys[nk++] = (uint8_t)k, ok = 1;
         }
@@ -304,14 +305,25 @@ int input_pad_layout_pick(const char *setting, int east_labelled_a) {
     return east_labelled_a ? PAD_LAYOUT_NINTENDO : PAD_LAYOUT_XBOX;
 }
 
+int input_pad_background_pick(const char *setting, int under_steam) {
+    if (setting && !strcmp(setting, "1")) return 1;
+    if (setting && !strcmp(setting, "0")) return 0;
+    return !under_steam;
+}
+
 int input_prompts_pick(const char *prompts, const char *pad_layout) {
     if (prompts && *prompts)
-        return !strcasecmp(prompts, "xbox") ? PROMPTS_XBOX : !strcasecmp(prompts, "pc") ? PROMPTS_PC : PROMPTS_NINTENDO;
+        return !strcasecmp(prompts, "xbox") ? PROMPTS_XBOX
+             : !strcasecmp(prompts, "playstation") || !strcasecmp(prompts, "ps") ? PROMPTS_PLAYSTATION
+             : !strcasecmp(prompts, "pc") ? PROMPTS_PC : PROMPTS_NINTENDO;
     return pad_layout && !strcasecmp(pad_layout, "xbox_prompts") ? PROMPTS_XBOX : PROMPTS_NINTENDO;
 }
 
 const char *input_prompts_folder(int prompts, const char *pad_layout) {
     if (prompts == PROMPTS_PC) return "romfs-patches-pc";
+    if (prompts == PROMPTS_PLAYSTATION)
+        return input_pad_layout_pick(pad_layout, 0) == PAD_LAYOUT_NINTENDO ? "romfs-patches-playstation"
+                                                                          : "romfs-patches-playstation-xbox";
     if (prompts != PROMPTS_XBOX) return NULL;
     // The folders are read at start, before a pad is open: auto counts as Xbox, as for a pad without Nintendo labels.
     // A Nintendo-labelled pad under auto plays by label too (its A is on the button labelled A), so it matches as well.

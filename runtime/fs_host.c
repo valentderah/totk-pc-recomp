@@ -11,6 +11,8 @@
 //   <profile>/save-backup/<time>/      the three committed saves before the current one
 //   <profile>/temp/                    emptied at start
 //   <profile>/cache/<index>/           cache storage
+//   <profile>/sdcard/                  the SD card a mod plugin mounts (MountSdCard, under any mount name: Zonai
+//                                      Fieldworks keeps its settings and logs there); the game never mounts it
 //
 // The save mount is journaled as on Horizon: changes go to a working copy and become the committed save atomically at
 // Commit; a crash or an Unmount before Commit leaves the previous committed save. Commit returns at once and the copy
@@ -19,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "fs.h"
 #include "host.h"
@@ -33,7 +36,8 @@
 #define NMOUNTS 16
 #define PATH_CAP 1100
 
-enum { M_FREE, M_SAVE, M_TEMP, M_CACHE, M_SAVE_RO };   // M_SAVE: the working copy; M_SAVE_RO: the committed save
+// M_SAVE: the working copy; M_SAVE_RO: the committed save; M_SDCARD: <profile>/sdcard
+enum { M_FREE, M_SAVE, M_TEMP, M_CACHE, M_SAVE_RO, M_SDCARD };
 
 typedef struct { int kind; char name[32]; char root[1024]; } Mount;
 typedef struct { PlatFile *h; int mode, save; } File;   // h NULL = free; save: on a save-data mount
@@ -281,6 +285,18 @@ static int same_file(const char *a, const char *b) {
     return same;
 }
 
+// The folder of the save (slot_00 ...) whose file the running commit wrote first, for quick save (fs_save_commits):
+// note_changed takes the first path component under new_root of each file copy_tree copies instead of linking.
+static char changed_slot[64], last_slot[64];
+static uint32_t commits;   // commits that changed a file, under tx_lock
+static void note_changed(const char *dst) {
+    size_t n = strlen(new_root);
+    if (changed_slot[0] || !n || strncmp(dst, new_root, n) || dst[n] != '/') return;
+    const char *rel = dst + n + 1, *sl = strchr(rel, '/');
+    size_t len = sl ? (size_t)(sl - rel) : sizeof changed_slot;
+    if (len < sizeof changed_slot) memcpy(changed_slot, rel, len), changed_slot[len] = 0;
+}
+
 // Copy the tree src to dst, which must not exist; links are skipped. durable: every file is flushed, and every
 // directory as far as the file system allows. base (or NULL): the committed save; a file whose bytes equal base's file
 // at the same path becomes a hard link to it instead of a copy (*nlinked), as committed files are never written in
@@ -300,7 +316,7 @@ static int copy_tree(const char *src, const char *dst, const char *base, int dur
         if (l.e[i].kind == PLAT_FS_DIR) bad = copy_tree(s, d, b, durable, nfiles, nlinked, bytes);
         else {
             if (b && same_file(s, b) && !plat_fs_link(b, d)) bad = 0, ++*nlinked;
-            else bad = copy_file(s, d, durable, bytes);
+            else bad = copy_file(s, d, durable, bytes), note_changed(d);
             *nfiles += !bad;
             if (!bad && durable && crashed()) bad = -1;
         }
@@ -509,6 +525,7 @@ static uint32_t save_commit_locked(void) {
     int nfiles = 0, linked = 0;
     tx_step = tx_dead = 0;
     const char *base = exists(newest_save()) ? newest_save() : NULL;
+    changed_slot[0] = 0;
     if (remove_tree(new_root) || copy_tree(work_root, new_root, base, 1, &nfiles, &linked, &bytes)) {
         if (tx_dead) return FS_R_INVALID_ARGUMENT;
         rt_log("fs: save commit: copying the working copy failed; the newest save is unchanged");
@@ -535,6 +552,8 @@ static uint32_t save_commit_locked(void) {
     ready_seq++;
     if (*ready_root) remove_tree(ready_root);   // superseded: the working copy it was made from held all of it
     snprintf(ready_root, sizeof ready_root, "%s", ready);
+    commits++;
+    memcpy(last_slot, changed_slot, sizeof last_slot);
     plat_xchg32(&save_dirty, 0);
     if (crashed()) return FS_R_INVALID_ARGUMENT;
     int waits = swap_in();
@@ -557,6 +576,34 @@ static void save_wait_commit(void) {
 }
 
 void fs_save_flush(void) { save_wait_commit(); }
+
+// ---- quick save (quicksave.c): the save folder the last commit wrote, copied out of the newest save
+uint32_t fs_save_commits(char *slot, size_t cap) {
+    plat_mutex_lock(&tx_lock);
+    uint32_t n = commits;
+    snprintf(slot, cap, "%s", last_slot);
+    plat_mutex_unlock(&tx_lock);
+    return n;
+}
+
+// The folder slot of the newest save to dst (replaced). 0 on success.
+static int slot_name_ok(const char *slot) {
+    return slot[0] && slot[0] != '.' && !strchr(slot, '/') && !strchr(slot, '\\') && !strchr(slot, ':');
+}
+
+int fs_save_copy_slot(const char *slot, const char *dst) {
+    if (!*save_root || !slot_name_ok(slot)) return -1;
+    save_wait_commit();
+    plat_mutex_lock(&tx_lock);
+    char *src = join(newest_save(), slot);
+    int n = 0, linked = 0;
+    uint64_t bytes = 0;
+    int bad = plat_fs_kind(src) != PLAT_FS_DIR || remove_tree(dst) || copy_tree(src, dst, NULL, 1, &n, &linked, &bytes);
+    plat_mutex_unlock(&tx_lock);
+    free(src);
+    return bad ? -1 : 0;
+}
+
 
 static uint32_t commit_run(void) {
     plat_mutex_lock(&tx_lock);
@@ -668,6 +715,20 @@ static int component_ok(const char *c, size_t n) {
     return 1;
 }
 
+int fs_host_mounted(const char *name) {
+    int found = 0;
+    plat_mutex_lock_shared(&lock);
+    for (int i = 0; i < NMOUNTS && name; i++) found |= mounts[i].kind && !strcmp(mounts[i].name, name);
+    plat_mutex_unlock_shared(&lock);
+    return found;
+}
+
+// path names its mount's root ("name:/", "name://"): the root is no file or folder to delete or rename.
+static int is_root(const char *path) {
+    const char *colon = path ? strchr(path, ':') : NULL;
+    return colon && colon[1] == '/' && !colon[strspn(colon + 1, "/") + 1];
+}
+
 // "name:/a/b" -> host path; 0 on success; *kind = the mount's kind (M_SAVE ...) when kind is given.
 static uint32_t host_path_kind(const char *path, char *out, size_t cap, int *kind) {
     if (!path) return FS_R_INVALID_PATH;
@@ -757,6 +818,14 @@ static uint32_t mount_temp(const char *name) {
     return mount_add(name, M_TEMP, p);
 }
 
+static uint32_t mount_sdcard(const char *name) {
+    ready();
+    char p[PATH_CAP];
+    snprintf(p, sizeof p, "%s/sdcard", profile);
+    make_dirs(p);
+    return mount_add(name, M_SDCARD, p);
+}
+
 static void cache_dir(int index, char *out, size_t cap) { snprintf(out, cap, "%s/cache/%d", profile, index); }
 
 static uint32_t create_cache(int index, int64_t size, int64_t journal) {
@@ -835,10 +904,7 @@ static void unmount(const char *name) {
         }
     plat_mutex_unlock(&lock);
     plat_mutex_unlock(&tx_lock);
-    size_t n = name ? strlen(name) : 0;
-    char probe[40];
-    if (!n || n >= 32 || (snprintf(probe, sizeof probe, "%s:", name), !romfs_owns(probe)))
-        rt_fatal("fs: unmount of unknown mount %s", name ? name : "(null)");
+    if (!romfs_unmount(name)) rt_fatal("fs: unmount of unknown mount %s", name ? name : "(null)");
 }
 
 static uint32_t commit(const char *name) {
@@ -877,6 +943,33 @@ static int64_t host_read_at(PlatFile *f, void *buf, uint32_t n, uint64_t off) {
     return got < 0 ? -1 : got;
 }
 
+// Quick load (quicksave.c, fs_save_read_from): while set, a read-only open of a file of any slot folder of the save
+// mount (save:/slot_NN/<file>) opens <file> of this folder instead, so the game loads the quick save whichever slot it
+// was asked to load, and no slot of the save is written for it.
+static char read_from[PATH_CAP];
+static volatile int32_t read_from_on, read_from_hits;
+
+void fs_save_read_from(const char *dir) {
+    if (dir) snprintf(read_from, sizeof read_from, "%s", dir), plat_xchg32(&read_from_hits, 0);
+    plat_xchg32(&read_from_on, dir != NULL);
+}
+
+int fs_save_read_from_hits(void) { return plat_cas32(&read_from_hits, 0, 0); }
+
+static void redirect_slot_read(const char *path, char *p, size_t cap) {
+    const char *rest = strstr(path, ":/slot_");
+    if (!rest) return;
+    const char *d = rest + 7, *file;
+    while (*d >= '0' && *d <= '9') d++;
+    if (d == rest + 7 || *d != '/' || !d[1] || strchr(d + 1, '/')) return;
+    file = d + 1;
+    char q[PATH_CAP];
+    if (snprintf(q, sizeof q, "%s/%s", read_from, file) >= (int)sizeof q || plat_fs_kind(q) != PLAT_FS_FILE) return;
+    rt_log("fs: quick load: %s read from %s", path, q);
+    snprintf(p, cap, "%s", q);
+    plat_inc32(&read_from_hits);
+}
+
 static uint32_t open_file(uint64_t *out, const char *path, int mode) {
     if (romfs_owns(path)) return romfs_open(out, path, mode);
     fs_trace(mode & FS_OPEN_WRITE ? "write" : "read", path);
@@ -885,6 +978,8 @@ static uint32_t open_file(uint64_t *out, const char *path, int mode) {
     int kind = M_FREE;
     uint32_t r = host_path_kind(path, p, sizeof p, &kind);
     if (r) return r;
+    if (kind == M_SAVE && !(mode & FS_OPEN_WRITE) && plat_cas32(&read_from_on, 0, 0))
+        redirect_slot_read(path, p, sizeof p);
     if (plat_fs_kind(p) != PLAT_FS_FILE) return FS_R_PATH_NOT_FOUND;
     if (kind == M_SAVE_RO && (mode & FS_OPEN_WRITE)) return FS_R_UNSUPPORTED_OPEN;
     int save_writer = kind == M_SAVE && (mode & FS_OPEN_WRITE);
@@ -925,10 +1020,12 @@ static uint32_t read_file(uint64_t *out, uint64_t h, int64_t offset, void *buffe
     return 0;
 }
 
+// ReadFile without a size out: reading less than size is the sdk's out-of-range (sdk nn::fs::ReadFile(FileHandle,
+// long, void*, unsigned long, ReadOption const&)).
 static uint32_t read_exact(uint64_t h, int64_t off, void *buf, uint64_t size) {
     uint64_t n = 0;
     uint32_t r = read_file(&n, h, off, buf, size);
-    return r ? r : n == size ? 0 : FS_R_INVALID_ARGUMENT;
+    return r ? r : n == size ? 0 : FS_R_OUT_OF_RANGE;
 }
 
 static uint32_t write_file(uint64_t h, int64_t offset, const void *buffer, uint64_t size, const int32_t *option) {
@@ -941,6 +1038,7 @@ static uint32_t write_file(uint64_t h, int64_t offset, const void *buffer, uint6
     if (!plat_file_id(f, &id)) rt_fatal("fs: host save size");
     if ((uint64_t)offset + size > id.size && !(mode & FS_OPEN_APPEND)) return FS_R_APPEND_REQUIRED;
     if (file->save) save_touched();
+    mem_heap_commit((uintptr_t)buffer, size);   // TOTK_HEAP_LAZY: the kernel reads the buffer, so its chunks must exist
     for (uint64_t done = 0; done < size;) {
         uint32_t chunk = size - done > 0x40000000 ? 0x40000000 : (uint32_t)(size - done);
         int64_t put = plat_file_pwrite(f, (const uint8_t *)buffer + done, chunk, (uint64_t)offset + done);
@@ -997,6 +1095,7 @@ static void close_file(uint64_t h) {
 }
 
 static uint32_t create_file(const char *path, int64_t size) {
+    if (romfs_owns(path)) return FS_R_ROMFS_WRITE;
     char p[PATH_CAP];
     uint32_t r = save_change_path(path, p, sizeof p);
     if (r) return r;
@@ -1010,6 +1109,7 @@ static uint32_t create_file(const char *path, int64_t size) {
 }
 
 static uint32_t delete_file(const char *path) {
+    if (romfs_owns(path)) return FS_R_ROMFS_WRITE;
     char p[PATH_CAP];
     uint32_t r = save_change_path(path, p, sizeof p);
     if (r) return r;
@@ -1017,7 +1117,15 @@ static uint32_t delete_file(const char *path) {
     return fs_result(plat_fs_unlink(p));
 }
 
+// A rename on the RomFS changes it; one from or to the RomFS crosses mounts.
+static uint32_t rename_romfs(const char *from, const char *to) {
+    int a = romfs_owns(from), b = romfs_owns(to);
+    return a && b ? FS_R_ROMFS_WRITE : a || b ? FS_R_INVALID_PATH : 0;
+}
+
 static uint32_t rename_file(const char *from, const char *to) {
+    uint32_t rr = rename_romfs(from, to);
+    if (rr) return rr;
     char a[PATH_CAP], b[PATH_CAP];
     uint32_t r = save_change_path(from, a, sizeof a);
     if (!r) r = host_path(to, b, sizeof b);
@@ -1045,30 +1153,100 @@ typedef struct { char name[769]; uint8_t pad0[3]; int8_t type; uint8_t pad1[3]; 
 _Static_assert(sizeof(DirectoryEntry) == 0x310, "nn::fs::DirectoryEntry");
 
 static uint32_t create_directory(const char *path) {
+    if (romfs_owns(path)) return FS_R_ROMFS_WRITE;
     char p[PATH_CAP];
     uint32_t r = save_change_path(path, p, sizeof p);
     if (r) return r;
     return fs_result(plat_fs_mkdir(p));
 }
 
+// A folder, not a file or a mount's root: the host path of what DeleteDirectory and its kin may delete or rename.
+static uint32_t folder_change_path(const char *path, char *p, size_t cap) {
+    if (romfs_owns(path)) return FS_R_ROMFS_WRITE;
+    uint32_t r = save_change_path(path, p, cap);
+    if (r) return r;
+    if (is_root(path)) return FS_R_INVALID_PATH;
+    return plat_fs_kind(p) == PLAT_FS_DIR ? 0 : FS_R_PATH_NOT_FOUND;
+}
+
 static uint32_t delete_recursive(const char *path) {
+    char p[PATH_CAP];
+    uint32_t r = folder_change_path(path, p, sizeof p);
+    if (r) return r;
+    return remove_tree(p) ? FS_R_INVALID_ARGUMENT : 0;
+}
+
+// An empty folder; FS_R_NOT_EMPTY otherwise.
+static uint32_t delete_directory(const char *path) {
+    char p[PATH_CAP];
+    uint32_t r = folder_change_path(path, p, sizeof p);
+    return r ? r : fs_result(plat_fs_rmdir(p));
+}
+
+// Everything under a folder goes, the folder stays; a mount's root may be cleaned.
+static uint32_t clean_recursive(const char *path) {
+    if (romfs_owns(path)) return FS_R_ROMFS_WRITE;
     char p[PATH_CAP];
     uint32_t r = save_change_path(path, p, sizeof p);
     if (r) return r;
     if (plat_fs_kind(p) != PLAT_FS_DIR) return FS_R_PATH_NOT_FOUND;
-    return remove_tree(p) ? FS_R_INVALID_ARGUMENT : 0;
+    Listing l;
+    int e = list_dir(p, &l), bad = 0;
+    for (int i = 0; i < l.n && !e; i++) {
+        char *child = join(p, l.e[i].name);
+        bad |= remove_tree(child);
+        free(child);
+    }
+    listing_free(l.e, l.n);
+    return e ? fs_result(e) : bad ? FS_R_INVALID_ARGUMENT : 0;
 }
 
-static uint32_t open_directory(uint64_t *out, const char *path, int mode) {
-    if (romfs_owns(path)) rt_fatal("fs: OpenDirectory on the RomFS (%s) is not implemented", path);
-    char p[PATH_CAP];
-    uint32_t r = host_path(path, p, sizeof p);
+static uint32_t rename_directory(const char *from, const char *to) {
+    uint32_t rr = rename_romfs(from, to);
+    if (rr) return rr;
+    char a[PATH_CAP], b[PATH_CAP];
+    uint32_t r = folder_change_path(from, a, sizeof a);
+    if (!r) r = host_path(to, b, sizeof b);
     if (r) return r;
-    if (!out || mode < 1 || mode > 3) return FS_R_INVALID_ARGUMENT;
-    if (plat_fs_kind(p) != PLAT_FS_DIR) return FS_R_PATH_NOT_FOUND;
-    Listing l;
-    int e = list_dir(p, &l);
-    if (e) return fs_result(e);
+    size_t n = strcspn(from, ":"), k = strlen(a);
+    if (strcspn(to, ":") != n || strncmp(from, to, n) || is_root(to)) return FS_R_INVALID_PATH;   // across mounts
+    if (exists(b)) return FS_R_ALREADY_EXISTS;
+    if (!strncmp(b, a, k) && b[k] == '/') return FS_R_INVALID_PATH;   // into itself
+    return fs_result(plat_fs_rename(a, b, 0));
+}
+
+// Whether ReadDirectory lists entry e of directory d: of a kind the open mode asks for, with a name nn::fs can hold
+// (768 bytes).
+static int dir_lists(const Dir *d, const Listed *e) {
+    return strlen(e->name) < 769 && (d->mode & (e->kind == PLAT_FS_DIR ? FS_DIR_DIRECTORIES : FS_DIR_FILES));
+}
+
+// The folder's entries are taken whole at open, from the host directory or the RomFS index with its overlays
+// (romfs.c romfs_list). The open mode check is the sdk's (FileSystemAccessor::OpenDirectory): a directory or file bit,
+// no bit but those and FS_DIR_NO_FILE_SIZE.
+static uint32_t open_directory(uint64_t *out, const char *path, int mode) {
+    fs_trace("dir", path);
+    if (!out) return FS_R_NULLPTR;
+    int rom = romfs_owns(path);
+    char p[PATH_CAP];
+    uint32_t r = rom ? 0 : host_path(path, p, sizeof p);
+    if (r) return r;
+    if (!(mode & (FS_DIR_DIRECTORIES | FS_DIR_FILES)) ||
+        (mode & ~(FS_DIR_DIRECTORIES | FS_DIR_FILES | FS_DIR_NO_FILE_SIZE)))
+        return FS_R_DIR_OPEN_MODE;
+    Listing l = {0};
+    if (rom) {
+        r = romfs_list(path, listing_add, &l);
+    } else if (plat_fs_kind(p) != PLAT_FS_DIR) {
+        r = FS_R_PATH_NOT_FOUND;
+    } else {
+        int e = list_dir(p, &l);
+        r = e ? fs_result(e) : 0;
+    }
+    if (r) {
+        listing_free(l.e, l.n);
+        return r;
+    }
     plat_mutex_lock(&lock);
     for (int i = 0; i < NDIRS; i++)
         if (!dirs[i].used) {
@@ -1081,24 +1259,40 @@ static uint32_t open_directory(uint64_t *out, const char *path, int mode) {
     rt_fatal("fs: host directory handle table full (%d)", NDIRS);
 }
 
+static Dir *dir_of(uint64_t h) {
+    return h >= DIR_BASE && h < DIR_BASE + NDIRS && dirs[h - DIR_BASE].used ? &dirs[h - DIR_BASE] : NULL;
+}
+
+// The argument checks are the sdk's (DirectoryAccessor::Read): max 0 reads nothing, a negative one is refused.
 static uint32_t read_directory(int64_t *count, DirectoryEntry *out, uint64_t h, int64_t max) {
-    if (h < DIR_BASE || h >= DIR_BASE + NDIRS || !count || max < 0 || (!out && max)) return FS_R_INVALID_ARGUMENT;
-    Dir *d = &dirs[h - DIR_BASE];
-    if (!d->used) return FS_R_INVALID_ARGUMENT;
+    Dir *d = dir_of(h);
+    if (!d) return FS_R_INVALID_ARGUMENT;
+    if (!count || (!out && max)) return FS_R_NULLPTR;
+    if (max < 0) return FS_R_INVALID_ARGUMENT;
     int64_t n = 0;
     while (n < max && d->next < d->n) {
         const Listed *e = &d->e[d->next++];
-        size_t k = strlen(e->name) + 1;
-        if (k > 769) continue;   // over 768 bytes: nn::fs cannot name it
+        if (!dir_lists(d, e)) continue;
         int is_dir = e->kind == PLAT_FS_DIR;
-        if (!(d->mode & (is_dir ? 1 : 2))) continue;
         memset(&out[n], 0, sizeof *out);
-        memcpy(out[n].name, e->name, k);
+        memcpy(out[n].name, e->name, strlen(e->name) + 1);
         out[n].type = is_dir ? FS_ENTRY_DIRECTORY : FS_ENTRY_FILE;
         out[n].size = is_dir ? 0 : (int64_t)e->size;
         n++;
     }
     *count = n;
+    return 0;
+}
+
+// All the entries the handle lists, wherever its reads stand: the sdk's RomFS directory counts from its first
+// position (its GetEntryCount reads a copy of it).
+static uint32_t entry_count(int64_t *out, uint64_t h) {
+    Dir *d = dir_of(h);
+    if (!d) return FS_R_INVALID_ARGUMENT;
+    if (!out) return FS_R_NULLPTR;
+    int64_t n = 0;
+    for (int i = 0; i < d->n; i++) n += dir_lists(d, &d->e[i]);
+    *out = n;
     return 0;
 }
 
@@ -1110,6 +1304,138 @@ static void close_directory(uint64_t h) {
     dirs[h - DIR_BASE] = (Dir){0};
     plat_mutex_unlock(&lock);
     listing_free(d.e, d.n);
+}
+
+// ---- the rest of nn::fs an application or a mod calls: each answered as the sdk's own code answers it (read in
+// Ghidra), or as its RomFS does for RomFS paths
+static int open_mode(uint64_t h) {
+    int mode = 0;
+    if (romfs_handle(h)) return FS_OPEN_READ;
+    return file_of(h, NULL, &mode) ? mode : 0;
+}
+
+// QueryRange: no range of a host file or the RomFS is encrypted or speed-emulated, so the 0x40-byte
+// nn::fs::QueryRangeInfo is all zero. Offsets are checked as the sdk's RomFsFile::DoOperateRange checks them.
+static uint32_t query_range(void *info, uint64_t h, int64_t offset, int64_t size) {
+    int64_t fsize = 0;
+    (void)size;
+    if (file_size(&fsize, h)) return FS_R_INVALID_ARGUMENT;
+    if (!info) return FS_R_NULLPTR;
+    if (offset < 0) return FS_R_INVALID_OFFSET;
+    if (offset > fsize) return FS_R_OUT_OF_RANGE;
+    memset(info, 0, 0x40);
+    return 0;
+}
+
+// nn::fs::FileTimeStampRaw (0x20 bytes) and FileTimeStamp (its first 0x19 bytes, as the sdk's
+// GetFileTimeStampForDebug copies them): three POSIX times, then a local-time flag. Which time is which is not in the
+// sdk code, so all three are the last write time. The RomFS has none (the sdk's fsa::IFileSystem default).
+typedef struct { int64_t time[3]; uint8_t is_local_time, pad[7]; } FileTimeStampRaw;
+_Static_assert(sizeof(FileTimeStampRaw) == 0x20, "nn::fs::FileTimeStampRaw");
+
+static uint32_t time_stamp(FileTimeStampRaw *out, const char *path) {
+    if (!out) return FS_R_NULLPTR;
+    if (romfs_owns(path)) return FS_R_NOT_IMPLEMENTED;
+    char p[PATH_CAP];
+    int64_t t = 0;
+    uint32_t r = host_path(path, p, sizeof p);
+    if (r) return r;
+    if (plat_fs_kind(p) == PLAT_FS_MISSING || !plat_fs_mtime(p, &t)) return FS_R_PATH_NOT_FOUND;
+    *out = (FileTimeStampRaw){{t, t, t}, 0, {0}};
+    return 0;
+}
+
+static uint32_t time_stamp_debug(void *out, const char *path) {
+    FileTimeStampRaw raw;
+    if (!out) return FS_R_NULLPTR;
+    uint32_t r = time_stamp(&raw, path);
+    if (!r) memcpy(out, &raw, 0x19);
+    return r;
+}
+
+// GetFreeSpaceSize takes a mount name ("save") or its root ("save:/"); a path below the root is the sdk's invalid
+// mount name. The RomFS has 0 bytes free (the sdk's RomFsFileSystem); a host mount has its volume's free bytes.
+static uint32_t free_space(int64_t *out, const char *name) {
+    char root[64];
+    if (!out || !name) return FS_R_NULLPTR;
+    const char *colon = strchr(name, ':');
+    if (colon && colon[1] && colon[strspn(colon + 1, "/") + 1]) return FS_R_INVALID_MOUNT_NAME;
+    size_t n = colon ? (size_t)(colon - name) : strlen(name);
+    if (!n || n >= 32) return FS_R_INVALID_MOUNT_NAME;
+    snprintf(root, sizeof root, "%.*s:/", (int)n, name);
+    if (romfs_owns(root)) {
+        *out = 0;
+        return 0;
+    }
+    char p[PATH_CAP];
+    uint64_t avail, total;
+    uint32_t r = host_path(root, p, sizeof p);
+    if (r) return r;
+    if (!plat_fs_space(p, &avail, &total)) return FS_R_INVALID_ARGUMENT;
+    *out = (int64_t)avail;
+    return 0;
+}
+
+// The RomFS refuses GetTotalSpaceSize (the sdk's RomFsFileSystem); a host mount gives its volume's size.
+static uint32_t total_space(int64_t *out, const char *path) {
+    if (!out) return FS_R_NULLPTR;
+    if (romfs_owns(path)) return FS_R_ROMFS_TOTAL_SPACE;
+    char p[PATH_CAP];
+    uint64_t avail, total;
+    uint32_t r = host_path(path, p, sizeof p);
+    if (r) return r;
+    if (plat_fs_kind(p) == PLAT_FS_MISSING) return FS_R_PATH_NOT_FOUND;
+    if (!plat_fs_space(p, &avail, &total)) return FS_R_INVALID_ARGUMENT;
+    *out = (int64_t)total;
+    return 0;
+}
+
+static int is_mounted(const char *name) {
+    char as_path[40];
+    if (!name || !*name || strlen(name) >= 32) return 0;
+    snprintf(as_path, sizeof as_path, "%s:", name);
+    return fs_host_mounted(name) || romfs_owns(as_path);
+}
+
+// The mount a path names is mounted; "@Host" paths and paths without a mount name are not (the 1.4.3 sdk's
+// IsPathMounted).
+static int is_path_mounted(const char *path) {
+    char name[32];
+    const char *colon = path ? strchr(path, ':') : NULL;
+    if (!colon || !strncmp(path, "@Host", 5) || colon == path || colon - path >= 32) return 0;
+    memcpy(name, path, (size_t)(colon - path));
+    name[colon - path] = 0;
+    return is_mounted(name);
+}
+
+static uint32_t save_exists_out(uint8_t *out, const uint64_t *uid) {
+    if (!out) return FS_R_NULLPTR;
+    *out = save_exists(TOTK_APPLICATION_ID, uid);
+    return 0;
+}
+
+// ReadFileAtOnce and CreateAndWriteFileAtOnce as the 1.4.3 sdk composes them: open, size check, one exact read,
+// close; create with the size, open for writing, one flushed write, close.
+static uint32_t read_file_at_once(const char *path, void *buf, uint64_t size) {
+    uint64_t h = 0;
+    int64_t fsize = 0;
+    uint32_t r = open_file(&h, path, FS_OPEN_READ);
+    if (r) return r;
+    r = file_size(&fsize, h);
+    if (!r) r = (uint64_t)fsize != size ? FS_R_INVALID_SIZE : read_exact(h, 0, buf, size);
+    close_file(h);
+    return r;
+}
+
+static uint32_t create_and_write_file_at_once(const char *path, const void *buf, uint64_t size) {
+    uint64_t h = 0;
+    int32_t flush = 1;   // WriteOptionFlag_Flush
+    uint32_t r = create_file(path, (int64_t)size);
+    if (!r) r = open_file(&h, path, FS_OPEN_WRITE);
+    if (r) return r;
+    r = write_file(h, 0, buf, size, &flush);
+    close_file(h);
+    return r;
 }
 
 // ---- overrides: AAPCS64 thunks. FileHandle, DirectoryHandle, CacheStorageListHandle
@@ -1138,6 +1464,7 @@ static void ov_mount_save(Cpu *c) { ret_x(c, mount_save(arg_p(c, 0), arg_p(c, 1)
 static void ov_mount_save_ro(Cpu *c) { ret_x(c, mount_save_ro(arg_p(c, 0), arg_x(c, 1), arg_p(c, 2))); }
 static void ov_save_exists(Cpu *c) { ret_x(c, save_exists(arg_x(c, 0), arg_p(c, 1))); }
 static void ov_mount_temp(Cpu *c) { ret_x(c, mount_temp(arg_p(c, 0))); }
+static void ov_mount_sdcard(Cpu *c) { ret_x(c, mount_sdcard(arg_p(c, 0))); }
 static void ov_unmount(Cpu *c) { unmount(arg_p(c, 0)); }
 static void ov_commit(Cpu *c) { ret_x(c, commit(arg_p(c, 0))); }
 static void ov_create_cache(Cpu *c) { ret_x(c, create_cache(I32(0), I64(1), I64(2))); }
@@ -1146,6 +1473,29 @@ static void ov_mount_cache(Cpu *c) { ret_x(c, mount_cache(arg_p(c, 0), I32(1)));
 static void ov_open_cache_list(Cpu *c) { ret_x(c, open_cache_list(arg_p(c, 0))); }
 static void ov_read_cache_list(Cpu *c) { ret_x(c, read_cache_list(arg_p(c, 0), arg_p(c, 1), arg_x(c, 2), I32(3))); }
 static void ov_close_cache_list(Cpu *c) { close_cache_list(arg_x(c, 0)); }
+static void ov_entry_count(Cpu *c) { ret_x(c, entry_count(arg_p(c, 0), arg_x(c, 1))); }
+static void ov_delete_directory(Cpu *c) { ret_x(c, delete_directory(arg_p(c, 0))); }
+static void ov_clean_recursive(Cpu *c) { ret_x(c, clean_recursive(arg_p(c, 0))); }
+static void ov_rename_directory(Cpu *c) { ret_x(c, rename_directory(arg_p(c, 0), arg_p(c, 1))); }
+// CreateFile's option (CreateOption_BigFile) splits a file over 4 GiB on FAT; a host file needs no split
+static void ov_create_file_opt(Cpu *c) { ret_x(c, create_file(arg_p(c, 0), I64(1))); }
+static void ov_read_exact_opt(Cpu *c) { ret_x(c, read_exact(arg_x(c, 0), I64(1), arg_p(c, 2), arg_x(c, 3))); }
+static void ov_read_at_once(Cpu *c) { ret_x(c, read_file_at_once(arg_p(c, 0), arg_p(c, 1), arg_x(c, 2))); }
+static void ov_write_at_once(Cpu *c) { ret_x(c, create_and_write_file_at_once(arg_p(c, 0), arg_p(c, 1), arg_x(c, 2))); }
+static void ov_open_mode(Cpu *c) { ret_x(c, (uint32_t)open_mode(arg_x(c, 0))); }
+static void ov_query_range(Cpu *c) { ret_x(c, query_range(arg_p(c, 0), arg_x(c, 1), I64(2), I64(3))); }
+static void ov_time_stamp(Cpu *c) { ret_x(c, time_stamp_debug(arg_p(c, 0), arg_p(c, 1))); }
+static void ov_time_stamp_raw(Cpu *c) { ret_x(c, time_stamp(arg_p(c, 0), arg_p(c, 1))); }
+static void ov_free_space(Cpu *c) { ret_x(c, free_space(arg_p(c, 0), arg_p(c, 1))); }
+static void ov_total_space(Cpu *c) { ret_x(c, total_space(arg_p(c, 0), arg_p(c, 1))); }
+static void ov_is_mounted(Cpu *c) { ret_x(c, (uint64_t)is_mounted(arg_p(c, 0))); }
+static void ov_is_path_mounted(Cpu *c) { ret_x(c, (uint64_t)is_path_mounted(arg_p(c, 0))); }
+// CommitSaveData is Commit under another name in the sdk (both tail-call one routine)
+static void ov_commit_save(Cpu *c) { ret_x(c, commit(arg_p(c, 0))); }
+// MountCacheStorage(name): the sdk mounts this application's cache storage index 0
+static void ov_mount_cache0(Cpu *c) { ret_x(c, mount_cache(arg_p(c, 0), 0)); }
+static void ov_save_exists_uid(Cpu *c) { ret_x(c, save_exists(TOTK_APPLICATION_ID, arg_p(c, 0))); }
+static void ov_save_exists_out(Cpu *c) { ret_x(c, save_exists_out(arg_p(c, 0), arg_p(c, 1))); }
 // The fs priority only orders I/O inside the system fs process; host I/O is unordered.
 static void ov_set_priority(Cpu *c) { (void)c; }
 #undef I32
@@ -1173,6 +1523,7 @@ static void ov_set_priority(Cpu *c) { (void)c; }
 #define S_MOUNT_SAVE_RO "_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE"
 #define S_SAVE_EXISTS "_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE"
 #define S_MOUNT_TEMP "_ZN2nn2fs21MountTemporaryStorageEPKc"
+#define S_MOUNT_SDCARD "_ZN2nn2fs11MountSdCardEPKc"
 #define S_UNMOUNT "_ZN2nn2fs7UnmountEPKc"
 #define S_COMMIT "_ZN2nn2fs6CommitEPKc"
 #define S_CREATE_CACHE "_ZN2nn2fs18CreateCacheStorageEill"
@@ -1183,7 +1534,29 @@ static void ov_set_priority(Cpu *c) { (void)c; }
 #define S_CLOSE_CACHE_LIST "_ZN2nn2fs21CloseCacheStorageListENS0_22CacheStorageListHandleE"
 #define S_SET_PRIORITY "_ZN2nn2fs26SetPriorityOnCurrentThreadENS0_8PriorityE"
 // romfs.c
+#define S_ENTRY_COUNT "_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE"
+#define S_DELETE_DIRECTORY "_ZN2nn2fs15DeleteDirectoryEPKc"
+#define S_CLEAN_RECURSIVE "_ZN2nn2fs25CleanDirectoryRecursivelyEPKc"
+#define S_RENAME_DIRECTORY "_ZN2nn2fs15RenameDirectoryEPKcS2_"
+#define S_CREATE_FILE_OPT "_ZN2nn2fs10CreateFileEPKcli"
+#define S_READ_EXACT_OPT "_ZN2nn2fs8ReadFileENS0_10FileHandleElPvmRKNS0_10ReadOptionE"
+#define S_READ_AT_ONCE "_ZN2nn2fs14ReadFileAtOnceEPKcPvm"
+#define S_WRITE_AT_ONCE "_ZN2nn2fs24CreateAndWriteFileAtOnceEPKcPKvm"
+#define S_OPEN_MODE "_ZN2nn2fs15GetFileOpenModeENS0_10FileHandleE"
+#define S_QUERY_RANGE "_ZN2nn2fs10QueryRangeEPNS0_14QueryRangeInfoENS0_10FileHandleEll"
+#define S_TIME_STAMP "_ZN2nn2fs24GetFileTimeStampForDebugEPNS0_13FileTimeStampEPKc"
+#define S_TIME_STAMP_RAW "_ZN2nn2fs27GetFileTimeStampRawForDebugEPNS0_16FileTimeStampRawEPKc"
+#define S_FREE_SPACE "_ZN2nn2fs16GetFreeSpaceSizeEPlPKc"
+#define S_TOTAL_SPACE "_ZN2nn2fs17GetTotalSpaceSizeEPlPKc"
+#define S_IS_MOUNTED "_ZN2nn2fs9IsMountedEPKc"
+#define S_IS_PATH_MOUNTED "_ZN2nn2fs13IsPathMountedEPKc"
+#define S_COMMIT_SAVE "_ZN2nn2fs14CommitSaveDataEPKc"
+#define S_MOUNT_CACHE0 "_ZN2nn2fs17MountCacheStorageEPKc"
+#define S_SAVE_EXISTS_UID "_ZN2nn2fs18IsSaveDataExistingERKNS_7account3UidE"
+#define S_SAVE_EXISTS_OUT "_ZN2nn2fs18IsSaveDataExistingEPbRKNS_7account3UidE"
+// romfs.c
 #define S_MOUNT_ROM "_ZN2nn2fs8MountRomEPKcPvm"
+#define S_MOUNT_ROM_NOCACHE "_ZN2nn2fs8MountRomEPKc"
 #define S_QUERY_CACHE "_ZN2nn2fs22QueryMountRomCacheSizeEPm"
 #define S_INITIALIZE "_ZN2nn2fs24InitializeForApplicationEv"
 
@@ -1209,6 +1582,7 @@ HOST_OVERRIDE(S_MOUNT_SAVE, ov_mount_save);
 HOST_OVERRIDE(S_MOUNT_SAVE_RO, ov_mount_save_ro);
 HOST_OVERRIDE(S_SAVE_EXISTS, ov_save_exists);
 HOST_OVERRIDE(S_MOUNT_TEMP, ov_mount_temp);
+HOST_OVERRIDE(S_MOUNT_SDCARD, ov_mount_sdcard);
 HOST_OVERRIDE(S_UNMOUNT, ov_unmount);
 HOST_OVERRIDE(S_COMMIT, ov_commit);
 HOST_OVERRIDE(S_CREATE_CACHE, ov_create_cache);
@@ -1218,6 +1592,26 @@ HOST_OVERRIDE(S_OPEN_CACHE_LIST, ov_open_cache_list);
 HOST_OVERRIDE(S_READ_CACHE_LIST, ov_read_cache_list);
 HOST_OVERRIDE(S_CLOSE_CACHE_LIST, ov_close_cache_list);
 HOST_OVERRIDE(S_SET_PRIORITY, ov_set_priority);
+HOST_OVERRIDE(S_ENTRY_COUNT, ov_entry_count);
+HOST_OVERRIDE(S_DELETE_DIRECTORY, ov_delete_directory);
+HOST_OVERRIDE(S_CLEAN_RECURSIVE, ov_clean_recursive);
+HOST_OVERRIDE(S_RENAME_DIRECTORY, ov_rename_directory);
+HOST_OVERRIDE(S_CREATE_FILE_OPT, ov_create_file_opt);
+HOST_OVERRIDE(S_READ_EXACT_OPT, ov_read_exact_opt);
+HOST_OVERRIDE(S_READ_AT_ONCE, ov_read_at_once);
+HOST_OVERRIDE(S_WRITE_AT_ONCE, ov_write_at_once);
+HOST_OVERRIDE(S_OPEN_MODE, ov_open_mode);
+HOST_OVERRIDE(S_QUERY_RANGE, ov_query_range);
+HOST_OVERRIDE(S_TIME_STAMP, ov_time_stamp);
+HOST_OVERRIDE(S_TIME_STAMP_RAW, ov_time_stamp_raw);
+HOST_OVERRIDE(S_FREE_SPACE, ov_free_space);
+HOST_OVERRIDE(S_TOTAL_SPACE, ov_total_space);
+HOST_OVERRIDE(S_IS_MOUNTED, ov_is_mounted);
+HOST_OVERRIDE(S_IS_PATH_MOUNTED, ov_is_path_mounted);
+HOST_OVERRIDE(S_COMMIT_SAVE, ov_commit_save);
+HOST_OVERRIDE(S_MOUNT_CACHE0, ov_mount_cache0);
+HOST_OVERRIDE(S_SAVE_EXISTS_UID, ov_save_exists_uid);
+HOST_OVERRIDE(S_SAVE_EXISTS_OUT, ov_save_exists_out);
 
 // ---- --probe-fs
 // Every check calls the overrides the way guest code does: by synthetic address through rt_call, with AAPCS64
@@ -1227,7 +1621,11 @@ static const char *const probe_symbols[] = {
     S_SET_FILE_SIZE, S_FLUSH_FILE, S_CREATE_FILE, S_DELETE_FILE, S_RENAME_FILE, S_CREATE_DIRECTORY, S_DELETE_RECURSIVE,
     S_OPEN_DIRECTORY, S_READ_DIRECTORY, S_CLOSE_DIRECTORY, S_MOUNT_SAVE, S_MOUNT_SAVE_RO, S_SAVE_EXISTS, S_MOUNT_TEMP,
     S_UNMOUNT, S_COMMIT, S_CREATE_CACHE, S_DELETE_CACHE, S_MOUNT_CACHE, S_OPEN_CACHE_LIST, S_READ_CACHE_LIST,
-    S_CLOSE_CACHE_LIST, S_SET_PRIORITY, S_MOUNT_ROM, S_QUERY_CACHE, S_INITIALIZE};
+    S_CLOSE_CACHE_LIST, S_SET_PRIORITY, S_MOUNT_ROM, S_QUERY_CACHE, S_INITIALIZE, S_ENTRY_COUNT, S_DELETE_DIRECTORY,
+    S_CLEAN_RECURSIVE, S_RENAME_DIRECTORY, S_CREATE_FILE_OPT, S_READ_EXACT_OPT, S_READ_AT_ONCE, S_WRITE_AT_ONCE,
+    S_OPEN_MODE, S_QUERY_RANGE, S_TIME_STAMP, S_TIME_STAMP_RAW, S_FREE_SPACE, S_TOTAL_SPACE, S_IS_MOUNTED,
+    S_IS_PATH_MOUNTED, S_COMMIT_SAVE, S_MOUNT_CACHE0, S_SAVE_EXISTS_UID, S_SAVE_EXISTS_OUT, S_MOUNT_ROM_NOCACHE,
+    S_MOUNT_SDCARD};
 #define NPROBE ((int)(sizeof probe_symbols / sizeof *probe_symbols))
 #define SAMPLES 64
 #define HEAD_BYTES (8u << 20)      // a sampled file is compared whole up to this size, else head and tail
@@ -1240,6 +1638,7 @@ static int failures, checks;
     do { checks++; if (!(cond)) { failures++; printf("  FAIL: " __VA_ARGS__); putchar('\n'); } } while (0)
 
 static uint64_t U(const void *p) { return (uint64_t)(uintptr_t)p; }
+static int files_open(int i) { return files[i].h != NULL; }
 
 // The override registered for sym, called through its synthetic address with up to 6 arguments. Returns x0.
 static uint64_t fs_call(const char *sym, const uint64_t a[6]) {
@@ -1422,6 +1821,264 @@ static uint64_t probe_romfs(void) {
     free(a);
     free(b);
     return count;
+}
+
+// ---- RomFS folders: every listing against an independent scan of the index rows and the overlays
+// The expected entries of RomFS folder rel ("" = root) into dirs and files (Listing, name order not kept): every index
+// row and every added overlay file under it, a file with the size it is served with.
+static void rom_expect_add(Listing *dirs, Listing *files, const char *name, size_t n, uint64_t i, int added,
+                           uint64_t size) {
+    const char *rest = name + n, *slash = strchr(rest, '/');
+    if (!slash) {
+        if (!added) {   // a replacement overlay serves its own size
+            size_t nov = romfs_overlay_count();
+            for (size_t k = 0; k < nov; k++) {
+                const char *file;
+                uint64_t osize;
+                int is_added;
+                if (!strcmp(romfs_overlay(k, &file, &osize, &is_added), name) && !is_added) size = osize;
+            }
+        }
+        listing_add(rest, PLAT_FS_FILE, size, files);
+        return;
+    }
+    char comp[800];
+    size_t len = (size_t)(slash - rest);
+    if (len >= sizeof comp) return;
+    memcpy(comp, rest, len);
+    comp[len] = 0;
+    for (int k = 0; k < dirs->n; k++)
+        if (!strcmp(dirs->e[k].name, comp)) return;
+    listing_add(comp, PLAT_FS_DIR, 0, dirs);
+    (void)i;
+}
+
+static void rom_expect(const char *rel, Listing *dirs, Listing *files) {
+    char pre[4200];
+    size_t n = (size_t)snprintf(pre, sizeof pre, "%s%s", rel, *rel ? "/" : "");
+    *dirs = (Listing){0}, *files = (Listing){0};
+    uint64_t count = romfs_file_count(), size;
+    for (uint64_t i = 0; i < count; i++) {
+        const char *name = romfs_entry(i, NULL, &size);
+        if (!strncmp(name, pre, n)) rom_expect_add(dirs, files, name, n, i, 0, size);
+    }
+    size_t nov = romfs_overlay_count();
+    for (size_t k = 0; k < nov; k++) {
+        const char *file;
+        uint64_t osize;
+        int is_added;
+        const char *name = romfs_overlay(k, &file, &osize, &is_added);
+        if (is_added && !strncmp(name, pre, n)) rom_expect_add(dirs, files, name, n, k, 1, osize);
+    }
+}
+
+// One RomFS folder listed through the overrides and compared with rom_expect: the same names, kinds and sizes, folders
+// before files, GetDirectoryEntryCount the total before, during and after the reads, the mode bits.
+static int rom_dir_check(const char *mount, const char *rel, int *ndirs, int *nfiles) {
+    char path[4300];
+    snprintf(path, sizeof path, "%s:/%s", mount, rel);
+    Listing dirs, files;
+    rom_expect(rel, &dirs, &files);
+    int want = dirs.n + files.n, ok = 1, got = 0, seen_file = 0, order = 1;
+    *ndirs = dirs.n, *nfiles = files.n;
+    uint64_t d = 0;
+    int64_t count = -1, n = -1;
+    static DirectoryEntry ents[5];
+    ok &= RES(S_OPEN_DIRECTORY, U(&d), U(path), FS_DIR_DIRECTORIES | FS_DIR_FILES) == 0;
+    ok &= ok && RES(S_ENTRY_COUNT, U(&count), d) == 0 && count == want;
+    char *used = calloc((size_t)want + 1, 1);
+    need(used != NULL, "probe listing");
+    while (ok && RES(S_READ_DIRECTORY, U(&n), U(ents), d, 5) == 0 && n > 0) {
+        for (int64_t k = 0; k < n; k++) {
+            int dir = ents[k].type == FS_ENTRY_DIRECTORY, found = 0;
+            Listing *l = dir ? &dirs : &files;
+            seen_file |= !dir;
+            order &= !(dir && seen_file);
+            for (int j = 0; j < l->n && !found; j++)
+                if (!strcmp(l->e[j].name, ents[k].name) && (dir || (uint64_t)ents[k].size == l->e[j].size)) {
+                    int slot = dir ? j : dirs.n + j;
+                    found = !used[slot];
+                    used[slot] = 1;
+                }
+            ok &= found;
+            got++;
+        }
+        if (got == 5) ok &= RES(S_ENTRY_COUNT, U(&count), d) == 0 && count == want;   // mid-read: still the total
+    }
+    ok &= got == want && order && RES(S_ENTRY_COUNT, U(&count), d) == 0 && count == want;
+    ok &= RES(S_READ_DIRECTORY, U(&n), U(ents), d, 5) == 0 && n == 0;
+    if (d) CALL(S_CLOSE_DIRECTORY, d);
+    free(used);
+    ok &= RES(S_OPEN_DIRECTORY, U(&d), U(path), FS_DIR_DIRECTORIES) == 0 && RES(S_ENTRY_COUNT, U(&count), d) == 0 &&
+          count == dirs.n;
+    CALL(S_CLOSE_DIRECTORY, d);
+    ok &= RES(S_OPEN_DIRECTORY, U(&d), U(path), FS_DIR_FILES | FS_DIR_NO_FILE_SIZE) == 0 &&
+          RES(S_ENTRY_COUNT, U(&count), d) == 0 && count == files.n;
+    CALL(S_CLOSE_DIRECTORY, d);
+    listing_free(dirs.e, dirs.n);
+    listing_free(files.e, files.n);
+    return ok;
+}
+
+// No RomFS index row lies under folder rel: only the overlays make it.
+static int rom_overlay_only(const char *rel) {
+    char pre[4200];
+    size_t n = (size_t)snprintf(pre, sizeof pre, "%s/", rel);
+    uint64_t lo = 0, hi = romfs_file_count();   // the index is sorted: the first row not below pre
+    while (lo < hi) {
+        uint64_t mid = lo + (hi - lo) / 2;
+        if (strcmp(romfs_entry(mid, NULL, NULL), pre) < 0) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo == romfs_file_count() || strncmp(romfs_entry(lo, NULL, NULL), pre, n);
+}
+
+static void probe_romfs_dirs(void) {
+    // the folders: the root, a top folder, a deep game folder, a folder only an added overlay file makes and a game
+    // folder an added file joins, when the overlays have them
+    char game[4200] = "", top[4200] = "", only[4200] = "", mixed[4200] = "";
+    uint64_t count = romfs_file_count();
+    const char *mid = romfs_entry(count / 2, NULL, NULL);
+    snprintf(game, sizeof game, "%.*s", (int)(strrchr(mid, '/') - mid), mid);
+    snprintf(top, sizeof top, "%.*s", (int)strcspn(mid, "/"), mid);
+    size_t nov = romfs_overlay_count();
+    for (size_t k = 0; k < nov; k++) {
+        const char *file, *name;
+        uint64_t osize;
+        int is_added;
+        name = romfs_overlay(k, &file, &osize, &is_added);
+        const char *slash = strrchr(name, '/');
+        if (!is_added || !slash) continue;
+        char folder[4200];
+        snprintf(folder, sizeof folder, "%.*s", (int)(slash - name), name);
+        char *target = rom_overlay_only(folder) ? only : mixed;
+        if (!*target) snprintf(target, 4200, "%s", folder);
+    }
+    const char *names[5] = {"", top, game, only, mixed};
+    const char *what[5] = {"root", "top folder", "game folder", "overlay-only folder", "game folder with added files"};
+    int listed = 0;
+    for (int k = 0; k < 5; k++) {
+        if (k >= 3 && !*names[k]) {
+            printf("romfs dirs: no %s among the overlays (TOTK_ROMFS_MODS adds one)\n", what[k]);
+            continue;
+        }
+        int nd = 0, nf = 0, ok = rom_dir_check("rom", names[k], &nd, &nf);
+        CHECK(ok, "RomFS %s listing", what[k]);
+        printf("romfs dirs: %s: %d folders, %d files: %s\n", what[k], nd, nf, ok ? "ok" : "FAIL");
+        listed += ok;
+    }
+
+    // paths: the root with any number of '/', a trailing '/', the exact case only, a file is no folder
+    char path[4300], file[4300];
+    uint64_t d = 0, h = 0;
+    int64_t n = -1;
+    int type = -1;
+    static DirectoryEntry ents[2];
+    CHECK(RES(S_ENTRY_TYPE, U(&type), U("rom:/")) == 0 && type == FS_ENTRY_DIRECTORY, "GetEntryType(rom:/)");
+    CHECK(RES(S_OPEN_DIRECTORY, U(&d), U("rom://"), 3) == 0, "OpenDirectory(rom://)");
+    CALL(S_CLOSE_DIRECTORY, d);
+    snprintf(path, sizeof path, "rom:/%s/", game);
+    CHECK(RES(S_OPEN_DIRECTORY, U(&d), U(path), 3) == 0 && RES(S_ENTRY_TYPE, U(&type), U(path)) == 0 &&
+          type == FS_ENTRY_DIRECTORY, "a RomFS folder with a trailing '/'");
+    CALL(S_CLOSE_DIRECTORY, d);
+    snprintf(path, sizeof path, "rom:/%s", game);
+    char *letter = path + 5;
+    while (*letter && !((*letter >= 'a' && *letter <= 'z') || (*letter >= 'A' && *letter <= 'Z'))) letter++;
+    if (*letter) {
+        *letter ^= 0x20;
+        CHECK(RES(S_OPEN_DIRECTORY, U(&d), U(path), 3) == FS_R_PATH_NOT_FOUND &&
+              RES(S_ENTRY_TYPE, U(&type), U(path)) == FS_R_PATH_NOT_FOUND, "a RomFS folder in another case");
+        *letter ^= 0x20;
+    }
+    snprintf(file, sizeof file, "rom:/%s", mid);
+    CHECK(RES(S_OPEN_DIRECTORY, U(&d), U(file), 3) == FS_R_PATH_NOT_FOUND, "OpenDirectory on a RomFS file");
+    snprintf(file + strlen(file), sizeof file - strlen(file), "/");
+    CHECK(RES(S_ENTRY_TYPE, U(&type), U(file)) == FS_R_PATH_NOT_FOUND, "GetEntryType on a RomFS file with '/'");
+    snprintf(file, sizeof file, "rom:/%s", mid);
+    CHECK(RES(S_OPEN_DIRECTORY, U(&d), U("rom:/absent-folder"), 3) == FS_R_PATH_NOT_FOUND, "an absent RomFS folder");
+    CHECK(RES(S_OPEN_DIRECTORY, U(&d), U("rom:/../x"), 3) == FS_R_PATH_NOT_FOUND, "rom:/../x");
+    CHECK(RES(S_OPEN_DIRECTORY, U(&d), U(path), 0) == FS_R_DIR_OPEN_MODE &&
+          RES(S_OPEN_DIRECTORY, U(&d), U(path), 4) == FS_R_DIR_OPEN_MODE &&
+          RES(S_OPEN_DIRECTORY, U(&d), U(path), 3 | 8) == FS_R_DIR_OPEN_MODE &&
+          RES(S_OPEN_DIRECTORY, 0, U(path), 3) == FS_R_NULLPTR, "OpenDirectory mode and argument checks");
+    CHECK(RES(S_OPEN_DIRECTORY, U(&d), U(path), 3) == 0 && RES(S_READ_DIRECTORY, U(&n), U(ents), d, 0) == 0 &&
+          n == 0 && RES(S_READ_DIRECTORY, U(&n), U(ents), d, -1) == FS_R_INVALID_ARGUMENT &&
+          RES(S_READ_DIRECTORY, U(&n), 0, d, 2) == FS_R_NULLPTR && RES(S_ENTRY_COUNT, 0, d) == FS_R_NULLPTR,
+          "ReadDirectory and GetDirectoryEntryCount argument checks");
+    CALL(S_CLOSE_DIRECTORY, d);
+    // handles are freed at close: many more opens than the table holds
+    int opened = 0;
+    for (int k = 0; k < 4 * NDIRS; k++)
+        if (!RES(S_OPEN_DIRECTORY, U(&d), U("rom:/"), 3)) opened++, CALL(S_CLOSE_DIRECTORY, d);
+    CHECK(opened == 4 * NDIRS, "RomFS folder opens and closes: %d of %d", opened, 4 * NDIRS);
+
+    // read-only: every change is refused with the sdk's RomFsFileSystem code
+    snprintf(path, sizeof path, "rom:/%s", game);
+    uint32_t w[10] = {RES(S_CREATE_FILE, U("rom:/new.bin"), 0), RES(S_CREATE_FILE_OPT, U("rom:/new.bin"), 0, 0),
+                      RES(S_DELETE_FILE, U(file)), RES(S_CREATE_DIRECTORY, U("rom:/newdir")),
+                      RES(S_DELETE_DIRECTORY, U(path)), RES(S_DELETE_RECURSIVE, U(path)),
+                      RES(S_CLEAN_RECURSIVE, U(path)), RES(S_RENAME_FILE, U(file), U("rom:/moved")),
+                      RES(S_RENAME_DIRECTORY, U(path), U("rom:/moved")),
+                      RES(S_WRITE_AT_ONCE, U("rom:/new.bin"), U(ents), 4)};
+    int refused = 0;
+    for (int k = 0; k < 10; k++) refused += w[k] == FS_R_ROMFS_WRITE;
+    CHECK(refused == 10, "RomFS changes refused with %#x: %d of 10", FS_R_ROMFS_WRITE, refused);
+
+    // files: open mode, QueryRange, the exact ReadFile with a ReadOption, ReadFileAtOnce, timestamps
+    uint64_t size = 0, off = 0;
+    romfs_entry(count / 2, &off, &size);
+    static uint8_t info[0x40], whole[1 << 16], cmp[1 << 16];
+    int32_t option = 0;
+    int64_t fsize = 0;
+    CHECK(RES(S_OPEN_FILE, U(&h), U(file), FS_OPEN_READ) == 0 && (CALL(S_OPEN_MODE, h) & 0xffffffff) == FS_OPEN_READ &&
+          RES(S_FILE_SIZE, U(&fsize), h) == 0, "a RomFS file's open mode");
+    memset(info, 0xff, sizeof info);
+    int zero = 1;
+    uint32_t qr = RES(S_QUERY_RANGE, U(info), h, 0, fsize);
+    for (unsigned k = 0; k < sizeof info; k++) zero &= !info[k];
+    CHECK(qr == 0 && zero && RES(S_QUERY_RANGE, U(info), h, -1, 1) == FS_R_INVALID_OFFSET &&
+          RES(S_QUERY_RANGE, U(info), h, fsize + 1, 1) == FS_R_OUT_OF_RANGE &&
+          RES(S_QUERY_RANGE, 0, h, 0, 1) == FS_R_NULLPTR, "QueryRange on a RomFS file");
+    uint64_t take = fsize < (int64_t)sizeof whole ? (uint64_t)fsize : sizeof whole;
+    CHECK(RES(S_READ_EXACT_OPT, h, 0, U(whole), take, U(&option)) == 0 &&
+          RES(S_READ_EXACT_OPT, h, fsize - 1, U(info), 2, U(&option)) == FS_R_OUT_OF_RANGE,
+          "ReadFile(FileHandle, ..., ReadOption) on a RomFS file");
+    CALL(S_CLOSE_FILE, h);
+    if ((uint64_t)fsize <= sizeof whole) {
+        memset(cmp, 0, sizeof cmp);
+        CHECK(RES(S_READ_AT_ONCE, U(file), U(cmp), fsize) == 0 && !memcmp(cmp, whole, (size_t)fsize) &&
+              RES(S_READ_AT_ONCE, U(file), U(cmp), fsize + 1) == FS_R_INVALID_SIZE &&
+              RES(S_READ_AT_ONCE, U("rom:/absent.bin"), U(cmp), 1) == FS_R_PATH_NOT_FOUND, "ReadFileAtOnce on the RomFS");
+    }
+    FileTimeStampRaw ts = {{0}, 0, {0}};
+    CHECK(RES(S_TIME_STAMP_RAW, U(&ts), U(file)) == FS_R_NOT_IMPLEMENTED &&
+          RES(S_TIME_STAMP, U(&ts), U(file)) == FS_R_NOT_IMPLEMENTED, "RomFS timestamps");
+
+    // space and mounts
+    int64_t space = -1;
+    CHECK(RES(S_FREE_SPACE, U(&space), U("rom")) == 0 && space == 0 && RES(S_FREE_SPACE, U(&space), U("rom:/")) == 0 &&
+          RES(S_FREE_SPACE, U(&space), U(path)) == FS_R_INVALID_MOUNT_NAME &&
+          RES(S_TOTAL_SPACE, U(&space), U("rom:/")) == FS_R_ROMFS_TOTAL_SPACE &&
+          RES(S_FREE_SPACE, 0, U("rom")) == FS_R_NULLPTR, "RomFS free and total space");
+    CHECK((CALL(S_IS_MOUNTED, U("rom")) & 0xff) == 1 && (CALL(S_IS_MOUNTED, U("absent")) & 0xff) == 0 &&
+          (CALL(S_IS_PATH_MOUNTED, U(file)) & 0xff) == 1 && (CALL(S_IS_PATH_MOUNTED, U("absent:/x")) & 0xff) == 0 &&
+          (CALL(S_IS_PATH_MOUNTED, U("@Host:/x")) & 0xff) == 0 && (CALL(S_IS_PATH_MOUNTED, 0) & 0xff) == 0,
+          "IsMounted, IsPathMounted (RomFS)");
+    // a second RomFS name (MountRom without a cache): the same files and folders; Unmount takes it, not the first
+    char file2[4300];
+    snprintf(file2, sizeof file2, "rom2:/%s", mid);
+    int nd = 0, nf = 0;
+    CHECK(RES(S_MOUNT_ROM_NOCACHE, U("rom2")) == 0 && (CALL(S_IS_MOUNTED, U("rom2")) & 0xff) == 1 &&
+          RES(S_OPEN_FILE, U(&h), U(file2), FS_OPEN_READ) == 0 && rom_dir_check("rom2", game, &nd, &nf),
+          "a second RomFS mount name");
+    if (h) CALL(S_CLOSE_FILE, h);
+    CALL(S_UNMOUNT, U("rom2"));
+    CALL(S_UNMOUNT, U("rom"));
+    CHECK((CALL(S_IS_MOUNTED, U("rom2")) & 0xff) == 0 && RES(S_OPEN_FILE, U(&h), U(file2), FS_OPEN_READ) ==
+          FS_R_PATH_NOT_FOUND && (CALL(S_IS_MOUNTED, U("rom")) & 0xff) == 1, "Unmount of RomFS names");
+    printf("romfs dirs: %d folders listed equal to the index scan; paths, modes, %d handle reuses, read-only refusals, "
+           "QueryRange, exact reads, ReadFileAtOnce, timestamps, space, IsMounted, a second mount name: %s\n", listed,
+           4 * NDIRS, failures ? "see FAIL lines" : "ok");
 }
 
 // ---- save transactions: restarts, uncommitted and committed changes, a crash at every step of a Commit
@@ -1623,6 +2280,110 @@ static void probe_save_tx(const uint64_t *uid) {
            "times; %d backups\n", steps, olds, news, mixed, backups);
 }
 
+// ---- the folder and file calls on one storage mount (save, temporary, cache, SD card), error paths with them
+static void probe_mount_ops(const char *m) {
+    char p[16][128];
+    const char *const leaf[16] = {"d", "d/a", "d/b", "d/sub", "d/sub/c", "d/w", "absent", "d/sub2", "d/sub2/x", "",
+                                  "d/w2", "e", "d/absent", "", "", ""};
+    for (int k = 0; k < 16; k++) snprintf(p[k], sizeof p[k], "%s:/%s", m, leaf[k]);
+    static uint8_t data[100], back[100], info[0x40];
+    for (unsigned k = 0; k < sizeof data; k++) data[k] = (uint8_t)(k * 13 + 1);
+    uint64_t d = 0, h = 0;
+    int64_t count = -1, space = -1, total = -1;
+    int type = -1;
+    int32_t option = 0;
+    static DirectoryEntry ents[4];
+    int ok = 1, step = 0;
+#define STEP(c) do { step++; if (!(c)) { ok = 0; printf("  FAIL: %s: step %d: %s\n", m, step, #c); } } while (0)
+    STEP(RES(S_CREATE_DIRECTORY, U(p[0])) == 0 && RES(S_CREATE_FILE, U(p[1]), 10) == 0 &&
+         RES(S_CREATE_FILE_OPT, U(p[2]), 0, 0) == 0 && RES(S_CREATE_DIRECTORY, U(p[3])) == 0 &&
+         RES(S_CREATE_FILE, U(p[4]), 1) == 0);
+    STEP(RES(S_OPEN_DIRECTORY, U(&d), U(p[0]), 3) == 0 && RES(S_ENTRY_COUNT, U(&count), d) == 0 && count == 3 &&
+         RES(S_READ_DIRECTORY, U(&count), U(ents), d, 4) == 0 && count == 3 && RES(S_ENTRY_COUNT, U(&count), d) == 0 &&
+         count == 3);
+    CALL(S_CLOSE_DIRECTORY, d);
+    STEP(RES(S_OPEN_DIRECTORY, U(&d), U(p[0]), 1) == 0 && RES(S_ENTRY_COUNT, U(&count), d) == 0 && count == 1);
+    CALL(S_CLOSE_DIRECTORY, d);
+    STEP(RES(S_OPEN_DIRECTORY, U(&d), U(p[0]), 2 | FS_DIR_NO_FILE_SIZE) == 0 && RES(S_ENTRY_COUNT, U(&count), d) == 0 &&
+         count == 2);
+    CALL(S_CLOSE_DIRECTORY, d);
+    STEP(RES(S_OPEN_DIRECTORY, U(&d), U(p[1]), 3) == FS_R_PATH_NOT_FOUND &&
+         RES(S_OPEN_DIRECTORY, U(&d), U(p[6]), 3) == FS_R_PATH_NOT_FOUND &&
+         RES(S_OPEN_DIRECTORY, U(&d), U(p[0]), 0) == FS_R_DIR_OPEN_MODE &&
+         RES(S_OPEN_DIRECTORY, U(&d), U(p[0]), 5) == FS_R_DIR_OPEN_MODE);
+
+    // whole-file calls
+    STEP(RES(S_WRITE_AT_ONCE, U(p[5]), U(data), sizeof data) == 0 &&
+         RES(S_WRITE_AT_ONCE, U(p[5]), U(data), sizeof data) == FS_R_ALREADY_EXISTS);
+    memset(back, 0, sizeof back);
+    STEP(RES(S_READ_AT_ONCE, U(p[5]), U(back), sizeof back) == 0 && !memcmp(back, data, sizeof data) &&
+         RES(S_READ_AT_ONCE, U(p[5]), U(back), sizeof back - 1) == FS_R_INVALID_SIZE &&
+         RES(S_READ_AT_ONCE, U(p[6]), U(back), 1) == FS_R_PATH_NOT_FOUND);
+    STEP(RES(S_WRITE_AT_ONCE, U(p[10]), 0, 0) == 0 && RES(S_READ_AT_ONCE, U(p[10]), 0, 0) == 0);
+
+    // a handle's open mode, QueryRange, the exact read with a ReadOption
+    STEP(RES(S_OPEN_FILE, U(&h), U(p[5]), FS_OPEN_READ) == 0 && (CALL(S_OPEN_MODE, h) & 0xffffffff) == FS_OPEN_READ);
+    memset(info, 0xff, sizeof info);
+    int zero = 1;
+    uint32_t qr = RES(S_QUERY_RANGE, U(info), h, 0, 10);
+    for (unsigned k = 0; k < sizeof info; k++) zero &= !info[k];
+    STEP(qr == 0 && zero && RES(S_QUERY_RANGE, U(info), h, sizeof data + 1, 1) == FS_R_OUT_OF_RANGE &&
+         RES(S_QUERY_RANGE, U(info), h, -1, 1) == FS_R_INVALID_OFFSET);
+    STEP(RES(S_READ_EXACT_OPT, h, 0, U(back), sizeof back, U(&option)) == 0 &&
+         RES(S_READ_EXACT_OPT, h, 1, U(back), sizeof back, U(&option)) == FS_R_OUT_OF_RANGE);
+    CALL(S_CLOSE_FILE, h);
+    STEP(RES(S_OPEN_FILE, U(&h), U(p[5]), FS_OPEN_WRITE | FS_OPEN_APPEND) == 0 &&
+         (CALL(S_OPEN_MODE, h) & 0xffffffff) == (FS_OPEN_WRITE | FS_OPEN_APPEND));
+    CALL(S_CLOSE_FILE, h);
+    STEP(RES(S_QUERY_RANGE, U(info), FILE_BASE + NFILES - 1, 0, 1) == FS_R_INVALID_ARGUMENT &&
+         (CALL(S_OPEN_MODE, FILE_BASE + NFILES - 1) & 0xffffffff) == 0);
+
+    // timestamps: every time the last write, the local-time flag clear; FileTimeStamp takes 0x19 bytes
+    FileTimeStampRaw ts;
+    static uint8_t dbg[0x20];
+    memset(&ts, 0xee, sizeof ts);
+    memset(dbg, 0xee, sizeof dbg);
+    int64_t now = (int64_t)time(NULL);
+    STEP(RES(S_TIME_STAMP_RAW, U(&ts), U(p[5])) == 0 && ts.time[0] == ts.time[1] && ts.time[1] == ts.time[2] &&
+         ts.time[0] > now - 86400 && ts.time[0] < now + 86400 && !ts.is_local_time);
+    STEP(RES(S_TIME_STAMP_RAW, U(&ts), U(p[0])) == 0 && RES(S_TIME_STAMP, U(dbg), U(p[0])) == 0 &&
+         !memcmp(dbg, &ts, 0x19) && dbg[0x19] == 0xee);
+    STEP(RES(S_TIME_STAMP_RAW, U(&ts), U(p[6])) == FS_R_PATH_NOT_FOUND && RES(S_TIME_STAMP, 0, U(p[5])) == FS_R_NULLPTR);
+
+    // space, mounts
+    STEP(RES(S_FREE_SPACE, U(&space), U(m)) == 0 && space > 0 && RES(S_FREE_SPACE, U(&space), U(p[9])) == 0 &&
+         RES(S_TOTAL_SPACE, U(&total), U(p[9])) == 0 && total >= space &&
+         RES(S_FREE_SPACE, U(&space), U(p[0])) == FS_R_INVALID_MOUNT_NAME &&
+         RES(S_TOTAL_SPACE, U(&total), U(p[6])) == FS_R_PATH_NOT_FOUND);
+    STEP((CALL(S_IS_MOUNTED, U(m)) & 0xff) == 1 && (CALL(S_IS_PATH_MOUNTED, U(p[6])) & 0xff) == 1 &&
+         RES(S_MOUNT_ROM, U(m), 0, 0) == FS_R_ALREADY_EXISTS);
+
+    // DeleteDirectory, RenameDirectory, CleanDirectoryRecursively
+    STEP(RES(S_DELETE_DIRECTORY, U(p[0])) == FS_R_NOT_EMPTY && RES(S_DELETE_DIRECTORY, U(p[1])) == FS_R_PATH_NOT_FOUND &&
+         RES(S_DELETE_DIRECTORY, U(p[6])) == FS_R_PATH_NOT_FOUND && RES(S_DELETE_DIRECTORY, U(p[9])) == FS_R_INVALID_PATH &&
+         RES(S_DELETE_RECURSIVE, U(p[9])) == FS_R_INVALID_PATH);
+    STEP(RES(S_RENAME_DIRECTORY, U(p[3]), U(p[7])) == 0 && RES(S_ENTRY_TYPE, U(&type), U(p[7])) == 0 &&
+         type == FS_ENTRY_DIRECTORY && RES(S_ENTRY_TYPE, U(&type), U(p[3])) == FS_R_PATH_NOT_FOUND);
+    STEP(RES(S_RENAME_DIRECTORY, U(p[1]), U(p[11])) == FS_R_PATH_NOT_FOUND &&
+         RES(S_RENAME_DIRECTORY, U(p[0]), U(p[8])) == FS_R_INVALID_PATH &&
+         RES(S_RENAME_DIRECTORY, U(p[7]), U(p[1])) == FS_R_ALREADY_EXISTS &&
+         RES(S_RENAME_DIRECTORY, U(p[12]), U(p[11])) == FS_R_PATH_NOT_FOUND &&
+         RES(S_RENAME_DIRECTORY, U(p[0]), U("nomount:/e")) == FS_R_PATH_NOT_FOUND);
+    STEP(RES(S_CLEAN_RECURSIVE, U(p[0])) == 0 && RES(S_OPEN_DIRECTORY, U(&d), U(p[0]), 3) == 0 &&
+         RES(S_ENTRY_COUNT, U(&count), d) == 0 && count == 0);
+    CALL(S_CLOSE_DIRECTORY, d);
+    STEP(RES(S_CLEAN_RECURSIVE, U(p[6])) == FS_R_PATH_NOT_FOUND && RES(S_DELETE_DIRECTORY, U(p[0])) == 0 &&
+         RES(S_ENTRY_TYPE, U(&type), U(p[0])) == FS_R_PATH_NOT_FOUND);
+    int opened = 0;
+    for (int k = 0; k < 4 * NDIRS; k++)
+        if (!RES(S_OPEN_DIRECTORY, U(&d), U(p[9]), 3)) opened++, CALL(S_CLOSE_DIRECTORY, d);
+    STEP(opened == 4 * NDIRS);
+#undef STEP
+    CHECK(ok, "folder and file calls on %s:", m);
+    printf("storage %s: directories (count, modes, delete, rename, clean), whole-file reads and writes, open mode, "
+           "QueryRange, exact reads, timestamps, space, IsMounted (%d steps): %s\n", m, step, ok ? "ok" : "FAIL");
+}
+
 static void probe_storage(void) {
     char tmp[PLAT_PATH_MAX * 3], dir[PLAT_PATH_MAX * 3 + 64];
     need(plat_temp_dir(tmp, sizeof tmp), "temporary directory");
@@ -1733,6 +2494,13 @@ static void probe_storage(void) {
     CHECK(RES(S_DELETE_RECURSIVE, U("save:/dir")) == 0 &&
           RES(S_ENTRY_TYPE, U(&type), U("save:/dir")) == FS_R_PATH_NOT_FOUND, "DeleteDirectoryRecursively");
     CHECK(tx_commit() == 0 && !fs_save_busy(), "Commit after the changes");
+    probe_mount_ops("save");
+    uint8_t save_there = 0;
+    CHECK((CALL(S_SAVE_EXISTS_UID, U(uid)) & 0xff) == 1 && (CALL(S_SAVE_EXISTS_UID, U(other)) & 0xff) == 0 &&
+          RES(S_SAVE_EXISTS_OUT, U(&save_there), U(uid)) == 0 && save_there == 1 &&
+          RES(S_SAVE_EXISTS_OUT, 0, U(uid)) == FS_R_NULLPTR, "IsSaveDataExisting(Uid), (bool*, Uid)");
+    CHECK(RES(S_COMMIT_SAVE, U("save")) == 0 && (fs_save_flush(), !fs_save_busy()) &&
+          RES(S_COMMIT_SAVE, U("nomount")) == FS_R_PATH_NOT_FOUND, "CommitSaveData");
     probe_save_tx(uid);
 
     // temporary and cache storage
@@ -1748,9 +2516,19 @@ static void probe_storage(void) {
           ncache == 1 && infos[0].index == 3, "cache storage list");
     CALL(S_CLOSE_CACHE_LIST, l);
     CALL(S_SET_PRIORITY, 1);
+    probe_mount_ops("temp");
+    probe_mount_ops("cache");
     CALL(S_UNMOUNT, U("cache"));
     CALL(S_UNMOUNT, U("temp"));
     CHECK(RES(S_DELETE_CACHE, 3) == 0, "DeleteCacheStorage");
+    // MountCacheStorage(name): index 0
+    CHECK(RES(S_MOUNT_CACHE0, U("cache0")) == FS_R_TARGET_NOT_FOUND && RES(S_CREATE_CACHE, 0, 1 << 20, 1 << 20) == 0 &&
+          RES(S_MOUNT_CACHE0, U("cache0")) == 0, "MountCacheStorage(name)");
+    CALL(S_UNMOUNT, U("cache0"));
+    CHECK(RES(S_DELETE_CACHE, 0) == 0, "DeleteCacheStorage(0)");
+    CHECK(RES(S_MOUNT_SDCARD, U("sd")) == 0, "MountSdCard");
+    probe_mount_ops("sd");
+    CALL(S_UNMOUNT, U("sd"));
     CALL(S_UNMOUNT, U("save"));
 
     int removed = !remove_tree(dir) && !exists(dir);
@@ -1770,13 +2548,19 @@ int probe_fs(void) {
     pcpu = plat_aligned_alloc(sizeof(Cpu), 64);
     need(pcpu != NULL, "probe Cpu");
     memset(pcpu, 0, sizeof *pcpu);
+    rt_fpcr_threshold(pcpu);
     uint8_t *stack = mem_kernel_alloc(0x10000, 16);
     pcpu->sp = (uint64_t)(uintptr_t)stack + 0x10000;
     pcpu->excl_addr = ~0ull;
     for (int r = 19; r < 30; r++) pcpu->x[r] = 0x1900 + r;
     CALL(S_INITIALIZE, 0);   // nn::fs::InitializeForApplication: fs_init again, idempotent
     uint64_t files = probe_romfs();
+    probe_romfs_dirs();
     probe_storage();
+    int open_files = 0, open_dirs = 0;
+    for (int i = 0; i < NFILES; i++) open_files += files_open(i);
+    for (int i = 0; i < NDIRS; i++) open_dirs += dirs[i].used;
+    CHECK(!open_files && !open_dirs, "handles left open: %d files, %d directories", open_files, open_dirs);
     int kept = 1;
     for (int r = 19; r < 30; r++) kept &= pcpu->x[r] == 0x1900u + r;
     CHECK(kept && pcpu->sp == (uint64_t)(uintptr_t)stack + 0x10000, "an override lost a callee-saved register");

@@ -30,6 +30,7 @@ If a PR touches this code, confirm the fix still holds.
 | lime silhouettes in grass; rectangles in the sky | a target outside the output map must keep its texel; zero-filling it wiped the half-res depth | `vk_pipeline.c` `target_wmask` |
 | stale grass maps in the far terrain for a second after a hit | write-back of a texture the CPU had rewritten | `vk_texture.c` `write_back` |
 | cut grass stays standing; fire does not spread (#132) | CPU reads of GPU-rendered textures without an invalidate | `vk_texture.c` `vk_texture_write_back_small`, `nvn_ext.c` `nvn_pool_invalidate` |
+| gloom damage on clean ground in the Depths with `sync_ahead` | the game read a one-request pixel buffer before the GPU of the frame in flight wrote it | `vk_memory.c` `vk_mem_shadow_read`, from `nvn_ext.c` `nvn_pool_invalidate` |
 | cloud and fog volumes empty for the session | a one-shot draw skipped instead of waiting for its pipeline | `vk_exec_draw.c` `prepare_draw` |
 | tile rectangles | storage buffers bound by Ryujinx first-use order, not the c0 slot | `vk_exec_draw.c` `ssbo_slot` |
 | black dialog background and loading map | 3D targets rejected, the grading LUT never written | `vk_exec.c` `resolve_target` |
@@ -75,7 +76,7 @@ A PR touching these needs stronger proof.
 | #519, #582 amiibo | rewritten by us | took the data-format fixes; left out the features and the Linux event rework |
 | #483 vs #585 | #585's mapping kept | #483's stick glyph mapping was rewritten unasked while #585 already had it right |
 | #528 rain | taken after a check | code review fine, merged only after a run on a rain save |
-| #767 | taken with our fix | the default was skipped with `prompts = xbox|pc` when those folders did not exist |
+| #767 | taken with our fix | the default was skipped with `prompts = xbox\|pc` when those folders did not exist |
 | #625 frame queue | taken, off by default | a new frame queue, one field run with it on |
 | #743 UB overlay | waiting | +25% in a Depths fight on an RTX 4080; needs review, fight runs x2 and shots on AMD |
 

@@ -1,17 +1,19 @@
 #version 450
-// Screen-space contact shadows (runtime/vk_contact.c). Each pixel of the game's lit scene colour marches a short way
-// toward the sun through the linear depth target; when the ray passes behind something close in front of it, the pixel
-// is in a contact shadow the shadow maps are too coarse to show, and its colour is darkened.
+// Screen-space contact shadows (runtime/vk_contact.c). Each pixel of the game's lit scene colour on a surface facing
+// the sun marches a short way toward the sun through the linear depth target; when the ray passes behind something
+// close in front of it, the pixel is in a contact shadow the shadow maps are too coarse to show, and its colour is
+// darkened.
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(binding = 0) uniform sampler2D lin_depth;                // the game's linear depth: view distance / far
 layout(binding = 1, r11f_g11f_b10f) uniform image2D scene;      // the lit scene colour, darkened in place
+layout(binding = 2) uniform sampler2D sun_vis;                  // half-resolution lighting: alpha is sun visibility
 
 layout(push_constant) uniform Params {
     vec4 proj;    // projection x scale, y scale, far plane, strength (0..1)
     vec4 light;   // view-space direction toward the sun (xyz), march length in metres at 10 m (w)
     vec4 size;    // width, height, 1/width, 1/height
-    vec4 opt;     // x: debug (1: write the shadow factor as grey)
+    vec4 opt;     // x: debug (1: the shadow factor as grey, 2: the sun visibility), y: 1 with sun_vis bound
 } pc;
 
 vec3 view_pos(vec2 uv, float z) {   // z: distance in front of the camera
@@ -28,6 +30,27 @@ float ign(vec2 px) {   // interleaved gradient noise: a per-pixel start offset t
     return fract(52.9829189 * fract(dot(px, vec2(0.06711056, 0.00583715))));
 }
 
+vec3 pos_at(ivec2 q) {   // the view-space position of a pixel, clamped to the image
+    q = clamp(q, ivec2(0), ivec2(pc.size.xy) - 1);
+    return view_pos((vec2(q) + 0.5) * pc.size.zw, texelFetch(lin_depth, q, 0).x * pc.proj.z);
+}
+
+// The surface normal from the linear depth: on each axis the neighbour nearer in depth, so an edge pixel takes the
+// slope of its own surface rather than the step to what lies behind it. Turned toward the camera. On the image border
+// the clamped neighbour is the pixel itself, a zero difference that would make the normal NaN, so the side inside the
+// image is taken there.
+vec3 normal_at(ivec2 px, vec3 p) {
+    ivec2 last = ivec2(pc.size.xy) - 1;
+    vec3 l = pos_at(px - ivec2(1, 0)), r = pos_at(px + ivec2(1, 0));
+    vec3 d = pos_at(px - ivec2(0, 1)), u = pos_at(px + ivec2(0, 1));
+    bool take_r = px.x == 0 || (px.x < last.x && abs(r.z - p.z) < abs(p.z - l.z));
+    bool take_u = px.y == 0 || (px.y < last.y && abs(u.z - p.z) < abs(p.z - d.z));
+    vec3 dx = take_r ? r - p : p - l;
+    vec3 dy = take_u ? u - p : p - d;
+    vec3 n = normalize(cross(dx, dy));
+    return dot(n, p) > 0.0 ? -n : n;
+}
+
 void main() {
     ivec2 px = ivec2(gl_GlobalInvocationID.xy);
     if (px.x >= int(pc.size.x) || px.y >= int(pc.size.y)) return;
@@ -36,7 +59,21 @@ void main() {
     float z = d * pc.proj.z;
     if (z > 80.0) return;
     vec2 uv = (vec2(px) + 0.5) * pc.size.zw;
+    // Direct sunlight on this pixel as the game's lighting found it: 0 in the shadow maps' shadow and underground, where
+    // darkening would take away ambient light and texture detail (flat caves). Without that pass every pixel counts as lit.
+    float vis = pc.opt.y > 0.5 ? textureLod(sun_vis, uv, 0.0).a : 1.0;
+    if (pc.opt.x > 1.5) {
+        imageStore(scene, px, vec4(vis, vis, vis, 1.0));
+        return;
+    }
+    if (vis <= 0.0 && pc.opt.x < 0.5) return;
     vec3 p = view_pos(uv, z);
+    // A contact shadow can only take away direct sunlight, and a surface turned away from the sun gets none: its march
+    // runs into the surface itself at once, and darkening it would darken the ambient light and the fog the composite
+    // already put on it (dark silhouettes of rock faces in the Gerudo sandstorm haze). Faces at a grazing angle to the
+    // sun get a share that grows with that angle.
+    float lit = smoothstep(0.0, 0.3, dot(normal_at(px, p), pc.light.xyz));
+    if (!(lit > 0.0)) return;   // also a NaN normal: the march is skipped rather than writing NaN into the colour
     // the march grows with distance, as one pixel covers more ground; thickness keeps thin blades from hiding the sky
     float len = pc.light.w * clamp(z / 10.0, 0.4, 3.0);
     float thick = 0.15 + z * 0.01;
@@ -56,7 +93,7 @@ void main() {
         }
     }
     float fade = 1.0 - smoothstep(40.0, 80.0, z);
-    float k = 1.0 - pc.proj.w * occ * fade;
+    float k = 1.0 - pc.proj.w * occ * fade * lit * vis;
     if (pc.opt.x > 0.5) {
         imageStore(scene, px, vec4(k, k, k, 1.0));
         return;

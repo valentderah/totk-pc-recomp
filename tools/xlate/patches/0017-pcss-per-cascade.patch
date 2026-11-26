@@ -1,0 +1,57 @@
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+@@ -1583,6 +1583,24 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             SpvInstruction uv = context.VectorShuffle(v2, pCoords, pCoords, 0, 1);
+             SpvInstruction layerF = context.CompositeExtract(f32, pCoords, 2);
+             SpvInstruction layerI = context.ConvertFToS(s32, layerF);
++
++            // TOTK: soft shadows per cascade. The radii and the penumbra factor above hold for the second cascade, in
++            // UV of its map; each cascade's map spans a different amount of ground per UV. The runtime measures each
++            // cascade against the second (runtime/vk_exec_draw.c, pcss_cascades) and gives pcss_depth[layer], the
++            // penumbra factor's multiplier, and pcss_scale[layer], the UV of this cascade's map that one UV of the
++            // second's ground spans. The search and widest radius take the scale, so a shadow keeps its width on the
++            // ground from one cascade to the next; the narrowest radius stays in texels, the map's own filter. A value
++            // of 0 or below counts as 1.
++            SpvInstruction layerC = context.GlslSClamp(s32, layerI, context.Constant(s32, 0), context.Constant(s32, 3));
++            SpvInstruction cascDepth = context.VectorExtractDynamic(f32, context.Load(v4, context.AccessChain(context.TypePointer(StorageClass.Uniform, v4),
++                context.ConstantBuffers[SupportBuffer.Binding], context.Constant(s32, (int)SupportBufferField.PcssDepth))), layerC);
++            SpvInstruction cascScale = context.VectorExtractDynamic(f32, context.Load(v4, context.AccessChain(context.TypePointer(StorageClass.Uniform, v4),
++                context.ConstantBuffers[SupportBuffer.Binding], context.Constant(s32, (int)SupportBufferField.PcssScale))), layerC);
++            cascDepth = context.Select(f32, context.FOrdGreaterThan(b, cascDepth, zero), cascDepth, one);
++            cascScale = context.Select(f32, context.FOrdGreaterThan(b, cascScale, zero), cascScale, one);
++            lightSize = context.FMul(f32, lightSize, cascDepth);
++            searchR = context.FMul(f32, searchR, cascScale);
++            maxR = context.GlslFMax(f32, context.FMul(f32, maxR, cascScale), minR);
+             SpvInstruction searchV = context.CompositeConstruct(v2, searchR, searchR);
+ 
+             SpvInstruction sum = zero, count = zero;
+--- a/src/Ryujinx.Graphics.Shader/SupportBuffer.cs
++++ b/src/Ryujinx.Graphics.Shader/SupportBuffer.cs
+@@ -27,6 +27,8 @@ namespace Ryujinx.Graphics.Shader
+         PointSize,
+         Pcss,
+         ShadowSpread,
++        PcssDepth,
++        PcssScale,
+     }
+ 
+     public struct SupportBuffer
+@@ -86,7 +88,9 @@ namespace Ryujinx.Graphics.Shader
+                 new StructureField(AggregateType.S32, "tfe_vertex_count"),
+                 new StructureField(AggregateType.FP32, "point_size"),
+                 new StructureField(AggregateType.Vector4 | AggregateType.FP32, "pcss"),
+-                new StructureField(AggregateType.Vector4 | AggregateType.FP32, "shadow_spread")
++                new StructureField(AggregateType.Vector4 | AggregateType.FP32, "shadow_spread"),
++                new StructureField(AggregateType.Vector4 | AggregateType.FP32, "pcss_depth"),
++                new StructureField(AggregateType.Vector4 | AggregateType.FP32, "pcss_scale")
+             ]);
+         }
+ 
+@@ -104,5 +108,7 @@ namespace Ryujinx.Graphics.Shader
+         public Vector4<float> PointSize;
+         public Vector4<float> Pcss;
+         public Vector4<float> ShadowSpread;
++        public Vector4<float> PcssDepth;
++        public Vector4<float> PcssScale;
+     }
+ }

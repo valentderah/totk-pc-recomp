@@ -90,12 +90,12 @@ void vk_exec_frame_log(const tex_t *p, uint64_t frame) {
                                   fw[i].h, fw[i].fmt, fw[i].n);
     }
     rt_log("frame %llu: submits %llu passes %llu draws %llu/%llu clears %llu copies %llu dispatches %llu; present %p "
-           "%ux%u/%#x written %d; feedback draws %llu barriers %llu restarts %llu layouts %llu; targets%s",
+           "%ux%u/%#x written %d; pass ends: targets %llu barrier %llu (%llu merged, %llu undone, unwritten reads %llu colour %llu depth) bits %llu/%llu/%llu/%llu/%llu/%llu/%llu/%llu; feedback draws %llu barriers %llu restarts %llu layouts %llu; targets%s",
            (unsigned long long)frame, (unsigned long long)f->submits,
            (unsigned long long)f->passes, (unsigned long long)f->draws, (unsigned long long)f->draws_seen,
            (unsigned long long)f->clears, (unsigned long long)f->copies, (unsigned long long)f->dispatches,
            p ? (const void *)p->mem : NULL, p ? p->d.width : 0, p ? p->d.height : 0, p ? (uint32_t)p->d.format : 0,
-           hit, (unsigned long long)f->fb_draws, (unsigned long long)f->fb_barriers, (unsigned long long)f->fb_restarts,
+           hit, (unsigned long long)f->pass_end_rt, (unsigned long long)f->pass_end_barrier, (unsigned long long)f->barrier_merged, (unsigned long long)f->barrier_undone, (unsigned long long)f->undone_color, (unsigned long long)f->undone_depth, (unsigned long long)f->barrier_bit[0], (unsigned long long)f->barrier_bit[1], (unsigned long long)f->barrier_bit[2], (unsigned long long)f->barrier_bit[3], (unsigned long long)f->barrier_bit[4], (unsigned long long)f->barrier_bit[5], (unsigned long long)f->barrier_bit[6], (unsigned long long)f->barrier_bit[7], (unsigned long long)f->fb_draws, (unsigned long long)f->fb_barriers, (unsigned long long)f->fb_restarts,
            (unsigned long long)f->fb_layouts, list);
     memset(f, 0, sizeof *f);
     nfw = 0;
@@ -136,6 +136,8 @@ static void state_reset(VkExec *ex) {
     vk_pipe_state_defaults(&ex->pipe);
     ex->barrier_at = -1;
     ex->oq_open = -1;
+    ex->bmerge = (uint8_t)vk_exec_barrier_merge_on();
+    vk_exec_dirty_all(ex);
 }
 
 // ---- render targets
@@ -410,6 +412,8 @@ void vk_exec_noatt_dims(const VkExec *ex, uint32_t *w, uint32_t *h) {
 static void resolve_rt_as(VkExec *ex, int peek) {
     if (ex->rt_resolved) return;
     ex->rt_resolved = 1;
+    int32_t fmt0[8], ds0[2] = {ex->pipe.depth_fmt, ex->pipe.samples};
+    memcpy(fmt0, ex->pipe.color_fmt, sizeof fmt0);
     const p_set_rt *r = &ex->rt;
     int n = r->n < 0 ? 0 : r->n > 8 ? 8 : r->n;
     uint32_t w = UINT32_MAX, h = UINT32_MAX, layers = UINT32_MAX, samples = 0, scale = 1;
@@ -451,6 +455,8 @@ static void resolve_rt_as(VkExec *ex, int peek) {
     ex->pass_ncolor = (uint32_t)n;
     ex->pass_samples = samples ? samples : 1;
     ex->pipe.samples = (uint8_t)ex->pass_samples;
+    if (memcmp(fmt0, ex->pipe.color_fmt, sizeof fmt0) || ds0[0] != ex->pipe.depth_fmt || ds0[1] != ex->pipe.samples)
+        ex->pipe_gen++;   // the pipeline's target formats changed
 }
 
 static void resolve_rt(VkExec *ex) { resolve_rt_as(ex, 0); }
@@ -528,13 +534,36 @@ static void tfr_note(const VkExecTarget *t, uint64_t stamp) {
     plat_mutex_lock(&tfr_lock);
     TargetFrames *e = tfr_find(t);
     if (!e) {
-        e = tfr_set(t);
+        // the way rendered longest ago, indexed from the set's start: the ways past the last set are RP's words
+        TargetFrames *s = tfr_set(t);
+        e = s;
         for (int i = 1; i < TFR_WAYS; i++)
-            if (e[i].last < e->last) e = &e[i];
+            if (s[i].last < e->last) e = &s[i];
         *e = (TargetFrames){t->image, t->level, t->base_layer, 0, 0};
     }
     if (e->last != stamp) e->prev = e->last, e->last = stamp;
     plat_mutex_unlock(&tfr_lock);
+}
+
+// --probe-vkexec: a new target noted into a full set takes the way rendered longest ago, and the set after it keeps
+// its entries. The ways are stamped so that a search stepping from the way it picked last would leave the set. 1 when
+// it holds; the two sets are cleared afterwards.
+int vk_exec_tfr_check(void) {
+    VkExecTarget t[TFR_WAYS + 1];
+    for (int n = 0, k = 1; n <= TFR_WAYS; k++) {
+        t[n] = (VkExecTarget){.image = (VkImage)(uintptr_t)k};
+        n += tfr_set(&t[n]) == tfr[0];
+    }
+    static const uint64_t last[TFR_WAYS] = {8, 7, 100, 6, 100, 100, 5, 100};
+    TargetFrames next[TFR_WAYS];
+    for (int i = 0; i < TFR_WAYS; i++) tfr[0][i] = (TargetFrames){t[i].image, 0, 0, last[i], 0};
+    memcpy(next, tfr[1], sizeof next);
+    tfr_note(&t[TFR_WAYS], 200);
+    plat_mutex_lock(&tfr_lock);
+    int ok = tfr_find(&t[TFR_WAYS]) == &tfr[0][6] && !memcmp(next, tfr[1], sizeof next);
+    plat_mutex_unlock(&tfr_lock);
+    memset(tfr, 0, sizeof tfr[0] * 2);
+    return ok;
 }
 
 static int tfr_recent(const VkExecTarget *t, uint64_t stamp) {
@@ -616,6 +645,7 @@ static VkImageMemoryBarrier2 layout_barrier(VkImage img, VkImageAspectFlags aspe
 // go back to GENERAL and the new ones leave it, in the same command.
 static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags *wasp, int nwant) {
     vk_exec_pass_end(ex);
+    ex->pass_storage = ex->pass_merged = 0;   // barrier_merge: every pass begins behind this barrier
     vk_exec_ub_flush(ex);   // uniform updates overlaid in the pass reach their buffers before the barrier below
     VkImageMemoryBarrier2 ib[18];
     uint32_t n = 0;
@@ -626,6 +656,7 @@ static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags
     for (int i = 0; i < nwant; i++)
         if (!has_image(ex->fbl_img, ex->nfbl, want[i]))
             ib[n++] = layout_barrier(want[i], wasp[i], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT);
+    if (n || nwant != ex->nfbl) ex->fbl_serial++;   // the images in the feedback layout changed
     for (int i = 0; i < nwant; i++) ex->fbl_img[i] = want[i], ex->fbl_aspect[i] = wasp[i];
     ex->nfbl = nwant;
     if (ex->barrier_at == ex->recorded && !n) return;
@@ -642,6 +673,85 @@ static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags
 }
 
 void vk_exec_barrier(VkExec *ex) { barrier_to(ex, NULL, NULL, 0); }
+
+// TOTK_NULL_ATTACH=1 (null_attach, default 0; vk_caps.null_attach): colour slots of a pass that hold no target get a
+// view of a dummy image instead of VK_NULL_HANDLE. Leaving a slot's imageView null is valid Vulkan, but Intel's legacy
+// Windows driver for 6th-10th generation graphics (HD 520, UHD 620; driver 101.21xx, Vulkan 1.3.215) faulted inside
+// vkCmdBeginRendering reading an attachment entry of the pass, at the first scene passes after the logo (issue #1343);
+// whether the empty slots are the cause is untested on that driver. The pipelines then name NULL_ATTACH_FMT for those
+// slots, with their writes masked off (vk_pipeline.c gkey_fill, target_wmask), so the views match the pipelines'
+// formats. Only slots below the last one with a target get a dummy: the pipelines' colorAttachmentCount ends there
+// (vk_pipeline.c target_count), and a pass without colour targets keeps none. All empty slots of a pass share one
+// view; an image serves every pass it covers (size, layers) with its sample count, so TotK makes one or two per scene
+// resolution. Each is moved to GENERAL in the upload batch and kept until the device goes (vk_exec_null_attach_release);
+// loads and stores are DONT_CARE, so the slots cost no bandwidth.
+#define NULL_ATTACH_MAX 24
+typedef struct { uint32_t w, h, layers, samples; VkImage img; VmaAllocation alloc; VkImageView view; } NullAttach;
+static NullAttach null_att[NULL_ATTACH_MAX];
+static int nnull_att;
+static PlatMutex null_att_lock = PLAT_MUTEX_INIT;
+
+void vk_exec_null_attach_release(void) {
+    VkCtx *c = vk_ctx();
+    plat_mutex_lock(&null_att_lock);
+    for (int i = 0; c && i < nnull_att; i++) {
+        vkDestroyImageView(c->device, null_att[i].view, NULL);
+        vmaDestroyImage(c->vma, null_att[i].img, null_att[i].alloc);
+    }
+    nnull_att = 0;
+    plat_mutex_unlock(&null_att_lock);
+}
+
+static VkImageView null_attach_view(uint32_t w, uint32_t h, uint32_t layers, uint32_t samples) {
+    plat_mutex_lock(&null_att_lock);
+    for (int i = 0; i < nnull_att; i++) {   // a view may be larger than the render area (VkRenderingInfo needs it to cover it)
+        const NullAttach *a = &null_att[i];
+        if (a->w >= w && a->h >= h && a->layers >= layers && a->samples == samples) {
+            VkImageView v = a->view;
+            plat_mutex_unlock(&null_att_lock);
+            return v;
+        }
+    }
+    static int warned;
+    if (nnull_att == NULL_ATTACH_MAX) {
+        if (!warned++) rt_log("vk_exec: more than %d dummy attachment shapes: further empty slots stay empty", NULL_ATTACH_MAX);
+        plat_mutex_unlock(&null_att_lock);
+        return VK_NULL_HANDLE;
+    }
+    VkCtx *c = vk_ctx();
+    NullAttach a = {w, h, layers, samples, VK_NULL_HANDLE, NULL, VK_NULL_HANDLE};
+    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                            .format = VK_EXEC_NULL_ATTACH_FMT, .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = layers,
+                            .samples = (VkSampleCountFlagBits)samples, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    VmaAllocationInfo info = {0};
+    if (vmaCreateImage(c->vma, &ci, &ai, &a.img, &a.alloc, &info) != VK_SUCCESS) {
+        if (!warned++) rt_log("vk_exec: a %ux%u x %u dummy attachment could not be created: the slot stays empty", w, h, layers);
+        plat_mutex_unlock(&null_att_lock);
+        return VK_NULL_HANDLE;
+    }
+    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = a.img,
+                                .viewType = layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D,
+                                .format = VK_EXEC_NULL_ATTACH_FMT,
+                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers}};
+    if (vkCreateImageView(c->device, &vi, NULL, &a.view) != VK_SUCCESS) {
+        vmaDestroyImage(c->vma, a.img, a.alloc);
+        if (!warned++) rt_log("vk_exec: a dummy attachment view could not be created: the slot stays empty");
+        plat_mutex_unlock(&null_att_lock);
+        return VK_NULL_HANDLE;
+    }
+    // In the upload batch, which goes to the queue before the part that records this pass (as the BC stand-ins)
+    VkCommandBuffer cb = vk_upload_begin();
+    image_barrier(cb, a.img, VK_IMAGE_LAYOUT_UNDEFINED, layers);
+    vk_upload_end();
+    null_att[nnull_att++] = a;
+    int n = nnull_att;
+    plat_mutex_unlock(&null_att_lock);
+    rt_log("vk_exec: dummy attachment %ux%u x %u, %u samples, for empty colour slots: %.2f MiB (%d of %d)", w, h, layers,
+           samples, info.size / 1048576.0, n, NULL_ATTACH_MAX);
+    return a.view;
+}
 
 void vk_exec_pass_begin(VkExec *ex) {
     if (ex->in_pass) return;
@@ -665,10 +775,24 @@ void vk_exec_pass_begin(VkExec *ex) {
     ex->fb_dirty = 0;
     ex->pass_serial++;
     VkRenderingAttachmentInfo ca[8], da = {0}, sa = {0};
+    uint32_t dummies = 0;   // null_attach: empty slots below this get a dummy (the pipelines' colorAttachmentCount)
+    VkImageView dummy = VK_NULL_HANDLE;
+    if (vk_caps.null_attach)
+        for (uint32_t i = 0; i < ex->pass_ncolor; i++)
+            if (ex->color[i].image) dummies = i + 1;
     for (uint32_t i = 0; i < ex->pass_ncolor; i++) {
         const VkExecTarget *t = &ex->color[i];
         ca[i] = (VkRenderingAttachmentInfo){.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-        if (!t->image) continue;
+        if (!t->image) {
+            if (i < dummies) {   // a dummy for the empty slot, which the pipelines name too (null_attach_view)
+                if (!dummy) dummy = null_attach_view(ex->pass_w, ex->pass_h, ex->pass_layers, ex->pass_samples);
+                ca[i].imageView = dummy;
+                ca[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+                ca[i].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+                ca[i].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            }
+            continue;
+        }
         ca[i].imageView = view_of(ex, t);
         ca[i].imageLayout = fbl >> i & 1 ? VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT : VK_IMAGE_LAYOUT_GENERAL;
         ca[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
@@ -860,8 +984,40 @@ static void clear_ds(VkExec *ex, const p_clear_ds *c) {
 
 // ---- the op loop
 
+// barrier_merge (TOTK_BARRIER_MERGE, on by default): TotK calls Barrier(ORDER_FRAGMENTS | INVALIDATE_TEXTURE) about
+// 1200 times a frame in some scenes (water, decals): the next draw reads the render targets the last one wrote. A full
+// barrier there ends the Vulkan pass and flips every target's layout. What such a barrier asks for, an attachment write
+// made visible to a later fragment shader read of the open pass, feedback_prepare / feedback_barrier already do before the
+// draw that samples it, with a by-region barrier inside the pass. So the pass keeps going, unless a draw of it has a shader
+// that may write a storage buffer or image (pass_storage), which only a full barrier makes visible, or the barrier asks for
+// more than those two bits, or the feedback layout is not in use, or a target is a 3D BC stand-in (its texture gets the
+// pass's writes only at the pass end, bc_copy_back). The reads the by-region barrier does not cover end the pass at the
+// draw that makes them (vk_exec_draw.c merge_guard), and so do reads of a target the draw does not write itself
+// (vk_exec_draw.c merge_unwritten_reads): the by-region barrier orders only reads of the pixel a fragment writes, while
+// NVN's ORDER_FRAGMENTS orders every pixel (ORDER_FRAGMENTS_TILED is the per-region one). What stays merged is a draw
+// that samples a target it also writes, which Savage Wind runs the same way on every GPU. If such a draw read a
+// neighbouring pixel, it would rely on the driver running the barrier for the whole target, as RADV and the desktop
+// drivers do. On 1.4.3 every read after a merged Barrier in the shrine, the town and the field is of that kind. Passes
+// a frame in the shrine: 581 -> 128 on an RDNA2 iGPU with no GPU time change on AMD's Windows driver; the waterfall
+// on RADV: 1105 -> 117, GPU 8.3 -> 4.1 ms.
+int vk_exec_barrier_merge_on(void) {
+    static int on = -1;
+    if (on < 0) on = cfg_bool("TOTK_BARRIER_MERGE");
+    return on;
+}
+
+static int barrier_merges(const VkExec *ex, int bits) {
+    if (!ex->bmerge || !ex->in_pass || ex->pass_storage || !(bits & 0x10) || (bits & ~0x12) ||
+        vk_ctx()->feedback != VK_FEEDBACK_LAYOUT)
+        return 0;
+    for (int i = 0; i < ex->pass_ncolor && i < 8; i++)
+        if (ex->color[i].image && ex->color[i].img && ex->color[i].img->image != ex->color[i].image) return 0;
+    return 1;
+}
+
 static void set_rt(VkExec *ex, const p_set_rt *r) {
     if (!memcmp(&ex->rt, r, sizeof *r)) return;   // the same targets again: the pass goes on
+    if (ex->in_pass) ex->fr.pass_end_rt++;
     vk_exec_pass_end(ex);
     ex->rt = *r;
     ex->rt_resolved = 0;
@@ -901,6 +1057,13 @@ static void maybe_split(VkExec *ex) {
     ex->dirty = VK_EXEC_DIRTY_ALL;
     vk_exec_draw_new_cb(ex);
     n_parts++;
+}
+
+// --probe-vkexec: a split every `draws` draws between passes, parts of at least `us` (0: no minimum); the parts made
+// so far.
+uint64_t vk_exec_split_set(int draws, int us) {
+    split_n = draws, split_ns = us > 0 ? (uint64_t)us * 1000 : 0;
+    return n_parts;
 }
 
 // The fixed-function state ops: writes into ex alone, applied by the replay and the state scan. 0: not one of them.
@@ -944,8 +1107,16 @@ static int state_op(VkExec *ex, uint32_t op, const void *a) {
         memcpy(ex->blend_color, ((const p_blend_color *)a)->rgba, sizeof ex->blend_color);
         ex->dirty |= VK_EXEC_DIRTY_BLEND_CONST;
         break;
-    case OP_DEPTH_CLAMP: ex->pipe.depth_clamp = ((const p_flag *)a)->value != 0; break;
-    case OP_RASTER_DISCARD: ex->pipe.raster_discard = ((const p_flag *)a)->value != 0; break;
+    case OP_DEPTH_CLAMP: {
+        uint8_t v = ((const p_flag *)a)->value != 0;
+        if (ex->pipe.depth_clamp != v) ex->pipe.depth_clamp = v, ex->pipe_gen++;
+        break;
+    }
+    case OP_RASTER_DISCARD: {
+        uint8_t v = ((const p_flag *)a)->value != 0;
+        if (ex->pipe.raster_discard != v) ex->pipe.raster_discard = v, ex->pipe_gen++;
+        break;
+    }
     case OP_PRIM_RESTART: ex->prim_restart = *(const p_prim_restart *)a; break;
     case OP_COPY_STRIDE: ex->copy_stride = ((const p_copy_stride *)a)->stride; break;
     case OP_SET_TEX_POOL: ex->tex_pool = ((const p_set_pool *)a)->pool, ex->tex_serial++; break;
@@ -972,8 +1143,11 @@ static void run_job(VkExec *ex) {
     if (j.kind != VK_JOB_CONTACT) {
         vk_dlaa_exec(ex, &j);
     } else {
-        // The scan resolved the scene and its depth without creating entries (vk_texture_revive): their images now.
+        // The scan resolved the scene, its depth and the lighting target without creating entries (vk_texture_revive):
+        // their images now. A lighting target without one leaves the march darkening every pixel.
         const VkTexImage *si = vk_texture_get(j.scene.tex), *di = vk_texture_get(j.depth.tex);
+        const VkTexImage *ui = j.sun.img ? vk_texture_get(j.sun.tex) : NULL;
+        j.sun.img = ui, j.sun.image = ui ? ui->image : VK_NULL_HANDLE;
         if (si && di) {
             j.scene.img = si, j.scene.image = si->image, j.depth.img = di, j.depth.image = di->image;
             vk_contact_exec(ex, &j);
@@ -1001,7 +1175,7 @@ static int walk(VkExec *ex, const op_hdr *h, int depth, const op_hdr *stop) {
             if (ex->wpos_i < ex->wpos_end && ex->wpos[ex->wpos_i] == ex->pos) ex->drop_n++, ex->wpos_i++;
         }
         switch (h->op) {
-        case OP_BEGIN: break;
+        case OP_BEGIN: case OP_FENCE_SYNC: break;   // FENCE_SYNC: the front end signals it at submit (p_fence_sync)
         case OP_JUMP: h = (const op_hdr *)(uintptr_t)((const p_jump *)a)->target; continue;
         case OP_CALL:
             if (depth >= CALL_DEPTH) rt_fatal("vk: command buffer calls nested deeper than %d", CALL_DEPTH);
@@ -1010,7 +1184,17 @@ static int walk(VkExec *ex, const op_hdr *h, int depth, const op_hdr *stop) {
         case OP_SET_RT: set_rt(ex, a); break;
         case OP_CLEAR_COLOR: clear_color(ex, a); break;
         case OP_CLEAR_DS: clear_ds(ex, a); break;
-        case OP_BARRIER: vk_exec_barrier(ex); break;
+        case OP_BARRIER:
+            if (barrier_merges(ex, ((const p_barrier *)a)->bits)) {   // barrier_merge: the pass goes on (see barrier_merges)
+                ex->pass_merged = 1;
+                ex->fr.barrier_merged++;
+                break;
+            }
+            if (ex->in_pass) ex->fr.pass_end_barrier++;
+            if (rt_trace & RT_TRACE_GFX)
+                for (int i = 0; i < 8; i++) ex->fr.barrier_bit[i] += (uint32_t)((const p_barrier *)a)->bits >> i & 1;
+            vk_exec_barrier(ex);
+            break;
         case OP_DRAW: case OP_DRAW_IDX: case OP_DISPATCH: case OP_UPDATE_UB: case OP_DRAW_IDX_IND: case OP_DISPATCH_IND:
             if (h->op == OP_DRAW || h->op == OP_DRAW_IDX || h->op == OP_DRAW_IDX_IND) ex->fr.draws_seen++, ex->split_draws++;
             if (h->op == OP_DISPATCH || h->op == OP_DISPATCH_IND) ex->fr.dispatches++, ex->split_draws++;
@@ -1147,6 +1331,7 @@ static void *grow_n(void *p, uint32_t *cap, size_t elem) {
 
 static void copy_state(VkExec *dst, const VkExec *src) {
     memcpy((char *)dst + VK_EXEC_STATE_BEGIN, (const char *)src + VK_EXEC_STATE_BEGIN, VK_EXEC_STATE_END - VK_EXEC_STATE_BEGIN);
+    vk_exec_dirty_all(dst);   // the bound state was replaced: no draw memo may take it for what it held
 }
 
 static int draw_op(uint32_t op) { return op == OP_DRAW || op == OP_DRAW_IDX || op == OP_DRAW_IDX_IND; }
@@ -1313,6 +1498,7 @@ static void chunk_record(Rec *r, int k) {
     const Chunk *next = k + 1 < __atomic_load_n(&SC.nch, __ATOMIC_ACQUIRE) ? &SC.ch[k + 1] : NULL;
     ex->cb = rec_cb(r, RP.fence);
     ex->fence = RP.fence, ex->recorded = 0, ex->in_pass = 0, ex->nviews = 0, ex->barrier_at = -1, ex->nfbl = 0;
+    ex->fbl_serial++;
     ex->part_start = 0;
     x_cur = ex;
     chunk_k = k;
@@ -1563,7 +1749,7 @@ static void scan(VkExec *s, int hi, const op_hdr *h, int depth) {
             if (vk_exec_xfer_revive(h->op, a, s->pos)) scan_hold(HOLD_TEX);
             SC.open = 0;
             break;
-        case OP_SIGNAL_EVENT: break;
+        case OP_SIGNAL_EVENT: case OP_FENCE_SYNC: break;
         case OP_RENDER_COND: SC.cond[SC.ncond++] = (uint8_t)vk_exec_xfer_scan(s, h->op, a); break;
         case OP_REPORT_COUNTER: case OP_RESET_COUNTER: case OP_RENDER_ENABLE: vk_exec_xfer_scan(s, h->op, a); break;
         default: state_op(s, h->op, a);   // walk stops on an op without a handler
@@ -1678,6 +1864,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
     ex->nviews = 0;
     ex->barrier_at = -1;
     ex->nfbl = 0;   // the previous command buffer ended with a full barrier: every image is in GENERAL
+    ex->fbl_serial++;
     ex->fr.submits++;
     ex->split_draws = ex->part_start = 0;
     ex->part_t0 = kern_now_ns();
@@ -1697,6 +1884,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
         for (int i = 0; i < n; i++) walk(ex, nvn_op_first(handles[i]), 0, NULL);
     }
     vk_exec_pass_end(ex);
+    if (vk_dlaa_fg_on) vk_dlaa_sub_end(ex);   // frame generation after the frame's window texture (vk_dlaa.c)
     x_cur = NULL;
     if (ex->recorded) vk_exec_barrier(ex);   // later submissions see this one's writes
     if (n) ex->recorded += vk_mem_mirror_end(ex->cb, fence), vk_usnap_end(fence);   // VRAM mirror bytes the GPU wrote go back to guest memory

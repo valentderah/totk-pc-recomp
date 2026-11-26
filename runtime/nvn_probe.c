@@ -319,6 +319,7 @@ static void probe_samplers(void) {
 // ---- sync and events
 OBJ(NVNsync, syncs);
 OBJ(NVNsync, sync_future);
+OBJ(NVNsync, sync_cmd);         // CommandBufferFenceSync's sync (record_all, probe_null_effects)
 OBJ(NVNevent, ev);
 OBJ(NVNevent, ev2);
 OBJ(NVNeventBuilder, evb);
@@ -326,6 +327,7 @@ OBJ(NVNeventBuilder, evb);
 static void probe_sync_events(void) {
     CHECK((uint8_t)CALL(nvnSyncInitialize, U(&syncs), U(&dev)) == 1, "SyncInitialize");
     CHECK(CALL(nvnSyncWait, U(&syncs), 1000) == NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED, "a sync never fenced times out at once");
+    CALL(nvnSyncInitialize, U(&sync_cmd), U(&dev));
     CALL(nvnSyncInitialize, U(&sync_future), U(&dev));
     sync_t *sf = (sync_t *)(void *)&sync_future;
     sf->fenced = 1;
@@ -461,6 +463,7 @@ static uint64_t record_all(void) {
     CALL(nvnCommandBufferSetColorReductionEnable, U(c), 1);   // hints: nothing recorded
     CALL(nvnCommandBufferSetColorReductionThresholds, U(c), 0, U(thresholds));
     REC(OP_COPY_T2T, CALL(nvnCommandBufferDownsample, U(c), U(&tex1), U(&tex2)));
+    REC(OP_FENCE_SYNC, CALL(nvnCommandBufferFenceSync, U(c), U(&sync_cmd), NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE, 0));
     CHECK((uint8_t)CALL(nvnCommandBufferIsRecording, U(c)) == 1, "IsRecording while recording");
     uint64_t h = CALL(nvnCommandBufferEndRecording, U(c));
     CHECK((uint8_t)CALL(nvnCommandBufferIsRecording, U(c)) == 0, "IsRecording after EndRecording");
@@ -681,6 +684,7 @@ static void parse_all(uint64_t h) {
                       (p->addr == 0xc300 && p->size == 4 && p->value == 0x1234), "CLEAR_BUF payload (ClearBuffer, ReportValue)");
             break;
         }
+        case OP_FENCE_SYNC: CHECK(((const p_fence_sync *)a)->sync == (sync_t *)(void *)&sync_cmd, "FENCE_SYNC payload"); break;
         default: CHECK(0, "unexpected op %s", nvn_op_name(o->op)); break;
         }
     }
@@ -770,6 +774,16 @@ static void probe_commands(void) {
     // adding the control memory again retires the recordings made in it
     CALL(nvnCommandBufferAddControlMemory, U(&cmd2), U(ctlmem2), 0x1000);
     CHECK(!nvn_handle_live(h2) && nvn_handle_live(h), "reusing control memory retires only the handles recorded in it");
+
+    // a buffer that only called a recording is not empty: the call takes control memory and no command memory
+    CALL(nvnCommandBufferAddCommandMemory, U(&cmd2), U(&pool), 0x34000, 0x4000);
+    CALL(nvnCommandBufferBeginRecording, U(&cmd2));
+    CALL(nvnCommandBufferCallCommands, U(&cmd2), 1, U(&h));
+    uint64_t used = CALL(nvnCommandBufferGetCommandMemoryUsed, U(&cmd2));
+    uint64_t ctl_used = CALL(nvnCommandBufferGetControlMemoryUsed, U(&cmd2));
+    CHECK(used == 0 && ctl_used > 0, "a call takes control memory only: command %llu, control %llu bytes",
+          (unsigned long long)used, (unsigned long long)ctl_used);
+    CALL(nvnCommandBufferEndRecording, U(&cmd2));
     CALL(nvnCommandBufferFinalize, U(&cmd2));
     probe_pins();
     n_objects += 5;
@@ -805,6 +819,7 @@ static void probe_null_effects(void) {
     CALL(nvnCommandBufferUpdateUniformBuffer, U(c), gbase, 64, 8, 8, U(d2));
     CALL(nvnCommandBufferDrawArrays, U(c), NVN_DRAW_PRIMITIVE_TRIANGLES, 0, 3);   // ignored
     CALL(nvnCommandBufferBarrier, U(c), 1);
+    CALL(nvnCommandBufferFenceSync, U(c), U(&sync_cmd), NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE, 0);
     uint64_t ha = CALL(nvnCommandBufferEndRecording, U(c));
 
     begin(&cmd2, ctlmem2, 0x38000);
@@ -814,6 +829,9 @@ static void probe_null_effects(void) {
 
     CHECK(*(uint32_t *)ev_val == 0 && !pmem[OFF_UB + 4] && !pmem[OFF_DST] && pmem[OFF_COUNTER_B] == 0xaa,
           "recording has no side effects");
+    // record_all and the call that inlined it recorded a FenceSync of sync_cmd too, and neither was submitted
+    CHECK(CALL(nvnSyncWait, U(&sync_cmd), 1000) == NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED,
+          "a CommandBufferFenceSync recorded but not submitted leaves the sync unsignaled");
 
     uint64_t t0 = rt_ticks(), subs = nvn_submit_count(), fence0 = nvn_fence_last();
     uint64_t hs[2] = {ha, hb};
@@ -825,6 +843,12 @@ static void probe_null_effects(void) {
           (unsigned long long)wait);
     CHECK(nvn_submit_count() == subs + 1 && nvn_fence_last() == fence0 + 1 && gfx_backend()->fence_done() == nvn_fence_last(),
           "one submit advances the fence once (%llu -> %llu)", (unsigned long long)fence0, (unsigned long long)nvn_fence_last());
+    const sync_t *sc = (const sync_t *)(const void *)&sync_cmd;
+    uint64_t wait_cmd = CALL(nvnSyncWait, U(&sync_cmd), 1000000000ull);
+    CHECK(sc->fenced == 1 && sc->fence == nvn_fence_last() &&
+              (wait_cmd == NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED || wait_cmd == NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED),
+          "CommandBufferFenceSync: the submit fenced the sync at its value (fenced %u, fence %llu of %llu), SyncWait %llu",
+          sc->fenced, (unsigned long long)sc->fence, (unsigned long long)nvn_fence_last(), (unsigned long long)wait_cmd);
 
     // event: WRITE 0x11, ADD 5, then handle 2's WRITE 0x99
     CHECK((uint32_t)CALL(nvnEventGetValue, U(&ev)) == 0x99, "event value %#x after the stream, expected 0x99", *(uint32_t *)ev_val);
@@ -842,7 +866,7 @@ static void probe_null_effects(void) {
     CHECK(cb[0] == 0 && cb[1] + 1 >= t0 && cb[1] <= t1 + 1, "samples-passed counter {%llu, %llu}", (unsigned long long)cb[0],
           (unsigned long long)cb[1]);
     CHECK(!memcmp(pmem + OFF_B2B_DST, keep, 16), "a copy out of the GPU window left the target alone");
-    n_effects = 6;
+    n_effects = 7;
 
     CALL(nvnCommandBufferFinalize, U(&cmd2));
     CALL(nvnCommandBufferFinalize, U(&cmd));
@@ -919,6 +943,7 @@ int probe_nvn(void) {
     if (child && *child) return run_as_child(child);
     // The probe checks the null back end whatever TOTK_GPU says; the choice is made once, at the first object call.
     ((RtConfig *)rt_config())->gpu = "null";
+    rt_fpcr_threshold(&cpu);   // the FP result check threshold of a fresh Cpu (cpu.h): a zeroed one is wrong, not slow
     nvn_procs_register();
     hostfn_seal();
     kern_run_on_guest_main(probe_main);

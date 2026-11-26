@@ -11,7 +11,7 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
                the installer is never run)
     llvm/      llvm-mingw, x86_64 only, the files clang and lld need to compile and link totk.exe
     runtime/   libtotkrt.a and libtotkrt-v2.a (build_game.py --make-runtime-lib with llvm/, x86-64-v3 and v2), the
-               runtime headers, romfs.c, patches.c and ov_zstd.c (compiled per install), deps/ (headers and import
+               runtime headers, the INSTALL_SIDE sources of build_game.py (compiled per install), deps/ (headers and import
                libraries of SDL3, Opus, libvpx, Vulkan and VMA)
     bin/       totk_xlate.exe (+ .id), hactool.exe, SDL3.dll (upstream), libopus-0.dll, ninja.exe
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, totk.ini.example, recomplauncher.json
@@ -19,13 +19,15 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
                install compiles that update's code and the runtime libraries with it
     VERSION    the repository's VERSION plus the commit, 0.1.0+973c626; the installer's release string
     TotK-Setup.exe  installer/launcher/launcher.c built with llvm/ (-mwindows): starts python/pythonw.exe -m installer.gui
+               Everything else is the build kit the setup copies into the install folder (installer/layout.py KIT_ITEMS)
 
 --prove compiles the generated C and links build/release-check/totk.exe with nothing but the folder's python/, llvm/,
 runtime/ and bin/ (PATH holds the Windows system directory and those), then runs the four probes there.
 
 Both need one game version extracted and lifted first (tools/extract.py, recomp/gen.py): generated/v121 or, without
 it, generated/v143, and for --prove its build/extracted/<version> (they are read, nothing is written to them). The
-runtime library reads only what both versions' layout.h share (MOD_COUNT, MOD_MAIN_BASE), so either serves.
+runtime library reads only what both versions' layout.h share (MOD_MAIN_BASE; its module tables hold RT_MAX_MODULES, so an
+install's layout may add mod plugins), so either serves.
 
 A release also needs build/xlate built from the current sources (tools/build_xlate.py); the script stops first if not.
 
@@ -58,6 +60,8 @@ import pgo  # noqa: E402
 import shader_list  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from installer.guilogic import UI_LANGUAGES  # noqa: E402
 MAIN_ROOT = (ROOT / 'build').resolve().parent   # build/, generated/, toolchain/ and refs/ are junctions in a worktree
 DL = MAIN_ROOT / 'toolchain' / 'release-dl'
 WORK = MAIN_ROOT / 'toolchain' / 'release-work'   # unpacked downloads
@@ -115,7 +119,7 @@ LLVM_SKIP_SUFFIXES = {'.idl', '.tlb'}
 TOOLS_FILES = ['build_game.py', 'build_shaders.py', 'button_icons.py', 'check_content.py', 'check_isa.py', 'extract.py',
                'hostmem.py', 'make_romfs_patches.py', 'ncz.py', 'pack_shader_cache.py', 'prepare_shaders.py',
                'romfs_index.py', 'shader_census.py', 'shader_list.py', 'ultrawide_layout.py', 'cheats.py',
-               'exefs_patches.py']
+               'exefs_patches.py', 'exefs_plugins.py']
 TOOLS_DIRS = ['vendor/macnativegames', 'data']   # data/: expected hashes
 RUNTIME_SUFFIXES = {'.h', '.inc', '.ico'}   # .ico: the installer window icon
 
@@ -168,10 +172,12 @@ def fetch(name):
 
 
 def unpack(name, member_filter=None):
-    """Extract a pinned archive into toolchain/release-work/<name> (once) and return that directory."""
+    """Extract a pinned archive into toolchain/release-work/<name> and return that directory. The stamp holds the pin's
+    sha256, so a bumped pin unpacks its new archive instead of reusing the old one's files."""
     dest = WORK / name
     stamp = dest / '.unpacked'
-    if stamp.is_file():
+    key = PINS[name][1]
+    if stamp.is_file() and stamp.read_text() == key:
         return dest
     shutil.rmtree(dest, ignore_errors=True)
     dest.mkdir(parents=True)
@@ -182,7 +188,7 @@ def unpack(name, member_filter=None):
     else:
         with tarfile.open(path) as t:
             t.extractall(dest, filter='data')
-    stamp.write_text('')
+    stamp.write_text(key)
     return dest
 
 
@@ -362,6 +368,7 @@ def collect_licenses(out):
         (unpack('sdl3-dll') / 'LICENSE.txt', 'SDL3-LICENSE.txt'),
         (unpack('zstd') / 'ucrt64' / 'share' / 'licenses' / 'zstd' / 'LICENSE', 'zstd-LICENSE.txt'),
         (ROOT / 'runtime' / 'shaders' / 'ffx' / 'LICENSE.txt', 'FidelityFX-FSR-LICENSE.txt'),
+        (ROOT / 'runtime' / 'third_party' / 'FidelityFX' / 'LICENSE.txt', 'FidelityFX-SDK-LICENSE.txt'),
         (MAIN_ROOT / 'toolchain' / 'hactool' / 'LICENSE', 'hactool-LICENSE.txt'),
         (MAIN_ROOT / 'refs' / 'MacNativeGames' / 'LICENSE', 'MacNativeGames-LICENSE.txt'),
     ]
@@ -487,10 +494,10 @@ def c_wide(text):
 
 
 def launcher_header(path):
-    """launcher_text.h: the launcher's two messages in English, Russian, Brazilian Portuguese and Simplified Chinese,
-    taken from the installer's catalog (LAUNCHER_TITLE_PT_BR for pt-BR.json, LAUNCHER_TITLE_ZH_HANS for zh-Hans.json)."""
-    lines = ['/* generated by tools/make_release.py from installer/text/{en,ru,pt-BR,zh-Hans}.json */']
-    for lang in ('en', 'ru', 'pt-BR', 'zh-Hans'):
+    """launcher_text.h: the launcher's two messages in every window language, taken from the installer's catalog
+    (LAUNCHER_TITLE_PT_BR for pt-BR.json, LAUNCHER_TITLE_ZH_HANS for zh-Hans.json...)."""
+    lines = [f'/* generated by tools/make_release.py from installer/text/{{{",".join(UI_LANGUAGES)}}}.json */']
+    for lang in UI_LANGUAGES:
         texts = json.loads((ROOT / 'installer' / 'text' / f'{lang}.json').read_text(encoding='utf-8'))
         for key in ('title', 'python_missing'):
             macro = f'LAUNCHER_{key.upper()}_{lang.upper().replace("-", "_")}'
@@ -541,7 +548,7 @@ def check_bundle(out):
     r = subprocess.run([py, '-m', 'installer.gui', '--selftest'], cwd=out, env=env, capture_output=True, text=True, timeout=300)
     if r.returncode:
         sys.exit(f'bundle check: window selftest exit {r.returncode}\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}')
-    print('bundle check: the window built every screen in both languages and closed')
+    print('bundle check: the window built every screen in every language and closed')
 
 
 def sizes(out):

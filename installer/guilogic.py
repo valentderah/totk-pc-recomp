@@ -24,17 +24,22 @@ from . import state as statefile
 from .events import render
 
 TEXT = Path(__file__).resolve().parent / 'text'
-UI_LANGUAGES = ('en', 'ru', 'pt-BR', 'zh-Hans')
+UI_LANGUAGES = ('en', 'ru', 'pt-BR', 'zh-Hans', 'de', 'fr', 'es', 'it', 'nl', 'ja', 'ko', 'vi')
 # what the language switch in the window's corner shows for each
-UI_LANGUAGE_LABELS = {'en': 'English', 'ru': 'Русский', 'pt-BR': 'Português (Brasil)', 'zh-Hans': '简体中文'}
-STEP_ORDER = ('check', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'dlss', 'cleanup')
+UI_LANGUAGE_LABELS = {'en': 'English', 'ru': 'Русский', 'pt-BR': 'Português (Brasil)', 'zh-Hans': '简体中文',
+                      'de': 'Deutsch', 'fr': 'Français', 'es': 'Español', 'it': 'Italiano', 'nl': 'Nederlands',
+                      'ja': '日本語', 'ko': '한국어', 'vi': 'Tiếng Việt'}
+STEP_ORDER = ('check', 'kit', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss',
+              'fsr', 'cleanup')
 # message parameter -> catalog id prefix of the names that replace its raw values
 PARAM_NAMES = {'lang': 'lang.', 'known': 'lang.', 'step': 'step.', 'input': 'param.input.'}
-LANG_RU = 0x19   # primary language id of Russian in a Windows LANGID
 LANG_PT_BR = 0x0416   # Portuguese (Brazil), the whole LANGID: Portugal's Portuguese stays English
-# Windows LANGIDs that write Simplified Chinese: zh-CN, zh-SG. zh-TW, zh-HK and zh-MO write Traditional Chinese, which
-# the window does not have.
-LANGIDS_ZH_HANS = (0x0804, 0x1004)
+# primary language id in a Windows LANGID -> window language, for the languages whose every region gets the same text.
+# Every Chinese gets Simplified Chinese: the setup has no Traditional Chinese text, as the in-game menu has none.
+PRIMARY_LANGS = {0x04: 'zh-Hans', 0x19: 'ru', 0x07: 'de', 0x0c: 'fr', 0x0a: 'es', 0x10: 'it', 0x13: 'nl', 0x11: 'ja',
+                 0x12: 'ko', 0x2a: 'vi'}
+# window language -> the game language the form starts with (default_game_language)
+GAME_LANGUAGE_FOR_UI = {'ru': 'ru', 'de': 'de', 'fr': 'fr', 'es': 'es', 'it': 'it', 'nl': 'nl', 'ja': 'ja'}
 
 
 def load_texts(lang):
@@ -83,11 +88,10 @@ def flat(value):
 
 def windows_ui_language():
     """The window language for the display language: the Windows one (ui_language_for_langid); elsewhere LC_ALL,
-    LC_MESSAGES or LANG ('ru', 'pt_BR', 'zh_CN' or 'zh_SG', else English)."""
+    LC_MESSAGES or LANG (ui_language_for_locale)."""
     if os.name != 'nt':
-        loc = (os.environ.get('LC_ALL') or os.environ.get('LC_MESSAGES') or os.environ.get('LANG') or '').lower()
-        return ('ru' if loc.startswith('ru') else 'pt-BR' if loc.startswith(('pt_br', 'pt-br'))
-                else 'zh-Hans' if loc.startswith(('zh_cn', 'zh-cn', 'zh_sg', 'zh-sg', 'zh_hans', 'zh-hans')) else 'en')
+        return ui_language_for_locale(os.environ.get('LC_ALL') or os.environ.get('LC_MESSAGES')
+                                      or os.environ.get('LANG') or '')
     try:
         langid = ctypes.windll.kernel32.GetUserDefaultUILanguage()
     except (AttributeError, OSError):
@@ -95,23 +99,32 @@ def windows_ui_language():
     return ui_language_for_langid(langid)
 
 
+def ui_language_for_locale(loc):
+    """The window language for a POSIX locale such as 'de_AT.UTF-8': its language, Brazilian Portuguese only for
+    pt_BR, Simplified Chinese for every Chinese, else English."""
+    loc = loc.lower().replace('-', '_')
+    if loc.startswith('pt_br'):
+        return 'pt-BR'
+    lang = loc.split('_')[0].split('.')[0]
+    if lang == 'zh':
+        return 'zh-Hans'
+    return lang if lang in PRIMARY_LANGS.values() else 'en'
+
+
 def ui_language_for_langid(langid):
-    """'ru' for a Russian Windows LANGID, 'pt-BR' for Brazilian Portuguese, 'zh-Hans' for a Simplified Chinese one,
-    else 'en'."""
-    if langid & 0x3ff == LANG_RU:
-        return 'ru'
+    """The window language for a Windows LANGID: by its primary language (PRIMARY_LANGS), Brazilian Portuguese only
+    for pt-BR (Portugal's stays English), else 'en'."""
     if langid == LANG_PT_BR:
         return 'pt-BR'
-    if langid in LANGIDS_ZH_HANS:
-        return 'zh-Hans'
-    return 'en'
+    return PRIMARY_LANGS.get(langid & 0x3ff, 'en')
 
 
 def default_game_language(ui):
-    """The game language the form starts with. A Chinese window still starts with English: Chinese game text needs
-    the Switch shared fonts (ini.NEED_SHARED_FONTS), which the setup extracts only from a firmware folder, and the game
-    stops when they are missing; the player can still pick Chinese."""
-    return 'ru' if ui == 'ru' else 'en-US'
+    """The game language the form starts with: the window's own when the game has it. A Chinese or Korean window
+    still starts with English: that game text needs the Switch shared fonts (ini.NEED_SHARED_FONTS), which the setup
+    extracts only from a firmware folder, and the game stops when they are missing; the player can still pick it.
+    The game has no Brazilian Portuguese, so that window starts with English too."""
+    return GAME_LANGUAGE_FOR_UI.get(ui, 'en-US')
 
 
 def gib(n):
@@ -129,6 +142,14 @@ def amount(cat, done, total, unit):
 
 # ---- the form ----------------------------------------------------------------------------------------------------
 
+def fsr_default(adapters):
+    """Whether the window ticks Download AMD FSR at start: only with an AMD display adapter among adapters (their
+    names, screens.windows_adapter_names). The step downloads on any GPU when ticked (steps.Fsr); on other GPUs, and
+    when no adapter could be listed, the box starts unticked, so a player without an AMD GPU never downloads AMD's
+    libraries (about 36 MB) without choosing to."""
+    return any('AMD' in a.upper() or 'RADEON' in a.upper() for a in adapters)
+
+
 @dataclass
 class Form:
     base: str = ''
@@ -138,6 +159,7 @@ class Form:
     lang: str = ''
     dest: str = ''
     dlss: bool = False
+    fsr: bool = False
 
     def installed_state(self):
         """The recorded state of the install folder (totk-install.json), or None. Never raises."""
@@ -190,6 +212,8 @@ class Form:
             cmd.append('--verify')
         if self.dlss:
             cmd.append('--dlss')
+        if self.fsr:
+            cmd.append('--fsr')
         return cmd
 
 

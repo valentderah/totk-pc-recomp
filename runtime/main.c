@@ -161,6 +161,16 @@ const RtConfig *rt_config(void) { return &cfg; }
 volatile int g_fnprof = 0;   // resolution.c switches it on until the game sets its render size (res_fn_hit)
 void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) { (void)lr, res_fn_hit(addr, x0); }
 
+// cpu.h RT_FPCR_NOTE: diagnostic only, the write itself takes effect as before (runtime/simd.h slow paths).
+void rt_fpcr_rmode(uint64_t fpcr, uint64_t lr) {
+    static int seen;
+    if (__atomic_exchange_n(&seen, 1, __ATOMIC_RELAXED)) return;
+    static const char *const mode[] = {"nearest", "+inf", "-inf", "zero"};
+    char at[128];
+    rt_log("fpcr: guest code set rounding mode %s (FPCR %#llx), in a function called from %s", mode[(fpcr >> 22) & 3],
+           (unsigned long long)fpcr, ldr_describe(lr, at, sizeof at));
+}
+
 void rt_brk(Cpu *c, uint32_t imm, uint64_t pc) {
     char at[128], lr[128];
     rt_fatal("brk #%#x at %s (lr %s)", imm, ldr_describe(pc, at, sizeof at), ldr_describe(c->x[30], lr, sizeof lr));
@@ -558,6 +568,7 @@ static int selftest(void) {
     CHECK(s.functions > 0, "no functions linked");
     Cpu *c = plat_aligned_alloc(sizeof(Cpu), 64);
     memset(c, 0, sizeof *c);
+    rt_fpcr_threshold(c);
     uint64_t r = rt_call(c, probe, 1, (uint64_t)7);
     CHECK(rt_dispatch_lookup(probe) && r == 42 && host_probe_hits == 1 && c->x[30] == 0,
           "a registered host function does not dispatch through rt_call");
@@ -600,7 +611,7 @@ static int usage(const char *argv0) {
                     "--probe-cfg | --probe-dpi | --probe-mods | --probe-playtime | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-vkmem | "
                     "--probe-vkexec | --probe-astc | --probe-movie | --probe-crash-call | --probe-crash-null | --probe-discord | "
-                    "--prepare-shaders | --warm-shaders | --boot |--seconds S [--shot PNG]]\n", argv0);
+                    "--prepare-shaders | --warm-shaders | --boot | --plugin-init DIR | --seconds S [--shot PNG]]\n", argv0);
     return 2;
 }
 
@@ -718,6 +729,10 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[i], "--shot")) {
             if (++i == argc) return usage(argv[0]);
             cfg.shot = argv[i];
+        } else if (!mode && !strcmp(argv[i], "--plugin-init")) {   // the plugin service run (plugin_init.c)
+            if (++i == argc) return usage(argv[0]);
+            mode = argv[i - 1];
+            cfg.plugin_init = argv[i];
         } else if (!mode && !strncmp(argv[i], "--", 2)) {
             mode = argv[i];
         } else {
@@ -762,5 +777,6 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "--prepare-shaders")) return vk_pipeline_prepare_shaders();
     if (!strcmp(mode, "--warm-shaders")) return vk_pipeline_warm_shaders();
     if (!strcmp(mode, "--boot")) { cfg.boot = 1; rt_boot(); return 0; }
+    if (!strcmp(mode, "--plugin-init")) { rt_boot_plugin_init(); return 0; }
     return usage(argv[0]);
 }
