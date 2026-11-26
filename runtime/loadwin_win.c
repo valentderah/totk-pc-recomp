@@ -22,7 +22,7 @@
 #include "platform/platform.h"
 #include "ui_text.h"
 
-enum { PANEL_W = 600, PANEL_H = 394, LOG_H = 300, PAD = 28, BTN_W = 150, BTN_H = 32, BTN_Y = 342 };
+enum { PANEL_W = 600, PANEL_H = 376, LOG_H = 300, PAD = 28, BTN_W = 150, BTN_H = 32, BTN_Y = 324 };
 enum { ID_DETAILS = 101, ID_COPY, ID_CLOSE, ID_LOG };
 enum { WM_LW_CLOSE = WM_APP + 1, WM_LW_FATAL };
 enum { TIMER_ID = 1, TIMER_MS = 33 };
@@ -174,7 +174,7 @@ static Rgb mix(Rgb a, Rgb b, double k) {
 enum { N_HEARTS = 12, N_QUARTERS = 4 * N_HEARTS };
 #define HEART_W 40.0     // 96-DPI units: a heart's width, the gap between two, the row's middle
 #define HEART_GAP 5.0
-#define HEARTS_Y 240.0   // the hearts and the stage line under them sit midway between the version and the buttons
+#define HEARTS_Y 222.0   // the row's middle, under the version; the stage line goes under the hearts
 
 typedef struct {
     double q[N_HEARTS][4];        // 0..1 each quarter's red
@@ -210,9 +210,11 @@ static void hearts_step(void) {
 static Hearts hearts_now(const LwView *v) {
     Hearts h = {0};
     for (int k = 0; k < N_HEARTS; k++) h.scale[k] = 1;
+    int arrived = 0;   // the quarters already shown; a jump notes the later ones a little apart, ahead of now
     for (int i = 0; i < G.quarters; i++) {
         double x = G.age - G.q_at[i];   // the quarter came x s ago
         if (x < 0) break;
+        arrived = i + 1;
         int k = i / 4, j = i % 4;
         h.q[k][j] = smooth01(x / 0.10);
         h.qwhite[k][j] = 1 - smooth01(x / 0.30);
@@ -222,8 +224,10 @@ static Hearts hearts_now(const LwView *v) {
     }
     if (G.part > 0) h.sweep[G.quarters / 4][G.quarters % 4] = G.part, h.lit[G.quarters / 4] = 1;
     if (G.finale < 0) {
-        int k = G.quarters / 4;
-        if (k < N_HEARTS && !v->failed) {   // the heart being filled beats; a failed start stops it
+        // The heart being filled beats: the one the shown quarters reach, so the bright rim stays with the red while a
+        // jump's quarters still come in one by one. A failed start stops it.
+        int k = arrived / 4;
+        if (k < N_HEARTS && !v->failed) {
             double x = G.pulse - floor(G.pulse);
             double beat = exp(-(x * x) / 0.005) + exp(-((x - 1) * (x - 1)) / 0.005) +
                           0.6 * exp(-((x - 0.22) * (x - 0.22)) / 0.005);
@@ -366,7 +370,7 @@ static void paint(HDC dc, RECT cr, uint32_t *px) {
 
     // Under the hearts, centred: the stage, its counts and the time left in one line parted by dots; under it the
     // stage running at the same time
-    RECT r1 = {S(PAD), S(272), w - S(PAD), S(294)}, r2 = {S(PAD), S(295), w - S(PAD), S(315)};
+    RECT r1 = {S(PAD), S(254), w - S(PAD), S(276)}, r2 = {S(PAD), S(277), w - S(PAD), S(297)};
     if (!v->failed) {
         int n = snprintf(line, sizeof line, "%s", stage_name(v->stage));
         if (v->total) {
