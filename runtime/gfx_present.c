@@ -18,6 +18,8 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "perf_panel.h"
+#include "input_panel.h"
 #include "flight.h"
 #include "fs.h"
 #include "gfx.h"
@@ -83,6 +85,9 @@ void gfx_window_focus_changed(int in) {
 void gfx_window_closed(void) {
     int restart = plat_cas32(&g_restart, 0, 0) != 0;
     rt_log("gfx: window closed; %s", restart ? "restarting" : "exiting");
+    // Draw callbacks do not acquire present or queue locks; join here without g_pl held.
+    perf_panel_close();
+    input_panel_close();
     fs_save_flush();
     vk_pipeline_save();
     playtime_save();
@@ -873,6 +878,7 @@ static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w,
     gfx_window_start();
     VkCtx *c = vk_ctx();
     plat_rmutex_lock(&g_pl);
+    menu_perf_update(c->phys);   // Also process a closed panel when this present cannot draw an overlay.
     if (pair != 2) flip_locked();
     if (plat_cas32(&g_hold, 0, 0)) goto out;
     if (!g_sc || plat_cas32(&g_dirty, 0, 0)) {
@@ -1165,4 +1171,6 @@ void gfx_window_start(void) {
     }
     plat_rmutex_unlock(&g_start_lock);
     vsync_ensure();
+    perf_panel_tick();
+    input_panel_tick();
 }
