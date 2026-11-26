@@ -170,7 +170,7 @@ static const CfgMeta metas[] = {
     {"FRAME_GEN", "off", "off|fsr3|dlssg", LIVE},   // the generator; vk_fg.cpp vk_fg_engine maps it
     {"DLSSG_FRAMES", "auto", "auto|2|3|4", LIVE},   // generated pictures between real frames; capped by the GPU
     {"DLSSG_ASYNC", "0", "0|1", RESTART},           // evaluate frame generation on a second graphics queue
-    {"DLSS_CACHE_PRUNE", "0", "0|1", LIVE},          // release old scene-size DLSS contexts when the mode changes
+    {"DLSS_CACHE_PRUNE", "0", "0|1", LIVE},          // release old scene-size DLSS contexts when the mode or dynamic-res policy changes
     {"REALTIME", "1", "0|1", RESTART}, {"CLOTH_REALTIME", "1", "0|1", RESTART},
     {"MODS_REBUILD", "auto", "auto|off", RESTART},
     {"MODS_WITHOUT_CODE", "0", "0|1", RESTART},   // 1: a mod is used without the code module it cannot run (mods.c)

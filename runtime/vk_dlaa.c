@@ -533,13 +533,13 @@ static void free_size(struct Size *e) {
     destroy_size(e);
 }
 
-// Dynamic resolution reuses its recent sizes. A user's DLSS mode change does not: release the old mode's output images,
-// masks and NGX feature state before the new scene size is selected.
-static void prune_sizes(const char *from, const char *to) {
+// Dynamic resolution reuses its recent sizes. A user's DLSS mode or resolution-policy change does not: release the old
+// output images, masks and NGX feature state before the new scene size is selected.
+static int prune_sizes(void) {
     int n = 0;
     for (size_t i = 0; i < DLSS_SIZES; i++)
         n += D.sizes[i].mv || D.sizes[i].feat || D.sizes[i].fg_feat;
-    if (!n) return;
+    if (!n) return 0;
     VkCtx *c = vk_ctx();
     vk_present_drain();
     vk_queue_lock();
@@ -550,7 +550,7 @@ static void prune_sizes(const char *from, const char *to) {
     for (size_t i = 0; i < DLSS_SIZES; i++) destroy_size(&D.sizes[i]);
     vk_queue_unlock();
     D.reset = 1;
-    rt_log("dlaa: DLSS mode %s -> %s released %d cached scene-size context%s", from, to, n, n == 1 ? "" : "s");
+    return n;
 }
 
 // The entry for a scene and output size: its output (RGBA16F at the output size, written by DLSS, then blitted into
@@ -2278,13 +2278,29 @@ void vk_dlaa_pass(VkExec *ex) {
 // bias follows the mode and the upscaler going on or off; the engine is fixed for the run.
 static void dlss_mode(void) {
     static char mode[32];
+    static int dynres = -1;
     static float bias;   // what the material samplers have (vk_texture.c starts at 0)
     const char *m = cfg_value("TOTK_DLSS");
-    if (strcmp(m, mode)) {
-        if (cfg_bool("TOTK_DLSS_CACHE_PRUNE")) prune_sizes(mode[0] ? mode : "off", m);
+    int dyn = cfg_bool("TOTK_DYNAMIC_RES");
+    int mode_changed = strcmp(m, mode) != 0;
+    int dyn_changed = dynres >= 0 && dyn != dynres;
+    if ((mode_changed || dyn_changed) && cfg_bool("TOTK_DLSS_CACHE_PRUNE")) {
+        int n = prune_sizes();
+        if (n && mode_changed && dyn_changed)
+            rt_log("dlaa: DLSS mode %s -> %s and dynamic resolution %s released %d cached scene-size context%s",
+                   mode[0] ? mode : "off", m, dyn ? "on" : "off", n, n == 1 ? "" : "s");
+        else if (n && mode_changed)
+            rt_log("dlaa: DLSS mode %s -> %s released %d cached scene-size context%s", mode[0] ? mode : "off", m, n,
+                   n == 1 ? "" : "s");
+        else if (n)
+            rt_log("dlaa: dynamic resolution %s released %d cached scene-size context%s", dyn ? "on" : "off", n,
+                   n == 1 ? "" : "s");
+    }
+    if (mode_changed) {
         snprintf(mode, sizeof mode, "%s", m);
         res_dlss_mode(m);
     }
+    dynres = dyn;
     float b = 0.0f;
     int e = vk_upscaler_engine();
     if (dl_active()) b = res_dlss_lod_bias() - (e == UPSCALER_FSR3 || e == UPSCALER_FSR4 ? 1.0f : 0.0f);
