@@ -66,7 +66,8 @@ static PlatFile *image;
 static const uint8_t *image_map;
 static char image_file[2048];
 static char index_dir[2048];         // the directory of romfs-index.bin: the proof file's default place
-static char mount_name[32];
+// The RomFS mount names, under lock: [0] is the first MountRom (the game's), which stays mounted; "" is a free slot.
+static char mount_names[ROMFS_MOUNTS][32];
 static PlatMutex lock = PLAT_MUTEX_INIT;
 static uint64_t handles[NH];         // file index + 1; 0 is free
 static uint32_t handle_ovl[NH];      // overlay slot + 1 of an open handle, 0 = original
@@ -1582,30 +1583,92 @@ const char *romfs_overlay(size_t k, const char **file, uint64_t *size, int *is_a
     return overlays[k].name;
 }
 
+// The RomFS mount whose name path starts with ("<name>:"), copied into name; 0 when none.
+static int mount_of(const char *path, char name[32]) {
+    int found = 0;
+    if (!path) return 0;
+    plat_mutex_lock_shared(&lock);
+    for (int k = 0; k < ROMFS_MOUNTS && !found; k++) {
+        size_t n = strlen(mount_names[k]);
+        if (n && !strncmp(path, mount_names[k], n) && path[n] == ':') found = 1, memcpy(name, mount_names[k], 32);
+    }
+    plat_mutex_unlock_shared(&lock);
+    return found;
+}
+
 int romfs_owns(const char *path) {
-    size_t n = strlen(mount_name);
-    return n && path && !strncmp(path, mount_name, n) && path[n] == ':';
+    char name[32];
+    return mount_of(path, name);
+}
+
+// The RomFS path of "<mount>:/<path>" on any RomFS mount (romfs_path.h romfs_path_relative), or NULL.
+static const char *relative(const char *path) {
+    char name[32];
+    return mount_of(path, name) ? romfs_path_relative(name, path) : NULL;
+}
+
+// The RomFS folder path names, into out without a trailing '/': "" for the mount's root ("<mount>:/",
+// "<mount>://"). 0 when path is on no RomFS mount or is no valid RomFS path.
+static int folder_of(const char *path, char *out, size_t cap) {
+    char name[32];
+    if (!mount_of(path, name)) return 0;
+    size_t n = strlen(name);
+    if (path[n + 1] != '/') return 0;
+    const char *p = path + n + 1;
+    while (*p == '/') p++;
+    size_t len = strlen(p);
+    while (len && p[len - 1] == '/') len--;
+    if (len >= cap) return 0;
+    memcpy(out, p, len);
+    out[len] = 0;
+    return !len || romfs_path_valid_relative(out);
 }
 
 int romfs_handle(uint64_t h) { return h > ROMFS_HANDLE_BASE && h < ROMFS_HANDLE_BASE + NH; }
 
 uint32_t romfs_mount(const char *name) {
     fs_init();
-    if (!name || !romfs_path_valid_relative(name) || strlen(name) >= sizeof mount_name || strchr(name, '/') ||
+    if (!name || !romfs_path_valid_relative(name) || strlen(name) >= sizeof mount_names[0] || strchr(name, '/') ||
         strchr(name, ':'))
         return FS_R_INVALID;
+    if (fs_host_mounted(name)) return FS_R_ALREADY_EXISTS;   // a storage mount has the name
+    int slot = -1;
     plat_mutex_lock(&lock);
-    if (*mount_name && strcmp(name, mount_name)) rt_fatal("second RomFS mount %s (%s is mounted)", name, mount_name);
-    strcpy(mount_name, name);
+    for (int k = 0; k < ROMFS_MOUNTS; k++) {
+        if (!strcmp(mount_names[k], name)) {   // mounted already: the game mounts "content" once, the probe twice
+            plat_mutex_unlock(&lock);
+            return 0;
+        }
+        if (!*mount_names[k] && slot < 0) slot = k;
+    }
+    // slot 0 is taken first and never freed (romfs_unmount), so the game's mount stays [0]
+    if (slot < 0) rt_fatal("RomFS mount table full (%d names): %s", ROMFS_MOUNTS, name);
+    strcpy(mount_names[slot], name);
     plat_mutex_unlock(&lock);
     rt_log("fs mount %s: -> RomFS", name);
     return 0;
 }
 
+// The first RomFS mount is the game's and stays: the run time never unmounted it, and its paths are opened on every
+// thread. A mod's further names go at Unmount; their open handles stay valid (a handle names an index row, no mount).
+int romfs_unmount(const char *name) {
+    int found = 0, kept = 0;
+    if (!name) return 0;
+    plat_mutex_lock(&lock);
+    for (int k = 0; k < ROMFS_MOUNTS && !found; k++)
+        if (*mount_names[k] && !strcmp(mount_names[k], name)) {
+            found = 1, kept = !k;
+            if (k) *mount_names[k] = 0;
+        }
+    plat_mutex_unlock(&lock);
+    if (found) rt_log("fs unmount %s (RomFS)%s", name, kept ? ": kept, the game's mount" : "");
+    return found;
+}
+
 uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
     fs_trace("rom", path);
     if (!out || mode != FS_OPEN_READ) return FS_R_UNSUPPORTED_OPEN;
-    const char *p = romfs_path_relative(mount_name, path);
+    const char *p = relative(path);
     if (!p) return FS_R_PATH_NOT_FOUND;
     uint64_t i = file_index(p);
     if (i == UINT64_MAX) return FS_R_PATH_NOT_FOUND;
@@ -1715,26 +1778,98 @@ void romfs_close(uint64_t h) {
     if (of) plat_file_close(of);
 }
 
+// A path with a trailing '/' names a folder only; the mount's root ("<mount>:/") is a folder.
 uint32_t romfs_entry_type(int *out, const char *path) {
     if (!out) return FS_R_INVALID;
-    const char *p = romfs_path_relative(mount_name, path);
-    if (!p) return FS_R_PATH_NOT_FOUND;
-    if (file_index(p) != UINT64_MAX) {
+    const char *p = relative(path);
+    if (p && file_index(p) != UINT64_MAX) {
         *out = FS_ENTRY_FILE;
         return 0;
     }
     char dir[4096];
-    if (snprintf(dir, sizeof dir, "%s/", p) >= (int)sizeof dir) return FS_R_INVALID;
-    if (folder_exists(dir)) {
+    if (!folder_of(path, dir, sizeof dir - 1)) return FS_R_PATH_NOT_FOUND;
+    size_t n = strlen(dir);
+    dir[n] = '/', dir[n + 1] = 0;
+    if (!n || folder_exists(dir)) {
         *out = FS_ENTRY_DIRECTORY;
         return 0;
     }
     return FS_R_PATH_NOT_FOUND;
 }
 
+// ---- folder listings (romfs_list), made from the sorted index and the sorted added files at each OpenDirectory
+typedef struct { const char *name; uint64_t size; } Child;
+typedef struct { Child *e; size_t n, cap; } Children;
+
+static void child_add(Children *c, const char *name, uint64_t size) {
+    if (c->n == c->cap) {
+        c->cap = c->cap ? c->cap * 2 : 64;
+        c->e = realloc(c->e, c->cap * sizeof *c->e);
+        need(c->e != NULL, "RomFS folder listing");
+    }
+    c->e[c->n++] = (Child){name, size};
+}
+
+static int child_order(const void *a, const void *b) { return strcmp(((const Child *)a)->name, ((const Child *)b)->name); }
+
+// RomFS path p (index row or added file i) under the folder prefix of n bytes: a file right under the folder goes to
+// files with the size it is served with (the overlay's when one replaces or adds it), the first component of a deeper
+// path to dirs as a malloc'd copy, once per run of equal components (paths that share it are adjacent when sorted).
+static void child_of(const char *p, uint64_t i, size_t n, Children *dirs, Children *files, const char **last,
+                     size_t *last_n) {
+    const char *rest = p + n, *slash = strchr(rest, '/');
+    if (!slash) {
+        uint32_t ov = overlay_slot(i);
+        child_add(files, rest, ov ? overlays[ov - 1].size : entry(i).size);
+        return;
+    }
+    size_t len = (size_t)(slash - rest);
+    if (*last && *last_n == len && !memcmp(*last, rest, len)) return;
+    *last = rest, *last_n = len;
+    char *name = malloc(len + 1);
+    need(name != NULL, "RomFS folder listing");
+    memcpy(name, rest, len);
+    name[len] = 0;
+    child_add(dirs, name, 0);
+}
+
+uint32_t romfs_list(const char *path, int (*cb)(const char *name, int kind, uint64_t size, void *ctx), void *ctx) {
+    char pre[4096];
+    if (!folder_of(path, pre, sizeof pre - 1)) return FS_R_PATH_NOT_FOUND;
+    size_t n = strlen(pre);
+    if (n) pre[n++] = '/', pre[n] = 0;
+    // a file or a missing folder: the sdk's RomFsFileSystem::DoOpenDirectory answers both with path not found
+    if (n && !folder_exists(pre)) return FS_R_PATH_NOT_FOUND;
+    Children dirs = {0}, files = {0};
+    const char *last = NULL;
+    size_t last_n = 0;
+    for (uint64_t i = lower(pre); i < file_count; i++) {
+        const char *p = entry_name(entry(i));
+        if (strncmp(p, pre, n)) break;
+        child_of(p, i, n, &dirs, &files, &last, &last_n);
+    }
+    last = NULL;
+    for (size_t k = added_lower(pre); k < nadded && !strncmp(added[k], pre, n); k++)
+        child_of(added[k], file_count + k, n, &dirs, &files, &last, &last_n);
+    // the RomFS's folders and the added files' may share a name: sorted, a name given twice is adjacent. Folders come
+    // first, as the sdk's RomFS directory reads them (RomFsFileSystem::DoOpenDirectory's directory, its read).
+    if (dirs.n) qsort(dirs.e, dirs.n, sizeof *dirs.e, child_order);
+    if (files.n) qsort(files.e, files.n, sizeof *files.e, child_order);
+    int go = 1;
+    for (size_t k = 0; k < dirs.n && go; k++)
+        if (!k || strcmp(dirs.e[k].name, dirs.e[k - 1].name)) go = cb(dirs.e[k].name, PLAT_FS_DIR, 0, ctx);
+    for (size_t k = 0; k < files.n && go; k++) go = cb(files.e[k].name, PLAT_FS_FILE, files.e[k].size, ctx);
+    for (size_t k = 0; k < dirs.n; k++) free((void *)dirs.e[k].name);
+    free(dirs.e);
+    free(files.e);
+    return 0;
+}
+
 // ---- overrides
 // nn::Result nn::fs::MountRom(const char *name, void *cache, size_t cache_size)
 static void ov_mount_rom(Cpu *c) { ret_x(c, romfs_mount(arg_p(c, 0))); }
+// nn::Result nn::fs::MountRom(const char *name): the same without a cache buffer (the sdk runs one mount routine)
+static void ov_mount_rom_nocache(Cpu *c) { ret_x(c, romfs_mount(arg_p(c, 0))); }
 // nn::Result nn::fs::QueryMountRomCacheSize(size_t *out): no cache needed, the host reads the image directly
 static void ov_query_cache(Cpu *c) {
     uint64_t *out = arg_p(c, 0);
@@ -1748,5 +1883,6 @@ static void ov_initialize(Cpu *c) {
 }
 
 HOST_OVERRIDE("_ZN2nn2fs8MountRomEPKcPvm", ov_mount_rom);
+HOST_OVERRIDE("_ZN2nn2fs8MountRomEPKc", ov_mount_rom_nocache);
 HOST_OVERRIDE("_ZN2nn2fs22QueryMountRomCacheSizeEPm", ov_query_cache);
 HOST_OVERRIDE("_ZN2nn2fs24InitializeForApplicationEv", ov_initialize);

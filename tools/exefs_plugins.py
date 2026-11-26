@@ -99,7 +99,19 @@ HOST_FS = {'_ZN2nn2fs11MountSdCardEPKc', '_ZN2nn2fs8OpenFileEPNS0_10FileHandleEP
            '_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl',
            '_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE', '_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc',
            '_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvmRKNS0_10ReadOptionE', '_ZN2nn2fs10RenameFileEPKcS2_',
-           '_ZN2nn2fs26DeleteDirectoryRecursivelyEPKc', '_ZN2nn2fs6CommitEPKc', '_ZN2nn2fs7UnmountEPKc'}
+           '_ZN2nn2fs26DeleteDirectoryRecursivelyEPKc', '_ZN2nn2fs6CommitEPKc', '_ZN2nn2fs7UnmountEPKc',
+           '_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE', '_ZN2nn2fs15DeleteDirectoryEPKc',
+           '_ZN2nn2fs25CleanDirectoryRecursivelyEPKc', '_ZN2nn2fs15RenameDirectoryEPKcS2_', '_ZN2nn2fs10CreateFileEPKcli',
+           '_ZN2nn2fs8ReadFileENS0_10FileHandleElPvmRKNS0_10ReadOptionE', '_ZN2nn2fs14ReadFileAtOnceEPKcPvm',
+           '_ZN2nn2fs24CreateAndWriteFileAtOnceEPKcPKvm', '_ZN2nn2fs15GetFileOpenModeENS0_10FileHandleE',
+           '_ZN2nn2fs10QueryRangeEPNS0_14QueryRangeInfoENS0_10FileHandleEll',
+           '_ZN2nn2fs24GetFileTimeStampForDebugEPNS0_13FileTimeStampEPKc',
+           '_ZN2nn2fs27GetFileTimeStampRawForDebugEPNS0_16FileTimeStampRawEPKc', '_ZN2nn2fs16GetFreeSpaceSizeEPlPKc',
+           '_ZN2nn2fs17GetTotalSpaceSizeEPlPKc', '_ZN2nn2fs9IsMountedEPKc', '_ZN2nn2fs13IsPathMountedEPKc',
+           '_ZN2nn2fs14CommitSaveDataEPKc', '_ZN2nn2fs17MountCacheStorageEPKc', '_ZN2nn2fs17MountCacheStorageEPKci',
+           '_ZN2nn2fs18IsSaveDataExistingERKNS_7account3UidE', '_ZN2nn2fs18IsSaveDataExistingEPbRKNS_7account3UidE',
+           '_ZN2nn2fs8MountRomEPKc', '_ZN2nn2fs8MountRomEPKcPvm', '_ZN2nn2fs22QueryMountRomCacheSizeEPm',
+           '_ZN2nn2fs21MountTemporaryStorageEPKc', '_ZN2nn2fs8ReadFileENS0_10FileHandleElPvm'}
 LANGUAGE = {'_ZN2nn2oe18GetDesiredLanguageEv', '_ZN2nn8settings6detail15GetLanguageCodeEPNS0_12LanguageCodeE'}
 # The imports the code the hooks reach may call while the game runs (reach()). Each reviewed for what it touches: the
 # libc ones above (the caller's buffers and the game's heap), SNPrintf (the caller's buffer), the sdk's mutexes and
