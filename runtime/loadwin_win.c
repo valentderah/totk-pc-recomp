@@ -1,6 +1,6 @@
 // The loading window on Win32 (loadwin.h): a borderless panel in the middle of the primary monitor's work area, drawn
 // with GDI on a thread of its own, so it keeps moving while the main and prewarm threads work. It shows the program's
-// icon, name and version, the stage, a row of hearts with the share of the start done, the counts and times under it,
+// icon, name and version, a row of hearts with the share of the start done, the stage with its counts and times under it,
 // and a Details button that expands an edit control with the log. The panel can be dragged by any free spot; its close
 // button ends the game, as closing the console did.
 //
@@ -174,7 +174,7 @@ static Rgb mix(Rgb a, Rgb b, double k) {
 enum { N_HEARTS = 12, N_QUARTERS = 4 * N_HEARTS };
 #define HEART_W 40.0     // 96-DPI units: a heart's width, the gap between two, the row's middle
 #define HEART_GAP 5.0
-#define HEARTS_Y 251.0   // under the stage, where the bar was
+#define HEARTS_Y 240.0   // the hearts and the stage line under them sit midway between the version and the buttons
 
 typedef struct {
     double q[N_HEARTS][4];        // 0..1 each quarter's red
@@ -354,10 +354,9 @@ static void paint(HDC dc, RECT cr, uint32_t *px) {
     snprintf(line, sizeof line, menu_text(UI_LW_VERSION), rt_port_version, game);
     draw_u8(dc, line, (RECT){0, S(157), w, S(177)}, DT_CENTER | DT_SINGLELINE | DT_VCENTER, G.f_ver, C_DIM);
 
-    draw_u8(dc, v->failed ? menu_text(UI_LW_FAILED) : stage_name(v->stage), (RECT){S(PAD), S(188), w - S(PAD), S(220)},
-            DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS, G.f_stage, v->failed ? C_FAIL : C_TEXT);
-
-    if (v->failed) {   // the reason in place of the hearts, what to do under it
+    if (v->failed) {   // a heading, the reason in place of the hearts, what to do under it
+        draw_u8(dc, menu_text(UI_LW_FAILED), (RECT){S(PAD), S(188), w - S(PAD), S(220)},
+                DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS, G.f_stage, C_FAIL);
         draw_u8(dc, v->why[0] ? v->why : menu_text(UI_LW_FAILED_HINT), (RECT){S(PAD), S(226), w - S(PAD), S(282)},
                 DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS, G.f_body, C_TEXT);
         if (v->why[0])
@@ -365,30 +364,32 @@ static void paint(HDC dc, RECT cr, uint32_t *px) {
                     DT_LEFT | DT_WORDBREAK, G.f_small, C_DIM);
     }
 
-    // Under the hearts: the counts and the time left
-    RECT r1 = {S(PAD), S(284), w - S(PAD), S(306)}, r2 = {S(PAD), S(307), w - S(PAD), S(327)};
+    // Under the hearts, centred: the stage, its counts and the time left in one line parted by dots; under it the
+    // stage running at the same time
+    RECT r1 = {S(PAD), S(272), w - S(PAD), S(294)}, r2 = {S(PAD), S(295), w - S(PAD), S(315)};
     if (!v->failed) {
+        int n = snprintf(line, sizeof line, "%s", stage_name(v->stage));
         if (v->total) {
             count_text(v->done, v->total, a, sizeof a);
             grouped(v->total - v->done, b, sizeof b);
-            int n = snprintf(line, sizeof line, "%s  \xc2\xb7  ", a);
+            n += snprintf(line + n, sizeof line - n, "  \xc2\xb7  %s  \xc2\xb7  ", a);
             n += snprintf(line + n, sizeof line - n, menu_text(UI_LW_LEFT_ITEMS), b);
             if (v->task_left_s >= 0 && v->done < v->total) {
                 left_text(v->task_left_s, a, sizeof a);
                 snprintf(line + n, sizeof line - n, "  \xc2\xb7  %s", a);
             }
-            draw_u8(dc, line, r1, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS, G.f_body, C_TEXT);
         }
+        draw_u8(dc, line, r1, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS, G.f_body, C_TEXT);
         if (v->other >= 0) {
             char what[256];
             if (v->other_total) {
                 count_text(v->other_done, v->other_total, a, sizeof a);
-                snprintf(what, sizeof what, "%s: %s", stage_name(v->other), a);
+                snprintf(what, sizeof what, "%s  \xc2\xb7  %s", stage_name(v->other), a);
             } else {
                 snprintf(what, sizeof what, "%s", stage_name(v->other));
             }
             snprintf(line, sizeof line, menu_text(UI_LW_ALSO), what);
-            draw_u8(dc, line, r2, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS, G.f_small, C_DIM);
+            draw_u8(dc, line, r2, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS, G.f_small, C_DIM);
         }
     }
 
