@@ -79,6 +79,10 @@ typedef struct PoolRec {
 
 static void mirror_forget(PoolRec *r);   // pool_lock exclusive: off the mirrored list
 static int shadow_on;                    // shadow mode: imported pools get shadow storage instead (vk_mem_class_log)
+// The default of a switch whose new path ran in one configuration only: Mesa RADV in the Linux build with imported
+// memory (a Steam Deck). Elsewhere (Windows, another driver, the mirror mode of a discrete GPU) the switch is off
+// until its path runs there. Read after mirror_mode decided the memory mode (vk_mem_class_log).
+const char *vk_ran_default(void) { return vk_caps.radv && !vk_mirror_on ? "1" : "0"; }
 static int shadow_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size);
 static void shadow_touch(PoolRec *r);
 static void shadow_forget(PoolRec *r);
@@ -1498,6 +1502,232 @@ static void ah_time(uint64_t *n, uint64_t *ns, uint64_t *mx, uint64_t dt) {
 // was not told is done is the game reading ahead of its own wait.
 static void ahead_read(uint64_t addr, uint64_t size);
 
+// ---- early reads (shadow storage with TOTK_SYNC_AHEAD)
+// TotK sends a frame as one submission. The pass that writes its pixel readbacks into a CPU-visible buffer runs in the
+// first millisecond of that submission, and the game reads the result after the frame wait, while the GPU is still in
+// the frame (measured in a scene where the player runs: 16 of the frame's 17 ms of GPU work follow the writer). Waiting
+// for the submission's fence stopped a job worker or the main thread for about 11 ms, five times a second. Instead:
+// - A pool the game waited to read from (vk_mem_shadow_read) becomes a readback pool.
+// - A pass or dispatch that writes into a readback pool is followed by a flag: a memory barrier (shader and transfer
+//   writes made available to the host), vkCmdFillBuffer of a new number into a host-visible word, a second barrier.
+// - The next wait for a range a flagged writer at or below the waited value wrote polls the flag. Once the GPU wrote
+//   it, the reader copies the range from the shadow into guest memory as the fence copy would (vk_gpu_written: the
+//   words that differ from the pending write's base, the bases updated), and the game reads on. The fence copy runs
+//   later as before and finds those words equal.
+// Self-check: the fence copy compares an early-copied range with the shadow and counts the ranges that differ
+// (logged with the shadow lines). A difference is a later GPU write into the range or an early copy that came too
+// early.
+// TOTK_EARLY_READ: 0 waits for the fence. On by default only where it ran (vk_ran_default): the flag is GPU work of a
+// new kind inside the frame, and no other driver was tested.
+#define RB_POOLS 16
+#define RBF_N 1024
+#define RB_CHK 32
+typedef struct { uint64_t lo, hi, fence; uint32_t gen; } RbRec;
+static int rb_on = -1;
+static PlatMutex rb_lock = PLAT_MUTEX_INIT;   // after shadow_lock
+static uint64_t rb_lo[RB_POOLS], rb_hi[RB_POOLS];
+static int rb_n;                               // published with release; entries never change once added
+static VkBuffer rbf_buf;
+static VmaAllocation rbf_alloc;
+static volatile uint32_t *rbf_map;
+static int rbf_state;                          // 0 not made, 1 ready, -1 failed
+static uint32_t rbf_gen;
+static RbRec rbr[RBF_N];                       // rb_lock: flagged writes, a ring
+static uint32_t rbr_next;
+static struct { uint64_t addr, size; uint8_t b[64]; } rb_chk[RB_CHK];   // shadow_lock: early copies to check
+static uint64_t rb_flags, rb_early, rb_early_fence, rb_poll_ns, rb_nowriter, rb_timeout, rb_mismatch, rb_checked;
+static _Thread_local struct { uint64_t lo, hi; } rb_pend[8];   // replay thread: writes of the open pass or dispatch
+static _Thread_local int rb_npend;
+
+static int rb_enabled(void) {
+    if (rb_on < 0) {
+        rb_on = rt_knob("EARLY_READ", vk_ran_default()) != 0;
+        if (rb_on) rt_log("mem: early reads of GPU-written ranges on (TOTK_EARLY_READ)");
+    }
+    return rb_on;
+}
+
+static int vk_mem_rb_pool(uint64_t addr) {
+    int n = __atomic_load_n(&rb_n, __ATOMIC_ACQUIRE);
+    for (int i = 0; i < n; i++)
+        if (addr >= rb_lo[i] && addr < rb_hi[i]) return 1;
+    return 0;
+}
+
+static void rb_pool_add(uint64_t addr, uint64_t size) {
+    if (vk_mem_rb_pool(addr)) return;
+    plat_mutex_lock_shared(&pool_lock);
+    const pidx_ent *e = pidx_find(&pool_index, addr, size);
+    PoolRec *r = e ? e->buf : NULL;
+    uint64_t lo = r ? r->import_lo : 0, hi = r ? r->import_hi : 0;
+    plat_mutex_unlock_shared(&pool_lock);
+    if (!r || hi <= lo) return;
+    plat_mutex_lock(&rb_lock);
+    if (rb_n < RB_POOLS && !vk_mem_rb_pool(addr)) {
+        rb_lo[rb_n] = lo, rb_hi[rb_n] = hi;
+        __atomic_store_n(&rb_n, rb_n + 1, __ATOMIC_RELEASE);
+        rt_log("mem: early reads: readback pool %#llx-%#llx", (unsigned long long)lo, (unsigned long long)hi);
+    }
+    plat_mutex_unlock(&rb_lock);
+}
+
+static int rbf_ready(void) {
+    if (rbf_state) return rbf_state > 0;
+    VkCtx *c = vk_ctx();
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = RBF_N * 4,
+                             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT, .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VmaAllocationCreateInfo ai = {.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                  .requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                  .preferredFlags = VK_MEMORY_PROPERTY_HOST_CACHED_BIT};
+    VmaAllocationInfo info;
+    if (vmaCreateBuffer(c->vma, &bi, &ai, &rbf_buf, &rbf_alloc, &info) != VK_SUCCESS || !info.pMappedData) {
+        rt_log("mem: early reads: no flag buffer: off");
+        rbf_state = -1;
+        return 0;
+    }
+    rbf_map = info.pMappedData;
+    memset((void *)rbf_map, 0, RBF_N * 4);
+    rbf_state = 1;
+    return 1;
+}
+
+// Replay thread: the open pass or dispatch writes [addr, addr+size) of CPU-visible memory.
+void vk_mem_rb_note(uint64_t addr, uint64_t size) {
+    if (rb_on <= 0 || !size || !vk_mem_rb_pool(addr)) return;   // (not read yet: no wait came, no pool is listed)
+    for (int i = 0; i < rb_npend; i++)
+        if (rb_pend[i].lo == addr && rb_pend[i].hi == addr + size) return;
+    if (rb_npend < 8) rb_pend[rb_npend].lo = addr, rb_pend[rb_npend++].hi = addr + size;
+}
+
+// Replay thread, outside a render pass: a flag after the pass or dispatch that wrote the noted ranges.
+void vk_mem_rb_flush(VkCommandBuffer cb, uint64_t fence) {
+    if (!rb_npend) return;
+    int n = rb_npend;
+    rb_npend = 0;
+    plat_mutex_lock(&rb_lock);
+    int ok = rbf_ready();
+    plat_mutex_unlock(&rb_lock);
+    if (!ok || !cb) return;
+    uint32_t g = __atomic_add_fetch(&rbf_gen, 1, __ATOMIC_RELAXED);
+    if (!g) g = __atomic_add_fetch(&rbf_gen, 1, __ATOMIC_RELAXED);
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                           .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                           .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                                            VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | VK_PIPELINE_STAGE_2_HOST_BIT,
+                           .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_HOST_READ_BIT};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    vkCmdPipelineBarrier2(cb, &di);
+    vkCmdFillBuffer(cb, rbf_buf, (VkDeviceSize)(g & (RBF_N - 1)) * 4, 4, g);
+    VkMemoryBarrier2 fb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                           .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                           .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+    di.pMemoryBarriers = &fb;
+    vkCmdPipelineBarrier2(cb, &di);
+    plat_mutex_lock(&rb_lock);
+    for (int i = 0; i < n; i++) rbr[rbr_next++ & (RBF_N - 1)] = (RbRec){rb_pend[i].lo, rb_pend[i].hi, fence, g};
+    rb_flags++;
+    plat_mutex_unlock(&rb_lock);
+}
+
+// shadow_lock held: the shadow's bytes of [addr, addr+size) into guest memory, as the fence copy makes them.
+static void rb_copy(PoolRec *r, uint64_t addr, uint64_t size) {
+    mem_thaw(addr, size);
+    const uint8_t *s = r->smap + (addr - r->import_lo);
+    int k = 0;
+    while (k < nspend && !(spend[k].base && spend[k].lo <= addr && spend[k].hi >= addr + size)) k++;
+    if (k < nspend) {
+        const uint8_t *base = spend[k].base + (addr - spend[k].lo);
+        uint64_t x = 0, y;
+        BaseSet bs;
+        bases_over(addr, addr + size, &bs);
+        while (diff_run(s, base, size, &x, &y)) {
+            memcpy((void *)(uintptr_t)(addr + x), s + x, y - x);
+            base_set(&bs, addr + x, addr + y, (const uint8_t *)(uintptr_t)(addr + x));
+            x = y;
+        }
+    } else {
+        memcpy((void *)(uintptr_t)addr, s, size);
+    }
+    if (size <= 64) {
+        int i = 0;
+        while (i < RB_CHK - 1 && rb_chk[i].size) i++;
+        rb_chk[i].addr = addr, rb_chk[i].size = size;
+        memcpy(rb_chk[i].b, s, size);
+    }
+}
+
+// shadow_lock held, from vk_gpu_written: early copies inside [addr, addr+size), checked against the shadow now.
+static void rb_check(const PoolRec *r, uint64_t addr, uint64_t size) {
+    for (int i = 0; i < RB_CHK; i++) {
+        if (!rb_chk[i].size || rb_chk[i].addr < addr || rb_chk[i].addr + rb_chk[i].size > addr + size) continue;
+        rb_checked++;
+        if (memcmp(rb_chk[i].b, r->smap + (rb_chk[i].addr - r->import_lo), rb_chk[i].size)) rb_mismatch++;
+        rb_chk[i].size = 0;
+    }
+}
+
+// The game waits to read [addr, addr+size) until value `wait` is done (core given up by the caller). With a flagged
+// writer of the range at or below `wait`: polls its flag and copies the range early. 1: the range is current (early,
+// or the fence was reached meanwhile), 0: wait for the fence.
+static int rb_try(uint64_t addr, uint64_t size, uint64_t wait) {
+    uint32_t g = 0;
+    plat_mutex_lock(&rb_lock);
+    for (uint32_t k = 1; k <= RBF_N && k <= rbr_next; k++) {
+        const RbRec *e = &rbr[(rbr_next - k) & (RBF_N - 1)];
+        if (e->fence <= wait && e->lo < addr + size && e->hi > addr) {
+            g = e->gen;
+            break;
+        }
+    }
+    if (!g) rb_nowriter++;
+    plat_mutex_unlock(&rb_lock);
+    if (!g) return 0;
+    uint64_t t0 = qpc();
+    for (unsigned i = 0;; i++) {
+        if ((int32_t)(__atomic_load_n(&rbf_map[g & (RBF_N - 1)], __ATOMIC_ACQUIRE) - g) >= 0) break;
+        if (vk_sync_fence_done() >= wait) {
+            plat_mutex_lock(&rb_lock);
+            rb_early_fence++, rb_poll_ns += qpc() - t0;
+            plat_mutex_unlock(&rb_lock);
+            return 1;
+        }
+        if (qpc() - t0 > 100000000ull) {   // 100 ms: give the fence wait the rest
+            plat_mutex_lock(&rb_lock);
+            rb_timeout++;
+            plat_mutex_unlock(&rb_lock);
+            return 0;
+        }
+        if (i < 64) plat_pause();
+        else plat_wait_ns(20000);
+    }
+    plat_mutex_lock_shared(&pool_lock);
+    const pidx_ent *pe = pidx_find(&pool_index, addr, size);
+    PoolRec *r = pe ? pe->buf : NULL;
+    plat_mutex_lock(&shadow_lock);
+    int ok = r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi;
+    if (ok) rb_copy(r, addr, size);
+    plat_mutex_unlock(&shadow_lock);
+    plat_mutex_unlock_shared(&pool_lock);
+    plat_mutex_lock(&rb_lock);
+    if (ok) rb_early++;
+    rb_poll_ns += qpc() - t0;
+    plat_mutex_unlock(&rb_lock);
+    return ok;
+}
+
+static void rb_log(void) {
+    if (rb_on <= 0) return;
+    plat_mutex_lock(&rb_lock);
+    rt_log("mem: early reads: %llu flags; %llu reads copied early, %llu found the fence reached, %.2f ms polling; "
+           "%llu waits without a flagged writer, %llu timeouts; checked %llu, %llu differed at the fence",
+           (unsigned long long)rb_flags, (unsigned long long)rb_early, (unsigned long long)rb_early_fence,
+           rb_poll_ns / 1e6, (unsigned long long)rb_nowriter, (unsigned long long)rb_timeout,
+           (unsigned long long)rb_checked, (unsigned long long)rb_mismatch);
+    rb_flags = rb_early = rb_early_fence = rb_poll_ns = rb_nowriter = rb_timeout = 0;
+    plat_mutex_unlock(&rb_lock);
+}
+
 void vk_mem_shadow_read(uint64_t addr, uint64_t size) {
     if (vk_ahead_g.reads && size) ahead_read(addr, size);
     if (vk_ahead_on) vk_ahead_invalidate(addr, size);
@@ -1517,10 +1747,11 @@ void vk_mem_shadow_read(uint64_t addr, uint64_t size) {
     if (known || !pending || wait) *e = (SRead){addr, size, now};
     plat_mutex_unlock(&shadow_lock);
     if (!wait) return;
+    if (rb_enabled()) rb_pool_add(addr, size);
     uint64_t t0 = qpc();
     {
         NVN_BLOCKING();
-        vk_sync_fence_wait(wait, UINT64_MAX);
+        if (!(rb_on > 0 && rb_try(addr, size, wait))) vk_sync_fence_wait(wait, UINT64_MAX);
     }
     uint64_t dt = qpc() - t0;
     plat_mutex_lock(&shadow_lock);
@@ -1693,6 +1924,7 @@ void vk_gpu_written(uint64_t addr, uint64_t size) {
         int k = 0;
         while (k < nspend && (spend[k].lo != addr || spend[k].hi != addr + size)) k++;
         if (r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi) {
+            if (rb_on > 0) rb_check(r, addr, size);
             mem_thaw(addr, size);
             const uint8_t *s = r->smap + (addr - r->import_lo);
             if (k < nspend && spend[k].base) {
@@ -1719,6 +1951,7 @@ void vk_gpu_written(uint64_t addr, uint64_t size) {
 
 static void shadow_log(uint64_t frame) {
     if (!shadow_on) return;
+    rb_log();
     plat_mutex_lock(&shadow_lock);
     rt_log("mem: shadow at frame %llu: %lld pools %.1f MiB; since the last: %llu pool syncs, %llu queries, %.1f MiB "
            "copied in (%llu untracked), %.1f MiB written back, %.2f ms, %d GPU writes pending",

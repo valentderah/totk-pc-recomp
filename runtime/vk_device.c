@@ -309,6 +309,7 @@ static int create_device(void) {
     g_vk.has_external_memory_host = has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME) &&
                                    !(no_import && *no_import && strcmp(no_import, "0"));
     if (g_vk.has_external_memory_host) ext[n_ext++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
+    vk_caps_driver(g_vk.phys);   // before the memory mode: its switches read the driver (vk_memory.c vk_ran_default)
     vk_mem_class_log(&g_vk.props, &g_vk.mem_props, g_vk.has_external_memory_host);
 
     FeatureChain *c = calloc(1, sizeof *c);
@@ -412,7 +413,6 @@ static int create_device(void) {
     // The driver fills the chain with what it supports; the same chain then enables all of it (robustBufferAccess
     // stays on: guest shaders index constant buffers freely and out-of-range reads must stay harmless).
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &c->f2);
-    vk_caps_driver(g_vk.phys);
     vk_caps_features(&c->f2.features);
     if (gpl_link) {
         VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT gp = {

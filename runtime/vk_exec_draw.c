@@ -654,6 +654,7 @@ static int ub_bind(VkExec *ex, uint64_t addr, uint64_t n, uint64_t align, VkDesc
 static void ub_written(VkExec *ex, uint64_t addr, uint64_t n);
 
 static void note_written(VkExec *ex, uint64_t addr, uint64_t size) {
+    if (!nvn_gpu_only(addr)) vk_mem_rb_note(addr, size);   // early reads (vk_memory.c)
     CbRes *r = cb_res(ex);
     for (int i = 0; i < r->nwritten; i++)
         if (r->written[i].addr == addr && r->written[i].size == size) return;
@@ -4603,6 +4604,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     VkPassMark *m = dispatch_mark(ex, cs, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
     vkCmdDispatch(ex->cb, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
     vk_pass_mark_end(ex->cb, m);
+    vk_mem_rb_flush(ex->cb, ex->fence);   // early reads (vk_memory.c): the flag after a writer of a readback pool
     ex->recorded++;
     if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, d);
 }
@@ -4642,6 +4644,7 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
     VkPassMark *m = dispatch_mark(ex, cs, 0, 0, 0);
     vkCmdDispatchIndirect(ex->cb, ip.buffer, ip.offset);
     vk_pass_mark_end(ex->cb, m);
+    vk_mem_rb_flush(ex->cb, ex->fence);   // early reads (vk_memory.c): the flag after a writer of a readback pool
     ex->recorded++;
     vk_mem_count(ip.cls, VK_MUSE_IND, sizeof(VkDispatchIndirectCommand));
     VK_MEM_BOUND(ip);

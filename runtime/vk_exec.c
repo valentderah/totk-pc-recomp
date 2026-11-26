@@ -835,6 +835,7 @@ void vk_exec_pass_end(VkExec *ex) {
     if (!ex->in_pass) return;
     vk_exec_oq_pass_end(ex);
     vkCmdEndRendering(ex->cb);
+    vk_mem_rb_flush(ex->cb, ex->fence);   // early reads (vk_memory.c): the flag after a writer of a readback pool
     ex->recorded++;
     ex->in_pass = 0;
     if (ex->mark) {
