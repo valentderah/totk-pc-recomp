@@ -61,6 +61,7 @@ typedef struct Tex {
                                   // storage binding); ReadTexels waits for it instead of draining the replay queue
     uint8_t listed;               // in owned[]
     uint8_t eager_cand;           // in eager_c[]: rendered by the value being recorded, snapshot not taken yet
+    uint8_t eager_dry;            // snapshots made for it since its last write-back while it was not written back lately
     struct EagerSnap *eager;      // wb_eager: the staging copy of the image that value eager->value ended with
     uint64_t wb_last;             // wb_eager: gpu_fence of the newest render a write-back took (0: never written back)
     uint8_t *snap;                // a texture that fills no page: its storage bytes when the GPU write was recorded
@@ -1617,9 +1618,24 @@ static void wb_eager_init(void) {
 static void eager_candidate(Tex *e) {
     if (wb_eager < 0) wb_eager_init();
     if (wb_eager == EAGER_OFF || e->eager_cand || !e->gpu_fence) return;
-    if (!e->wb_last || e->gpu_fence > e->wb_last + EAGER_WINDOW) {   // not written back lately: no snapshot, free the old
-        eager_release(e);
-        return;
+    // TOTK_WB_EAGER_ALL (vk_ran_default): a target that was not written back lately gets a snapshot too. Without it the
+    // first write-back of a target took the blocking path: the game's main thread waited 5-14 ms for the GPU inside
+    // its frame wait, with the texture lock and its virtual core held. TotK draws a grass map once when a terrain
+    // tile loads and reads it back once, so every one of them went that way: 50-100 waits in 45 s of play (300-560 ms).
+    // Every wanted target is written back at the next frame wait when the game reads it; eager_sweep frees a snapshot
+    // after EAGER_WINDOW values.
+    static int all = -1;
+    if (all < 0) all = rt_knob("WB_EAGER_ALL", vk_ran_default());
+    if (!e->wb_last || e->gpu_fence > e->wb_last + EAGER_WINDOW) {   // not written back lately
+        // (three snapshots that no write-back used, then no more until one comes: some targets are drawn again and
+        // again and never read; a snapshot each time doubled the staging copies at Lookout Landing)
+        // (a target of one page or less always gets its snapshot: two 128-byte targets that the game draws every
+        // frame and reads now and then made 38 of the 49 blocking write-backs left in a Lookout Landing play run)
+        if (!RT_KNOB_ON(all) || (e->eager_dry >= 3 && e->t.L.size > 4096)) {
+            eager_release(e);   // no snapshot, free the old
+            return;
+        }
+        if (e->eager_dry < 255) e->eager_dry++;
     }
     if (neager_c == ceager_c) {
         ceager_c = ceager_c ? 2 * ceager_c : 32;
@@ -2578,6 +2594,7 @@ static void write_back_n(Tex **v, int n) {
     for (int i = 0; i < n; i++) {
         v[i]->gpu_dirty = 0;
         if (wb_eager > EAGER_OFF && v[i]->gpu_fence > v[i]->wb_last) v[i]->wb_last = v[i]->gpu_fence;   // eager_candidate's window
+        v[i]->eager_dry = 0;
     }
 }
 

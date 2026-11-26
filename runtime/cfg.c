@@ -68,7 +68,7 @@ static const char *const known[] = {
     "SWKBD_ANSWER", "SYNC_AHEAD",
     "SWKBD_TEST", "TEST_OOM", "TEST_PAD", "TEST_PAD_RUMBLE_MS", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_BLOCK_MIB", "TEX_HEAP_EXTRA_MB", "TEX_MEMO", "TEX_REG_DEFER", "TEX_RELEASED_MIB", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UB_OVERLAY", "UB_OVERLAY_OUT", "UPSCALER", "USNAP_PEEK", "VB_USED", "VERT_PLUS", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64", "VK_NO_HOST_IMPORT",
     "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VMA_BLOCK_MIB", "VOLUME", "VOLUME_MASK_BIAS", "VOLUME_MUSIC", "VOLUME_SFX", "VOLUME_VOICE", "VRAM_HEADROOM", "VRAM_LIMIT_MIB", "VS_OUTS",
-    "WALK_KEY", "WALK_SCALE", "WB_EAGER", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
+    "WALK_KEY", "WALK_SCALE", "WB_EAGER", "WB_EAGER_ALL", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
     "ZSTD_CHECK", "ZSTD_NATIVE",
 };
 
@@ -119,6 +119,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"USNAP_PEEK", "performance"},
     {"BAR_IMG", "performance"}, {"FB_IMGBAR", "performance"}, {"FB_KEEP", "performance"}, {"FB_TERRAIN", "performance"},
     {"TEX_REG_DEFER", "performance"},
+    {"WB_EAGER_ALL", "performance"},
     {"VK_DYN_VERTEX", "performance"}, {"VK_DYN_A2C", "performance"}, {"VK_SUBGROUP_PIN", "performance"},
     {"OPTREF_GUARD", "performance"}, {"ABILITY_GUARD", "performance"}, {"REPORT_GUARD", "performance"},
     {"TRACE", "diagnostics"}, {"FLIGHT", "diagnostics"}, {"PASS_CRUMBS", "diagnostics"}, {"ADDR_REPORT", "diagnostics"}, {"FLIGHT_SPIKE_MS", "diagnostics"},
@@ -236,6 +237,7 @@ static const CfgMeta metas[] = {
     {"USNAP_PEEK", "", "0|1|ab", RESTART},
     {"BAR_IMG", "", "0|1|ab", RESTART}, {"FB_IMGBAR", "", "0|1|ab", RESTART}, {"FB_KEEP", "", "0|1|ab", RESTART}, {"FB_TERRAIN", "", "0|1|ab", RESTART},
     {"TEX_REG_DEFER", "", "0|1|ab", RESTART},
+    {"WB_EAGER_ALL", "", "0|1|ab", RESTART},
     {"FREE_CORES", "0", "0|1", RESTART}, {"TIMER_1MS", "1", "0|1", RESTART},
     // shaders and pipelines
     {"PIPE_WAIT", "default", "default|draw", RESTART}, {"PIPE_SKIP", "fullscreen", "strict|any|fullscreen", RESTART},
