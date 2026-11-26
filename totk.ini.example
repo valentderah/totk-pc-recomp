@@ -33,6 +33,10 @@
 # 0 keeps the previous serial path. Needs a graphics queue family with two queues; without one it falls back to the
 # serial path. fg_shot is unavailable while this is on. Read at start; it also uses more VRAM.
 # dlssg_async = 0
+# Release cached DLSS and DLSS Frame Generation scene-size contexts when the DLSS mode changes. Dynamic-resolution
+# changes still reuse their recent sizes. Useful when changing between DLAA and DLSS modes late in a long session;
+# recreating the next feature can cost one short hitch. Applies at the next mode change.
+# dlss_cache_prune = 0
 # Real-time frame step: game speed follows the clock instead of the frame count.
 # realtime = 1
 # Cloth simulation on the real-time clock. Needs realtime = 1.

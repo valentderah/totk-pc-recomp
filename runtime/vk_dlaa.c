@@ -509,9 +509,8 @@ static int image2d(uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags usage, 
     return vkCreateImageView(c->device, &vi, NULL, view) == VK_SUCCESS;
 }
 
-static void free_size(struct Size *e) {
+static void destroy_size(struct Size *e) {
     const VkCtx *c = vk_ctx();
-    vkDeviceWaitIdle(c->device);   // a third scene size: the evicted images may still be in flight
     if (e->out_view) vkDestroyImageView(c->device, e->out_view, NULL);
     if (e->mv_view) vkDestroyImageView(c->device, e->mv_view, NULL);
     if (e->out) vmaDestroyImage(c->vma, e->out, e->out_mem);
@@ -526,6 +525,32 @@ static void free_size(struct Size *e) {
     if (e->fg_feat) N.release(e->fg_feat);
     free(e->fg_scratch);
     memset(e, 0, sizeof *e);
+}
+
+static void free_size(struct Size *e) {
+    const VkCtx *c = vk_ctx();
+    vkDeviceWaitIdle(c->device);   // a third scene size: the evicted images may still be in flight
+    destroy_size(e);
+}
+
+// Dynamic resolution reuses its recent sizes. A user's DLSS mode change does not: release the old mode's output images,
+// masks and NGX feature state before the new scene size is selected.
+static void prune_sizes(const char *from, const char *to) {
+    int n = 0;
+    for (size_t i = 0; i < DLSS_SIZES; i++)
+        n += D.sizes[i].mv || D.sizes[i].feat || D.sizes[i].fg_feat;
+    if (!n) return;
+    VkCtx *c = vk_ctx();
+    vk_present_drain();
+    vk_queue_lock();
+    vkDeviceWaitIdle(c->device);
+    D.last = NULL;
+    D.last_color = VK_NULL_HANDLE;
+    D.dlssg.ok = 0;
+    for (size_t i = 0; i < DLSS_SIZES; i++) destroy_size(&D.sizes[i]);
+    vk_queue_unlock();
+    D.reset = 1;
+    rt_log("dlaa: DLSS mode %s -> %s released %d cached scene-size context%s", from, to, n, n == 1 ? "" : "s");
 }
 
 // The entry for a scene and output size: its output (RGBA16F at the output size, written by DLSS, then blitted into
@@ -2256,6 +2281,7 @@ static void dlss_mode(void) {
     static float bias;   // what the material samplers have (vk_texture.c starts at 0)
     const char *m = cfg_value("TOTK_DLSS");
     if (strcmp(m, mode)) {
+        if (cfg_bool("TOTK_DLSS_CACHE_PRUNE")) prune_sizes(mode[0] ? mode : "off", m);
         snprintf(mode, sizeof mode, "%s", m);
         res_dlss_mode(m);
     }
