@@ -321,6 +321,12 @@
 # shaders (translator patches 0010 and 0017), so the shader cache is rebuilt once after an update. Read at start.
 # pcss = 0
 
+# Point lights (lightroots, the Brightbloom's light, glowing items): the game draws them at half resolution, and a
+# light near the ground turns its bumps into streaks finer than that, which shimmer while the view moves. full draws
+# them at full resolution, from the full-resolution depth and surface normals, so the lit ground keeps its detail
+# without the shimmer (the point lights cost about four times as much). Changes apply at once.
+# light_full = game
+
 # The temporal upscaler for the 3D scene: off (the game's own scaling and FXAA), dlss (NVIDIA DLSS, on NVIDIA RTX GPUs
 # with the DLSS model from NVIDIA's DLSS SDK next to the executable: Windows nvngx_dlss.dll next to totk.exe; Linux
 # libnvidia-ngx-dlss.so.<version> next to totk, with the NVIDIA driver's libnvidia-ngx.so.1 installed), fsr3 (AMD FSR

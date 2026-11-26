@@ -1107,6 +1107,7 @@ void gfx_window_release_vk(void) {
         vk_color_release();
         vk_hdr_release();
         vk_contact_release();
+        vk_lightfull_release();
         if (g_reflex_sem) {
             vkDestroySemaphore(c->device, g_reflex_sem, NULL);
             g_reflex_sem = VK_NULL_HANDLE;

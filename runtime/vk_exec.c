@@ -431,7 +431,21 @@ static void resolve_rt_as(VkExec *ex, int peek) {
     }
     VkExecTarget *d = &ex->depth;
     resolve_target(r->depth, &r->dview, r->has_dview, 1, d, peek ? ex : NULL);
-    ex->pass_depth = d->image && (d->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) ? d->format : VK_FORMAT_UNDEFINED;
+    // the point lights' passes drawn at full size: their targets become vk_lightfull.c's own (scale 2)
+    ex->pass_lightfull = vk_lightfull_retarget(ex);
+    if (ex->pass_lightfull) {
+        w = h = layers = UINT32_MAX, samples = 0, scale = 1;
+        for (int i = 0; i < n; i++) {
+            VkExecTarget *t = &ex->color[i];
+            if (!t->image) continue;
+            if (t->width < w) w = t->width;
+            if (t->height < h) h = t->height;
+            if (t->layers < layers) layers = t->layers;
+            if (!samples) samples = t->samples;
+            if (t->scale > scale) scale = t->scale;
+        }
+    }
+    ex->pass_depth =d->image && (d->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) ? d->format : VK_FORMAT_UNDEFINED;
     ex->pass_stencil = d->image && (d->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) ? d->format : VK_FORMAT_UNDEFINED;
     ex->pipe.depth_fmt = d->image ? d->nvn_format : 0;
     if (d->image) {
@@ -757,6 +771,7 @@ void vk_exec_pass_begin(VkExec *ex) {
     if (ex->in_pass) return;
     resolve_rt(ex);
     vk_contact_pass_begin(ex);
+    vk_lightfull_pass_begin(ex);
     vk_dlaa_pass(ex);   // DLAA runs before the bloom chain's first pass (vk_dlaa.c)
     // Learned targets (VkTexImage.fb_learned) are attached in the feedback layout
     VkImage want[9];
@@ -849,6 +864,7 @@ void vk_exec_pass_end(VkExec *ex) {
         if (ex->color[i].image && ex->color[i].img && ex->color[i].img->image != ex->color[i].image)
             bc_copy_back(ex, &ex->color[i]);
     if (vk_dump_armed) vk_dump_pass_end(ex);
+    vk_lightfull_pass_end(ex);
     uint64_t stamp = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
     for (int i = 0; i < 8; i++)
         if (ex->color[i].image) vk_texture_gpu_written(ex->color[i].tex), tfr_note(&ex->color[i], stamp);

@@ -152,6 +152,13 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PCSS] = "Soft shadows",
     [UI_MENU_PCSS_DESC] = "Sun shadows sharp where an object meets the ground and softer the further the shadow falls "
                           "(PCSS). 0 keeps the game's filter. Takes effect at the next start.",
+    [UI_MENU_LIGHT_FULL] = "Point light resolution",
+    [UI_MENU_LIGHT_FULL_DESC] = "The game draws point lights such as lightroots and Brightblooms at half resolution, "
+                                "so near the ground they shimmer while the view moves. Full draws them at full "
+                                "resolution, keeping the detail of what they light; Game keeps the game's look. "
+                                "Applies at once.",
+    [UI_MENU_LIGHT_FULL_GAME] = "Game",
+    [UI_MENU_LIGHT_FULL_FULL] = "Full",
     [UI_MENU_CONTACT_SHADOWS] = "Contact shadows",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Small sun shadows the shadow maps miss: at feet, under stones, in grass and creases. "
                                      "Traced on the screen after lighting. Takes effect at the next start.",
@@ -808,6 +815,13 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_PCSS] = "Мягкие тени",
     [UI_MENU_PCSS_DESC] = "Тени от солнца резкие там, где предмет касается земли, и мягче, чем дальше падает тень "
                           "(PCSS). 0 оставляет фильтр игры. Действует после перезапуска.",
+    [UI_MENU_LIGHT_FULL] = "Разрешение точечного света",
+    [UI_MENU_LIGHT_FULL_DESC] = "Игра рисует точечные источники, например светокорни и светоцветы, в половинном "
+                                "разрешении, поэтому у земли они мерцают при движении камеры. Полное: рисовать их в "
+                                "полном разрешении, сохраняя детали освещённых поверхностей; Как в игре — без "
+                                "изменений. Применяется сразу.",
+    [UI_MENU_LIGHT_FULL_GAME] = "Как в игре",
+    [UI_MENU_LIGHT_FULL_FULL] = "Полное",
     [UI_MENU_CONTACT_SHADOWS] = "Контактные тени",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Мелкие тени от солнца, которых нет на картах теней: у ног, под камнями, в траве и "
                                      "складках. Считаются по экрану после освещения. Действует после перезапуска.",
@@ -1948,6 +1962,13 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_PCSS] = "Sombras suaves",
     [UI_MENU_PCSS_DESC] = "Sombras do sol nítidas onde um objeto toca o chão e mais suaves quanto mais longe a sombra "
                           "cai (PCSS). 0 mantém o filtro do jogo. Vale no próximo início.",
+    [UI_MENU_LIGHT_FULL] = "Resolução das luzes pontuais",
+    [UI_MENU_LIGHT_FULL_DESC] = "O jogo desenha luzes pontuais como raízes de luz e Brightblooms na metade da "
+                                "resolução, então perto do chão elas tremulam com a câmera em movimento. Completa as "
+                                "desenha na resolução completa, mantendo os detalhes do que iluminam; Do jogo mantém "
+                                "o visual do jogo. Aplica-se na hora.",
+    [UI_MENU_LIGHT_FULL_GAME] = "Do jogo",
+    [UI_MENU_LIGHT_FULL_FULL] = "Completa",
     [UI_MENU_DLSS] = "Modo de upscaling",
     [UI_MENU_DLSS_DESC] = "Nativo suaviza a cena 3D na resolução cheia. Qualidade, Equilibrado, Desempenho e Ultra "
                           "Desempenho a desenham em 67, 58, 50 e 33 % e deixam o upscaler (DLSS ou FSR 3.1) ampliá-la, "
@@ -2720,6 +2741,10 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_CONTACT_SHADOWS_DESC] = "阴影贴图遗漏的细小太阳阴影：脚下、石头下、草丛和褶皱中。在光照之后于屏幕空间追踪。下次启动时生效。",
     [UI_MENU_PCSS] = "柔和阴影",
     [UI_MENU_PCSS_DESC] = "物体接触地面处的太阳阴影锐利，阴影投得越远越柔和（PCSS）。0 保留游戏自身的过滤。下次启动时生效。",
+    [UI_MENU_LIGHT_FULL] = "点光源分辨率",
+    [UI_MENU_LIGHT_FULL_DESC] = "游戏以一半分辨率绘制光根、亮光花等点光源，因此靠近地面时镜头移动会闪烁。完整以全分辨率绘制，保留被照亮表面的细节；游戏保持游戏原样。立即生效。",
+    [UI_MENU_LIGHT_FULL_GAME] = "游戏",
+    [UI_MENU_LIGHT_FULL_FULL] = "完整",
     [UI_MENU_DLSS] = "超分模式",
     [UI_MENU_DLSS_DESC] = "原生以全分辨率对 3D 场景做抗锯齿。质量、平衡、性能和超级性能分别以 67%、58%、50% 和 33% 绘制，再由超分"
                           "（DLSS 或 FSR 3.1）放大，以节省 GPU 时间；它们会取代 3D 渲染比例。立即生效。",
@@ -2947,6 +2972,13 @@ static const char *const text_de[UI_TEXT_COUNT] = {
     [UI_MENU_PCSS] = "Weiche Schatten",
     [UI_MENU_PCSS_DESC] = "Sonnenschatten scharf, wo ein Objekt den Boden berührt, und weicher, je weiter der "
                           "Schatten fällt (PCSS). 0 behält den Filter des Spiels. Wirkt beim nächsten Start.",
+    [UI_MENU_LIGHT_FULL] = "Punktlicht-Auflösung",
+    [UI_MENU_LIGHT_FULL_DESC] = "Das Spiel zeichnet Punktlichter wie die der Lichtwurzeln in halber Auflösung, daher "
+                                "flimmern sie in Bodennähe, wenn sich die Kamera bewegt. Voll zeichnet sie in voller "
+                                "Auflösung und erhält die Details der beleuchteten Flächen; Spiel behält das "
+                                "Aussehen des Spiels. Wirkt sofort.",
+    [UI_MENU_LIGHT_FULL_GAME] = "Spiel",
+    [UI_MENU_LIGHT_FULL_FULL] = "Voll",
     [UI_MENU_CONTACT_SHADOWS] = "Kontaktschatten",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Kleine Sonnenschatten, die den Schattenkarten entgehen: an Füßen, unter "
                                      "Steinen, im Gras und in Falten. Nach der Beleuchtung im Bildraum berechnet. "
@@ -3860,6 +3892,13 @@ static const char *const text_fr[UI_TEXT_COUNT] = {
     [UI_MENU_PCSS] = "Ombres douces",
     [UI_MENU_PCSS_DESC] = "Ombres du soleil nettes là où un objet touche le sol et plus douces à mesure que l'ombre "
                           "s'éloigne (PCSS). 0 garde le filtre du jeu. Prend effet au prochain démarrage.",
+    [UI_MENU_LIGHT_FULL] = "Résolution des lumières ponctuelles",
+    [UI_MENU_LIGHT_FULL_DESC] = "Le jeu dessine les lumières ponctuelles, comme celles des racines de lumière, en "
+                                "demi-résolution : près du sol, elles scintillent quand la caméra bouge. Complète "
+                                "les dessine en pleine résolution et garde le détail des surfaces éclairées ; Jeu "
+                                "garde le rendu du jeu. S'applique immédiatement.",
+    [UI_MENU_LIGHT_FULL_GAME] = "Jeu",
+    [UI_MENU_LIGHT_FULL_FULL] = "Complète",
     [UI_MENU_CONTACT_SHADOWS] = "Ombres de contact",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Petites ombres du soleil que les cartes d'ombres manquent : aux pieds, sous les "
                                      "pierres, dans l'herbe et les plis. Calculées à l'écran après l'éclairage. Prend "
@@ -4791,6 +4830,13 @@ static const char *const text_es[UI_TEXT_COUNT] = {
     [UI_MENU_PCSS] = "Sombras suaves",
     [UI_MENU_PCSS_DESC] = "Sombras del sol nítidas donde un objeto toca el suelo y más suaves cuanto más lejos cae la "
                           "sombra (PCSS). 0 mantiene el filtro del juego. Se aplica en el próximo inicio.",
+    [UI_MENU_LIGHT_FULL] = "Resolución de las luces puntuales",
+    [UI_MENU_LIGHT_FULL_DESC] = "El juego dibuja las luces puntuales, como las de las raíces de luz, a media "
+                                "resolución, así que cerca del suelo parpadean al mover la cámara. Completa las "
+                                "dibuja a resolución completa y conserva el detalle de lo que iluminan; Juego "
+                                "mantiene el aspecto del juego. Se aplica al instante.",
+    [UI_MENU_LIGHT_FULL_GAME] = "Juego",
+    [UI_MENU_LIGHT_FULL_FULL] = "Completa",
     [UI_MENU_CONTACT_SHADOWS] = "Sombras de contacto",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Pequeñas sombras del sol que los mapas de sombras no captan: en los pies, bajo "
                                      "las piedras, en la hierba y en los pliegues. Calculadas en pantalla tras la "
@@ -5705,6 +5751,13 @@ static const char *const text_it[UI_TEXT_COUNT] = {
     [UI_MENU_PCSS] = "Ombre morbide",
     [UI_MENU_PCSS_DESC] = "Ombre del sole nitide dove un oggetto tocca il suolo e più morbide quanto più lontano cade "
                           "l'ombra (PCSS). 0 mantiene il filtro del gioco. Ha effetto al prossimo avvio.",
+    [UI_MENU_LIGHT_FULL] = "Risoluzione delle luci puntiformi",
+    [UI_MENU_LIGHT_FULL_DESC] = "Il gioco disegna le luci puntiformi, come quelle delle radici di luce, a metà "
+                                "risoluzione, quindi vicino al suolo tremolano quando la visuale si muove. Piena le "
+                                "disegna a risoluzione piena e conserva i dettagli di ciò che illuminano; Gioco "
+                                "mantiene l'aspetto del gioco. Si applica subito.",
+    [UI_MENU_LIGHT_FULL_GAME] = "Gioco",
+    [UI_MENU_LIGHT_FULL_FULL] = "Piena",
     [UI_MENU_CONTACT_SHADOWS] = "Ombre di contatto",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Piccole ombre del sole che le mappe delle ombre non colgono: ai piedi, sotto le "
                                      "pietre, nell'erba e nelle pieghe. Calcolate sullo schermo dopo l'illuminazione. "
@@ -6625,6 +6678,13 @@ static const char *const text_nl[UI_TEXT_COUNT] = {
     [UI_MENU_PCSS] = "Zachte schaduwen",
     [UI_MENU_PCSS_DESC] = "Zonneschaduwen scherp waar een voorwerp de grond raakt en zachter naarmate de schaduw "
                           "verder valt (PCSS). 0 houdt het filter van het spel. Werkt bij de volgende start.",
+    [UI_MENU_LIGHT_FULL] = "Resolutie van puntlichten",
+    [UI_MENU_LIGHT_FULL_DESC] = "Het spel tekent puntlichten, zoals die van lichtwortels, op halve resolutie, "
+                                "waardoor ze dicht bij de grond flikkeren als de camera beweegt. Volledig tekent ze "
+                                "op volledige resolutie en behoudt het detail van wat ze verlichten; Spel houdt het "
+                                "uiterlijk van het spel. Werkt meteen.",
+    [UI_MENU_LIGHT_FULL_GAME] = "Spel",
+    [UI_MENU_LIGHT_FULL_FULL] = "Volledig",
     [UI_MENU_CONTACT_SHADOWS] = "Contactschaduwen",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Kleine zonneschaduwen die de schaduwkaarten missen: bij voeten, onder stenen, "
                                      "in gras en plooien. Na de belichting op het scherm berekend. Werkt bij de "
@@ -7498,6 +7558,10 @@ static const char *const text_ja[UI_TEXT_COUNT] = {
     [UI_MENU_SHADOW_SCALE_DESC] = "太陽のシャドウマップを、ゲーム標準の 960x960 より各辺でこの倍率だけ大きく描きます。影の輪郭と葉の影がくっきりします。次回の起動時に反映されます。",
     [UI_MENU_PCSS] = "ソフトシャドウ",
     [UI_MENU_PCSS_DESC] = "物体が地面に接する部分では太陽の影をくっきりと、影が遠くに落ちるほど柔らかくします (PCSS)。0 でゲームのフィルターのままです。次回の起動時に反映されます。",
+    [UI_MENU_LIGHT_FULL] = "点光源の解像度",
+    [UI_MENU_LIGHT_FULL_DESC] = "ゲームは光の根などの点光源を半分の解像度で描くため、地面の近くではカメラの移動中にちらつきます。フルでは完全な解像度で描き、照らされた面の細部を保ちます。ゲームはゲームの見た目のままです。すぐに反映されます。",
+    [UI_MENU_LIGHT_FULL_GAME] = "ゲーム",
+    [UI_MENU_LIGHT_FULL_FULL] = "フル",
     [UI_MENU_CONTACT_SHADOWS] = "接触影",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "シャドウマップが拾えない小さな太陽の影です。足元、石の下、草むら、くぼみなど。ライティングの後に画面上で計算します。次回の起動時に反映されます。",
     [UI_MENU_SHADOW_RANGE] = "影のカスケード範囲",
@@ -8256,6 +8320,11 @@ static const char *const text_ko[UI_TEXT_COUNT] = {
     [UI_MENU_PCSS] = "부드러운 그림자",
     [UI_MENU_PCSS_DESC] = "물체가 땅에 닿는 곳에서는 태양 그림자를 선명하게, 그림자가 멀리 드리울수록 부드럽게 합니다(PCSS). 0이면 게임의 필터를 유지합니다. 다음 실행 시 "
                           "적용됩니다.",
+    [UI_MENU_LIGHT_FULL] = "점광원 해상도",
+    [UI_MENU_LIGHT_FULL_DESC] = "게임은 빛의 뿌리 같은 점광원을 절반 해상도로 그리므로, 지면 근처에서는 카메라가 움직일 때 깜빡입니다. 전체는 전체 해상도로 그려 비추는 표면의 "
+                                "디테일을 유지합니다. 게임은 게임의 모습을 유지합니다. 즉시 적용됩니다.",
+    [UI_MENU_LIGHT_FULL_GAME] = "게임",
+    [UI_MENU_LIGHT_FULL_FULL] = "전체",
     [UI_MENU_CONTACT_SHADOWS] = "접촉 그림자",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "그림자 맵이 놓치는 작은 태양 그림자입니다. 발밑, 돌 아래, 풀숲, 움푹한 곳 등. 조명 후 화면 공간에서 계산합니다. 다음 실행 시 "
                                      "적용됩니다.",
@@ -8999,6 +9068,12 @@ static const char *const text_vi[UI_TEXT_COUNT] = {
     [UI_MENU_PCSS] = "Bóng mềm",
     [UI_MENU_PCSS_DESC] = "Bóng mặt trời sắc nét ở chỗ vật thể chạm đất và mềm dần theo độ xa của bóng (PCSS). 0 giữ bộ lọc "
                           "của game. Có hiệu lực từ lần khởi động kế tiếp.",
+    [UI_MENU_LIGHT_FULL] = "Độ phân giải đèn điểm",
+    [UI_MENU_LIGHT_FULL_DESC] = "Game vẽ các nguồn sáng điểm như rễ sáng ở nửa độ phân giải, nên gần mặt đất chúng "
+                                "nhấp nháy khi camera di chuyển. Đầy đủ vẽ chúng ở độ phân giải đầy đủ, giữ chi tiết "
+                                "của bề mặt được chiếu sáng; Theo game giữ nguyên hình ảnh của game. Áp dụng ngay.",
+    [UI_MENU_LIGHT_FULL_GAME] = "Theo game",
+    [UI_MENU_LIGHT_FULL_FULL] = "Đầy đủ",
     [UI_MENU_CONTACT_SHADOWS] = "Bóng tiếp xúc",
     [UI_MENU_CONTACT_SHADOWS_DESC] = "Các bóng mặt trời nhỏ mà bản đồ bóng bỏ sót: ở chân, dưới đá, trong cỏ và các khe. "
                                      "Được dò trên màn hình sau khi chiếu sáng. Có hiệu lực từ lần khởi động kế tiếp.",

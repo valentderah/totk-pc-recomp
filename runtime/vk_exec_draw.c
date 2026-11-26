@@ -40,7 +40,8 @@
 #define SUPPORT_BYTES 1488u   // Ryujinx SupportBuffer (std140): alpha_test, is_bgra[8], viewport_inverse, viewport_size, ...;
                               // 1408 pcss, 1424 shadow_spread, 1440 pcss_depth and 1456 pcss_scale (translator patches 0010,
                               // 0011, 0017), 1472 HDR (support_fill)
-#define SUP_IN 11             // support_in: viewport size, point size, then pcss_depth and pcss_scale per cascade
+#define SUP_IN 12             // support_in: viewport size, point size, then pcss_depth and pcss_scale per cascade, then
+                              // the fragment stage's render scale
 #define NVN_STAGE_VS 0
 #define NVN_STAGE_FS 1
 #define NVN_STAGE_CS 5
@@ -1980,11 +1981,23 @@ int vk_exec_draw_samples(VkExec *ex, const GfxShader *fs, const VkTexImage *img)
 
 // The image descriptor of slot h; in a dispatch, a compare-sampled colour image the driver cannot compare is swapped
 // for its depth twin; in a pass larger than it, the scene's light target, once DLSS scaled it this frame, for DLSS's
-// output (vk_dlaa.c).
+// output (vk_dlaa.c); in a pass larger than it, the game's half-size point light image, while the full-size one
+// replaces it, for that, and in the point lights' passes drawn at full size their half-size depth and normals, for the
+// G-buffer's (vk_lightfull.c).
 static void tex_info(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate, VkDescriptorImageInfo *out,
                      int *locked) {
     VkExecDraw *D = ex->draw;
     tex_info_lookup(ex, r, h, storage, separate, out, locked);
+    if (h && !storage && ex->in_pass && (vk_lightfull_swap_img || ex->pass_lightfull)) {
+        tex_lock(locked);
+        const VkTexImage *img = vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL);
+        if (img && img == vk_lightfull_swap_img && ex->pass_w > img->width + 1)
+            out->imageView = vk_lightfull_swap_view, out->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        else if (img && ex->pass_lightfull) {
+            VkImageView v = vk_lightfull_sampled(ex, img);
+            if (v) out->imageView = v, out->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        }
+    }
     if (h && !storage && vk_dlaa_swap_img && ex->in_pass && ex->pass_w > vk_dlaa_swap_img->width + 1) {
         tex_lock(locked);
         if (vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL) == vk_dlaa_swap_img)
@@ -2068,13 +2081,15 @@ static VkDescriptorSet alloc_set_batched(VkExec *ex, VkDescriptorSetLayout layou
 static const float *pcss_params(void);
 static void pcss_cascades(const VkExec *ex, float out[8]);
 
-// What support_fill reads: viewport size, point size, and the soft shadows' per-cascade factors (pcss_cascades).
+// What support_fill reads: viewport size, point size, the soft shadows' per-cascade factors (pcss_cascades), and the
+// render scale of the fragment stage (2 in the point lights' passes vk_lightfull.c draws at full size, else 1).
 static void support_in(const VkExec *ex, float in[SUP_IN]) {
     float k = ex->pass_scale > 1 ? (float)ex->pass_scale : 1.0f;
     in[0] = ex->in_pass && ex->has_vp ? ex->vp[0][2] * k : (float)ex->pass_w;
     in[1] = ex->in_pass && ex->has_vp ? ex->vp[0][3] * k : (float)ex->pass_h;
     in[2] = ex->point_size > 0 ? ex->point_size : 1.0f;
     pcss_cascades(ex, in + 3);
+    in[11] = ex->in_pass && ex->pass_lightfull ? 2.0f : 1.0f;
 }
 
 // TOTK_PCSS (percent, 0 = off): the pcss field of the support buffer, which translator patch 0010 reads in every
@@ -2205,6 +2220,10 @@ static void support_fill(uint8_t *b, const float in[SUP_IN]) {
     memcpy(b + 1424, shadow_spread_params(), 16);    // shadow_spread (translator patch 0011): sun shadow filter width
     memcpy(b + 1440, in + 3, 32);   // pcss_depth and pcss_scale (translator patch 0017): soft shadows per cascade
     for (int i = 0; i < 73; i++) memcpy(b + 192 + 16 * i, &one, 4);   // render scale 1: the host renders at guest size
+    // render scale 0, by which fragment shaders divide gl_FragCoord: a pass drawn at twice the game's size reads its
+    // textures at the game's coordinates (vk_lightfull.c gives it full-size textures in place of the half-size ones, so
+    // the same coordinates land on full-size texels)
+    memcpy(b + 192, &in[11], 4);
     if (vk_hdr_wanted()) {   // read by the HDR tonemap only (shaders/hdr_tonemap.frag), which declares it past the translator's
         float hdr[4];
         vk_hdr_support(hdr);
