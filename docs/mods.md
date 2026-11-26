@@ -126,9 +126,9 @@ ahead of time, after the design in [#845](https://github.com/valentderah/totk-pc
 
 The Mods tab order decides between a plugin and another mod's patch on the same instruction, as for code patches. A
 plugin site over one of the port's own patches turns that built-in patch off while the mod is on. Where a plugin's new
-code takes a second copy of a game function, that copy keeps the other mods' patches in the function, but on the
-instructions the plugin wrote; when two plugins write new code into the same game function, the copy of the first
-one by mod folder name runs there.
+code takes a second copy of a game function, that copy keeps the other mods' patches in the function; on an
+instruction both write, the Mods tab order decides too. When two plugins write new code into the same game function,
+the copy of the first one by mod folder name runs there.
 
 The rebuild refuses a plugin when its start-up or the code its redirects reach needs what the port does not give it:
 system calls other than the few its start-up needs (memory queries and maps, the heap size, the clock, debug output),

@@ -475,11 +475,15 @@ class Emitter:
     def code_copy(self, entry, end, k, refs):
         """C of the function [entry, end) as set k's plugin init left it, named code_name(k, entry) and static: what
         f_<entry> runs instead of its own body while rt_patch_on[k] is set (recomp/patches.py `code`). The per-site
-        patches of the function stay, but for those on the words set k wrote. Its fall-back fb_ is renamed too."""
-        kept, mod = self.patched, self.mod
+        patches of other sets stay, also on a word set k wrote, where that word stands for the module's original: an
+        ordered set's alternative tests the site's pick byte (patches.Table.picks counts set k there), so the Mods tab
+        order decides, and k's word runs when no alternative is on. Over a written br, blr or ret (no per-site original
+        kind) k's word alone runs. Its fall-back fb_ is renamed too."""
+        kept, mod, overlay = self.patched, self.mod, self.overlay(k)
         written = {a for a, alts in self.codes.items() if entry <= a < end and any(j == k for j, _ in alts)}
-        self.patched = {a: alts for a, alts in kept.items() if a not in written}
-        self.mod, self.copying = self.overlay(k), k
+        self.patched = {a: alts for a, alts in kept.items()
+                        if a not in written or overlay.lift(a).kind in ('op', 'bl', 'blr', 'b', 'bcond')}
+        self.mod, self.copying = overlay, k
         try:
             lines, r = self.function(entry, end)
         finally:
@@ -496,12 +500,13 @@ class Emitter:
     def constant_branches(self, insns, entry, end):
         """In a code copy: each br / blr among the copy set's words whose register those words make a constant
         (patches.region_targets) becomes a b / bl to that address. The walk forgets the values at every label of the
-        function, where other paths arrive."""
+        function, where other paths arrive, and after another set's patch site, whose word may run instead."""
         stats = self.stats.copy()
         labels, _ = self.scan(insns, entry, end)
         self.stats = stats
         words = {a: w for a, alts in self.codes.items() if entry <= a < end for j, w in alts if j == self.copying}
-        for a, (kind, t) in patches.region_targets(words, labels | {entry}).items():
+        sites = {a + d for a in self.patched if entry <= a < end for d in (0, 4)}
+        for a, (kind, t) in patches.region_targets(words, labels | sites | {entry}).items():
             if kind in ('br', 'blr'):
                 insns[(a - entry) // 4] = Insn('b' if kind == 'br' else 'bl', target=t)
                 self.stats['code_constant_branches'] += 1

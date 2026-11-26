@@ -164,11 +164,15 @@ class Table:
 
     def picks(self):
         """The contested sites, by module name and offset: [(module, offset, [ordered set index in file order])]; the
-        list index is the site's rt_patch_pick byte."""
+        list index is the site's rt_patch_pick byte. An ordered set with a `code` word at a site counts too, after the
+        site's own sets: in its copy of the function the site's other alternatives test the pick, and its own word
+        runs when none matches."""
         out = []
         for name in sorted(self.sites):
+            codes = self.codes.get(name, {})
             for off in sorted(self.sites[name]):
                 sets = [k for k, _, _ in self.sites[name][off] if k in self.ordered]
+                sets += [k for k, _, _ in codes.get(off, ()) if k in self.ordered]
                 if len(sets) > 1:
                     if len(sets) > PICK_MAX:
                         raise PatchError(f'{name}+{off:#x}: {len(sets)} ordered sets, at most {PICK_MAX}')

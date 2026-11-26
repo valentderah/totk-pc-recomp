@@ -1143,7 +1143,7 @@ class Generator(unittest.TestCase):
         mod = gen.open_module('main', self.d / 'exefs/main', self.bases['main'], t)
         patches.check(t, mod, 'main')
         e = gen.Emitter(mod, {m, *starts}, t.for_module('main', self.bases['main']),
-                        codes=t.codes_for('main', self.bases['main']))
+                        codes=t.codes_for('main', self.bases['main']), picks=t.picks_for('main', self.bases['main']))
         return gen.chunk_text('main', 0, e, [(m, m + 12)])
 
     def test_code_copy_of_a_far_jump(self):
@@ -1169,6 +1169,23 @@ class Generator(unittest.TestCase):
         copy = c[c.index('static void fw0_'):]
         self.assertIn('rt_patch_on[1]', copy)
         self.assertNotIn('x19 = x0', copy.split('rt_patch_on[1]')[0])     # the mov the nop replaced is gone
+
+    def test_code_copy_on_another_mods_site(self):
+        # Zonai Fieldworks hooks the first word of functions SageWheel's far jumps cover: the site is contested (the
+        # Mods tab order picks), in the copy the other mod's b tests the pick and SageWheel's adrp is its original
+        m, pb = self.bases['main'] + FN, self.bases['plugin0']
+        words = dict(zip((FN, FN + 4, FN + 8), far_jump(FN, pb + 0x4200)))
+        other = b(m, pb + 0x4100)
+        t = self.code_table(words, ['set zf TOTK_ZF 0 ordered', f'site zf main {FN:x} aa0003f3 {other:08x}'])
+        self.assertEqual(t.picks(), [('main', FN, [1, 0])])
+        c = self.emit_code(t)
+        copy = c[c.index('static void fw0_'):]
+        self.assertIn('if (rt_patch_pick[0] == 1)', copy)
+        self.assertIn(f'c->pc = {pb + 0x4100:#x}ull;', copy)                 # the other mod's hook when it wins
+        self.assertIn(f'{(pb + 0x4200) & ~0xFFF:#x}ull', copy)               # else SageWheel's adrp
+        self.assertIn('c->pc = x17;', copy)   # its br is not folded: the adrp before it may not have run
+        own = c[c.index(f'void f_{m:x}(Cpu *c) {{'):c.index(f'static void fw0_{m:x}(Cpu *c) {{')]
+        self.assertIn('if (rt_patch_pick[0] == 1)', own)
 
     def test_code_copy_branch_needs_a_start(self):
         m = self.bases['main'] + FN
