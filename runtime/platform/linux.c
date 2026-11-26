@@ -871,9 +871,13 @@ int plat_mem_reserve(uint64_t addr, uint64_t n, int watch) {
     if (p != MAP_FAILED && !ok) munmap(p, n);   // a kernel without MAP_FIXED_NOREPLACE put it elsewhere
     if (ok) {
         ps_set(addr, n, PS_RESERVED);
-        // Transparent huge pages would populate (and count as written) 2 MiB at the first write of one page; writes are
-        // tracked per 4 KiB page, as on Windows.
-        if (watch) madvise(p, n, MADV_NOHUGEPAGE);
+        // Transparent huge pages over the watched blocks too (TOTK_HEAP_THP=0: off, 4 KiB pages as before). The game
+        // code's loads spread over the heap and missed the TLB (Steam Deck: about 6 M page walks a second); with huge
+        // pages the frame took 2.9% less (4 pairs of runs) for about 190 MiB more memory. Write tracking stays correct:
+        // the asynchronous write protection splits a huge page that is protected in part, and the written pages per
+        // query and the shadow uploads did not grow.
+        const char *thp = getenv("TOTK_HEAP_THP");
+        if (watch) madvise(p, n, thp && *thp == '0' ? MADV_NOHUGEPAGE : MADV_HUGEPAGE);
         struct uffdio_register reg = {.range = {addr, n}, .mode = UFFDIO_REGISTER_MODE_WP};
         if (watch && ww_fd >= 0 && ioctl(ww_fd, UFFDIO_REGISTER, &reg))
             fprintf(stderr, "platform: write watch over %#llx+%#llx failed (%s)\n", (unsigned long long)addr,

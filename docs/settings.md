@@ -242,6 +242,7 @@ Many rows below are developer tools that only act together with another setting 
 | `tex_block_mib` (default `64`) | Block size in MiB of the pool that holds the game's textures; images of a quarter block or more get memory of their own. `0` puts textures in the default pools with the buffers. | Larger blocks hold more memory that no texture uses; smaller ones mean more allocations from the driver. | Caution |
 | `tex_released_mib` (default `256`) | MiB of textures the game released that are kept for reuse; older ones beyond it are dropped. `0` keeps up to 2048 of them, whatever their size. | A larger value keeps more device memory and process commit; a smaller one makes the game create more textures again. | Caution |
 | `vma_block_mib` (default `64`) | Block size in MiB that the Vulkan memory allocator takes from the driver for buffers and other images on heaps over 1 GiB; larger allocations than half a block get memory of their own. `0` uses the allocator's 256. | Larger blocks hold more memory that nothing uses; smaller ones mean more allocations from the driver. | Caution |
+| `heap_thp` (default `1`) | Linux: transparent huge pages for the game's heap and the other watched blocks. `0` keeps 4 KiB pages. Environment variable only (`TOTK_HEAP_THP`): the blocks are reserved before `totk.ini` is read. | The game's loads spread over the heap and missed the TLB (Steam Deck: 2.9% less frame time for about 190 MiB more memory). Needs transparent huge pages in the `madvise` or `always` mode of the kernel. | Caution |
 
 ## Generated-code patches
 
