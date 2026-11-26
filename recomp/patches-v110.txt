@@ -129,6 +129,11 @@ site grass  main 100e8c8 52802002 @page:x2 b9408842   # mov w2, #0x100     -> ld
 site grass  main 100e92c 52801002 @page:x2 b9408c42   # mov w2, #0x80      -> ldr w2, [page+140]
 site grass  main 1a3f41c 52a84f48 @page:x8 b9408108  # mov w8, #62.5      -> ldr w8, [page+128]
 site grass  main 1a3f428 52a83f48 @page:x8 b9409108  # mov w8, #31.25     -> ldr w8, [page+144]
+# Scale the distance used by blade cutoff/LOD and cross-grass fade by the reciprocal range at page +148.
+# Save x10 and q16 in aligned stack slots so the inserted loads leave the guest registers and flags intact.
+site grass  main 18d8848 bc408ea0 a9bf7fea 3c9f0ff0 bc408ea0 @page:x10 bd409550 1e300800 3cc107f0 a8c17fea
+site grass  main 18d8c28 bd4002a0 a9bf7fea 3c9f0ff0 bd4002a0 @page:x10 bd409550 1e300800 3cc107f0 a8c17fea
+site grass  main 128e26c bd400980 a9bf7fea 3c9f0ff0 bd400980 @page:x10 bd409550 1e300800 3cc107f0 a8c17fea
 
 # High-frame-rate climbing (#35, #276, #1001): r is in s9 in the local 1.1.0 controller at main+0x1927948.
 # The shipping formula multiplies by -0.181, doubles with fadd, then adds 1.272; keep its rounding and [0.5, 1.5] clamp.

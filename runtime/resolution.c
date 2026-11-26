@@ -576,7 +576,8 @@ static void res_shadow_range(void) {
 }
 
 // The grass map's values on page +128..+144 (the grass patch set): extent, step, the two texture sizes, and the
-// half extent main+0x206340c picks instead of the extent. Texture sizes stay multiples of 32.
+// half extent main+0x206340c picks instead of the extent. On 1.1.0, +148 holds the reciprocal distance scale for
+// blade and cross-grass selection. Texture sizes stay multiples of 32.
 static void res_grass_range(void) {
     int pct = grass_pct(), set = rt_patch_set("grass");
     if (pct == 100) return;
@@ -590,6 +591,10 @@ static void res_grass_range(void) {
     memcpy(page + 128, f, sizeof f);
     memcpy(page + 136, t, sizeof t);
     memcpy(page + 144, &half, sizeof half);
+    if (RT_V110) {
+        float inverse = 100.0f / (float)pct;
+        memcpy(page + 148, &inverse, sizeof inverse);
+    }
     rt_patch_switch(set, 1);
     rt_log("resolution: grass map %g m, textures %ux%u and %ux%u (TOTK_GRASS_RANGE=%d)", f[0], t[0], t[0], t[1], t[1],
            pct);
