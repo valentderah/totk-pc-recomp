@@ -11,6 +11,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "input.h"
 #include "input_sdl.h"
 #include "platform/platform.h"
 #include "swkbd.h"
@@ -123,8 +124,13 @@ static void open_box(void *arg) {
         rt_log("swkbd: cannot open the text entry window (%s)", SDL_GetError());
         return;
     }
+    // With the gamepad thread the joystick axis events are off (input.c start). SDL makes the button events of a
+    // button that a mapping binds to an axis from them (SDL_gamepad.c SDL_GamepadEventWatcher), and the box
+    // reads button events: they are on while the box is open.
+    if (input_pad_threaded()) SDL_SetEventEnabled(SDL_EVENT_JOYSTICK_AXIS_MOTION, true);
     b->ren = SDL_CreateRenderer(b->win, NULL);
     if (!b->ren) {
+        if (input_pad_threaded()) SDL_SetEventEnabled(SDL_EVENT_JOYSTICK_AXIS_MOTION, false);
         rt_log("swkbd: no renderer for the text entry (%s)", SDL_GetError());
         SDL_DestroyWindow(b->win);
         b->win = NULL;
@@ -151,6 +157,7 @@ static void open_box(void *arg) {
 }
 
 static void close_box(Box *b) {
+    if (input_pad_threaded()) SDL_SetEventEnabled(SDL_EVENT_JOYSTICK_AXIS_MOTION, false);
     SDL_StopTextInput(b->win);
     SDL_DestroyRenderer(b->ren);
     SDL_DestroyWindow(b->win);

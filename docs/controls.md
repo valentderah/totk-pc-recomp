@@ -309,7 +309,7 @@ Bridges that output a ViGEm DualShock 4 (ProCon2Windows, connectyourpro as teste
 A game Steam starts sees Steam's virtual gamepad in place of the controllers Steam Input reads (Steam lists them in
 `SDL_GAMECONTROLLER_IGNORE_DEVICES`), and that virtual pad has no gyro or accelerometer. With `motion = 1` the game
 clears that list before SDL starts (`runtime/input.c`, `steam_reveal`): buttons and sticks still come from the virtual
-pad, so Steam's remapping applies and nothing is read twice, and when the virtual pad has no sensors the motion thread
+pad, so Steam's remapping applies and nothing is read twice, and when the virtual pad has no sensors the gamepad thread
 opens the real controller behind it for its gyro and accelerometer only (`motion_source`). The log then shows
 `input: motion from "<name>" (<vendor>:<product>), the controller behind Steam Input's virtual gamepad`. This covers the
 Steam Controller and the Steam Deck's built-in controls, which Steam Input cannot be turned off for, and other
