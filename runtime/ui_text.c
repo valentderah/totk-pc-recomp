@@ -43,6 +43,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     // The SDL text entry draws with SDL's ASCII debug font, so these three exist in English only (the other rows fall
     // back to it).
     [UI_SWKBD_SDL_KEYS_HINT] = "Keys: type, Enter OK, Esc cancel",
+    // The controller lines: the add and delete buttons' labels, then the case switch's and the cancel button's.
+    [UI_SWKBD_SDL_PAD_HINT1] = "Pad: D-pad move  %s add  %s delete",
+    [UI_SWKBD_SDL_PAD_HINT2] = "%s upper/lower  Start OK  %s cancel",
 
     [UI_MENU_TITLE] = "Settings",
     [UI_MENU_TAB_SCREEN] = "Screen", [UI_MENU_TAB_GAME] = "Game", [UI_MENU_TAB_MODS] = "Mods", [UI_MENU_TAB_SOUND] = "Sound",

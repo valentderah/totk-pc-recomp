@@ -29,6 +29,7 @@ typedef struct {
     int result;                  // 1 OK, -1 Cancel, 0 still open
     int open;
     SDL_Gamepad *pad;            // the controller, for its button labels; NULL when none is connected
+    SDL_Gamepad *opened;         // the handle open_box took itself (input.c had none open), closed by close_box
     SDL_Window *win;
     SDL_Renderer *ren;
     Uint32 id;
@@ -54,6 +55,20 @@ static const char *face_label(const Box *b, SDL_GamepadButton button, const char
     }
 }
 
+// The left shoulder's name on the connected controller: L1 on PlayStation pads, L on Nintendo pads, LB otherwise.
+static const char *shoulder_label(const Box *b) {
+    switch (b->pad ? SDL_GetGamepadType(b->pad) : SDL_GAMEPAD_TYPE_UNKNOWN) {
+    case SDL_GAMEPAD_TYPE_PS3:
+    case SDL_GAMEPAD_TYPE_PS4:
+    case SDL_GAMEPAD_TYPE_PS5: return "L1";
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO:
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR: return "L";
+    default: return "LB";
+    }
+}
+
 static void draw(const Box *b) {
     char prompt[0x101 * 3 + 1], text[KB_LIMIT * 3 + 2], line[KB_LIMIT * 3 + 2];
     char pad1[64], pad2[64];
@@ -70,9 +85,11 @@ static void draw(const Box *b) {
         swkbd_utf16_to_utf8(b->text, b->n, text, sizeof text);
     }
     snprintf(line, sizeof line, "%s_", text);
-    snprintf(pad1, sizeof pad1, "Pad: D-pad move  %s add  %s delete", face_label(b, SDL_GAMEPAD_BUTTON_SOUTH, "A"),
+    // the debug font draws ASCII: the hints are the catalog's English text whatever the game's language
+    snprintf(pad1, sizeof pad1, ui_text_in("en", UI_SWKBD_SDL_PAD_HINT1), face_label(b, SDL_GAMEPAD_BUTTON_SOUTH, "A"),
              face_label(b, SDL_GAMEPAD_BUTTON_EAST, "B"));
-    snprintf(pad2, sizeof pad2, "LB upper/lower  Start OK  %s cancel", face_label(b, SDL_GAMEPAD_BUTTON_NORTH, "Y"));
+    snprintf(pad2, sizeof pad2, ui_text_in("en", UI_SWKBD_SDL_PAD_HINT2), shoulder_label(b),
+             face_label(b, SDL_GAMEPAD_BUTTON_NORTH, "Y"));
     SDL_SetRenderDrawColor(b->ren, 24, 24, 32, 255);
     SDL_RenderClear(b->ren);
     SDL_SetRenderScale(b->ren, 4.0f, 4.0f);
@@ -91,7 +108,6 @@ static void draw(const Box *b) {
         SDL_RenderDebugText(b->ren, x, y, c);
         SDL_SetRenderDrawColor(b->ren, 240, 240, 240, 255);
     }
-    // the debug font draws ASCII: the hints are the catalog's English text whatever the game's language
     SDL_RenderDebugText(b->ren, 4, 116, ui_text_in("en", UI_SWKBD_SDL_KEYS_HINT));
     SDL_RenderDebugText(b->ren, 4, 130, pad1);
     SDL_RenderDebugText(b->ren, 4, 144, pad2);
@@ -121,7 +137,7 @@ static void open_box(void *arg) {
     SDL_JoystickID *ids = SDL_GetGamepads(&count);
     if (ids && count) {
         b->pad = SDL_GetGamepadFromID(ids[0]);
-        if (!b->pad) b->pad = SDL_OpenGamepad(ids[0]);
+        if (!b->pad) b->pad = b->opened = SDL_OpenGamepad(ids[0]);
     }
     SDL_free(ids);
     SDL_StartTextInput(b->win);
@@ -138,8 +154,10 @@ static void close_box(Box *b) {
     SDL_StopTextInput(b->win);
     SDL_DestroyRenderer(b->ren);
     SDL_DestroyWindow(b->win);
+    if (b->opened) SDL_CloseGamepad(b->opened);
     b->win = NULL;
     b->ren = NULL;
+    b->pad = b->opened = NULL;
     g_box = NULL;
     plat_event_set(&b->done);
 }
