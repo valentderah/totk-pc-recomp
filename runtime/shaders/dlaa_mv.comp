@@ -40,7 +40,11 @@ void main() {
     mat4 q = vp(prev.r[3], prev.r[4], prev.r[5], prev.r[6]);
     vec4 world = inverse(c) * ndc;
     vec2 mv = vec2(0.0);
-    if (abs(world.w) > 1e-12) {
+    // Depth on the near plane is no surface. The Purah Pad scope fills the two side strips its HUD covers
+    // (x 0-320 and 2240-2560 at 2560 wide) with depth 0 so the scene skips them; reprojected, that gave the largest
+    // vectors on screen at the frame generator's highest depth priority, and it scattered them into two columns of
+    // stale picture inside the scope. Real geometry never sits that close: d 1e-5 is 1.00001 times the near distance.
+    if (d > 1e-5 && abs(world.w) > 1e-12) {
         vec4 clip = q * (world / world.w);
         if (clip.w > 1e-6) {
             vec2 pn = clip.xy / clip.w;
