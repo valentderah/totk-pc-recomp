@@ -322,6 +322,7 @@ void rt_frame_presented(const tex_t *t, uint64_t n) {
            (unsigned long long)g.validation_errors, (unsigned long long)g.shader_failures,
            (unsigned long long)g.draws_skipped);
     stats_line();
+    fs_failed_summary();
     fflush(stdout);
     fflush(stderr);
     fs_save_flush();

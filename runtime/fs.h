@@ -83,6 +83,8 @@ int romfs_folders_prepare(unsigned w, unsigned h, const char *prompts_folder);
 int romfs_prompts_off(const char *folder);
 const char *romfs_overlay(size_t k, const char **file, uint64_t *size, int *is_added);   // RomFS path of overlay k
 void fs_trace(const char *what, const char *path);         // TOTK_TRACE=fs: one line per open
+const char *romfs_handle_name(uint64_t h);                 // RomFS path of an open RomFS handle, NULL for any other
+void romfs_crash_report(void);                             // the last RomFS opens and who served each (crash report)
 
 // ---- fs_host.c
 int fs_host_mounted(const char *name);                     // name is a save, temporary, cache or SD card mount
@@ -98,3 +100,12 @@ int fs_save_copy_slot(const char *slot, const char *dst);  // a folder of the ne
 void fs_save_read_from(const char *dir);                   // quick load: reads of save:/slot_NN/<file> open dir/<file>
                                                            // while dir is set; NULL ends it
 int fs_save_read_from_hits(void);                          // opens redirected since the last fs_save_read_from(dir)
+// Failed nn::fs calls (fs_host.c, section "failed calls"): an override that returns a failure notes the call name, the
+// path (or the handle) and the module that asked (c: the guest's registers, NULL for a host caller). open: OpenFile,
+// OpenDirectory or ReadFileAtOnce, whose first distinct paths are logged.
+struct Cpu;
+void fs_failed(const struct Cpu *c, const char *call, const char *path, uint32_t result, int open);
+void fs_failed_handle(const struct Cpu *c, const char *call, uint64_t handle, uint32_t result);
+void fs_failed_summary(void);                              // one log line with this run's counts; the exit paths
+void fs_crash_report(void);                                // the crash report's lines: the last failed calls, the
+                                                           // last RomFS opens

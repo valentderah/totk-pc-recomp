@@ -1438,68 +1438,220 @@ static uint32_t create_and_write_file_at_once(const char *path, const void *buf,
     return r;
 }
 
+// ---- failed calls
+// A mod that cannot find its files fails later somewhere else (#1486: a plugin's merge file was missing, its actors
+// were never made, and the crash named only an offset in the plugin). So every override that returns a failure notes
+// it here with the module that asked. The game itself fails many calls by design: a boot to play without mods fails
+// about 1,400 opens and 1,000 GetEntryType calls (optional files such as content:/Model/<actor>.anim.bfres.zs, tried
+// compressed and then plain), and about 150 more per minute of play. So only a failure with a mod plugin behind it is
+// logged (the first FAIL_LOGGED distinct paths of failed opens); the game's own are counted (fs_failed_summary, at
+// exit). The crash report prints the last FAIL_RING failures of any caller and, in a ring of their own that the game's
+// probes cannot push out, the last PLUGIN_RING with a plugin behind them (fs_crash_report). TOTK_TRACE=fs logs every
+// failure. Only failures pay: a successful call costs one compare of its result. The memory is fixed (the rings and
+// the table of logged paths' hashes), however long the session runs.
+#define FAIL_RING 32
+#define PLUGIN_RING 16
+#define FAIL_LOGGED 32
+#define FAIL_FRAMES 16   // guest frames searched for a plugin behind a game call
+
+typedef struct {
+    volatile int32_t seq;   // the failure's number in its ring + 1, written last; 0 while the slot is written
+    uint32_t result;
+    const char *call;
+    char path[200], caller[112];
+} FsFail;
+
+typedef struct { FsFail *slot; uint32_t cap; volatile int32_t count; } FailRing;
+
+static FsFail fail_slots[FAIL_RING], plugin_slots[PLUGIN_RING];
+static FailRing fail_all = {fail_slots, FAIL_RING}, fail_plugin = {plugin_slots, PLUGIN_RING};
+static volatile int32_t fail_opens, fail_plugin_opens;
+static uint32_t fail_logged[FAIL_LOGGED];
+static int fail_nlogged, fail_closed;
+static PlatMutex fail_lock = PLAT_MUTEX_INIT;
+
+// Who made the call: the module the guest returns to ("main", "sdk", "plugin4 (Zonai Fieldworks)"). A game function
+// that a plugin called opens the plugin's files too, so when the return address is in the game, the frame-pointer
+// chain is searched for a plugin frame: "main for plugin4 (Zonai Fieldworks)". Returns 1 when a plugin is involved.
+static int fail_caller(const Cpu *c, char *out, size_t cap) {
+    int plugin = 0;
+    // A plugin's import call reaches the override through rt_original, which returns into the host: the plugin's
+    // own return address is kept by plugin_init.c plugin_import.
+    uint64_t lr = c ? c->x[30] : 0, import = c && lr == RT_RET_HOST ? plugins_import_caller() : 0;
+    const char *who = c ? ldr_label(import ? import : lr, &plugin) : NULL;
+    snprintf(out, cap, "%s", who ? who : c ? "host" : "-");
+    if (!c || plugin) return plugin;
+    uint64_t fp = c->x[29];
+    for (int n = 0; n < FAIL_FRAMES && fp && !(fp & 7) && plat_mem_readable(fp, 16); n++) {
+        uint64_t next = LD64(fp), lr = LD64(fp + 8);
+        const char *m = ldr_label(lr, &plugin);
+        if (plugin) {   // a return into host code (a hook's entry tail-called the call) names the plugin alone
+            size_t k = who ? strlen(out) : 0;
+            snprintf(out + k, cap - k, who ? " for %s" : "%s", m);
+            return 1;
+        }
+        if (next <= fp || next - fp > (64u << 20)) break;
+        fp = next;
+    }
+    return 0;
+}
+
+static void ring_put(FailRing *r, const char *call, const char *path, uint32_t result, const char *caller) {
+    int32_t n = plat_inc32(&r->count);
+    FsFail *f = &r->slot[(uint32_t)(n - 1) % r->cap];
+    __atomic_store_n(&f->seq, 0, __ATOMIC_RELEASE);
+    f->result = result;
+    f->call = call;
+    snprintf(f->path, sizeof f->path, "%s", path);
+    snprintf(f->caller, sizeof f->caller, "%s", caller);
+    __atomic_store_n(&f->seq, n, __ATOMIC_RELEASE);
+}
+
+static uint32_t path_hash(const char *s) {
+    uint32_t h = 0x811C9DC5u;
+    for (; *s; s++) h = (h ^ (uint8_t)*s) * 0x01000193u;
+    return h;
+}
+
+void fs_failed(const Cpu *c, const char *call, const char *path, uint32_t result, int open) {
+    char caller[112];
+    int plugin = fail_caller(c, caller, sizeof caller);
+    if (!path) path = "(null)";
+    ring_put(&fail_all, call, path, result, caller);
+    if (plugin) ring_put(&fail_plugin, call, path, result, caller);
+    if (rt_trace & RT_TRACE_FS) rt_log("fs: %s failed %s: %#x (%s)", call, path, result, caller);
+    if (!open) return;
+    plat_inc32(&fail_opens);
+    if (!plugin) return;
+    plat_inc32(&fail_plugin_opens);
+    uint32_t h = path_hash(path);   // each distinct path once
+    int fresh = 0, full = 0;
+    plat_mutex_lock(&fail_lock);
+    int k = 0;
+    while (k < fail_nlogged && fail_logged[k] != h) k++;
+    if (k == fail_nlogged) {
+        if (fail_nlogged < FAIL_LOGGED) fail_logged[fail_nlogged++] = h, fresh = 1;
+        else if (!fail_closed) fail_closed = full = 1;   // the closing line once
+    }
+    plat_mutex_unlock(&fail_lock);
+    if (fresh) rt_log("fs: open failed %s: %#x (%s)", path, result, caller);
+    else if (full) rt_log("fs: %d failed opens of mod plugins logged; further ones are only counted", FAIL_LOGGED);
+}
+
+// A call on an open file or directory: the RomFS path when it is a RomFS file, else the handle (host storage keeps no
+// path per handle).
+void fs_failed_handle(const Cpu *c, const char *call, uint64_t handle, uint32_t result) {
+    char what[64];
+    const char *path = romfs_handle_name(handle);
+    if (!path) snprintf(what, sizeof what, "handle %#llx", (unsigned long long)handle), path = what;
+    fs_failed(c, call, path, result, 0);
+}
+
+void fs_failed_summary(void) {
+    int32_t n = plat_cas32(&fail_all.count, 0, 0);
+    if (n)
+        rt_log("fs: %d nn::fs calls failed this run (%d with a mod plugin behind them), %d of them opens (%d of a "
+               "plugin)", n, plat_cas32(&fail_plugin.count, 0, 0), plat_cas32(&fail_opens, 0, 0),
+               plat_cas32(&fail_plugin_opens, 0, 0));
+}
+
+// The crash report reads the rings without a lock (the crashed thread may hold one); a slot being written at the crash
+// (seq 0 or a newer number) is left out.
+static void ring_report(FailRing *r, const char *what) {
+    int32_t n = plat_cas32(&r->count, 0, 0);
+    if (!n) {
+        rt_logf("  failed nn::fs calls%s: none this run\n", what);
+        return;
+    }
+    int32_t from = n > (int32_t)r->cap ? n - (int32_t)r->cap : 0;
+    rt_logf("  failed nn::fs calls%s: %d this run, the last %d (oldest first):\n", what, n, n - from);
+    for (int32_t i = from; i < n; i++) {
+        const FsFail *f = &r->slot[(uint32_t)i % r->cap];
+        if (__atomic_load_n(&f->seq, __ATOMIC_ACQUIRE) == i + 1)
+            rt_logf("    %s %s: %#x (%s)\n", f->call, f->path, f->result, f->caller);
+    }
+}
+
+void fs_crash_report(void) {
+    if (ldr_plugin_count()) ring_report(&fail_plugin, " with a mod plugin behind them");
+    ring_report(&fail_all, "");
+    romfs_crash_report();
+}
+
 // ---- overrides: AAPCS64 thunks. FileHandle, DirectoryHandle, CacheStorageListHandle
 // and ApplicationId are 8-byte structs passed in one register; Uid, ReadOption and WriteOption by reference.
 #define I32(i) ((int32_t)arg_x(c, i))
 #define I64(i) ((int64_t)arg_x(c, i))
-static void ov_open_file(Cpu *c) { ret_x(c, open_file(arg_p(c, 0), arg_p(c, 1), I32(2))); }
-static void ov_file_size(Cpu *c) { ret_x(c, file_size(arg_p(c, 0), arg_x(c, 1))); }
+// The result goes back to the guest as before; a failure is noted first (fs_failed) with the path in argument i, or
+// with the handle in argument i for a call on an open file or directory. NOTE_OPEN also counts it as an open.
+#define NOTE_AS(call, open, i, expr) \
+    do { uint32_t r_ = (expr); if (r_) fs_failed(c, call, arg_p(c, i), r_, open); ret_x(c, r_); } while (0)
+#define NOTE(call, i, expr) NOTE_AS(call, 0, i, expr)
+#define NOTE_OPEN(call, i, expr) NOTE_AS(call, 1, i, expr)
+#define NOTE_HANDLE(call, i, expr) \
+    do { uint32_t r_ = (expr); if (r_) fs_failed_handle(c, call, arg_x(c, i), r_); ret_x(c, r_); } while (0)
+static void ov_open_file(Cpu *c) { NOTE_OPEN("OpenFile", 1, open_file(arg_p(c, 0), arg_p(c, 1), I32(2))); }
+static void ov_file_size(Cpu *c) { NOTE_HANDLE("GetFileSize", 1, file_size(arg_p(c, 0), arg_x(c, 1))); }
 static void ov_close_file(Cpu *c) { close_file(arg_x(c, 0)); }
-static void ov_entry_type(Cpu *c) { ret_x(c, entry_type(arg_p(c, 0), arg_p(c, 1))); }
-static void ov_read_file(Cpu *c) { ret_x(c, read_file(arg_p(c, 0), arg_x(c, 1), I64(2), arg_p(c, 3), arg_x(c, 4))); }
-static void ov_read_options(Cpu *c) { ret_x(c, read_file(arg_p(c, 0), arg_x(c, 1), I64(2), arg_p(c, 3), arg_x(c, 4))); }
-static void ov_read_exact(Cpu *c) { ret_x(c, read_exact(arg_x(c, 0), I64(1), arg_p(c, 2), arg_x(c, 3))); }
-static void ov_write_file(Cpu *c) { ret_x(c, write_file(arg_x(c, 0), I64(1), arg_p(c, 2), arg_x(c, 3), arg_p(c, 4))); }
-static void ov_set_file_size(Cpu *c) { ret_x(c, set_file_size(arg_x(c, 0), I64(1))); }
-static void ov_flush_file(Cpu *c) { ret_x(c, flush_file(arg_x(c, 0))); }
-static void ov_create_file(Cpu *c) { ret_x(c, create_file(arg_p(c, 0), I64(1))); }
-static void ov_delete_file(Cpu *c) { ret_x(c, delete_file(arg_p(c, 0))); }
-static void ov_rename_file(Cpu *c) { ret_x(c, rename_file(arg_p(c, 0), arg_p(c, 1))); }
-static void ov_create_directory(Cpu *c) { ret_x(c, create_directory(arg_p(c, 0))); }
-static void ov_delete_recursive(Cpu *c) { ret_x(c, delete_recursive(arg_p(c, 0))); }
-static void ov_open_directory(Cpu *c) { ret_x(c, open_directory(arg_p(c, 0), arg_p(c, 1), I32(2))); }
-static void ov_read_directory(Cpu *c) { ret_x(c, read_directory(arg_p(c, 0), arg_p(c, 1), arg_x(c, 2), I64(3))); }
+static void ov_entry_type(Cpu *c) { NOTE("GetEntryType", 1, entry_type(arg_p(c, 0), arg_p(c, 1))); }
+static void ov_read_file(Cpu *c) { NOTE_HANDLE("ReadFile", 1, read_file(arg_p(c, 0), arg_x(c, 1), I64(2), arg_p(c, 3), arg_x(c, 4))); }
+static void ov_read_options(Cpu *c) { NOTE_HANDLE("ReadFile", 1, read_file(arg_p(c, 0), arg_x(c, 1), I64(2), arg_p(c, 3), arg_x(c, 4))); }
+static void ov_read_exact(Cpu *c) { NOTE_HANDLE("ReadFile", 0, read_exact(arg_x(c, 0), I64(1), arg_p(c, 2), arg_x(c, 3))); }
+static void ov_write_file(Cpu *c) { NOTE_HANDLE("WriteFile", 0, write_file(arg_x(c, 0), I64(1), arg_p(c, 2), arg_x(c, 3), arg_p(c, 4))); }
+static void ov_set_file_size(Cpu *c) { NOTE_HANDLE("SetFileSize", 0, set_file_size(arg_x(c, 0), I64(1))); }
+static void ov_flush_file(Cpu *c) { NOTE_HANDLE("FlushFile", 0, flush_file(arg_x(c, 0))); }
+static void ov_create_file(Cpu *c) { NOTE("CreateFile", 0, create_file(arg_p(c, 0), I64(1))); }
+static void ov_delete_file(Cpu *c) { NOTE("DeleteFile", 0, delete_file(arg_p(c, 0))); }
+static void ov_rename_file(Cpu *c) { NOTE("RenameFile", 0, rename_file(arg_p(c, 0), arg_p(c, 1))); }
+static void ov_create_directory(Cpu *c) { NOTE("CreateDirectory", 0, create_directory(arg_p(c, 0))); }
+static void ov_delete_recursive(Cpu *c) { NOTE("DeleteDirectoryRecursively", 0, delete_recursive(arg_p(c, 0))); }
+static void ov_open_directory(Cpu *c) { NOTE_OPEN("OpenDirectory", 1, open_directory(arg_p(c, 0), arg_p(c, 1), I32(2))); }
+static void ov_read_directory(Cpu *c) { NOTE_HANDLE("ReadDirectory", 2, read_directory(arg_p(c, 0), arg_p(c, 1), arg_x(c, 2), I64(3))); }
 static void ov_close_directory(Cpu *c) { close_directory(arg_x(c, 0)); }
-static void ov_mount_save(Cpu *c) { ret_x(c, mount_save(arg_p(c, 0), arg_p(c, 1))); }
-static void ov_mount_save_ro(Cpu *c) { ret_x(c, mount_save_ro(arg_p(c, 0), arg_x(c, 1), arg_p(c, 2))); }
+static void ov_mount_save(Cpu *c) { NOTE("MountSaveData", 0, mount_save(arg_p(c, 0), arg_p(c, 1))); }
+static void ov_mount_save_ro(Cpu *c) { NOTE("MountSaveDataReadOnly", 0, mount_save_ro(arg_p(c, 0), arg_x(c, 1), arg_p(c, 2))); }
 static void ov_save_exists(Cpu *c) { ret_x(c, save_exists(arg_x(c, 0), arg_p(c, 1))); }
-static void ov_mount_temp(Cpu *c) { ret_x(c, mount_temp(arg_p(c, 0))); }
-static void ov_mount_sdcard(Cpu *c) { ret_x(c, mount_sdcard(arg_p(c, 0))); }
+static void ov_mount_temp(Cpu *c) { NOTE("MountTemporaryStorage", 0, mount_temp(arg_p(c, 0))); }
+static void ov_mount_sdcard(Cpu *c) { NOTE("MountSdCard", 0, mount_sdcard(arg_p(c, 0))); }
 static void ov_unmount(Cpu *c) { unmount(arg_p(c, 0)); }
-static void ov_commit(Cpu *c) { ret_x(c, commit(arg_p(c, 0))); }
+static void ov_commit(Cpu *c) { NOTE("Commit", 0, commit(arg_p(c, 0))); }
 static void ov_create_cache(Cpu *c) { ret_x(c, create_cache(I32(0), I64(1), I64(2))); }
 static void ov_delete_cache(Cpu *c) { ret_x(c, delete_cache(I32(0))); }
-static void ov_mount_cache(Cpu *c) { ret_x(c, mount_cache(arg_p(c, 0), I32(1))); }
+static void ov_mount_cache(Cpu *c) { NOTE("MountCacheStorage", 0, mount_cache(arg_p(c, 0), I32(1))); }
 static void ov_open_cache_list(Cpu *c) { ret_x(c, open_cache_list(arg_p(c, 0))); }
 static void ov_read_cache_list(Cpu *c) { ret_x(c, read_cache_list(arg_p(c, 0), arg_p(c, 1), arg_x(c, 2), I32(3))); }
 static void ov_close_cache_list(Cpu *c) { close_cache_list(arg_x(c, 0)); }
-static void ov_entry_count(Cpu *c) { ret_x(c, entry_count(arg_p(c, 0), arg_x(c, 1))); }
-static void ov_delete_directory(Cpu *c) { ret_x(c, delete_directory(arg_p(c, 0))); }
-static void ov_clean_recursive(Cpu *c) { ret_x(c, clean_recursive(arg_p(c, 0))); }
-static void ov_rename_directory(Cpu *c) { ret_x(c, rename_directory(arg_p(c, 0), arg_p(c, 1))); }
+static void ov_entry_count(Cpu *c) { NOTE_HANDLE("GetDirectoryEntryCount", 1, entry_count(arg_p(c, 0), arg_x(c, 1))); }
+static void ov_delete_directory(Cpu *c) { NOTE("DeleteDirectory", 0, delete_directory(arg_p(c, 0))); }
+static void ov_clean_recursive(Cpu *c) { NOTE("CleanDirectoryRecursively", 0, clean_recursive(arg_p(c, 0))); }
+static void ov_rename_directory(Cpu *c) { NOTE("RenameDirectory", 0, rename_directory(arg_p(c, 0), arg_p(c, 1))); }
 // CreateFile's option (CreateOption_BigFile) splits a file over 4 GiB on FAT; a host file needs no split
-static void ov_create_file_opt(Cpu *c) { ret_x(c, create_file(arg_p(c, 0), I64(1))); }
-static void ov_read_exact_opt(Cpu *c) { ret_x(c, read_exact(arg_x(c, 0), I64(1), arg_p(c, 2), arg_x(c, 3))); }
-static void ov_read_at_once(Cpu *c) { ret_x(c, read_file_at_once(arg_p(c, 0), arg_p(c, 1), arg_x(c, 2))); }
-static void ov_write_at_once(Cpu *c) { ret_x(c, create_and_write_file_at_once(arg_p(c, 0), arg_p(c, 1), arg_x(c, 2))); }
+static void ov_create_file_opt(Cpu *c) { NOTE("CreateFile", 0, create_file(arg_p(c, 0), I64(1))); }
+static void ov_read_exact_opt(Cpu *c) { NOTE_HANDLE("ReadFile", 0, read_exact(arg_x(c, 0), I64(1), arg_p(c, 2), arg_x(c, 3))); }
+static void ov_read_at_once(Cpu *c) { NOTE_OPEN("ReadFileAtOnce", 0, read_file_at_once(arg_p(c, 0), arg_p(c, 1), arg_x(c, 2))); }
+static void ov_write_at_once(Cpu *c) { NOTE("CreateAndWriteFileAtOnce", 0, create_and_write_file_at_once(arg_p(c, 0), arg_p(c, 1), arg_x(c, 2))); }
 static void ov_open_mode(Cpu *c) { ret_x(c, (uint32_t)open_mode(arg_x(c, 0))); }
-static void ov_query_range(Cpu *c) { ret_x(c, query_range(arg_p(c, 0), arg_x(c, 1), I64(2), I64(3))); }
-static void ov_time_stamp(Cpu *c) { ret_x(c, time_stamp_debug(arg_p(c, 0), arg_p(c, 1))); }
-static void ov_time_stamp_raw(Cpu *c) { ret_x(c, time_stamp(arg_p(c, 0), arg_p(c, 1))); }
-static void ov_free_space(Cpu *c) { ret_x(c, free_space(arg_p(c, 0), arg_p(c, 1))); }
-static void ov_total_space(Cpu *c) { ret_x(c, total_space(arg_p(c, 0), arg_p(c, 1))); }
+static void ov_query_range(Cpu *c) { NOTE_HANDLE("QueryRange", 1, query_range(arg_p(c, 0), arg_x(c, 1), I64(2), I64(3))); }
+static void ov_time_stamp(Cpu *c) { NOTE("GetFileTimeStampForDebug", 1, time_stamp_debug(arg_p(c, 0), arg_p(c, 1))); }
+static void ov_time_stamp_raw(Cpu *c) { NOTE("GetFileTimeStampRawForDebug", 1, time_stamp(arg_p(c, 0), arg_p(c, 1))); }
+static void ov_free_space(Cpu *c) { NOTE("GetFreeSpaceSize", 1, free_space(arg_p(c, 0), arg_p(c, 1))); }
+static void ov_total_space(Cpu *c) { NOTE("GetTotalSpaceSize", 1, total_space(arg_p(c, 0), arg_p(c, 1))); }
 static void ov_is_mounted(Cpu *c) { ret_x(c, (uint64_t)is_mounted(arg_p(c, 0))); }
 static void ov_is_path_mounted(Cpu *c) { ret_x(c, (uint64_t)is_path_mounted(arg_p(c, 0))); }
 // CommitSaveData is Commit under another name in the sdk (both tail-call one routine)
-static void ov_commit_save(Cpu *c) { ret_x(c, commit(arg_p(c, 0))); }
+static void ov_commit_save(Cpu *c) { NOTE("CommitSaveData", 0, commit(arg_p(c, 0))); }
 // MountCacheStorage(name): the sdk mounts this application's cache storage index 0
-static void ov_mount_cache0(Cpu *c) { ret_x(c, mount_cache(arg_p(c, 0), 0)); }
+static void ov_mount_cache0(Cpu *c) { NOTE("MountCacheStorage", 0, mount_cache(arg_p(c, 0), 0)); }
 static void ov_save_exists_uid(Cpu *c) { ret_x(c, save_exists(TOTK_APPLICATION_ID, arg_p(c, 0))); }
 static void ov_save_exists_out(Cpu *c) { ret_x(c, save_exists_out(arg_p(c, 0), arg_p(c, 1))); }
 // The fs priority only orders I/O inside the system fs process; host I/O is unordered.
 static void ov_set_priority(Cpu *c) { (void)c; }
 #undef I32
 #undef I64
+#undef NOTE_AS
+#undef NOTE
+#undef NOTE_OPEN
+#undef NOTE_HANDLE
 
 #define S_OPEN_FILE "_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci"
 #define S_FILE_SIZE "_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE"
