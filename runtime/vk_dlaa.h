@@ -51,7 +51,8 @@ void vk_dlaa_sub_end(VkExec *ex);
 // scene depth, motion vectors, camera and jitter were kept by the scene's DLSS or frame-generation point. 0: no
 // picture was generated this frame.
 int vk_dlssg_generate(VkCommandBuffer cb, VkImage win, VkImageView win_view, VkFormat win_fmt, VkImage hudless,
-                      VkImageView hudless_view, VkImage outputs[VK_FG_MAX_GENERATED],
+                      VkImageView hudless_view, VkImage depth, VkImageView depth_view, VkFormat depth_format, VkImage mv,
+                      VkImageView mv_view, VkImage outputs[VK_FG_MAX_GENERATED],
                       VkImageView output_views[VK_FG_MAX_GENERATED], int count, uint32_t w, uint32_t h);
 // vk_exec_draw.c, each draw before its fixed state is recorded: notes the scene camera block (vk_dlaa_draw), and moves
 // the viewport of the scene's draws by the frame's jitter (vk_dlaa_viewport, when the viewport is recorded).

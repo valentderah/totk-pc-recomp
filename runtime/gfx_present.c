@@ -873,7 +873,7 @@ void gfx_present_hold(int on) { plat_xchg32(&g_hold, on != 0); }
 // them, which leaves every earlier blit waiting in front of its own and draws the menu as the first laid it out.
 // Returns 1 when the blit was submitted.
 static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], int defer,
-                         int pair) {
+                         int pair, uint64_t fg_value) {
     int general = layout == VK_IMAGE_LAYOUT_GENERAL, done = 0;
     gfx_window_start();
     VkCtx *c = vk_ctx();
@@ -1055,12 +1055,16 @@ static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w,
     vk_crumb(cb, VK_CRUMB_PRESENT_END, crumb);
     vkEndCommandBuffer(cb);
 
-    VkSemaphoreSubmitInfo wait = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = g_acquire[slot],
-                                  .stageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT};
+    VkSemaphoreSubmitInfo wait[2] = {
+        {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = g_acquire[slot],
+         .stageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT},
+        {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = c->fg_timeline, .value = fg_value,
+         .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT}};
     VkSemaphoreSubmitInfo sig = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = g_render_done[idx],
                                  .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
     VkCommandBufferSubmitInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cb};
-    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .waitSemaphoreInfoCount = 1, .pWaitSemaphoreInfos = &wait,
+    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .waitSemaphoreInfoCount = fg_value ? 2u : 1u,
+                        .pWaitSemaphoreInfos = wait,
                         .commandBufferInfoCount = 1, .pCommandBufferInfos = &cbi, .signalSemaphoreInfoCount = 1,
                         .pSignalSemaphoreInfos = &sig};
     vk_queue_lock();
@@ -1093,26 +1097,26 @@ out:
 }
 
 void vk_present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]) {
-    present_image(src, layout, fmt, w, h, crop, 0, 0);
+    present_image(src, layout, fmt, w, h, crop, 0, 0, 0);
 }
 
 void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]) {
-    present_image(src, layout, fmt, w, h, crop, 1, 0);
+    present_image(src, layout, fmt, w, h, crop, 1, 0, 0);
 }
 
 int vk_present_blit_generated(const VkImage gen[], int count, VkFormat gen_fmt, VkImage src, VkFormat fmt, int w,
-                              int h, const int crop[4]) {
+                              int h, uint64_t fg_value, const int crop[4]) {
     // without the first blit (no swapchain, minimised, held) the game's frame goes alone, as any present
-    if (count <= 0 || !present_image(gen[0], VK_IMAGE_LAYOUT_GENERAL, gen_fmt, w, h, crop, 1, 1)) {
-        present_image(src, VK_IMAGE_LAYOUT_GENERAL, fmt, w, h, crop, 1, 0);
+    if (count <= 0 || !present_image(gen[0], VK_IMAGE_LAYOUT_GENERAL, gen_fmt, w, h, crop, 1, 1, fg_value)) {
+        present_image(src, VK_IMAGE_LAYOUT_GENERAL, fmt, w, h, crop, 1, 0, 0);
         return 0;
     }
     for (int i = 1; i < count; i++)
-        if (!present_image(gen[i], VK_IMAGE_LAYOUT_GENERAL, gen_fmt, w, h, crop, 1, 3)) {
-            present_image(src, VK_IMAGE_LAYOUT_GENERAL, fmt, w, h, crop, 1, 0);
+        if (!present_image(gen[i], VK_IMAGE_LAYOUT_GENERAL, gen_fmt, w, h, crop, 1, 3, fg_value)) {
+            present_image(src, VK_IMAGE_LAYOUT_GENERAL, fmt, w, h, crop, 1, 0, 0);
             return 0;
         }
-    present_image(src, VK_IMAGE_LAYOUT_GENERAL, fmt, w, h, crop, 1, 2);
+    present_image(src, VK_IMAGE_LAYOUT_GENERAL, fmt, w, h, crop, 1, 2, 0);
     return 1;
 }
 

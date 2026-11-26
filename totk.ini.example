@@ -28,6 +28,11 @@
 # DLSS generated frames: auto (the GPU's maximum: 2x on RTX 40, up to 4x with Multi Frame Generation on RTX 50), 2, 3
 # or 4. A setting above the GPU's maximum is capped. Applies at once; a changed count rebuilds the swapchain.
 # dlssg_frames = auto
+# Run DLSS Frame Generation on a second graphics queue while the next real frame is rendered. The inputs are copied
+# into three private image sets, so the next frame cannot overwrite the generated frame's colour, depth or motion.
+# 0 keeps the previous serial path. Needs a graphics queue family with two queues; without one it falls back to the
+# serial path. fg_shot is unavailable while this is on. Read at start; it also uses more VRAM.
+# dlssg_async = 0
 # Real-time frame step: game speed follows the clock instead of the frame count.
 # realtime = 1
 # Cloth simulation on the real-time clock. Needs realtime = 1.

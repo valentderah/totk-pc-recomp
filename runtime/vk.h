@@ -22,12 +22,16 @@ typedef struct VkCtx {
     VkPhysicalDeviceProperties props;
     VkPhysicalDeviceMemoryProperties mem_props;
     uint32_t gfx_family;                    // graphics + compute + presentation on win32
+    uint32_t gfx_queue_count;               // queues the family offers; DLSSG uses a second one when available
     uint32_t xfer_family;                   // a transfer-only family when the GPU has one, else gfx_family
     VkQueue gfx_queue;                      // graphics + present
+    VkQueue fg_queue;                       // frame generation; equals gfx_queue without a second queue
     VkQueue xfer_queue;                     // equals gfx_queue when xfer_shared
+    int fg_shared;                          // 1: no second graphics queue; DLSSG stays on gfx_queue
     int xfer_shared;                        // 1: no separate queue; serialise with gfx_queue
     VmaAllocator vma;
     VkSemaphore timeline;                   // one timeline semaphore; values are issued by vk_sync.c
+    VkSemaphore fg_timeline;                // DLSSG submissions on fg_queue
     VkDebugUtilsMessengerEXT messenger;
     volatile int32_t validation_errors;        // errors seen by the messenger (TOTK_VK_VALIDATION=1)
     int validation;                         // layer active
@@ -151,7 +155,7 @@ void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int
 // Frame generation: the blits of count generated pictures (RGBA8, GENERAL, the size of src), then of src, all left
 // waiting, oldest first; each vk_present_flip presents one. 0: a generated picture was not blitted (src went alone).
 int vk_present_blit_generated(const VkImage gen[], int count, VkFormat gen_fmt, VkImage src, VkFormat fmt, int w,
-                              int h, const int crop[4]);
+                              int h, uint64_t fg_value, const int crop[4]);
 // FSR 1 on the present (vk_fsr.c): records EASU (+ RCAS) of src's crop rectangle {x, y, w, h} into the rectangle out
 // {x, y, w, h} of dst, a swapchain image in TRANSFER_DST; src is in GENERAL and fmt its format. 0 = nothing recorded
 // (the setting says bilinear, no upscale is needed, or FSR is not available): the caller blits.

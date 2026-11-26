@@ -983,6 +983,11 @@ static int dlssg_scene_ready(struct Size *e, const VkExecTarget *color, const Vk
     if (inv4(vp, iv))
         for (int i = 0; i < 16; i++) D.dlssg.clip_to_view[i] = (float)iv[i];
     VkFgScene scene = *cam;
+    scene.depth = D.dlssg.depth;
+    scene.mv = D.dlssg.mv;
+    scene.depth_view = D.dlssg.depth_view;
+    scene.mv_view = D.dlssg.mv_view;
+    scene.depth_format = D.dlssg.depth_format;
     scene.w = D.dlssg.w, scene.h = D.dlssg.h;
     scene.ow = D.dlssg.ow, scene.oh = D.dlssg.oh;
     vk_fg_dlssg_scene(&scene);
@@ -2063,9 +2068,10 @@ static void identity4(float m[16]) {
 // 4x), MultiFrameIndex is 1..count, and each evaluation writes its own output image so the present can show the
 // pictures in order.
 int vk_dlssg_generate(VkCommandBuffer cb, VkImage win, VkImageView win_view, VkFormat win_fmt, VkImage hudless,
-                      VkImageView hudless_view, VkImage outputs[VK_FG_MAX_GENERATED],
+                      VkImageView hudless_view, VkImage depth, VkImageView depth_view, VkFormat depth_format, VkImage mv,
+                      VkImageView mv_view, VkImage outputs[VK_FG_MAX_GENERATED],
                       VkImageView output_views[VK_FG_MAX_GENERATED], int count, uint32_t w, uint32_t h) {
-    if (!D.dlssg.ok || !D.dlssg.depth_view || !D.dlssg.mv_view || count <= 0) return 0;
+    if (!D.dlssg.ok || !depth_view || !mv_view || count <= 0) return 0;
     struct Size *e = D.last;
     if (!e || !e->mv || e->w != D.dlssg.w || e->h != D.dlssg.h) {
         e = NULL;
@@ -2142,11 +2148,9 @@ int vk_dlssg_generate(VkCommandBuffer cb, VkImage win, VkImageView win_view, VkF
     NgxResourceVK rb = res_image(win_view, win, win_fmt, w, h, VK_IMAGE_ASPECT_COLOR_BIT, 0);
     NgxResourceVK rh = res_image(hudless_view, hudless, VK_FORMAT_R8G8B8A8_UNORM, w, h, VK_IMAGE_ASPECT_COLOR_BIT, 0);
     NgxResourceVK rz =
-        res_image(D.dlssg.depth_view, D.dlssg.depth, D.dlssg.depth_format, D.dlssg.w, D.dlssg.h,
-                  VK_IMAGE_ASPECT_DEPTH_BIT, 0);
+        res_image(depth_view, depth, depth_format, D.dlssg.w, D.dlssg.h, VK_IMAGE_ASPECT_DEPTH_BIT, 0);
     NgxResourceVK rm =
-        res_image(D.dlssg.mv_view, D.dlssg.mv, VK_FORMAT_R16G16_SFLOAT, D.dlssg.w, D.dlssg.h,
-                  VK_IMAGE_ASPECT_COLOR_BIT, 0);
+        res_image(mv_view, mv, VK_FORMAT_R16G16_SFLOAT, D.dlssg.w, D.dlssg.h, VK_IMAGE_ASPECT_COLOR_BIT, 0);
     float lens[16];
     identity4(lens);
     static uint64_t backbuffer_id;

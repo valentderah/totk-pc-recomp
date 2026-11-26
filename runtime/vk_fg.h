@@ -4,7 +4,9 @@
 // The frame's inputs come from the replay (vk_dlaa.c follows the scene for it, with DLSS off): at the scene's end the
 // camera motion vectors and the SDK's prepare step (vk_fg_prepare), before the HUD's first draw the picture without
 // the HUD (vk_fg_hudless), at the end of the submission that copied the picture into the window texture the optical
-// flow and the interpolation (vk_fg_generate). All of it goes into the replay's command buffer.
+// flow and the interpolation (vk_fg_generate). The default path records all of it in the replay's command buffer.
+// dlssg_async copies the DLSS Frame Generation inputs into a rotating set of private images and evaluates them on a
+// second graphics queue after the real frame is submitted, so the next real frame can draw at the same time.
 #pragma once
 
 #include <stdint.h>
@@ -47,6 +49,8 @@ void vk_fg_menu(int open);
 typedef struct {
     VkImage depth, mv;          // D32F scene depth (level 0, layer 0) and RG16F camera motion, w x h, GENERAL: last
                                 // frame's window position minus this frame's, scene pixels (vk_dlaa.c mv_pass)
+    VkImageView depth_view, mv_view;   // views of the same images for DLSS Frame Generation
+    VkFormat depth_format;      // the scene depth's format
     uint32_t w, h;              // the scene's size
     uint32_t ow, oh;            // the output's (the window texture's)
     float near_m, far_m, fov_y; // the camera's planes (far 0: none) and vertical field of view (radians)
@@ -74,6 +78,19 @@ int vk_fg_hudless(VkCommandBuffer cb, VkImage src, VkFormat fmt, uint32_t level,
 // 1: a frame between the last one and this was made.
 int vk_fg_generate(VkCommandBuffer cb, uint64_t fence, uint64_t frame, VkImage win, VkImageView win_view,
                    VkFormat fmt, uint32_t w, uint32_t h);
+// vk_backend.c submit_sync, immediately after the submission that armed a DLSSG picture: records and submits the
+// evaluation on the second graphics queue, waiting for the real frame's timeline value. Returns its timeline value.
+uint64_t vk_fg_async_submit(uint64_t ready);
+// Wait for a DLSSG timeline value before reusing the image set that produced it.
+void vk_fg_async_wait(uint64_t value);
+// vk_backend.c submit_sync before vk_sync_submit: waits outside the submission lock before a recorded frame may reuse
+// the image set its previous generated pictures still read or present.
+void vk_fg_wait_reuse(void);
+// The generated picture's queue value and rotating slot. slot is -1 when presented is not a DLSSG frame.
+uint64_t vk_fg_present_state(VkImage presented, int *slot);
+// The present thread after submitting the generated and real pictures: their timeline value protects the slot from
+// reuse until the generated pictures have also finished being read by the present.
+void vk_fg_present_submitted(int slot, uint64_t value);
 // GPU timestamps of the frame's steps (TOTK_FG_TIMES, default on with frame generation): FG_T_MV0 resets the frame's
 // slot, so it comes first in the frame.
 enum { FG_T_MV0, FG_T_MV1, FG_T_PREP0, FG_T_PREP1, FG_T_HL0, FG_T_HL1, FG_T_FI0, FG_T_FI1, FG_T_N };

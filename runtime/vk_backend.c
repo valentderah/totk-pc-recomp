@@ -56,7 +56,8 @@ typedef struct {
     VkImage image, gen[VK_FG_MAX_GENERATED];
     VkFormat format, gen_format;
     int w, h, has_crop, crop[4], ngen;
-    uint64_t frame, at, queued, value, pid;
+    uint64_t frame, at, queued, value, pid, fg_value;
+    int fg_slot;
 } PresentJob;   // pid: the frame's present ID (vk_reflex_frame); gen: its generated pictures (vk_fg_present_gens)
 
 static PlatMutex pl = PLAT_MUTEX_INIT;
@@ -209,11 +210,12 @@ static void present_main(void *arg) {
         // the frame's last submission, its interpolation included: no submission goes out while busy
         uint64_t drawn = j.ngen ? vk_sync_issued() : 0;
         int generated =
-            j.ngen && vk_present_blit_generated(j.gen, j.ngen, j.gen_format, j.image, j.format, j.w, j.h,
+            j.ngen && vk_present_blit_generated(j.gen, j.ngen, j.gen_format, j.image, j.format, j.w, j.h, j.fg_value,
                                                 j.has_crop ? j.crop : NULL);
         if (!j.ngen)
             vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
         uint64_t f = vk_sync_submit(NULL, 0);   // a timeline value after the blit: deferred destruction waits for the blit too
+        if (j.fg_slot >= 0) vk_fg_present_submitted(j.fg_slot, f);
         if (j.value && f != j.value)
             rt_fatal("vk: the present of frame %llu signalled %llu, queued as %llu", (unsigned long long)j.frame,
                      (unsigned long long)f, (unsigned long long)j.value);
@@ -283,6 +285,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
     vk_fg_present_swap(&j.image, &j.format);   // TOTK_FG_TEST (frame generation checks): another picture in its place
     j.ngen = vk_fg_present_gens(j.image, j.gen);
     j.gen_format = vk_fg_present_format();
+    j.fg_value = vk_fg_present_state(j.image, &j.fg_slot);
     int shown = j.ngen > 0 ? j.ngen + 1 : 1;
     if (__atomic_load_n(&fg_live, __ATOMIC_RELAXED) != shown)
         __atomic_store_n(&fg_live, shown, __ATOMIC_RELAXED);
@@ -448,7 +451,10 @@ static uint64_t submit_sync(const uint64_t *handles, int n) {
     vk_sync_start();
     vk_present_drain();
     vk_texture_new_submit();
-    return vk_sync_submit(handles, n);
+    vk_fg_wait_reuse();
+    uint64_t value = vk_sync_submit(handles, n);
+    vk_fg_async_submit(value);
+    return value;
 }
 
 static void replay_main(void *arg) {

@@ -255,6 +255,7 @@ static int pick_device(void) {
     VkQueueFamilyProperties *qp = calloc(nq ? nq : 1, sizeof *qp);
     vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &nq, qp);
     g_vk.gfx_family = find_gfx_family(g_vk.phys, qp, nq);
+    g_vk.gfx_queue_count = qp[g_vk.gfx_family].queueCount;
     g_vk.xfer_family = g_vk.gfx_family;
     for (uint32_t i = 0; i < nq; i++)   // a family that does transfer only (async DMA engine)
         if ((qp[i].queueFlags & VK_QUEUE_TRANSFER_BIT) && !(qp[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))) {
@@ -465,14 +466,17 @@ static int create_device(void) {
                has_fbl && c->fbl.attachmentFeedbackLoopLayout, has_lr && c->lr.dynamicRenderingLocalRead);
     }
 
-    float prio = 1.0f;
+    float prio[2] = {1.0f, 1.0f};
+    int want_fg_queue = cfg_bool("TOTK_DLSSG_ASYNC");
+    uint32_t gfx_queues = want_fg_queue && g_vk.gfx_queue_count > 1 ? 2 : 1;
     VkDeviceQueueCreateInfo qi[2] = {
-        {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.gfx_family, .queueCount = 1,
-         .pQueuePriorities = &prio}};
+        {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.gfx_family,
+         .queueCount = gfx_queues,
+         .pQueuePriorities = prio}};
     uint32_t nqi = 1;
     if (g_vk.xfer_family != g_vk.gfx_family) {
         qi[1] = (VkDeviceQueueCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                                          .queueFamilyIndex = g_vk.xfer_family, .queueCount = 1, .pQueuePriorities = &prio};
+                                          .queueFamilyIndex = g_vk.xfer_family, .queueCount = 1, .pQueuePriorities = prio};
         nqi = 2;
     }
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &c->f2, .queueCreateInfoCount = nqi,
@@ -481,6 +485,9 @@ static int create_device(void) {
     free(c);
     if (r != VK_SUCCESS) { rt_log("vk: vkCreateDevice failed (%d)", (int)r); return 0; }
     vkGetDeviceQueue(g_vk.device, g_vk.gfx_family, 0, &g_vk.gfx_queue);
+    if (gfx_queues > 1) vkGetDeviceQueue(g_vk.device, g_vk.gfx_family, 1, &g_vk.fg_queue);
+    else g_vk.fg_queue = g_vk.gfx_queue;
+    g_vk.fg_shared = gfx_queues < 2;
     if (g_vk.xfer_family != g_vk.gfx_family) vkGetDeviceQueue(g_vk.device, g_vk.xfer_family, 0, &g_vk.xfer_queue);
     else { g_vk.xfer_queue = g_vk.gfx_queue; g_vk.xfer_shared = 1; }
 
@@ -511,6 +518,13 @@ static int create_device(void) {
         rt_log("vk: timeline semaphore creation failed (%d)", (int)r);
         return 0;
     }
+    if ((r = vkCreateSemaphore(g_vk.device, &si, NULL, &g_vk.fg_timeline)) != VK_SUCCESS) {
+        rt_log("vk: frame generation timeline semaphore creation failed (%d)", (int)r);
+        return 0;
+    }
+    if (want_fg_queue)
+        rt_log("vk: frame generation queue %s", g_vk.fg_shared ? "shares the graphics queue"
+                                                               : "uses a second graphics queue");
     vk_crumbs_init(&g_vk);
     return 1;
 }
@@ -528,6 +542,7 @@ static void destroy_all(void) {
     if (g_vk.device) vk_crumbs_release();
     if (g_vk.device) vk_exec_null_attach_release();
     if (g_vk.timeline) vkDestroySemaphore(g_vk.device, g_vk.timeline, NULL);
+    if (g_vk.fg_timeline) vkDestroySemaphore(g_vk.device, g_vk.fg_timeline, NULL);
     vk_headroom_stop();
     if (g_vk.vma) vmaDestroyAllocator(g_vk.vma);
     if (g_vk.device) vkDestroyDevice(g_vk.device, NULL);
