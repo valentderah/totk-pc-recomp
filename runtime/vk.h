@@ -216,12 +216,23 @@ int  vk_pool_init(pool_t *p);              // CPU-visible: guest storage importe
                                            // VkBuffer, or its shadow copy (vk_memory.c mirror_mode); physical:
                                            // device-local memory; virtual: a 64 KiB page table
 void vk_pool_fini(pool_t *p);              // drops images cut from the pool; waits for the GPU if it used the pool
+// TOTK_REPLAY_ASYNC teardown (vk_backend.c vk_be_pool_fini): the game thread marks the record dying (0: no record), the
+// replay thread finishes it in queue order without waiting for the GPU; lookups that found a dying record, run total.
+int  vk_pool_fini_begin(const pool_t *p, uint64_t *lo, uint64_t *size, int *phys);
+void vk_pool_fini_queued(const pool_t *key);
+uint64_t vk_mem_dying_resolves(void);
 int  vk_pool_map_virtual(pool_t *v, int n, const void *requests);   // nvn_mapping_t[n], checked by the front end
 void vk_texture_register(int id, const tex_t *t, const view_t *v);  // texture descriptor slot (copied)
 void vk_sampler_register(int id, const samp_par *s);                // sampler descriptor slot (copied)
 void vk_texture_release(const tex_t *t);   // TextureFinalize: the image stays for slots that still name its storage
 void vk_read_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, uint8_t *dst, uint64_t row, uint64_t img);
 void vk_write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *src, uint64_t row, uint64_t img);
+// TOTK_REPLAY_ASYNC WriteTexels (vk_backend.c vk_be_write_texels): the game thread writes guest memory and stages the
+// image write (NULL: none; *bytes: the staging it holds), the replay thread records it in queue order and frees it.
+typedef struct VkTexWrite VkTexWrite;
+VkTexWrite *vk_write_texels_begin(const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *src,
+                                  uint64_t row, uint64_t img, uint64_t *bytes);
+void vk_write_texels_queued(VkTexWrite *w);
 void vk_guest_written(uint64_t addr, uint64_t size);   // a host write write-watch may miss: textures there re-upload
 
 // GPU address -> backing (section 3.1). avail: bytes from offset that stay contiguous in buffer. alloc/alloc_offset:
