@@ -46,7 +46,8 @@ static int init(VkCtx *c) {
     VkDescriptorSetLayoutCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                                            .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR,
                                            .bindingCount = 2, .pBindings = b};
-    VkPushConstantRange pr = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 32};
+    // offset + size + adjustment + the sRGB conversion flag: 4 + 4 + 4 floats + 1 flag = 36 bytes
+    VkPushConstantRange pr = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 36};
     VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
                                      .pSetLayouts = &C.dsl, .pushConstantRangeCount = 1, .pPushConstantRanges = &pr};
     VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST,
@@ -136,11 +137,29 @@ static void barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkPipel
     vkCmdPipelineBarrier2(cb, &d);
 }
 
-VkImage vk_color_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4]) {
-    if (!adjusting()) return VK_NULL_HANDLE;
+static VkImage record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4],
+                      int srgb_encode) {
+    int adjusted = adjusting();
+    if (!srgb_encode && !adjusted) return VK_NULL_HANDLE;
     VkCtx *c = vk_ctx();
     if (!C.tried) init(c);
-    if (!C.ok || !ensure_image(c, (uint32_t)crop[2], (uint32_t)crop[3])) return VK_NULL_HANDLE;
+    if (!C.ok) {
+        static int said;
+        if (!said) said = 1, rt_log("vk: DLSS Frame Generation sRGB encode off: its pipeline was not created");
+        return VK_NULL_HANDLE;
+    }
+    if (!ensure_image(c, (uint32_t)crop[2], (uint32_t)crop[3])) {
+        static int said;
+        if (!said) said = 1, rt_log("vk: DLSS Frame Generation sRGB encode off: no %ux%u image",
+                                    crop[2], crop[3]);
+        return VK_NULL_HANDLE;
+    }
+    if (srgb_encode) {
+        static int said;
+        if (!said)
+            said = 1, rt_log("vk: DLSS Frame Generation sRGB encode on at %ux%u (source format %d)",
+                             crop[2], crop[3], (int)fmt);
+    }
     slot %= SLOTS;
     if (C.src_view[slot]) vkDestroyImageView(c->device, C.src_view[slot], NULL);
     VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = src,
@@ -163,8 +182,8 @@ VkImage vk_color_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat
          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &oi}};
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, C.pipe);
     rec_push(C.push, cb, VK_PIPELINE_BIND_POINT_COMPUTE, C.layout, 0, 2, w);
-    struct { int32_t offset[2], size[2]; float adj[4]; } pc = {{crop[0], crop[1]}, {crop[2], crop[3]},
-                                                              {C.adj[0], C.adj[1], C.adj[2], C.adj[3]}};
+    struct { int32_t offset[2], size[2]; float adj[4]; uint32_t srgb_encode; } pc = {
+        {crop[0], crop[1]}, {crop[2], crop[3]}, {C.adj[0], C.adj[1], C.adj[2], C.adj[3]}, (uint32_t)srgb_encode};
     vkCmdPushConstants(cb, C.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
     vkCmdDispatch(cb, ((uint32_t)crop[2] + 7) / 8, ((uint32_t)crop[3] + 7) / 8, 1);
     // later submissions that write src wait for this read; FSR and the blit read the output
@@ -172,6 +191,14 @@ VkImage vk_color_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat
     barrier(cb, C.img, VK_IMAGE_LAYOUT_GENERAL, CS, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, ALL,
             VK_ACCESS_2_MEMORY_READ_BIT);
     return C.img;
+}
+
+VkImage vk_color_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4]) {
+    return record(cb, slot, src, fmt, crop, 0);
+}
+
+VkImage vk_color_record_srgb(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4]) {
+    return record(cb, slot, src, fmt, crop, 1);
 }
 
 void vk_color_release(void) {

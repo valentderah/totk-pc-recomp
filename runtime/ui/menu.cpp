@@ -881,8 +881,13 @@ static void row_play_time(void) {
 static void tab_game(float scale) {
     opt_begin("##game", scale);
     row_fps_limit();
-    static const UiTextId frame_gen[] = {UI_MENU_FRAME_GEN_OFF, UI_MENU_FRAME_GEN_FSR3};
-    opt_choice("TOTK_FRAME_GEN", UI_MENU_FRAME_GEN, frame_gen, 2, UI_MENU_FRAME_GEN_DESC);
+    static const UiTextId frame_gen[] = {UI_MENU_FRAME_GEN_OFF, UI_MENU_FRAME_GEN_FSR3, UI_MENU_FRAME_GEN_DLSSG};
+    opt_choice("TOTK_FRAME_GEN", UI_MENU_FRAME_GEN, frame_gen, 3, UI_MENU_FRAME_GEN_DESC);
+    if (!strcmp(cfg_value("TOTK_FRAME_GEN"), "dlssg")) {
+        static const UiTextId frames[] = {UI_MENU_DLSSG_FRAMES_AUTO, UI_MENU_DLSSG_FRAMES_2X,
+                                          UI_MENU_DLSSG_FRAMES_3X, UI_MENU_DLSSG_FRAMES_4X};
+        opt_choice("TOTK_DLSSG_FRAMES", UI_MENU_DLSSG_FRAMES, frames, 4, UI_MENU_DLSSG_FRAMES_DESC);
+    }
     opt_toggle("TOTK_FRAME_QUEUE", UI_MENU_FRAME_QUEUE, UI_MENU_FRAME_QUEUE_DESC);
     row_game_lang();
     static const UiTextId mode[] = {UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD};
@@ -1636,7 +1641,7 @@ static uint64_t g_perf_last_ns, g_perf_win_ns, g_perf_max_ns;
 static int g_perf_frames;
 static char g_perf_text[96];
 
-// Frame generation shows more pictures than the game draws (vk_backend.c present_pair): the presents a second over the
+// Frame generation shows more pictures than the game draws (vk_backend.c present_generated): the presents a second over the
 // last half second while it runs, else 0. The overlay's frame counts stay the frames the game drew. (PR #1089's
 // shown_tick, by xellow78-lgtm.)
 static double g_shown_fps;

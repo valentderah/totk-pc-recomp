@@ -20,11 +20,14 @@
 # Frame queue: the game starts a frame while the previous one waits for its display time, so a frame that runs long
 # still makes its turn. Far fewer dropped frames at the limit for up to one frame more input delay. Takes effect at once.
 # frame_queue = 0
-# Frame generation: off, or fsr3 (AMD FSR 3 frame interpolation). A generated picture goes on screen between each two
-# the game draws: twice the pictures, the game at half of fps_limit (the limit counts the pictures shown), the controls
-# about half a frame later. For displays of 120 Hz and more; off with DLSS, FSR (scene_upscaler) or HDR, and in
-# menus and fades. Applies at once.
+# Frame generation: off, fsr3 (AMD FSR 3) or dlssg (NVIDIA DLSS Frame Generation). FSR 3 inserts one picture between
+# each two the game draws; DLSS inserts one to three on supported RTX GPUs. fps_limit counts the pictures shown, so the
+# game draws less often. DLSS works with DLSS upscaling; both are off with FSR upscaling, HDR, replay_workers > 0 and
+# sync_ahead = 1, and in menus and fades. Selecting dlssg after the game started needs a restart; fsr3 applies at once.
 # frame_gen = off
+# DLSS generated frames: auto (the GPU's maximum: 2x on RTX 40, up to 4x with Multi Frame Generation on RTX 50), 2, 3
+# or 4. A setting above the GPU's maximum is capped. Applies at once; a changed count rebuilds the swapchain.
+# dlssg_frames = auto
 # Real-time frame step: game speed follows the clock instead of the frame count.
 # realtime = 1
 # Cloth simulation on the real-time clock. Needs realtime = 1.

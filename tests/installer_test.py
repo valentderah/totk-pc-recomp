@@ -1492,7 +1492,7 @@ class EventsTest(unittest.TestCase):
 
 @unittest.skipUnless(steps.os.name == 'nt', 'DLSS is Windows-only')
 class DlssTest(unittest.TestCase):
-    """The DLSS step: off without --dlss, needs an RTX GPU, keeps a player's library, verifies the download."""
+    """The DLSS step: off without --dlss, needs an RTX GPU, keeps a player's libraries, verifies both downloads."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1500,17 +1500,21 @@ class DlssTest(unittest.TestCase):
         self.dest, temp = base / 'dest', base / 'temp'
         self.dest.mkdir()
         temp.mkdir()
-        self.src = base / 'nvngx_dlss.dll'
-        self.src.write_bytes(b'dlss' * 1000)
-        self.saved = steps.DLSS_URL, steps.DLSS_SIZE, steps.DLSS_SHA256
-        steps.DLSS_URL = self.src.as_uri()   # urllib reads file: URLs as it reads https: ones
-        steps.DLSS_SIZE, steps.DLSS_SHA256 = 4000, steps.file_sha256(self.src)
+        self.src = {}
+        files = []
+        for name, _, _, _ in steps.DLSS_FILES:
+            src = base / name
+            src.write_bytes(name.encode() * 500)
+            self.src[name] = src
+            files.append((name, src.as_uri(), src.stat().st_size, steps.file_sha256(src)))
+        self.saved = steps.DLSS_FILES
+        steps.DLSS_FILES = tuple(files)   # urllib reads file: URLs as it reads https: ones
         rtx = {'devices': [{'name': 'NVIDIA GeForce RTX 4080 SUPER', 'api': [1, 4, 0], 'type': 2}]}
         self.ctx = SimpleNamespace(dest=self.dest, temp=temp, host=rtx, reporter=Reporter(out=io.StringIO()),
                                    options=SimpleNamespace(dlss=True))
 
     def tearDown(self):
-        steps.DLSS_URL, steps.DLSS_SIZE, steps.DLSS_SHA256 = self.saved
+        steps.DLSS_FILES = self.saved
         self.ctx.reporter.close()
         self.tmp.cleanup()
 
@@ -1527,14 +1531,16 @@ class DlssTest(unittest.TestCase):
     def test_downloads_and_checks_the_library(self):
         rec = steps.Dlss().run(self.ctx)
         self.assertEqual(rec, {'installed': steps.DLSS_VERSION})
-        self.assertEqual((self.dest / 'nvngx_dlss.dll').read_bytes(), self.src.read_bytes())
+        for name, *_ in steps.DLSS_FILES:
+            self.assertEqual((self.dest / name).read_bytes(), self.src[name].read_bytes())
         self.assertFalse(list(self.ctx.temp.iterdir()))
         self.assertTrue(steps.Dlss().current(self.ctx, rec))
         (self.dest / 'nvngx_dlss.dll').unlink()
         self.assertFalse(steps.Dlss().current(self.ctx, rec))
 
     def test_a_wrong_file_is_not_installed_and_tried_again(self):
-        steps.DLSS_SHA256 = '0' * 64
+        name, url, size, _ = steps.DLSS_FILES[0]
+        steps.DLSS_FILES = (('nvngx_dlss.dll', url, size, '0' * 64),) + steps.DLSS_FILES[1:]
         rec = steps.Dlss().run(self.ctx)
         self.assertEqual(rec, {'failed': True})
         self.assertFalse((self.dest / 'nvngx_dlss.dll').exists())
@@ -1546,16 +1552,17 @@ class DlssTest(unittest.TestCase):
             def read(self, n=-1):
                 raise http.client.IncompleteRead(b'dl', 3998)
 
-        with mock.patch.object(steps.urllib.request, 'urlopen', return_value=Cut()):
+        with mock.patch.object(steps.urllib.request, 'urlopen', side_effect=lambda *_a, **_k: Cut()):
             self.assertEqual(steps.Dlss().run(self.ctx), {'failed': True})
         self.assertFalse((self.dest / 'nvngx_dlss.dll').exists())
         self.assertFalse(list(self.ctx.temp.iterdir()))
-        self.assertEqual(self.warnings(), ['warn.dlss_download_failed'])
+        self.assertEqual(self.warnings(), ['warn.dlss_download_failed', 'warn.dlss_download_failed'])
 
     def test_keeps_the_players_library(self):
         (self.dest / 'nvngx_dlss.dll').write_bytes(b'newer')
         self.assertEqual(steps.Dlss().run(self.ctx), {'kept': True})
         self.assertEqual((self.dest / 'nvngx_dlss.dll').read_bytes(), b'newer')
+        self.assertEqual((self.dest / 'nvngx_dlssg.dll').read_bytes(), self.src['nvngx_dlssg.dll'].read_bytes())
         self.assertEqual(self.warnings(), ['warn.dlss_kept'])
 
     def test_skipped_without_an_rtx_gpu(self):

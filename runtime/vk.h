@@ -148,9 +148,10 @@ void vk_present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, in
 // vk_present_image split in two: vk_present_blit submits the blit and leaves the present waiting, vk_present_flip
 // queues it. The next blit or a swapchain rebuild queues a waiting present first.
 void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]);
-// Frame generation's pair: the blit of gen (RGBA8, GENERAL, the size of src), then of src, both left waiting, oldest
-// first; each vk_present_flip presents one. 0: gen was not blitted (src went alone, one flip).
-int vk_present_blit_pair(VkImage gen, VkImage src, VkFormat fmt, int w, int h, const int crop[4]);
+// Frame generation: the blits of count generated pictures (RGBA8, GENERAL, the size of src), then of src, all left
+// waiting, oldest first; each vk_present_flip presents one. 0: a generated picture was not blitted (src went alone).
+int vk_present_blit_generated(const VkImage gen[], int count, VkFormat gen_fmt, VkImage src, VkFormat fmt, int w,
+                              int h, const int crop[4]);
 // FSR 1 on the present (vk_fsr.c): records EASU (+ RCAS) of src's crop rectangle {x, y, w, h} into the rectangle out
 // {x, y, w, h} of dst, a swapchain image in TRANSFER_DST; src is in GENERAL and fmt its format. 0 = nothing recorded
 // (the setting says bilinear, no upscale is needed, or FSR is not available): the caller blits.
@@ -165,6 +166,9 @@ int vk_has_reflex(void);
 // src's crop rectangle {x, y, w, h}, adjusted, into an RGBA16F image of that size in GENERAL and returns it (the caller
 // scales that one instead, crop {0, 0, w, h}); VK_NULL_HANDLE = nothing recorded. src is in GENERAL, fmt its format.
 VkImage vk_color_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4]);
+// The same pass, after encoding a linear picture with the sRGB transfer function. DLSS Frame Generation writes its
+// interpolated picture in linear space; the game's real picture and the swapchain bytes are sRGB-encoded.
+VkImage vk_color_record_srgb(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4]);
 void vk_color_release(void);   // before the device goes away
 // HDR output (vk_hdr.c). vk_hdr_wanted: TOTK_HDR, read once. vk_hdr_surface_format: the HDR10 surface format when wanted
 // and offered (1). vk_hdr_set_active: gfx_present.c says whether the swapchain is HDR10 (vk_hdr_active). vk_hdr_encode:
