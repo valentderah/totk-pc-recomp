@@ -401,6 +401,7 @@ uint64_t vk_mem_gen(void);
 // Page write generations over guest memory (mem_written_pages plus vk_guest_written). Returns 1 when a page of the
 // range was written after generation `since`, 0 when not, -1 when the range is not write-watched (treat as written);
 // *now is the generation to pass next time.
+int vk_mem_watch_texture(uint64_t addr, uint64_t size);   // pool watch: a mirrored texture's storage; 0 not watched
 int vk_mem_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now);
 // The same answer from per-epoch write-watch snapshots of 2 MiB regions: no system call once the regions were queried in
 // this epoch (a guest submission). For checks that may see writes made during the epoch one epoch late.

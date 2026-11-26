@@ -62,6 +62,7 @@ typedef struct Tex {
     uint8_t listed;               // in owned[]
     uint8_t eager_cand;           // in eager_c[]: rendered by the value being recorded, snapshot not taken yet
     uint8_t eager_dry;            // snapshots made for it since its last write-back while it was not written back lately
+    uint8_t unwatched;            // mirrored, but its storage has no write watch (vk_mem_watch_texture): uploaded at every check
     struct EagerSnap *eager;      // wb_eager: the staging copy of the image that value eager->value ended with
     uint64_t wb_last;             // wb_eager: gpu_fence of the newest render a write-back took (0: never written back)
     uint8_t *snap;                // a texture that fills no page: its storage bytes when the GPU write was recorded
@@ -552,6 +553,12 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
         p->swz[0] = NVN_TEXTURE_SWIZZLE_R, p->swz[1] = NVN_TEXTURE_SWIZZLE_G, p->swz[2] = NVN_TEXTURE_SWIZZLE_B,
         p->swz[3] = NVN_TEXTURE_SWIZZLE_A;
     p->mirrored = (uint8_t)tex_mirrored(t);
+    if (p->mirrored && !vk_mem_watch_texture((uintptr_t)t->mem, t->L.size)) {   // pool watch (vk_memory.c)
+        static volatile int32_t n_unwatched;
+        e->unwatched = 1;
+        log_limited(&n_unwatched, "texture storage %#llx+%#llx is not in a watched memory pool: uploaded at every check",
+                    (unsigned long long)(uintptr_t)t->mem, (unsigned long long)t->L.size);
+    }
     p->bound = e->bound_to != NULL;
     p->block_views = (uint8_t)block_views;
     p->fb_usage = (uint8_t)fb_usage;
@@ -1315,6 +1322,7 @@ static void make_fresh(Tex *e) {
     }
     uint32_t now;
     int ch = vk_mem_changed(e->pub.addr, size, e->wgen, &now);
+    if (e->unwatched) ch = -1;
     e->wgen = now;
     e->last_ch = ch;
     if (ch) upload(e);   // 1 written, -1 not tracked: both upload again
@@ -1328,6 +1336,7 @@ static void make_fresh_snap(Tex *e) {
     uint32_t now;
     n_checks++;
     int ch = vk_mem_changed_snap(e->pub.addr, e->t.L.size, e->uploaded ? e->wgen : 0, submit_epoch, &now);
+    if (e->unwatched) ch = -1;
     e->wgen = now;
     if (!e->uploaded) { upload(e); return; }
     e->last_ch = ch;

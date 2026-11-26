@@ -528,6 +528,15 @@ void plat_sleep_ms(uint32_t ms) {
 // by a holder of G (kernel.c wake: the signal is sent with G held) slept again on G at once: two OS wake-ups per
 // guest wake. 512 pauses cover a typical hold; a longer hold still ends in the futex sleep.
 #define LK_SPINS 512
+// plat_lock_spins_thread(n): the calling thread pauses n times before it sleeps on any lock (0: the
+// default). For a thread that limits the frame (the replay): the holders of its locks hold them for less than a wake
+// from a futex sleep takes.
+static __thread int lk_spins_tl;
+void plat_lock_spins_thread(int n) { lk_spins_tl = n; }
+static inline int lk_spins(void) {
+    if (__builtin_expect(lk_spins_tl != 0, 0)) return lk_spins_tl;
+    return LK_SPINS;
+}
 
 static long futex(volatile uint32_t *w, int op, uint32_t val, const struct timespec *ts) {
     return syscall(SYS_futex, w, op | FUTEX_PRIVATE_FLAG, val, ts, NULL, 0);
@@ -564,7 +573,7 @@ void plat_mutex_lock(PlatMutex *m) {
             if (__atomic_compare_exchange_n(w, &s, s | LK_W, 1, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return;
             continue;
         }
-        if (spin < LK_SPINS) plat_pause();
+        if (spin < lk_spins()) plat_pause();
         else lk_sleep(w, s);
     }
 }
@@ -591,7 +600,7 @@ void plat_mutex_lock_shared(PlatMutex *m) {
             if (__atomic_compare_exchange_n(w, &s, s + 1, 1, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return;
             continue;
         }
-        if (spin < LK_SPINS) plat_pause();
+        if (spin < lk_spins()) plat_pause();
         else lk_sleep(w, s);
     }
 }
@@ -923,9 +932,40 @@ int plat_mem_state(uint64_t addr, uint64_t limit, uint64_t *end) {
     return v == PS_FREE ? PLAT_MEM_FREE : v == PS_RESERVED ? PLAT_MEM_RESERVED : v - PS_NONE;
 }
 
+// The write watch over given ranges only (memory.c mem_watch_*). plat_mem_watch_ranges(addr, n) takes the
+// watch off a whole reservation; plat_mem_watch(addr, n, 1) puts it on a page range again and protects its pages, so
+// every write after the call is reported; plat_mem_watch(addr, n, 0) takes it off, and the pages are then written
+// without a fault and no query reports them. A query over a range with unwatched parts skips those parts
+// (PAGEMAP_SCAN without PM_SCAN_CHECK_WPASYNC skips a mapping that is not registered). 0 when not possible.
+#ifndef UFFDIO_WRITEPROTECT_MODE_WP
+#define UFFDIO_WRITEPROTECT_MODE_WP ((__u64)1 << 0)
+#endif
+static int ww_ranges;   // ranges mode: queries do not ask for the registration check
+
+int plat_mem_watch_ranges(uint64_t addr, uint64_t n) {
+    if (ww_fd < 0) return 0;
+    struct uffdio_range r = {addr, n};
+    if (ioctl(ww_fd, UFFDIO_UNREGISTER, &r)) return 0;
+    __atomic_store_n(&ww_ranges, 1, __ATOMIC_RELEASE);
+    return 1;
+}
+
+int plat_mem_watch(uint64_t addr, uint64_t n, int on) {
+    if (ww_fd < 0) return 0;
+    if (!on) {
+        struct uffdio_range r = {addr, n};
+        return !ioctl(ww_fd, UFFDIO_UNREGISTER, &r);
+    }
+    struct uffdio_register reg = {.range = {addr, n}, .mode = UFFDIO_REGISTER_MODE_WP};
+    if (ioctl(ww_fd, UFFDIO_REGISTER, &reg)) return 0;
+    struct uffdio_writeprotect wp = {.range = {addr, n}, .mode = UFFDIO_WRITEPROTECT_MODE_WP};
+    return !ioctl(ww_fd, UFFDIO_WRITEPROTECT, &wp);
+}
+
 uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t max, int reset) {
     if (!max || !n) return 0;
     if (ww_fd < 0) return UINT64_MAX;
+    int check = __atomic_load_n(&ww_ranges, __ATOMIC_RELAXED) ? 0 : PM_SCAN_CHECK_WPASYNC;
     struct page_region r[256];
     uint64_t got = 0;
     for (uint64_t at = addr, end = addr + n; at < end && got < max;) {
@@ -933,7 +973,7 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
         // zero page. A page never touched since its commit has no protection marker either and counts as written to
         // the kernel; a read maps the zero page there. Neither is a write, as on Windows.
         struct pm_scan_arg arg = {.size = sizeof arg,
-                                  .flags = reset ? PM_SCAN_WP_MATCHING | PM_SCAN_CHECK_WPASYNC : 0,
+                                  .flags = reset ? PM_SCAN_WP_MATCHING | check : 0,
                                   .start = at, .end = end, .vec = (uint64_t)(uintptr_t)r, .vec_len = 256,
                                   .max_pages = max - got,
                                   .category_inverted = PAGE_IS_PFNZERO,

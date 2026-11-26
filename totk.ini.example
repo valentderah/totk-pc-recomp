@@ -246,6 +246,18 @@
 # memory, off elsewhere (not run there). Read at start.
 # wb_eager_all = 1
 
+# The write watch of shadow storage on Linux, each 0 or 1. ww_pools: the watch covers the pages of CPU-visible memory
+# pools only, not the whole heap of the game (import memory mode only). ww_idle: with usnap_peek, a pool that only
+# the uniform snapshot reads leaves the watch.
+# ww_prescan: a second thread makes the write-watch queries before the replay thread needs them. Default of the
+# three: on with the RADV driver in the Linux build and imported memory, off elsewhere (not run there). Windows
+# always watches the whole heap. replay_spins (default 4096): the pauses that the replay thread spins before it
+# sleeps on a Linux lock, 0 for the count of the other threads. Read at start.
+# ww_pools = 1
+# ww_idle = 1
+# ww_prescan = 1
+# replay_spins = 4096
+
 [display]
 # Device profile: auto (the Steam Deck when this is one), desktop or deck. On a Steam Deck the keys this file does not
 # set default to fullscreen = 1, window_size = 1280x800, output_res = 1280x800, render_scale = game, vk_present = fifo

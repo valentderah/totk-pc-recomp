@@ -434,6 +434,10 @@ static void replay_main(void *arg) {
     (void)arg;
     perf_replay_thread();
     perf_core_thread(PCORE_REPLAY);
+    {   // TOTK_REPLAY_SPINS (4096 pauses, about 80 us; 0: the default of every thread): see plat_lock_spins_thread
+        const char *e = cfg_get("TOTK_REPLAY_SPINS");
+        plat_lock_spins_thread(e && *e ? atoi(e) : 4096);
+    }
     plat_mutex_lock(&rl);
     for (;;) {
         while (!rq_n) plat_cond_wait(&rcv, &rl);

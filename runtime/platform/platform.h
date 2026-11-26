@@ -136,6 +136,7 @@ typedef struct { void *p; } PlatCond;
 void plat_mutex_init(PlatMutex *m);
 void plat_mutex_lock(PlatMutex *m);
 int plat_mutex_trylock(PlatMutex *m);     // 1 when acquired
+void plat_lock_spins_thread(int n);       // the calling thread spins n pauses before it sleeps on a lock (0: default)
 void plat_mutex_unlock(PlatMutex *m);
 void plat_mutex_lock_shared(PlatMutex *m);
 int plat_mutex_trylock_shared(PlatMutex *m);   // 1 when acquired
@@ -218,6 +219,11 @@ int plat_mem_state(uint64_t addr, uint64_t limit, uint64_t *end);
 // The pages of a watched reservation written since the last reset, up to max page addresses into pages, in address
 // order; reset: those reported start over as unwritten. UINT64_MAX when writes to the range are not tracked.
 uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t max, int reset);
+// The write watch on parts of a watched reservation only. plat_mem_watch_ranges takes the watch off the whole
+// reservation [addr, addr+n); plat_mem_watch then puts it on a page range (on 1: writes after the call are reported) or
+// takes it off (on 0: writes cost nothing and no query reports them). 0 when the platform cannot (nothing changes).
+int plat_mem_watch_ranges(uint64_t addr, uint64_t n);
+int plat_mem_watch(uint64_t addr, uint64_t n, int on);
 // A write that faulted on a read-only page at addr goes to fn first; fn returns 1 when it made the page writable and
 // the write should run again, 0 to let the fault go on (to the crash handler). One hook per process.
 void plat_mem_fault_hook(int (*fn)(uint64_t addr));

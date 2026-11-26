@@ -77,6 +77,8 @@ static volatile uint8_t frz[RT_ADDRESS_LIMIT >> FRZ_SHIFT];
 static uint32_t thaw_ms[RT_ADDRESS_LIMIT >> FRZ_SHIFT];   // frz_lock: GetTickCount of the last thaw request, 0 never
 static volatile int32_t nfrz;
 static PlatMutex frz_lock = PLAT_MUTEX_INIT;
+static int watch_on;        // the write watch covers given ranges only (mem_watch_ranges, below)
+static uint16_t *watch_n;   // watch_lock: holders per 4 KiB page below RT_ADDRESS_LIMIT
 static volatile int64_t frz_count[4];   // freezes; thaws by a write fault, by mem_thaw, by a mapping change
 
 static int watched(uint64_t addr, uint64_t size) {
@@ -119,16 +121,38 @@ void mem_thaw(uint64_t a, uint64_t n) {
 
 // frz_lock held exclusively. Makes the committed pages of region r read-only when every one of them is read-write;
 // reserved holes (heap pages given back) stay as they are, and thaw_locked finds the read-only runs again.
+// With the watch on given ranges only (mem_watch_ranges), only the watched pages of the region become
+// read-only. The other pages are the game's heap beside the pools: nobody asks whether they were written, and a write
+// into one of them would thaw the region (a fault, two protection changes) again and again. Up to 64 runs then. A
+// region without a watched page freezes with no page changed.
+static inline int watch_live(uint64_t a) {   // the page at a is watched
+    uint16_t n = __atomic_load_n(&watch_n[a >> 12], __ATOMIC_RELAXED);
+    return n && n != 0xffff;
+}
 static int freeze_locked(uint64_t r) {
-    uint64_t a = r << FRZ_SHIFT, end = a + FRZ_SIZE, run[16][2];
-    int n = 0;
+    enum { RUNS = 64 };
+    uint64_t a = r << FRZ_SHIFT, end = a + FRZ_SIZE, run[RUNS][2];
+    int n = 0, max = watch_on ? RUNS : 16;
     for (uint64_t x = a, y; x < end; x = y) {
         int st = plat_mem_state(x, end, &y);
         if (st >= PLAT_PROT_NONE) {
-            if (st != PLAT_PROT_RW || n == 16) return 0;
-            run[n][0] = x, run[n][1] = y, n++;
+            if (st != PLAT_PROT_RW) return 0;
+            if (!watch_on) {
+                if (n == max) return 0;
+                run[n][0] = x, run[n][1] = y, n++;
+                continue;
+            }
+            for (uint64_t p = x; p < y;) {
+                if (!watch_live(p)) { p += PAGE; continue; }
+                uint64_t q = p;
+                while (q < y && watch_live(q)) q += PAGE;
+                if (n == max) return 0;
+                run[n][0] = p, run[n][1] = q, n++;
+                p = q;
+            }
         } else if (st != PLAT_MEM_RESERVED) return 0;
     }
+    if (watch_on && !n) return 1;
     for (int i = 0; i < n; i++)
         if (!plat_mem_protect(run[i][0], run[i][1] - run[i][0], PLAT_PROT_READ)) {
             while (i--) plat_mem_protect(run[i][0], run[i][1] - run[i][0], PLAT_PROT_RW);
@@ -397,6 +421,79 @@ uint64_t mem_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, uint64
 
 uint64_t mem_written_peek(uint64_t addr, uint64_t size, uint64_t *pages, uint64_t max) {
     return written_pages(addr, size, pages, max, 0);
+}
+
+// ---- the write watch on given ranges only
+// The back end asks about written pages only inside NVN memory pools, but the watch covered the whole stack and heap
+// block and the alias region, and a query protects every written page of its range again. At Lookout Landing 370 of
+// the 950 pages a frame the queries found lay in no pool (the game's heap beside the pools): a write fault each
+// (about 1 us on a game thread) and a part of every query's work, for nothing. mem_watch_ranges takes the watch off
+// both reservations; mem_watch_add puts it on the pages of [addr, addr+size) and mem_watch_remove takes it off again.
+// The count of holders is kept per page (pools share pages at their ends). mem_watch_covered tells whether every page
+// of a range has a holder: a range that has not is not tracked.
+// A count of WATCH_NOT marks a page whose watch could not be put on (not tracked, for good); a count that reached
+// WATCH_TOP stays (the page stays watched).
+enum { WATCH_TOP = 0xfffe, WATCH_NOT = 0xffff };
+static PlatMutex watch_lock = PLAT_MUTEX_INIT;
+
+int mem_watch_ranges(void) {
+    if (watch_on) return 1;
+    // The platform first: where it watches whole reservations only (Windows), no table is made.
+    if (!plat_mem_watch_ranges(L.aslr.base, low_size)) return 0;
+    if (!plat_mem_watch_ranges(L.alias.base, ALIAS_SIZE))
+        rt_fatal("memory: the write watch came off the heap block, but not off the alias region");
+    watch_n = plat_mem_alloc((size_t)(RT_ADDRESS_LIMIT >> 12) * sizeof *watch_n);   // not committed until touched
+    if (!watch_n) rt_fatal("memory: no memory for the page counts of the write watch");
+    watch_on = 1;
+    return 1;
+}
+
+// The page range of [addr, addr+size) when the mode is on and the range lies in a watched reservation.
+static int watch_span(uint64_t addr, uint64_t size, uint64_t *p0, uint64_t *p1) {
+    if (!watch_on || !size || !watched(addr, size)) return 0;
+    *p0 = addr >> 12, *p1 = (addr + size + PAGE - 1) >> 12;
+    return 1;
+}
+
+static void watch_change(uint64_t addr, uint64_t size, int add) {
+    uint64_t p0, p1;
+    if (!watch_span(addr, size, &p0, &p1)) return;
+    // A frozen region has only the pages read-only that were watched at its freeze: pages that join the watch thaw it
+    // first, and the hold of mem_thaw keeps it thawed until long after this call.
+    if (add) mem_thaw(addr, size);
+    plat_mutex_lock(&watch_lock);
+    for (uint64_t p = p0; p < p1;) {
+        // a run of pages whose holder count crosses zero: one system call
+        uint64_t q = p;
+        int edge = add ? watch_n[p] == 0 : watch_n[p] == 1;
+        while (q < p1 && (add ? watch_n[q] == 0 : watch_n[q] == 1) == edge) q++;
+        for (uint64_t k = p; k < q; k++) {
+            if (add) { if (watch_n[k] < WATCH_TOP) watch_n[k]++; }
+            else if (watch_n[k] && watch_n[k] < WATCH_TOP) watch_n[k]--;
+        }
+        if (edge && !plat_mem_watch(p << 12, (q - p) << 12, add)) {
+            rt_log("memory: write watch %s %#llx+%#llx failed", add ? "on" : "off", (unsigned long long)(p << 12),
+                   (unsigned long long)((q - p) << 12));
+            if (add)
+                for (uint64_t k = p; k < q; k++) __atomic_store_n(&watch_n[k], WATCH_NOT, __ATOMIC_RELAXED);
+        }
+        p = q;
+    }
+    plat_mutex_unlock(&watch_lock);
+}
+
+void mem_watch_add(uint64_t addr, uint64_t size) { watch_change(addr, size, 1); }
+void mem_watch_remove(uint64_t addr, uint64_t size) { watch_change(addr, size, 0); }
+
+int mem_watch_covered(uint64_t addr, uint64_t size) {
+    uint64_t p0, p1;
+    if (!watch_on) return 1;
+    if (!watch_span(addr, size, &p0, &p1)) return 0;
+    for (uint64_t p = p0; p < p1; p++) {
+        uint16_t n = __atomic_load_n(&watch_n[p], __ATOMIC_RELAXED);
+        if (!n || n == WATCH_NOT) return 0;
+    }
+    return 1;
 }
 
 static uint64_t image_bytes(void) {
