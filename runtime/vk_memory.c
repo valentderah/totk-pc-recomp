@@ -50,6 +50,7 @@ typedef struct PoolRec {
     VPage *pt;                         // POOL_VIRT: size / 64 KiB entries
     uint64_t npages;
     volatile int32_t used;                // resolved at least once: the GPU may still read it at finalize
+    uint8_t dying;                     // pool_lock: its teardown is queued for the replay thread (vk_pool_fini_begin)
     // TOTK_TRACE=perf dirty census (vk_mem_dirty_submit), replay thread under the submit lock only:
     uint32_t bound_sub;                // last submit that bound it as a buffer (dirty_sub), 0 never
     uint32_t synced_gen;               // page generation its lazy-mirror count covers; DIRTY_UNSYNCED until scanned
@@ -94,6 +95,7 @@ static uint64_t pool_gen = 1;
 // every submission's start (mirror syncs are per submission). vk_mem_gen: both together.
 static uint64_t mirror_gen;
 static pidx pool_index;                // POOL_IMPORT, POOL_PHYS and POOL_VIRT records by GPU address
+static volatile int64_t n_dying_resolves;   // lookups that found a record whose teardown is queued (vk_mem_dying_resolves)
 static PoolRec **phys_list;            // physical pools by key, for MapVirtual requests
 static int nphys, cap_phys;
 static int32_t n_imports, n_import_failures;
@@ -307,7 +309,8 @@ int vk_pool_init(pool_t *p) {
     return 1;
 }
 
-void vk_pool_fini(pool_t *p) {
+// queued: the replay thread's half of a teardown vk_pool_fini_begin queued (vk_backend.c vk_be_pool_fini).
+static void pool_fini(const pool_t *p, int queued) {
     VkCtx *c = vk_ctx();
     if (!c) return;
     pidx_ent e;
@@ -333,7 +336,11 @@ void vk_pool_fini(pool_t *p) {
     // Images cut from this range go first; a used buffer or memory waits until the GPU is done with it, since the
     // guest gets the storage back when this returns.
     vk_texture_range_gone(r->lo, r->size, r->alloc);
-    if (r->used && r->kind != POOL_VIRT) {
+    // Queued, the guest got the storage back when vk_pool_fini_begin returned, so a wait here protects nothing and
+    // would hold the replay behind the GPU. The record goes by completion below; the open upload batch (a texture
+    // upload may read the import buffer) is submitted first, so the retire value's signal covers it in queue order.
+    if (queued) vk_upload_flush(0);
+    else if (r->used && r->kind != POOL_VIRT) {
         vk_upload_flush(1);
         vk_queue_lock();
         vkQueueWaitIdle(c->gfx_queue);
@@ -350,6 +357,36 @@ void vk_pool_fini(pool_t *p) {
     pool_retiring(r);
     vk_completion_add(retire_value(), pool_retire, r);
 }
+
+void vk_pool_fini(pool_t *p) { pool_fini(p, 0); }
+
+// Asynchronous replay, game thread (vk_backend.c vk_be_pool_fini): the record stays in the index for the items queued
+// before the teardown, marked dying, and the replay thread finishes it with vk_pool_fini_queued in queue order. The
+// generation bump drops every thread's cached hits (vk_mem_resolve), and resolve_locked never caches a dying record, so
+// each later lookup of it is counted. Returns 0 when the pool has no record (nothing to queue), else its range and
+// whether it is physical (virtual pools' textures may sit on its memory: vk_texture_range_gone's alloc test).
+int vk_pool_fini_begin(const pool_t *p, uint64_t *lo, uint64_t *size, int *phys) {
+    if (!vk_ctx()) return 0;
+    PoolRec *r = NULL;
+    plat_mutex_lock(&pool_lock);
+    for (int i = 0; i < pool_index.n && !r; i++)
+        if (pool_index.e[i].key == p) r = pool_index.e[i].buf;
+    if (r) {
+        r->dying = 1;
+        __atomic_add_fetch(&pool_gen, 1, __ATOMIC_RELEASE);
+        *lo = r->lo, *size = r->size, *phys = r->kind == POOL_PHYS;
+    }
+    int import = r && r->kind == POOL_IMPORT;
+    plat_mutex_unlock(&pool_lock);
+    if (import) mem_thaw(*lo, *size);   // as vk_pool_fini: the storage goes back to the guest writable now
+    return r != NULL;
+}
+
+// Replay thread: the rest of the teardown, keyed by the pool object's address, which is never dereferenced (the game
+// may have reused the object).
+void vk_pool_fini_queued(const pool_t *key) { pool_fini(key, 1); }
+
+uint64_t vk_mem_dying_resolves(void) { return (uint64_t)__atomic_load_n(&n_dying_resolves, __ATOMIC_RELAXED); }
 
 // Requests were checked by the front end (nvn_api_core.c, MNG totk_vpool.c); apply them in order.
 int vk_pool_map_virtual(pool_t *v, int n, const void *requests) {
@@ -439,7 +476,8 @@ static int resolve_locked(uint64_t addr, uint64_t size, VkMemSpan *out) {
     const pidx_ent *e = pidx_find(&pool_index, (uintptr_t)addr, size);
     PoolRec *r = e ? e->buf : NULL;
     int ok = 0;
-    if (r && (r->kind == POOL_IMPORT ? r->buf != VK_NULL_HANDLE : r->kind == POOL_PHYS)) {
+    if (r && r->dying) plat_inc64(&n_dying_resolves);
+    if (r && !r->dying && (r->kind == POOL_IMPORT ? r->buf != VK_NULL_HANDLE : r->kind == POOL_PHYS)) {
         int i = (int)(e - pool_index.e);
         if ((i == 0 || pool_index.maxhi[i - 1] <= e->lo) && (i + 1 == pool_index.n || pool_index.e[i + 1].lo >= e->hi)) {
             ResolveHit *h = rhit_slot(addr);
@@ -468,6 +506,7 @@ static int resolve_locked(uint64_t addr, uint64_t size, VkMemSpan *out) {
         uint64_t rel = addr - r->lo, k = rel / NVN_VPOOL_PAGE;
         if (k < r->npages && r->pt[k].phys) {
             PoolRec *ph = r->pt[k].phys;
+            if (ph->dying) plat_inc64(&n_dying_resolves);
             uint64_t off = r->pt[k].off + rel % NVN_VPOOL_PAGE, end = r->pt[k].off + NVN_VPOOL_PAGE;
             for (uint64_t j = k + 1; j < r->npages && r->pt[j].phys == ph && r->pt[j].off == end; j++) end += NVN_VPOOL_PAGE;
             out->buffer = ph->buf;
