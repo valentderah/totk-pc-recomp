@@ -62,6 +62,18 @@ MacNativeGames cannot run on x86-64 as is: its CPU path executes ARM64 code nati
   Simplified Chinese, German, French, Spanish, Italian, Dutch, Japanese, Korean,
   Vietnamese). The Chinese, Japanese and Korean glyphs
   come from a system font (`plat_font_path`) merged into the font atlas.
+- Loading window (`loadwin.c`, `loadwin_win.c`). A game run shows a panel in the middle of the screen from the start
+  until the game window opens: a row of twelve hearts filling a quarter at a time with the share of the whole start (the
+  next quarter sweeps in between; the one being filled beats; a white flash runs along the row when the game window
+  opens), the stage, the counted work of the boot prewarm (shaders, pipelines) and of the mods' files' size-table pass,
+  the time left, and about how long until the game starts. The share and that time come from the recent starts'
+  timeline, when each stage began and ended (`<profile>/loading-time.txt`, the mean of the last start and the one kept
+  before): a stage slower than then moves the end later, so the hearts keep filling ever more slowly while it runs and
+  catch up when it ends (`loadwin.c` `time_left`); without the file, fixed shares of the stages fill the hearts.
+  `tests/loadwin_pace.c` runs the estimator and the hearts through emulated starts. The panel's Details button shows the
+  run's log live. A run that Windows gave a console of its own (started from Explorer or a shortcut) leaves it, so the
+  console window closes; `console = 1` keeps the console and opens no panel. A fatal error or a crash before the game
+  window keeps the panel open with the log until the player closes it.
 - OS calls the host makes go through `runtime/platform/` (`platform.h`, `win32.c`), so a Linux or macOS host adds one file instead of touching the rest. The split is not finished: `tools/check_platform.py` lists the Win32 uses left in the other files.
 
 #### Threads and cores

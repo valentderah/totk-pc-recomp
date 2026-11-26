@@ -248,6 +248,10 @@ pre-port layout generator; all game-derived temporary data stays under `build/`.
 to check canonical aliases, capped/full fallback, prompt arguments, the missing 16:9 prompts and generation
 deduplication without game files. `tests/romfs_prompts_test.py` checks that two `--background` runs for one folder
 publish it once and that a folder with a manifest is kept.
+A change to the loading window (`runtime/loadwin.c`, `runtime/loadwin_win.c`) passes
+`python tests\loadwin_pace.py`, which runs its estimate and its hearts through every pair of emulated starts (warm, cold
+file cache, pipelines compiled anew, a slow guest start, a slow machine) and fails when the hearts go back, stand still
+or fill before the game window (Windows only).
 A change to the mods' ExeFS patches
 (`tools/exefs_patches.py`, `runtime/mods.c`, the `folded.txt` of `recomp/gen.py`) passes
 `.venv\Scripts\python tests\exefs_patches_test.py`, which makes its own modules and runs `gen.py` on one with a jump

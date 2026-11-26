@@ -1961,7 +1961,10 @@ int plat_restart(void) {
     STARTUPINFOW si = {.cb = sizeof si};
     PROCESS_INFORMATION pi;
     wchar_t *cmd = _wcsdup(GetCommandLineW());   // CreateProcessW may write its command line
-    BOOL ok = cmd && CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
+    // A process that left its console (loadwin_win.c lw_wsys_detach_console) starts the new one without a console
+    // window, which would otherwise open for it until that one leaves its console too
+    DWORD flags = GetConsoleWindow() ? 0 : CREATE_NO_WINDOW;
+    BOOL ok = cmd && CreateProcessW(NULL, cmd, NULL, NULL, FALSE, flags, NULL, NULL, &si, &pi);
     free(cmd);
     plat_setenv(RESTART_WAIT, NULL);
     if (!ok) return 0;
