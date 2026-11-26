@@ -58,6 +58,11 @@
 # interrupt that lands inside a port function is refused. 0 or 1. Default: on. On a Ryzen 9 7900X with 4 cores the
 # frame on the sky islands was about 5% shorter.
 # host_checkpoint = 1
+# With async_preempt on, microseconds a waiting thread spins for a virtual core before it first interrupts the owner,
+# then interrupts it at most every millisecond: 10 to 1000, default 250. A shorter wait hands a busy core over sooner
+# in a scene whose waits outlast it, at the cost of more switches between the two threads; async_preempt = 0 turns
+# the interrupt off.
+# ap_first_us = 250
 # Replay NVN submissions on their own thread, at most one frame behind the game, 0 or 1. Default: off. Helps where the
 # game waits for the GPU; adds up to a frame of latency.
 # replay_async = 0
