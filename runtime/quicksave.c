@@ -305,6 +305,10 @@ static int poll_locked(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx,
         if (plat_cas32(&g_request, REQ_NONE, REQ_LOAD) != REQ_LOAD || !quicksave_on()) return 0;
         char data[1200];
         path_of(data, sizeof data, "slot");
+        if (fs_save_recover_slot(data)) {
+            say(UI_QS_LOAD_FAILED, "quickload", "the previous quick save could not be recovered");
+            return 0;
+        }
         if (plat_fs_kind(data) != PLAT_FS_DIR) { say(UI_QS_NONE, "quickload", "there is no quick save"); return 0; }
         const char *why = not_in_play();
         if (why) { say(UI_QS_NOT_NOW, "quickload: not now", why); return 0; }

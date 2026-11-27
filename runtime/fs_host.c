@@ -591,16 +591,70 @@ static int slot_name_ok(const char *slot) {
     return slot[0] && slot[0] != '.' && !strchr(slot, '/') && !strchr(slot, '\\') && !strchr(slot, ':');
 }
 
+// dst and its .new/.old siblings belong to the quicksave caller, outside the regular save transaction.
+static char *slot_copy_path(const char *dst, const char *suffix) {
+    size_t n = strlen(dst) + strlen(suffix) + 1;
+    char *p = malloc(n);
+    need(p != NULL, "quick save path");
+    snprintf(p, n, "%s%s", dst, suffix);
+    return p;
+}
+
+// A process interrupted between the publication renames leaves the previous complete copy in .old.
+// Never promote .new: it can be an unfinished copy. This relies on the host's durable directory operations,
+// not on a guarantee against power loss on file systems that cannot flush directory entries.
+static int slot_copy_recover_locked(const char *dst, const char *old) {
+    int kind = plat_fs_kind(dst), old_kind = plat_fs_kind(old);
+    if ((kind != PLAT_FS_DIR && kind != PLAT_FS_MISSING) ||
+        (old_kind != PLAT_FS_DIR && old_kind != PLAT_FS_MISSING)) return -1;
+    if (kind == PLAT_FS_MISSING && old_kind == PLAT_FS_DIR) {
+        if (move_dir(old, dst, MOVE_TRIES)) {
+            rt_log("quicksave: the previous copy waits for recovery in %s", old);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int fs_save_recover_slot(const char *dst) {
+    char *old = slot_copy_path(dst, ".old");
+    plat_mutex_lock(&tx_lock);
+    int bad = slot_copy_recover_locked(dst, old);
+    plat_mutex_unlock(&tx_lock);
+    free(old);
+    return bad;
+}
+
 int fs_save_copy_slot(const char *slot, const char *dst) {
     if (!*save_root || !slot_name_ok(slot)) return -1;
     save_wait_commit();
     plat_mutex_lock(&tx_lock);
     char *src = join(newest_save(), slot);
+    char *staging = slot_copy_path(dst, ".new"), *old = slot_copy_path(dst, ".old");
     int n = 0, linked = 0;
     uint64_t bytes = 0;
-    int bad = plat_fs_kind(src) != PLAT_FS_DIR || remove_tree(dst) || copy_tree(src, dst, NULL, 1, &n, &linked, &bytes);
+    // Cleanup stays on the copy worker; quick load only restores a missing canonical directory.
+    int bad = plat_fs_kind(src) != PLAT_FS_DIR || slot_copy_recover_locked(dst, old) ||
+              remove_tree(staging) || remove_tree(old) || copy_tree(src, staging, NULL, 1, &n, &linked, &bytes);
+    int moved = 0;
+    if (!bad && exists(dst)) {
+        bad = move_dir(dst, old, MOVE_TRIES);
+        moved = !bad;
+    }
+    if (!bad && move_dir(staging, dst, MOVE_TRIES)) {
+        bad = -1;
+        if (moved && move_dir(old, dst, MOVE_TRIES))
+            rt_log("quicksave: publication failed; the previous copy is preserved in %s", old);
+    }
+    if (bad) {
+        remove_tree(staging);
+    } else if (moved && remove_tree(old)) {
+        rt_log("quicksave: saved; the replaced copy could not be cleaned up: %s", old);
+    }
     plat_mutex_unlock(&tx_lock);
     free(src);
+    free(staging);
+    free(old);
     return bad ? -1 : 0;
 }
 
@@ -945,29 +999,35 @@ static int64_t host_read_at(PlatFile *f, void *buf, uint32_t n, uint64_t off) {
 
 // Quick load (quicksave.c, fs_save_read_from): while set, a read-only open of a file of any slot folder of the save
 // mount (save:/slot_NN/<file>) opens <file> of this folder instead, so the game loads the quick save whichever slot it
-// was asked to load, and no slot of the save is written for it.
+// was asked to load, and no slot of the save is written for it. A missing snapshot file must not fall back to another
+// save's file: loading part of each would mix two save generations.
 static char read_from[PATH_CAP];
 static volatile int32_t read_from_on, read_from_hits;
 
 void fs_save_read_from(const char *dir) {
-    if (dir) snprintf(read_from, sizeof read_from, "%s", dir), plat_xchg32(&read_from_hits, 0);
+    if (dir) {
+        if (snprintf(read_from, sizeof read_from, "%s", dir) >= (int)sizeof read_from) read_from[0] = 0;
+        plat_xchg32(&read_from_hits, 0);
+    }
     plat_xchg32(&read_from_on, dir != NULL);
 }
 
 int fs_save_read_from_hits(void) { return plat_cas32(&read_from_hits, 0, 0); }
 
-static void redirect_slot_read(const char *path, char *p, size_t cap) {
+// 1 redirected, 0 outside the flat slot-file contract, -1 a missing/invalid snapshot file.
+static int redirect_slot_read(const char *path, char *p, size_t cap) {
     const char *rest = strstr(path, ":/slot_");
-    if (!rest) return;
+    if (!rest) return 0;
     const char *d = rest + 7, *file;
     while (*d >= '0' && *d <= '9') d++;
-    if (d == rest + 7 || *d != '/' || !d[1] || strchr(d + 1, '/')) return;
+    if (d == rest + 7 || *d != '/' || !d[1] || strchr(d + 1, '/')) return 0;
     file = d + 1;
     char q[PATH_CAP];
-    if (snprintf(q, sizeof q, "%s/%s", read_from, file) >= (int)sizeof q || plat_fs_kind(q) != PLAT_FS_FILE) return;
-    rt_log("fs: quick load: %s read from %s", path, q);
-    snprintf(p, cap, "%s", q);
-    plat_inc32(&read_from_hits);
+    if (!read_from[0]) return -1;
+    int n = snprintf(q, sizeof q, "%s/%s", read_from, file);
+    if (n < 0 || (size_t)n >= sizeof q || (size_t)n >= cap || plat_fs_kind(q) != PLAT_FS_FILE) return -1;
+    memcpy(p, q, (size_t)n + 1);
+    return 1;
 }
 
 static uint32_t open_file(uint64_t *out, const char *path, int mode) {
@@ -978,8 +1038,11 @@ static uint32_t open_file(uint64_t *out, const char *path, int mode) {
     int kind = M_FREE;
     uint32_t r = host_path_kind(path, p, sizeof p, &kind);
     if (r) return r;
-    if (kind == M_SAVE && !(mode & FS_OPEN_WRITE) && plat_cas32(&read_from_on, 0, 0))
-        redirect_slot_read(path, p, sizeof p);
+    int redirected = 0;
+    if (kind == M_SAVE && !(mode & FS_OPEN_WRITE) && plat_cas32(&read_from_on, 0, 0)) {
+        redirected = redirect_slot_read(path, p, sizeof p);
+        if (redirected < 0) return FS_R_PATH_NOT_FOUND;
+    }
     if (plat_fs_kind(p) != PLAT_FS_FILE) return FS_R_PATH_NOT_FOUND;
     if (kind == M_SAVE_RO && (mode & FS_OPEN_WRITE)) return FS_R_UNSUPPORTED_OPEN;
     int save_writer = kind == M_SAVE && (mode & FS_OPEN_WRITE);
@@ -992,6 +1055,10 @@ static uint32_t open_file(uint64_t *out, const char *path, int mode) {
             files[i] = (File){f, mode, save_writer};
             *out = FILE_BASE + (uint64_t)i;
             plat_mutex_unlock(&lock);
+            if (redirected) {
+                rt_log("fs: quick load: %s read from %s", path, p);
+                plat_inc32(&read_from_hits);
+            }
             if (save_writer) {
                 plat_inc32(&save_writers);
                 save_touched();
@@ -2536,6 +2603,108 @@ static void probe_mount_ops(const char *m) {
            "QueryRange, exact reads, timestamps, space, IsMounted (%d steps): %s\n", m, step, ok ? "ok" : "FAIL");
 }
 
+static int quick_copy_byte(const char *dir, const char *name) {
+    char *path = join(dir, name);
+    PlatFile *f = plat_file_open(path);
+    free(path);
+    if (!f) return -1;
+    int ok = independent_read(f, tx_buf, TX_SIZE, 0) == TX_SIZE;
+    plat_file_close(f);
+    return tx_byte(ok);
+}
+
+// Real copy_tree I/O in the probe's temporary profile, interrupted by the existing transaction crash hook.
+static void probe_quicksave_copy(void) {
+    char *dst = join(profile, "probe-quicksave"), *staging = slot_copy_path(dst, ".new");
+    char *old = slot_copy_path(dst, ".old"), *partial = join(staging, "a.sav");
+    CHECK(fs_save_recover_slot(dst) == 0 && !exists(dst), "quick save: no previous copy needs recovery");
+    CHECK(RES(S_CREATE_DIRECTORY, U("save:/probe_quick")) == 0 &&
+          tx_write("save:/probe_quick/a.sav", 81) && tx_write("save:/probe_quick/b.sav", 81) && tx_commit() == 0,
+          "quick save: commit a synthetic two-file slot");
+    CHECK(fs_save_copy_slot("probe_quick", dst) == 0 && quick_copy_byte(dst, "a.sav") == 81 &&
+          quick_copy_byte(dst, "b.sav") == 81, "quick save: copy both files");
+    CHECK(tx_write("save:/probe_quick/a.sav", 82) && tx_write("save:/probe_quick/b.sav", 82) && tx_commit() == 0,
+          "quick save: commit a changed synthetic slot");
+    tx_step = tx_dead = 0;
+    tx_crash_at = 1;
+    int copied = fs_save_copy_slot("probe_quick", dst), interrupted = tx_dead;
+    tx_crash_at = tx_step = tx_dead = 0;
+    CHECK(copied == -1 && interrupted, "quick save: actual copy fails after its first file");
+    CHECK(quick_copy_byte(dst, "a.sav") == 81 && quick_copy_byte(dst, "b.sav") == 81,
+          "quick save: interrupted copy preserves both previous files");
+    CHECK(move_dir(dst, old, MOVE_TRIES) == 0 && plat_fs_mkdir(staging) == 0 &&
+          plat_file_write(partial, "partial", 7), "quick save: interrupted publication with partial staging");
+    CHECK(fs_save_recover_slot(dst) == 0 && quick_copy_byte(dst, "a.sav") == 81 &&
+          quick_copy_byte(dst, "b.sav") == 81 && exists(staging) && !exists(old),
+          "quick save: load recovery restores old and leaves staging cleanup to the worker");
+    CHECK(fs_save_copy_slot("probe_quick", dst) == 0 && quick_copy_byte(dst, "a.sav") == 82 &&
+          quick_copy_byte(dst, "b.sav") == 82 && !exists(staging) && !exists(old),
+          "quick save: worker replaces both files and cleans transaction siblings");
+    CHECK(remove_tree(dst) == 0, "quick save: delete the probe's private destination");
+    free(partial);
+    free(old);
+    free(staging);
+    free(dst);
+}
+
+// The selected save and the quicksave deliberately differ; a missing quicksave file must never mix them.
+static void probe_quickload_reads(void) {
+    char *snapshot = join(profile, "probe-quickload"), *a = join(snapshot, "a.sav"), *b = join(snapshot, "b.sav");
+    CHECK(RES(S_CREATE_DIRECTORY, U("save:/slot_98")) == 0 &&
+          RES(S_CREATE_DIRECTORY, U("save:/slot_98/nested")) == 0 &&
+          RES(S_CREATE_DIRECTORY, U("save:/slot_word")) == 0 &&
+          tx_write("save:/slot_98/a.sav", 91) && tx_write("save:/slot_98/b.sav", 91) &&
+          tx_write("save:/slot_98/nested/a.sav", 92) && tx_write("save:/slot_word/a.sav", 93) &&
+          tx_write("save:/quickload-outside.sav", 94), "quick load: synthetic selected save files");
+    memset(tx_buf, 95, sizeof tx_buf);
+    CHECK(plat_fs_mkdir(snapshot) == 0 && plat_file_write(a, tx_buf, sizeof tx_buf),
+          "quick load: snapshot contains only its own a.sav");
+    fs_save_read_from(snapshot);
+    CHECK(tx_read("save:/slot_98/a.sav") == 95 && fs_save_read_from_hits() == 1,
+          "quick load: a matching file reads the snapshot and counts a successful redirect");
+    uint64_t h = 0;
+    uint32_t r = RES(S_OPEN_FILE, U(&h), U("save:/slot_98/b.sav"), FS_OPEN_READ);
+    CHECK(r == FS_R_PATH_NOT_FOUND && fs_save_read_from_hits() == 1,
+          "quick load: missing snapshot file cannot fall back to the selected save");
+    if (!r) CALL(S_CLOSE_FILE, h);
+    CHECK(plat_fs_mkdir(b) == 0, "quick load: invalid snapshot file is a directory");
+    r = RES(S_OPEN_FILE, U(&h), U("save:/slot_98/b.sav"), FS_OPEN_READ);
+    CHECK(r == FS_R_PATH_NOT_FOUND && fs_save_read_from_hits() == 1,
+          "quick load: invalid snapshot file cannot fall back to the selected save");
+    if (!r) CALL(S_CLOSE_FILE, h);
+    CHECK(tx_read("save:/quickload-outside.sav") == 94 && tx_read("save:/slot_98/nested/a.sav") == 92 &&
+          tx_read("save:/slot_word/a.sav") == 93 && fs_save_read_from_hits() == 1,
+          "quick load: outside-slot, nested and nonnumeric slot paths remain ordinary reads");
+    r = RES(S_OPEN_FILE, U(&h), U("save:/slot_98/a.sav"), FS_OPEN_READ | FS_OPEN_WRITE);
+    uint64_t got = 0;
+    int original = !r && RES(S_READ_FILE, U(&got), h, 0, U(tx_buf), TX_SIZE) == 0 && got == TX_SIZE;
+    if (!r) CALL(S_CLOSE_FILE, h);
+    CHECK(original && tx_byte(original) == 91 && fs_save_read_from_hits() == 1,
+          "quick load: writable opens still read the regular save");
+    char long_path[PATH_CAP + 32];
+    memset(long_path, 'x', sizeof long_path - 1);
+    long_path[sizeof long_path - 1] = 0;
+    fs_save_read_from(long_path);
+    r = RES(S_OPEN_FILE, U(&h), U("save:/slot_98/a.sav"), FS_OPEN_READ);
+    CHECK(r == FS_R_PATH_NOT_FOUND && fs_save_read_from_hits() == 0,
+          "quick load: an oversized snapshot directory cannot fall back or count a hit");
+    if (!r) CALL(S_CLOSE_FILE, h);
+    long_path[PATH_CAP - 2] = 0;
+    fs_save_read_from(long_path);
+    r = RES(S_OPEN_FILE, U(&h), U("save:/slot_98/a.sav"), FS_OPEN_READ);
+    CHECK(r == FS_R_PATH_NOT_FOUND && fs_save_read_from_hits() == 0,
+          "quick load: an oversized combined file path cannot fall back or count a hit");
+    if (!r) CALL(S_CLOSE_FILE, h);
+    fs_save_read_from(NULL);
+    CHECK(tx_read("save:/slot_98/a.sav") == 91 && tx_read("save:/slot_98/b.sav") == 91,
+          "quick load: ending the redirect restores ordinary selected-save reads");
+    CHECK(tx_commit() == 0 && !fs_save_busy(), "quick load: synthetic save writes leave no pending transaction");
+    CHECK(remove_tree(snapshot) == 0, "quick load: delete the probe's private snapshot");
+    free(b);
+    free(a);
+    free(snapshot);
+}
+
 static void probe_storage(void) {
     char tmp[PLAT_PATH_MAX * 3], dir[PLAT_PATH_MAX * 3 + 64];
     need(plat_temp_dir(tmp, sizeof tmp), "temporary directory");
@@ -2654,6 +2823,8 @@ static void probe_storage(void) {
     CHECK(RES(S_COMMIT_SAVE, U("save")) == 0 && (fs_save_flush(), !fs_save_busy()) &&
           RES(S_COMMIT_SAVE, U("nomount")) == FS_R_PATH_NOT_FOUND, "CommitSaveData");
     probe_save_tx(uid);
+    probe_quicksave_copy();
+    probe_quickload_reads();
 
     // temporary and cache storage
     CHECK(RES(S_MOUNT_TEMP, U("temp")) == 0 && RES(S_CREATE_FILE, U("temp:/t.bin"), 4) == 0 && !fs_save_busy(),
