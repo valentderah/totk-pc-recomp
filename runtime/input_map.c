@@ -125,7 +125,7 @@ int input_map_bind(const char *button, const char *list) {
     if (action < 0) { rt_log("input: bind: unknown button '%s'", button); return 0; }
     uint8_t keys[INPUT_BINDING_MAX], pads[INPUT_PAD_BINDING_MAX];
     int nk = 0, np = 0, none = 0, key_def = 0, pad_def = 0, bad = 0;
-    char buf[256];
+    char buf[INPUT_BINDING_TEXT_MAX];
     snprintf(buf, sizeof buf, "%s", list);
     for (char *save = NULL, *tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
         tok = trim(tok);
