@@ -7,6 +7,7 @@
 // cfg_get handed out stays valid) and cfg_save writes only the changed keys back, keeping the rest of the file.
 // Readers take no lock: an entry is complete before n_entries counts it, and value pointers are swapped atomically.
 #include <ctype.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -589,14 +590,14 @@ double cfg_double(const char *name) {
     const char *v = cfg_value(name);
     char *end;
     double d = strtod(v, &end);
-    return end == v || *end || d != d ? default_number(name) : d;
+    return end == v || *end || !isfinite(d) ? default_number(name) : d;
 }
 
 int cfg_int(const char *name) {
     const char *v = cfg_value(name);
     char *end;
-    long l = strtol(v, &end, 10);
-    return end == v || *end ? (int)default_number(name) : (int)l;
+    long long l = strtoll(v, &end, 10);
+    return end == v || *end || l < INT_MIN || l > INT_MAX ? (int)default_number(name) : (int)l;
 }
 
 int cfg_bool(const char *name) { return strcmp(cfg_value(name), "0") != 0; }

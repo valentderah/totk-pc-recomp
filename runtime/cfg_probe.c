@@ -534,6 +534,26 @@ int probe_cfg(void) {
     plat_setenv("TOTK_MOUSE_SENS", "fast");
     CHECK(cfg_double("TOTK_MOUSE_SENS") == 1.0, "double: a value that does not parse gives the default");
     plat_setenv("TOTK_MOUSE_SENS", NULL);
+    static const struct { const char *text; int want; } integer_cases[] = {
+        {"2147483647", 2147483647}, {"-2147483648", -2147483647 - 1},
+        {"2147483648", 0}, {"-2147483649", 0}, {"4294967296", 0},
+        {"999999999999999999999999999999999999", 0}, {"-999999999999999999999999999999999999", 0},
+        {"1.5", 0}, {"2x", 0}, {"+", 0}, {" 17", 17}, {"17 ", 0}, {"", 0}
+    };
+    for (size_t i = 0; i < sizeof integer_cases / sizeof *integer_cases; i++) {
+        plat_setenv("TOTK_REPLAY_CHUNKS", integer_cases[i].text);
+        CHECK(cfg_int("TOTK_REPLAY_CHUNKS") == integer_cases[i].want, "integer: syntax and representable range");
+    }
+    plat_setenv("TOTK_REPLAY_CHUNKS", NULL);
+    static const struct { const char *text; double want; } double_cases[] = {
+        {"inf", 1}, {"-inf", 1}, {"INFINITY", 1}, {"1e999", 1}, {"-1e999", 1}, {"NaN", 1},
+        {"1.25e1", 12.5}, {"-2.5e-1", -.25}, {"1e-9999", 0}, {"1e100", 1e100}, {"1.5x", 1}
+    };
+    for (size_t i = 0; i < sizeof double_cases / sizeof *double_cases; i++) {
+        plat_setenv("TOTK_COLOR_GAMMA", double_cases[i].text);
+        CHECK(cfg_double("TOTK_COLOR_GAMMA") == double_cases[i].want, "double: finite values or schema default");
+    }
+    plat_setenv("TOTK_COLOR_GAMMA", NULL);
     cfg_set("TOTK_MOUSE_SENS", "3");
     CHECK(cfg_double("TOTK_MOUSE_SENS") == 3.0 && cfg_int("TOTK_MOUSE_SENS") == 3, "a cfg_set value beats the default");
     CHECK(cfg_bool("TOTK_FREE_CORES") == 0, "free_cores unset: off");

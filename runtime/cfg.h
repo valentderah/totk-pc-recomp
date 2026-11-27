@@ -64,7 +64,8 @@ const CfgMeta *cfg_meta_at(int i);
 // prefix, like cfg_get; a name without a row is a bug (rt_fatal). A row with an empty default has no fixed value: its
 // consumer reads cfg_get and keeps its own "unset" branch. An empty value counts as unset.
 const char *cfg_value(const char *name);
-// cfg_value parsed. A set value that does not parse (int: whole string; double: strtod) gives the default's number.
+// cfg_value parsed. Invalid or non-finite values, and integers outside int's range, give the default's number.
+// Finite doubles retain their value, including underflow to zero; consumers apply each setting's range.
 // cfg_bool: "0" is false, anything else true.
 int cfg_int(const char *name);
 double cfg_double(const char *name);
