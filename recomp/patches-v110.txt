@@ -136,6 +136,14 @@ set gears    TOTK_HIGHFPS_FIX    1
 site gears main 213eee4 f9402001 bd40082c f9402001
 site gears main 213f0d4 1e24180c 3c9f0fe4 1e241804 1e2c088c 3cc107e4
 
+# Recall and Ultrahand target that is stale memory (#1005): set ability in patches-v143.txt, here for 1.1.0's
+# main+0x16315a0 (function main+0x1631510; the callees main+0x7d97c0, 0x6e2b78 and 0x8077a8 read the same actor
+# offsets, and 0xbdf0cc updates link +0x50). x9 is dead after 0x16315a4 on every path (clobbered by bl or returned
+# via the epilogue); x30 is saved by the prologue and restored by the epilogue.
+set ability  TOTK_ABILITY_GUARD  1
+site ability main 16315a0 f9400115 94c3f270            # ldr x21, [x8] -> bl page+0xf60
+site ability main 16315a4 b4000155 aa0903f5 b4000155   # cbz x21 -> mov x21, x9; cbz x21 (x9 dead after it)
+
 # Spin waits, from tools/spin_waits.py --exefs build/extracted/v110/exefs --patches recomp/patches-v110.txt: loops that only
 # another thread can end; their back-edges pass rt_spin_gate (runtime/kernel.c), TOTK_SPIN=0 keeps the core.
 
