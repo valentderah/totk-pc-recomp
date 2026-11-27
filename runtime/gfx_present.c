@@ -88,6 +88,7 @@ void gfx_window_closed(void) {
     vk_pipeline_save();
     playtime_save();
     prof_write();   // plat_exit runs no atexit handlers
+    vk_xr_shutdown();   // VR: end the OpenXR session before the threads die
     if (restart) {
         plat_setenv("TOTK_REEXEC", NULL);   // the new process counts its own address-space retries (memory.c)
         if (!plat_restart()) rt_log("gfx: the restart could not start the game again");
@@ -936,6 +937,10 @@ static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w,
     VkImage dst = g_sc_img[idx];
     sync_barrier(cb, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0,
                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    if (general) {   // TOTK_VR (vk_xr.c): the frame into the headset's eye images; the window shows the plain frame
+        const int crop0[4] = {cx, cy, cw, ch};
+        vk_xr_capture(cb, src, fmt, crop0);
+    }
     const int rect[4] = {cx, cy, cw, ch};
     int to[4];   // where the picture goes in the swapchain image: {x, y, w, h}
     gfx_fit_rect(cw, ch, (int)g_sc_ext.width, (int)g_sc_ext.height, to);

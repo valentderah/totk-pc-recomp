@@ -30,6 +30,11 @@
 #include "vk.h"
 #include "vk_exec.h"
 #include "platform/platform.h"
+// A dry draw (stereo pairs, panel HUD left out of the eye picture) is prepared in full but its draw command is not
+// recorded (on NVIDIA the empty scissor alone did not stop it: HUD in each eye). The empty
+// scissor stays as a second guard. TOTK_VR_DRYSKIP=0: scissor only.
+extern __thread int vk_exec_dry_draw;
+static int dry_skip(void) { static int v = -1; if (v < 0) { const char *e = cfg_get("TOTK_VR_DRYSKIP"); v = !(e && *e == '0'); } return v && vk_exec_dry_draw; }
 #include "vk_dlaa.h"
 #include "memx.h"
 
@@ -47,6 +52,10 @@
 #define ONESHOT_WAIT_MS 30000u   // prepare_draw: how long a one-shot draw waits for its pipeline before it is skipped
 
 enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_COUNT };
+
+// VR: a binding's mirror use. The HUD layer replay (vk_exec.c hud_replay) walks ops the frame has already run, so it
+// takes the mirror as it is (VK_MEM_PICK) and queues no second upload of guest memory.
+#define VK_MEM_USE_WALK(sp) do { if (vk_exec_walk2()) VK_MEM_PICK(sp); else VK_MEM_USE(sp); } while (0)
 
 static void warn_once(int key, const char *fmt, ...) {
     static volatile int32_t seen[W_COUNT];
@@ -1065,6 +1074,8 @@ static int slot_moves(const VkExec *ex, uint64_t h) { return ex->chunked && h &&
 // the global generation moved, about every 16 draws). A token hit moves *egen to gen.
 static int slot_still(uint32_t *egen, uint64_t etok, uint64_t h, uint32_t gen) {
     if (*egen == gen) return 1;
+    // VR: the HUD replay walks the frame's ops a second time onto its layer images; looked up again.
+    if (vk_exec_vr_scene_on()) return 0;
     uint64_t t = token_of(h);
     if (!t || t != etok) return 0;
     *egen = gen;
@@ -1276,7 +1287,7 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
         return 1;
     }
     if (sp.offset % align == 0) {
-        VK_MEM_USE(sp);
+        VK_MEM_USE_WALK(sp);
         VK_AHEAD_READ(sp, addr, n, use);
         if (written) ub_written(ex, addr, n);
         *out = (VkDescriptorBufferInfo){sp.buffer, sp.offset, n};
@@ -2605,13 +2616,16 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info, const uint64_t *b
     int gfx = info->bind_point == VK_PIPELINE_BIND_POINT_GRAPHICS;
     // TOTK_BIND_INC: a graphics build writes BI's array and per-descriptor census (bgt: a prepared draw's), on builds
     // only the bindings bi_plan names, check builds everything and compares what on would have kept.
-    int bim = gfx && bgt ? bind_inc_mode() : 0;
+    // The VR HUD replay's second walk (vk_exec_walk2) builds every set: the shortcuts would keep the first walk's
+    // descriptors (its targets) for the same addresses.
+    int walk2 = vk_exec_walk2();
+    int bim = gfx && bgt && !walk2 ? bind_inc_mode() : 0;
     int fl = 0;
     const BiTest *bt = bim ? bi_plan(ex, info, bgt, bgb, &fl) : NULL;
     int inc = bt != NULL;
     VkDescSlot *d = bim ? D->BI.d : ex->draw->d;
     BiMeta *meta = bim ? D->BI.meta : NULL;
-    int skip = gfx && bim != 1 ? bind_skip_on() : 0, same = 0, was_valid = D->B.res_valid;
+    int skip = gfx && bim != 1 && !walk2 ? bind_skip_on() : 0, same = 0, was_valid = D->B.res_valid;
     if (skip) {
         same = bind_sig(ex, info);
         if (same && was_valid && skip == 1) {
@@ -2872,6 +2886,8 @@ static VkViewport draw_viewport(VkExec *ex) {
     }
     if (w < 1) w = 1;
     if (h < 1) h = 1;
+    float sdx, sdy;
+    if (vk_exec_hud_shift(ex, &sdx, &sdy)) x += sdx, y += sdy;   // the stamina wheel moved on the HUD panel
     VkViewport v = {x, y + h, w, -h, ex->depth_range[0], ex->depth_range[1]};   // the y flip: negative height
     vk_dlaa_viewport(ex, &v);   // the scene's draws move by the DLAA jitter
     return v;
@@ -2965,7 +2981,7 @@ static void bind_vertex_buffers(VkExec *ex) {
             } else {
                 VkMemSpan sp;
                 if (r->address && vk_mem_resolve(r->address, 1, &sp)) {
-                    VK_MEM_USE(sp);
+                    VK_MEM_USE_WALK(sp);
                     nb = sp.buffer, no = sp.offset, nsz = r->size && r->size < sp.avail ? r->size : sp.avail;
                     VK_AHEAD_READ(sp, r->address, nsz, VK_MUSE_VB);
                     ncls = sp.cls, npool = sp.pool;
@@ -3362,6 +3378,145 @@ static int anv_vs_barrier(void) {
 }
 
 // Pass, shaders, pipeline, fixed state and resources for a draw. 0: the draw is skipped.
+static int shader_writes_storage(const GfxShader *s) {
+    if (!s) return 0;
+    const GfxShaderRes *r;
+    int n = gfx_shader_resources(s, GFX_RES_SSBO, &r);
+    for (int i = 0; i < n; i++)
+        if (r[i].flags & 1) return 1;
+    n = gfx_shader_resources(s, GFX_RES_IMG, &r);
+    for (int i = 0; i < n; i++)
+        if (r[i].flags & 4) return 1;
+    return 0;
+}
+
+extern __thread int vk_exec_dry_draw;   // vk_exec.c
+// VR: a shader's identity across runs and translator versions: the first 8 bytes of its input id (gfx_shader_input_id,
+// a hash of the game's shader code and the answers it uses), read as the hex prefix the cache's in/<input id>.in files
+// show (not a hash of the translated SPIR-V, which changes with every translator version).
+static uint64_t skipsh_hash(const GfxShader *s) {
+    if (!s) return 0;
+    const uint8_t *id = gfx_shader_input_id(s);
+    uint64_t h = 0;
+    for (int i = 0; i < 8; i++) h = h << 8 | id[i];
+    return h;
+}
+// VR: the rain particles drawn in a band around the camera (vs input 9ff23f76568b66a5 with fs
+// 961d1b8ad172cb54, one draw per frame in the particle pass; found by live bisection in the headset) are left out:
+// in stereo the band sits ~2 m around the head and moves with it. The ground rain is other draws and stays.
+// TOTK_VR_RAINBAND=1 keeps it.
+int vk_xr_active(void);
+static int vr_rainband_skip(const GfxShader *vs, const GfxShader *fs) {
+    static int on = -1;
+    if (on < 0) {   // decided once VR runs (the session starts after the first draws)
+        if (!vk_xr_active()) return 0;
+        const char *e = cfg_get("TOTK_VR_RAINBAND");
+        on = !(e && *e == '1');
+        if (on) rt_log("vr: the rain band around the camera is left out (TOTK_VR_RAINBAND=1 keeps it)");
+    }
+    if (!on || !fs) return 0;
+    if (skipsh_hash(vs) != 0x9ff23f76568b66a5ull || skipsh_hash(fs) != 0x961d1b8ad172cb54ull) return 0;
+    static unsigned long nhit;
+    if (nhit++ % 5000 == 0) rt_log("vr: rain band draw left out (%lu so far)", nhit);
+    return 1;
+}
+// VR: the game pastes blurred drop-shadow masks (small r8 textures, fs input 69170e3ddb6f028d) under some HUD
+// elements before their layouts draw; while aiming the bow one sits under the crosshair. In VR the crosshair is on its
+// own layer, but the shadow stayed in the 3D picture at the flat screen's spot: a diagonal smudge fixed to the view.
+// Left out in VR when the draw samples only small textures. TOTK_VR_HUDSHADOW=1 keeps them.
+int vk_exec_draw_samples_small(VkExec *ex);
+static int vr_hudshadow_skip(VkExec *ex, const GfxShader *fs) {
+    static int on = -1;
+    if (on < 0) {
+        if (!vk_xr_active()) return 0;
+        const char *e = cfg_get("TOTK_VR_HUDSHADOW");
+        on = !(e && *e == '1');
+        if (on) rt_log("vr: HUD drop-shadow pastes are left out (TOTK_VR_HUDSHADOW=1 keeps them)");
+    }
+    if (!on || !fs || skipsh_hash(fs) != 0x69170e3ddb6f028dull) return 0;
+    if (!vk_exec_draw_samples_small(ex)) return 0;
+    static unsigned long nhit;
+    if (nhit++ % 5000 == 0) rt_log("vr: HUD drop-shadow paste left out (%lu so far)", nhit);
+    return 1;
+}
+// VR, the HUD panel: a HUD draw that samples a rendered image at least half the target's size in both
+// directions shows a picture of the game (the quick-select strips' frozen, blurred view behind them):
+// on the panel it would cover the 3D view, so it is left out. TOTK_VR_HUDSCREEN=0 keeps it.
+static int hud_samples_screen(VkExec *ex, const GfxShader *fs) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_VR_HUDSCREEN"); on = !e || *e != '0'; }
+    if (!on || !ex->pass_w || !ex->pass_h) return 0;
+    const GfxShaderRes *res;
+    int n = gfx_shader_resources(fs, GFX_RES_TEX, &res), hit = 0;
+    vk_texture_lock();
+    for (int r = 0; r < n && !hit; r++)
+        for (int k = 0; k < (res[r].count ? res[r].count : 1) && !hit; k++) {
+            int slot = res[r].slot + k;
+            uint64_t h = slot >= 0 && slot < 128 ? ex->tex[NVN_STAGE_FS][slot] : 0;
+            const VkTexImage *img = h ? vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL) : NULL;
+            hit = img && img->gpu_owned && img->width * 2 >= ex->pass_w && img->height * 2 >= ex->pass_h;
+        }
+    vk_texture_unlock();
+    static unsigned nl;
+    if (hit && nl < 3) nl++, rt_log("vr: a HUD draw samples a picture of the game: left off the HUD panel");
+    return hit;
+}
+// Stereo pairs (vk_exec.c walk): a HUD-phase draw into the output that samples a screen-sized picture of
+// the game is a copy/paste of the game's own picture (e.g. into the image that is presented), not panel HUD: it must not
+// be left out of the picture (left out, the presented image stopped updating after the first seconds).
+unsigned long long vk_exec_draw_ss_vs, vk_exec_draw_ss_fs;   // the last screen-sampling draw's shader hashes (log)
+int vk_exec_draw_ss_tex, vk_exec_draw_ss_fmt, vk_exec_draw_ss_w, vk_exec_draw_ss_h;
+// diagnostic: the bound program's shader hashes (also stored in vk_exec_draw_ss_vs/fs), xor-combined
+unsigned long long vk_exec_draw_prog_hash(VkExec *ex) {
+    int has = 0, pend = 0;
+    const GfxShader *vs = shader_for(ex, NVN_STAGE_VS, &has, &pend, 0), *fs = shader_for(ex, NVN_STAGE_FS, &has, &pend, 0);
+    vk_exec_draw_ss_vs = vs ? skipsh_hash(vs) : 0, vk_exec_draw_ss_fs = fs ? skipsh_hash(fs) : 0;
+    return vk_exec_draw_ss_vs * 31 ^ vk_exec_draw_ss_fs;
+}
+// Stereo pairs: a HUD draw that samples only small textures (each under 1/8 of the target in both
+// directions; at least one), e.g. the blurred drop-shadow masks the game pastes under the bow crosshair and the
+// minimap before their layouts draw (they come after EventFade_00's marker and inherit its fade class). A fade covers
+// the screen with a colour or a large picture.
+int vk_exec_draw_samples_small(VkExec *ex) {
+    int has = 0, pend = 0;
+    const GfxShader *fs = shader_for(ex, NVN_STAGE_FS, &has, &pend, 0);
+    if (!fs || !has || !ex->pass_w || !ex->pass_h) return 0;
+    const GfxShaderRes *res;
+    int n = gfx_shader_resources(fs, GFX_RES_TEX, &res), small = 0, big = 0;
+    vk_texture_lock();
+    for (int r = 0; r < n; r++)
+        for (int k = 0; k < (res[r].count ? res[r].count : 1); k++) {
+            int slot = res[r].slot + k;
+            uint64_t h = slot >= 0 && slot < 128 ? ex->tex[NVN_STAGE_FS][slot] : 0;
+            const VkTexImage *img = h ? vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL) : NULL;
+            if (!img) continue;
+            if (img->width * 8 < ex->pass_w && img->height * 8 < ex->pass_h) small++;
+            else big++;
+        }
+    vk_texture_unlock();
+    return small && !big;
+}
+int vk_exec_draw_samples_screen(VkExec *ex) {
+    int has = 0, pend = 0;
+    const GfxShader *fs = shader_for(ex, NVN_STAGE_FS, &has, &pend, 0);
+    if (!fs || !has) return 0;
+    const GfxShaderRes *res;
+    int n = gfx_shader_resources(fs, GFX_RES_TEX, &res), hit = 0;
+    if (!ex->pass_w || !ex->pass_h) return 0;
+    vk_texture_lock();
+    for (int r = 0; r < n && !hit; r++)
+        for (int k = 0; k < (res[r].count ? res[r].count : 1) && !hit; k++) {
+            int slot = res[r].slot + k;
+            uint64_t h = slot >= 0 && slot < 128 ? ex->tex[NVN_STAGE_FS][slot] : 0;
+            const VkTexImage *img = h ? vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL) : NULL;
+            hit = img && img->gpu_owned && img->width * 2 >= ex->pass_w && img->height * 2 >= ex->pass_h;
+            if (hit) vk_exec_draw_ss_tex = (int)(h & 0xfffff), vk_exec_draw_ss_fmt = (int)img->format, vk_exec_draw_ss_w = (int)img->width, vk_exec_draw_ss_h = (int)img->height;
+        }
+    vk_texture_unlock();
+    if (hit) { int hv; const GfxShader *vs = shader_for(ex, NVN_STAGE_VS, &hv, &pend, 0); vk_exec_draw_ss_vs = vs ? skipsh_hash(vs) : 0; vk_exec_draw_ss_fs = skipsh_hash(fs); }
+    return hit;
+}
+int vk_exec_hud_shift(const VkExec *ex, float *dx, float *dy);   // vk_exec.c
 static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     VkExecDraw *D = ex->draw;
     if (ex->render_disabled) return 0;
@@ -3435,6 +3590,12 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     }
     if (!vs || (has_fs && !fs)) return 0;
     if (vk_dlaa_skip_draw(ex, fs)) return 0;   // the game's FXAA off, or its scaling replaced by DLSS (vk_dlaa.c)
+    if (vr_rainband_skip(vs, fs)) return 0;   // VR: the rain band around the head (TOTK_VR_RAINBAND=1 keeps it)
+    if (vr_hudshadow_skip(ex, fs)) return 0;  // VR: HUD drop-shadow pastes (TOTK_VR_HUDSHADOW=1 keeps them)
+    if (fs && vk_exec_hud_replay() && hud_samples_screen(ex, fs)) return 0;   // a picture of the game (VR HUD panel)
+    // VR: the HUD layer replay (vk_exec.c hud_replay) leaves out draws that write storage buffers or images: their effect
+    // lives outside the render targets (counts, histograms, visibility) and has happened once already.
+    if (vk_exec_hud_replay() && (shader_writes_storage(vs) || shader_writes_storage(fs))) return 0;
     if (ex->pass_merged && merge_guard(ex, vs, fs)) {   // barrier_merge: the full barrier the merged Barrier skipped
         vk_exec_pass_end(ex);
         vk_exec_pass_begin(ex);
@@ -3835,7 +3996,7 @@ static uint32_t mo_vertex_buffers(VkExec *ex) {
         const NVNbufferRange *r = &ex->vbuf[b];
         VkMemSpan sp;
         if (!r->address || !vk_mem_resolve(r->address, 1, &sp)) continue;
-        VK_MEM_USE(sp);
+        VK_MEM_USE_WALK(sp);
         v->b[b] = sp.buffer, v->o[b] = sp.offset, v->sz[b] = r->size && r->size < sp.avail ? r->size : sp.avail;
         VK_AHEAD_READ(sp, r->address, v->sz[b], VK_MUSE_VB);
     }
@@ -4411,7 +4572,7 @@ static void op_draw(VkExec *ex, const p_draw *d) {
         }
         bind_index(ex, ix, sizeof *ix * 6 * q, VK_INDEX_TYPE_UINT32);
         free(ix);
-        vkCmdDrawIndexed(ex->cb, 6 * q, inst, 0, 0, (uint32_t)d->base_instance);
+        if (!dry_skip()) vkCmdDrawIndexed(ex->cb, 6 * q, inst, 0, 0, (uint32_t)d->base_instance);
     } else if (d->prim == NVN_DRAW_PRIMITIVE_LINE_LOOP && n >= 2) {   // a strip that returns to its first vertex
         uint32_t *ix = malloc(sizeof *ix * (n + 1));
         if (!ix) rt_fatal("vk: out of memory");
@@ -4419,9 +4580,9 @@ static void op_draw(VkExec *ex, const p_draw *d) {
         ix[n] = first;
         bind_index(ex, ix, sizeof *ix * (n + 1), VK_INDEX_TYPE_UINT32);
         free(ix);
-        vkCmdDrawIndexed(ex->cb, n + 1, inst, 0, 0, (uint32_t)d->base_instance);
+        if (!dry_skip()) vkCmdDrawIndexed(ex->cb, n + 1, inst, 0, 0, (uint32_t)d->base_instance);
     } else {
-        vkCmdDraw(ex->cb, n, inst, first, (uint32_t)d->base_instance);
+        if (!dry_skip()) vkCmdDraw(ex->cb, n, inst, first, (uint32_t)d->base_instance);
     }
     ex->recorded++;
 }
@@ -4471,17 +4632,17 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
     } else if (sp.offset % isize[d->itype]) {
         return warn_once(W_INDEX, "index buffer %#llx is not aligned to its index size: draw skipped", (unsigned long long)d->ibuf);
     } else {
-        VK_MEM_USE(sp);
+        VK_MEM_USE_WALK(sp);
         VK_AHEAD_READ(sp, d->ibuf, bytes, VK_MUSE_IB);
         vkCmdBindIndexBuffer(ex->cb, sp.buffer, sp.offset, d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
         ex->recorded++;
         vk_mem_count(sp.cls, VK_MUSE_IB, bytes);
         VK_MEM_BOUND(sp);
     }
-    vkCmdDrawIndexed(ex->cb, (uint32_t)d->count, d->instances > 0 ? (uint32_t)d->instances : 1, 0, d->base_vertex,
+    if (!dry_skip()) vkCmdDrawIndexed(ex->cb, (uint32_t)d->count, d->instances > 0 ? (uint32_t)d->instances : 1, 0, d->base_vertex,
                      (uint32_t)d->base_instance);
     ex->recorded++;
-    if (d->itype != NVN_INDEX_TYPE_UNSIGNED_BYTE) mvobj_draw(ex, d, sp.buffer, sp.offset);
+    if (d->itype != NVN_INDEX_TYPE_UNSIGNED_BYTE && !dry_skip()) mvobj_draw(ex, d, sp.buffer, sp.offset);
 }
 
 // DrawElementsIndirect: the arguments are read by the GPU from the pool buffer (they are often written by an earlier
@@ -4504,7 +4665,7 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
     VK_AHEAD_READ(ip, d->ind, sizeof(VkDrawIndexedIndirectCommand), VK_MUSE_IND);
     VK_AHEAD_READ(ib, d->ibuf, ib.avail < 0x10000 ? ib.avail : 0x10000, VK_MUSE_IB);   // the count is the GPU's: 64 KiB
     vkCmdBindIndexBuffer(ex->cb, ib.buffer, ib.offset, d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexedIndirect(ex->cb, ip.buffer, ip.offset, 1, sizeof(VkDrawIndexedIndirectCommand));
+    if (!dry_skip()) vkCmdDrawIndexedIndirect(ex->cb, ip.buffer, ip.offset, 1, sizeof(VkDrawIndexedIndirectCommand));
     ex->recorded += 2;
     vk_mem_count(ip.cls, VK_MUSE_IND, sizeof(VkDrawIndexedIndirectCommand));
     VK_MEM_BOUND(ip);
@@ -4624,7 +4785,7 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
     VkPipeline p = vk_pipeline_compute(cs, &info);
     if (!p || !info) return warn_once(W_PIPELINE, "a compute pipeline could not be created: dispatches with it are skipped");
     vk_exec_barrier(ex);
-    VK_MEM_USE(ip);
+    VK_MEM_USE_WALK(ip);
     VK_AHEAD_READ(ip, d->ind, sizeof(VkDispatchIndirectCommand), VK_MUSE_IND);
     bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, p);
     D->c0_dim[0] = D->c0_dim[1] = D->c0_dim[2] = 0;
@@ -4937,6 +5098,31 @@ static void pipe_put(VkExec *ex, void *dst, const void *src, size_t n) {
     if (put_changed(dst, src, n)) ex->pipe_gen++;
 }
 
+// VR, the HUD layer (vk_exec.c hud_replay): the HUD is replayed onto a transparent image, and a draw blended
+// as colour * a + dst * (1 - a) gets alpha a + dst_a * (1 - a), so the layer ends up as the HUD premultiplied by its
+// coverage, whatever the game's own alpha factors were (the window's alpha is never shown).
+// Additive draws (colour * f + dst) and multiplies (colour * dst + dst * a) change what is there without covering it, so
+// they keep the layer's alpha. Before that, the minimap's view cone (blend rgb DST_COLOR, SRC_ALPHA, alpha the same:
+// 2 * a * dst_a, 0 around the cone) cut a see-through square into the minimap.
+static void hud_blend(blend_st *b) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_VR_HUDADD"); on = !e || *e != '0'; }
+    if (b->dst_rgb == NVN_BLEND_FUNC_ONE_MINUS_SRC_ALPHA)
+        b->src_a = NVN_BLEND_FUNC_ONE, b->dst_a = NVN_BLEND_FUNC_ONE_MINUS_SRC_ALPHA, b->eq_a = NVN_BLEND_EQUATION_ADD;
+    else if (on && b->dst_rgb == NVN_BLEND_FUNC_ONE && b->eq_rgb == NVN_BLEND_EQUATION_ADD)
+        b->src_a = NVN_BLEND_FUNC_ZERO, b->dst_a = NVN_BLEND_FUNC_ONE, b->eq_a = NVN_BLEND_EQUATION_ADD;
+    else if (on && b->src_rgb == NVN_BLEND_FUNC_DST_COLOR)   // a multiply (colour * dst + dst * a) tints what is there
+        b->src_a = NVN_BLEND_FUNC_ZERO, b->dst_a = NVN_BLEND_FUNC_ONE, b->eq_a = NVN_BLEND_EQUATION_ADD;
+}
+void vk_exec_hud_state(VkExec *ex) {
+    blend_st b = ex->pipe.blend[0];
+    hud_blend(&b);
+    pipe_put(ex, &ex->pipe.blend[0], &b, sizeof b);
+    chmask_st m = ex->pipe.chmask;
+    if (m.mask & 7) m.mask |= 8;
+    pipe_put(ex, &ex->pipe.chmask, &m, sizeof m);
+}
+
 // The changed handle slots chg of a bind at first into a 128-bit dirty mask.
 static void dirty_slots(uint64_t m[2], int first, uint32_t chg) {
     if (!chg) return;
@@ -4964,10 +5150,17 @@ int vk_exec_bind(VkExec *ex, uint32_t op, const void *payload) {
         switch (b->kind) {
         case 0:
             memcpy(&bs, b->bytes, sizeof bs);
+            if (bs.target == 0 && vk_exec_hud_replay()) hud_blend(&bs);
             if (bs.target < 8) pipe_put(ex, &ex->pipe.blend[bs.target], &bs, sizeof bs);
             break;
         case 1: pipe_put(ex, &ex->pipe.color, b->bytes, sizeof ex->pipe.color); break;
-        case 2: pipe_put(ex, &ex->pipe.chmask, b->bytes, sizeof ex->pipe.chmask); break;
+        case 2: {
+            chmask_st m;
+            memcpy(&m, b->bytes, sizeof m);
+            if (vk_exec_hud_replay() && (m.mask & 7)) m.mask |= 8;   // the HUD layer keeps coverage in alpha
+            pipe_put(ex, &ex->pipe.chmask, &m, sizeof m);
+            break;
+        }
         case 3: pipe_put(ex, &ex->pipe.ms, b->bytes, sizeof ex->pipe.ms); break;
         case 4: pipe_put(ex, &ex->pipe.poly, b->bytes, sizeof ex->pipe.poly); break;
         case 5: pipe_put(ex, &ex->pipe.ds, b->bytes, sizeof ex->pipe.ds); break;
@@ -5060,3 +5253,10 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
 
 // The last executed list's draws as " <position banks>/<changed banks>:<draws>" (bit n: cn), for TOTK_MV_CHECK's lines.
 const char *vk_mvobj_frame_masks(void) { return fm_last; }
+
+// VR: the sets bound and the last draw's memos are forgotten at a scene start (vk_exec.c).
+void vk_exec_draw_forget(VkExec *ex) {
+    if (!ex->draw) return;
+    ex->draw->B.res_valid = 0;
+    ex->draw->B.bi_valid = 0;
+}

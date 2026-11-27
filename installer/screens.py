@@ -17,12 +17,45 @@ from pathlib import Path
 # The game resolutions of another shape than 16:9 that runtime/ui/menu.cpp row_output_res lists, in the order of
 # runtime/cfg.c SHAPED: 21:9 and 32:9 monitors, 16:10 screens (the Steam Deck's 1280x800, handhelds and laptops) and 3:2
 # screens (Surface and Framework laptops and tablets), 4:3 screens (CRT monitors, iPads) and 19.5:9 and 20:9 phone screens
-# (streamed to a phone)
+# (streamed to a phone), and the square picture VR draws each eye at (main.c vr_setup)
 ASPECT_SIZES = ('2560x1080', '3440x1440', '3840x1600', '5120x2160', '3840x1080', '5120x1440', '7680x2160',
                 '1280x800', '1680x1050', '1920x1200', '2560x1600',
                 '1920x1280', '2160x1440', '2256x1504', '2880x1920', '3000x2000',
                 '1440x1080', '1600x1200', '2048x1536', '2732x2048',
-                '2340x1080', '3120x1440', '2400x1080', '3200x1440')
+                '2340x1080', '3120x1440', '2400x1080', '3200x1440', '2048x2048')
+VR_SIZE = '2048x2048'
+# The "TotK VR" shortcut the setup puts in the install folder (steps.py Vr): its presence means the install is set up
+# for VR, so later runs keep the VR layouts and the window ticks Set up VR again.
+VR_SHORTCUT = 'TotK VR.lnk' if os.name == 'nt' else 'TotK VR.desktop'
+
+
+# The game notes each headset's view in this file next to totk.ini (runtime/vk_xr.c vh_note): name TAB tangents TAB the
+# folder size of its HUD layout (runtime/cfg.c cfg_shape_size: any VR shape has one, at 2048 high).
+VR_HEADSETS = 'vr-headset.txt'
+
+
+def vr_layouts(dest):
+    """The HUD layout sizes of the headsets the game has played with in VR (vr-headset.txt), e.g. ['2112x2048']."""
+    try:
+        text = (Path(dest) / VR_HEADSETS).read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return []
+    out = []
+    for line in text.splitlines():
+        cols = line.split('\t')
+        if line.startswith('#') or len(cols) < 3:
+            continue
+        m = re.fullmatch(r'(\d+)x(\d+)', cols[2].strip())
+        if m and 256 <= int(m.group(1)) <= 8192 and 256 <= int(m.group(2)) <= 8192:
+            out.append(f'{int(m.group(1))}x{int(m.group(2))}')
+    return out
+
+
+def vr_set_up(dest):
+    try:
+        return (Path(dest) / VR_SHORTCUT).is_file()
+    except (OSError, ValueError):
+        return False
 SHAPED = tuple(tuple(int(v) for v in s.split('x')) for s in ASPECT_SIZES)
 TOLERANCE = 0.01   # cfg.c and resolution.c res_is_16x9: shapes within 1% are the same
 # cfg.c SHAPE_MIN / SHAPE_MAX: the aspect ratios a UI layout can be made for (tools/ultrawide_layout.py), 4:3 to 32:9
@@ -203,9 +236,10 @@ def prompts_style(text):
     return 'xbox' if nintendo else 'xbox-label'
 
 
-def wanted(dest, screens=None):
+def wanted(dest, screens=None, vr=False):
     """(sizes, style): the shape sizes to write layouts for, sorted, and the prompts style. A shape is wanted for each
-    display's own size and for the output_res the game defaults to there, and for the totk.ini output_res."""
+    display's own size and for the output_res the game defaults to there, for the totk.ini output_res, and VR's square
+    one plus each headset's own (vr-headset.txt) when VR is set up (vr, or the install's VR shortcut)."""
     screens = displays() if screens is None else screens
     try:
         text = (Path(dest) / 'totk.ini').read_text(encoding='utf-8-sig', errors='replace')
@@ -223,5 +257,8 @@ def wanted(dest, screens=None):
     m = re.fullmatch(r'(\d+)x(\d+)', (ini_value(text, 'output_res') or '').lower())
     if m:
         sizes.add(shape_size(int(m.group(1)), int(m.group(2))))
+    if vr or vr_set_up(dest):
+        sizes.add(VR_SIZE)
+        sizes.update(vr_layouts(dest))
     sizes.discard(None)
     return sorted(sizes, key=size_order), prompts_style(text)

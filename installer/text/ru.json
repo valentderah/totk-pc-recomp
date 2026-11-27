@@ -10,6 +10,7 @@
  "step.shapes": "Раскладка экранов игры под ваши мониторы",
  "step.dlss": "Загрузка NVIDIA DLSS",
  "step.fsr": "Загрузка AMD FSR 4",
+ "step.vr": "Настройка VR",
  "step.cleanup": "Уборка",
 
  "phase.check.host": "Проверка процессора и видеокарты",
@@ -42,6 +43,7 @@
  "phase.shapes.layouts": "Запись раскладок экрана и кнопок для каждой формы монитора",
  "phase.dlss.download": "Загрузка nvngx_dlss.dll из DLSS SDK от NVIDIA",
  "phase.fsr.download": "Загрузка библиотек FSR 4 из FSR SDK от AMD",
+ "phase.vr.download": "Загрузка загрузчика OpenXR от Khronos",
  "phase.cleanup.ini": "Запись totk.ini",
  "phase.cleanup.temp": "Удаление временных файлов",
 
@@ -128,6 +130,9 @@
  "warn.dlss_download_failed": "Не удалось загрузить NVIDIA DLSS с {url}: {detail}. Игра работает и без него; при следующем запуске установка попробует снова.",
  "warn.fsr_kept": "В папке установки уже есть библиотека FSR ({path}); установка оставляет имеющиеся библиотеки.",
  "warn.fsr_download_failed": "Не удалось загрузить AMD FSR 4 с {url}: {detail}. Игра работает и без него; при следующем запуске установка попробует снова.",
+ "warn.vr_shortcut_failed": "Не удалось создать ярлык TotK VR: {detail}. Игра всё равно запускается в VR с --vr; следующий запуск установщика попробует снова.",
+ "warn.vr_loader_kept": "В папке установки уже есть загрузчик OpenXR ({path}); установщик его сохраняет.",
+ "warn.vr_download_failed": "Не удалось скачать загрузчик OpenXR с {url}: {detail}. Без него игра работает без VR; следующий запуск установщика попробует снова.",
 
  "ui.title": "Установка TotK",
  "ui.rebuild_title": "Пересборка игры под ваши моды",
@@ -152,7 +157,9 @@
  "ui.dlss": "Загрузить NVIDIA DLSS (nvngx_dlss.dll) для видеокарт NVIDIA RTX",
  "ui.dlss_help": "Из DLSS SDK от NVIDIA на GitHub, по лицензии NVIDIA RTX SDK (github.com/NVIDIA/DLSS). Без него настройки dlaa и DLSS ничего не делают.",
  "ui.fsr": "Загрузить AMD FSR 4 (библиотеки FSR SDK от AMD) для видеокарт AMD Radeon",
+ "ui.vr": "Настроить VR для гарнитур SteamVR (ярлык TotK VR)",
  "ui.fsr_help": "Из FSR SDK от AMD на GitHub, по лицензии AMD FSR SDK (github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK). С ними работает вариант AMD FSR 4 в апскейлере 3D-сцены на тех видеокартах Radeon, для которых библиотеки AMD предлагают FSR 4; без них этот выбор ничего не делает. Отмечено по умолчанию, если в компьютере есть видеокарта AMD.",
+ "ui.vr_help": "Добавляет ярлык TotK VR, который запускает игру в гарнитуре SteamVR (вид от третьего лица, 3D с отслеживанием головы). В Windows также скачивается загрузчик OpenXR из OpenXR SDK от Khronos на GitHub по лицензии Apache 2.0 (github.com/KhronosGroup/OpenXR-SDK-Source); в Linux используется системный загрузчик OpenXR. Подробнее: docs/vr.md.",
  "ui.compressed_help": "Сжатые файлы NSZ и XCZ подходят как есть: установка сама их распакует (для этого, пока извлекаются данные игры, нужно столько свободного места, сколько занимают распакованные файлы).",
  "ui.section_files": "Файлы игры",
  "ui.section_install": "Установка",

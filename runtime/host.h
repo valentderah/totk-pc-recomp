@@ -340,6 +340,7 @@ int romfs_shaped_prompts_ready(const char *folder, unsigned w, unsigned h);   //
                                                            // prompts' folder (romfs-patches-xbox, -xbox-label, -pc)
 void res_wanted(unsigned out[2]);                          // the output size TOTK_OUTPUT_RES asks for
 void res_asked(unsigned out[2]);                           // the same before a missing shaped layout made it 16:9
+int vk_xr_world(void);                                     // VR is on (TOTK_VR / --vr, vk_xr.c)
 void res_fov_live(void);                                   // TOTK_FOV to the camera (set fov); on a settings change
 void res_dynres_live(void);                                // TOTK_DYNAMIC_RES to the game (set fixres); on a settings change
 // ---- code patches (patches.c) and the frame step (frame_rate.c)

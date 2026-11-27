@@ -10,6 +10,7 @@
  "step.shapes": "Laying out the game screens for your displays",
  "step.dlss": "Downloading NVIDIA DLSS",
  "step.fsr": "Downloading AMD FSR 4",
+ "step.vr": "Setting up VR",
  "step.cleanup": "Cleaning up",
 
  "phase.check.host": "Checking the processor and the graphics card",
@@ -42,6 +43,7 @@
  "phase.shapes.layouts": "Writing the screen layouts and button prompts for each display shape",
  "phase.dlss.download": "Downloading nvngx_dlss.dll from NVIDIA's DLSS SDK",
  "phase.fsr.download": "Downloading the FSR 4 libraries from AMD's FSR SDK",
+ "phase.vr.download": "Downloading the OpenXR loader from Khronos",
  "phase.cleanup.ini": "Writing totk.ini",
  "phase.cleanup.temp": "Removing temporary files",
 
@@ -128,6 +130,9 @@
  "warn.dlss_download_failed": "NVIDIA DLSS could not be downloaded from {url}: {detail}. The game runs without it; the next setup run tries again.",
  "warn.fsr_kept": "An FSR library is already in the install folder ({path}); the setup keeps the libraries there.",
  "warn.fsr_download_failed": "AMD FSR 4 could not be downloaded from {url}: {detail}. The game runs without it; the next setup run tries again.",
+ "warn.vr_shortcut_failed": "The TotK VR shortcut could not be made: {detail}. The game still starts in VR with --vr; the next setup run tries again.",
+ "warn.vr_loader_kept": "An OpenXR loader is already in the install folder ({path}); the setup keeps it.",
+ "warn.vr_download_failed": "The OpenXR loader could not be downloaded from {url}: {detail}. Without it the game plays without VR; the next setup run tries again.",
 
  "ui.title": "TotK Setup",
  "ui.rebuild_title": "Rebuilding the game for your mods",
@@ -152,7 +157,9 @@
  "ui.dlss": "Download NVIDIA DLSS (nvngx_dlss.dll) for NVIDIA RTX graphics cards",
  "ui.dlss_help": "From NVIDIA's DLSS SDK on GitHub, under NVIDIA's RTX SDK license (github.com/NVIDIA/DLSS). It makes the dlaa and DLSS settings work; without it they do nothing.",
  "ui.fsr": "Download AMD FSR 4 (AMD's FSR SDK libraries) for AMD Radeon graphics cards",
+ "ui.vr": "Set up VR for SteamVR headsets (a TotK VR shortcut)",
  "ui.fsr_help": "From AMD's FSR SDK on GitHub, under AMD's FSR SDK license (github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK). It makes the AMD FSR 4 choice of the 3D scene upscaler work on the Radeon cards AMD's libraries offer FSR 4 for; without it that choice does nothing. Ticked at start when the computer has an AMD graphics card.",
+ "ui.vr_help": "Adds a TotK VR shortcut that starts the game in a SteamVR headset (third person, head-tracked 3D). On Windows it also downloads the OpenXR loader from Khronos's OpenXR SDK on GitHub, under the Apache 2.0 license (github.com/KhronosGroup/OpenXR-SDK-Source); on Linux the system's OpenXR loader is used. See docs/vr.md.",
  "ui.compressed_help": "Compressed NSZ and XCZ files work as they are: the setup unpacks them by itself (until the game data is extracted, that needs as much free space as the unpacked files take).",
  "ui.section_files": "Game files",
  "ui.section_install": "Install",

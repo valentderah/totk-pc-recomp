@@ -30,7 +30,7 @@ UI_LANGUAGE_LABELS = {'en': 'English', 'ru': 'Русский', 'pt-BR': 'Portugu
                       'de': 'Deutsch', 'fr': 'Français', 'es': 'Español', 'it': 'Italiano', 'nl': 'Nederlands',
                       'ja': '日本語', 'ko': '한국어', 'vi': 'Tiếng Việt'}
 STEP_ORDER = ('check', 'kit', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss',
-              'fsr', 'cleanup')
+              'fsr', 'vr', 'cleanup')
 # message parameter -> catalog id prefix of the names that replace its raw values
 PARAM_NAMES = {'lang': 'lang.', 'known': 'lang.', 'step': 'step.', 'input': 'param.input.'}
 LANG_PT_BR = 0x0416   # Portuguese (Brazil), the whole LANGID: Portugal's Portuguese stays English
@@ -160,6 +160,7 @@ class Form:
     dest: str = ''
     dlss: bool = False
     fsr: bool = False
+    vr: bool = False
 
     def installed_state(self):
         """The recorded state of the install folder (totk-install.json), or None. Never raises."""
@@ -214,6 +215,8 @@ class Form:
             cmd.append('--dlss')
         if self.fsr:
             cmd.append('--fsr')
+        if self.vr:
+            cmd.append('--vr')
         return cmd
 
 

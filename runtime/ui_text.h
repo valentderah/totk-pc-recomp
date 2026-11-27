@@ -89,6 +89,8 @@ typedef enum {
     UI_MENU_PLAY_TIME, UI_MENU_PLAY_TIME_DESC,
     UI_MENU_PLAY_TIME_HM,        // hours and minutes: "%llu h %02u min" (unsigned long long hours, unsigned minutes)
     UI_MENU_PLAY_TIME_SESSION,   // note under the total: "this run: %s" (the hours and minutes above)
+    UI_MENU_TAB_VR,   // the VR tab
+    UI_MENU_VR_CAM_HEIGHT, UI_MENU_VR_CAM_HEIGHT_DESC, UI_MENU_VR_HEAD_AIM, UI_MENU_VR_HEAD_AIM_DESC,
 
     // Mods: the port's own patches and the player's mods folder (mods.c)
     UI_MENU_MODS_BUILTIN, UI_MENU_MODS_INSTALLED,

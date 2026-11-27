@@ -1467,8 +1467,11 @@ void plat_exit(int code) {
     _exit(code);
 }
 
+void cfg_env_changed(void);   // cfg.c: empties the settings lookup cache
 int plat_setenv(const char *name, const char *value) {
-    return (value ? setenv(name, value, 1) : unsetenv(name)) == 0;
+    int ok = (value ? setenv(name, value, 1) : unsetenv(name)) == 0;
+    cfg_env_changed();
+    return ok;
 }
 
 uint32_t plat_process_id(void) { return (uint32_t)getpid(); }
@@ -2062,4 +2065,9 @@ int plat_restart_wait(uint32_t timeout_ms) {
     }
     close(fd);
     return r;
+}
+
+int plat_mem_poke(uint64_t addr, const void *in, size_t n) {
+    struct iovec local = {(void *)in, n}, remote = {(void *)(uintptr_t)addr, n};
+    return process_vm_writev(getpid(), &local, 1, &remote, 1, 0) == (ssize_t)n;
 }

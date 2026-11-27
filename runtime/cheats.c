@@ -28,6 +28,7 @@
 #include "host.h"
 #include "input.h"
 #include "mods.h"
+void vk_xr_shutdown(void);   // vk_xr.c
 #include "platform/platform.h"
 
 #ifdef _WIN32
@@ -591,6 +592,7 @@ static void rebuild_if_needed(const char *dir) {
         return;
     }
     prof_write();   // plat_exit runs no atexit handlers
+    vk_xr_shutdown();   // VR: end the OpenXR session before the threads die
     plat_exit(0);
 }
 

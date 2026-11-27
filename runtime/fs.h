@@ -80,6 +80,8 @@ int romfs_folders_can_prepare(void);
 // processes the game does not wait for; the next start loads the result. 1 when every one runs, 0 when none was
 // missing, the tools are not there or one could not start.
 int romfs_folders_prepare(unsigned w, unsigned h, const char *prompts_folder);
+// The same for another output size with the prompts this start picked (vk_xr.c: a headset's next picture shape).
+int romfs_folders_prepare_for(unsigned w, unsigned h);
 int romfs_prompts_off(const char *folder);
 const char *romfs_overlay(size_t k, const char **file, uint64_t *size, int *is_added);   // RomFS path of overlay k
 void fs_trace(const char *what, const char *path);         // TOTK_TRACE=fs: one line per open

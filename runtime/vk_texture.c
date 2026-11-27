@@ -71,6 +71,16 @@ typedef struct Tex {
     uint64_t use_seq;             // order of the last creation or take-back among all entries
     uint64_t rel_seq;             // while released: use_seq of the newest entry placed before this release; an entry
                                   // with a later use_seq on overlapping storage replaced this one's bytes
+    // VR (vk_texture_hud & co.): the creation info, and the layers the HUD's draws are replayed onto
+    VkImageCreateInfo ci;
+    VkTexImage hud;               // the HUD layer for VR (vk_texture_hud): the HUD's draws replayed onto it, cleared
+    VmaAllocation hud_alloc;
+    VkTexImage ret;               // the aim reticle's layer for VR (vk_texture_reticle): Pointer_00's draws, placed in 3D
+    VmaAllocation ret_alloc;
+    VkTexImage wm;                // world markers for VR (vk_texture_worldhud): health bars, labels... over the 3D view
+    VmaAllocation wm_alloc;
+    VkTexImage stm;               // the stamina wheel alone for VR (vk_texture_stamina): where it is, so the panel can move it
+    VmaAllocation stm_alloc;
 } Tex;
 
 // A slot keeps what vk_texture_by_id resolved for it, so a draw binding skips the key lookup and the address chain: the
@@ -466,6 +476,8 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     if (fb_usage) ci.usage = usage |= VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
     Tex *e = calloc(1, sizeof *e);
     if (!e) rt_fatal("vk: out of memory for a texture");
+    e->ci = ci;
+    e->ci.pNext = NULL;
     e->key = *k;
     e->t = *t;
     e->f = f;
@@ -654,6 +666,10 @@ static void destroy_tex(Tex *e) {
     e->pub.gone = 1;
     vk_exec_image_gone(e->pub.image);
     vk_defer_image(e->pub.image, e->alloc);
+    if (e->hud.image) e->hud.gone = 1, vk_exec_image_gone(e->hud.image), vk_defer_image(e->hud.image, e->hud_alloc);
+    if (e->ret.image) e->ret.gone = 1, vk_exec_image_gone(e->ret.image), vk_defer_image(e->ret.image, e->ret_alloc);
+    if (e->wm.image) e->wm.gone = 1, vk_exec_image_gone(e->wm.image), vk_defer_image(e->wm.image, e->wm_alloc);
+    if (e->stm.image) e->stm.gone = 1, vk_exec_image_gone(e->stm.image), vk_defer_image(e->stm.image, e->stm_alloc);
     free(e->snap);
     e->snap = NULL;
     vk_defer_free(e);
@@ -3062,3 +3078,43 @@ void vk_texture_shutdown(void) {
     if (sinfo) memset(sinfo, 0, sizeof *sinfo << 20), memset(sepoch, 0, sizeof *sepoch << 20);   // no slot is registered: tokens 0
     unlock();
 }
+
+// ---- VR: the HUD layers (vk_exec.c hud_replay). A layer has the output image's size, RGBA16F (alpha holds coverage)
+// and memory of its own, starts in GENERAL and lives as long as the entry. kind 1 the HUD panel, 2 the aim reticle,
+// 3 world markers, 4 the stamina wheel alone.
+static const VkTexImage *layer_make(const VkTexImage *img, VkCommandBuffer cb, int kind) {
+    if (!img || img->gone) return NULL;
+    lock();
+    Tex *e = (Tex *)img;   // pub is the first member
+    VkTexImage *ly = kind == 4 ? &e->stm : kind == 3 ? &e->wm : kind == 2 ? &e->ret : &e->hud;
+    VmaAllocation *ly_alloc = kind == 4 ? &e->stm_alloc : kind == 3 ? &e->wm_alloc : kind == 2 ? &e->ret_alloc : &e->hud_alloc;
+    if (!ly->image && e->ci.sType == VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO && cb) {
+        VkImage im = VK_NULL_HANDLE;
+        VmaAllocation al = NULL;
+        VkImageCreateInfo ci = e->ci;
+        ci.format = VK_FORMAT_R16G16B16A16_SFLOAT, ci.pNext = NULL, ci.mipLevels = 1, ci.arrayLayers = 1,
+        ci.flags &= ~(VkImageCreateFlags)VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+        if (vk_texture_image(&ci, &im, &al) == VK_SUCCESS) {
+            *ly = e->pub;
+            ly->format = ci.format, ly->levels = 1, ly->layers = 1, ly->block_views = 0, ly->alpha_one = 0;
+            ly->image = im, ly->mirrored = 0, ly->gpu_owned = 1, ly->bound = 0, ly->gone = 0;
+            *ly_alloc = al;
+            VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+                                        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                        .image = im, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}};
+            VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &ib};
+            vkCmdPipelineBarrier2(cb, &di);
+            rt_log("vr: HUD layer %d: %ux%u", kind, e->pub.width, e->pub.height);
+        }
+    }
+    const VkTexImage *r = ly->image ? ly : NULL;
+    unlock();
+    return r;
+}
+const VkTexImage *vk_texture_hud(const VkTexImage *img, VkCommandBuffer cb) { return layer_make(img, cb, 1); }
+const VkTexImage *vk_texture_reticle(const VkTexImage *img, VkCommandBuffer cb) { return layer_make(img, cb, 2); }
+const VkTexImage *vk_texture_worldhud(const VkTexImage *img, VkCommandBuffer cb) { return layer_make(img, cb, 3); }
+const VkTexImage *vk_texture_stamina(const VkTexImage *img, VkCommandBuffer cb) { return layer_make(img, cb, 4); }

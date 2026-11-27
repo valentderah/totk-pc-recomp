@@ -1391,6 +1391,41 @@ class ShapesTest(unittest.TestCase):
         self.assertEqual(self.calls[0][-2:], ['--binds', str(self.dest / 'totk.ini')])
 
 
+class VrTest(unittest.TestCase):
+    def test_vr_adds_the_square_shape(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertNotIn(screens.VR_SIZE, screens.wanted(d, screens=[(1920, 1080)])[0])
+            self.assertIn(screens.VR_SIZE, screens.wanted(d, screens=[(1920, 1080)], vr=True)[0])
+            (Path(d) / screens.VR_SHORTCUT).write_text('')   # set up before: kept without the option
+            self.assertIn(screens.VR_SIZE, screens.wanted(d, screens=[(1920, 1080)])[0])
+
+    def test_desktop_exec_quoting(self):
+        self.assertEqual(steps.desktop_exec_quote('/a b/totk'), '"/a b/totk"')
+        self.assertEqual(steps.desktop_exec_quote('/a$"b/t'), '"/a\\$\\"b/t"')
+
+    @unittest.skipIf(os.name == 'nt', 'Linux shortcuts')
+    def test_linux_shortcuts(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as data:
+            dest = Path(d) / 'my install'
+            dest.mkdir()
+            ctx = SimpleNamespace(dest=dest, options=SimpleNamespace(vr=True), reporter=Reporter(),
+                                  layout=SimpleNamespace(runtime=Path(d) / 'none'))
+            with mock.patch.dict(os.environ, {'XDG_DATA_HOME': data}):
+                out = steps.Vr().run(ctx)
+            self.assertFalse(out.get('failed'))
+            app = Path(data) / 'applications' / 'totk-vr.desktop'
+            self.assertEqual(sorted(out['shortcuts']), sorted([str(dest / screens.VR_SHORTCUT), str(app)]))
+            text = app.read_text()
+            self.assertIn(f'Exec="{dest / "totk"}" --vr', text)
+            self.assertTrue(screens.vr_set_up(dest))
+
+    def test_off_touches_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            ctx = SimpleNamespace(dest=Path(d), options=SimpleNamespace(vr=False), reporter=Reporter())
+            self.assertEqual(steps.Vr().run(ctx), {})
+            self.assertEqual(list(Path(d).iterdir()), [])
+
+
 class FontsTest(unittest.TestCase):
     """The fonts step: keyed by language and firmware, a no-op without firmware, writes dest/shared-fonts."""
 
@@ -1430,7 +1465,7 @@ class FontsTest(unittest.TestCase):
     def test_all_steps_order(self):
         self.assertEqual([s.id for s in steps.all_steps()],
                          ['check', 'kit', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss',
-                          'fsr', 'cleanup'])
+                          'fsr', 'vr', 'cleanup'])
 
     def test_extracts_into_the_install_folder(self):
         self.fake_tool()

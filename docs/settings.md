@@ -262,3 +262,84 @@ These names are code patch sets built into the generated game code (`recomp/patc
 | `patch_scene` (default `0`) | Patch set that makes the game use the configured scene render size. | The resolution code switches this set from the render size setting; a manual value is replaced. | Unknown |
 | `report_guard` (default `1`) | Patch set on 1.4.3 only: in the model scene's report loop (main+0xa22d8, main+0xa2310) an object whose report handle is negative or whose row index is 0x8000 or more gets coverage 0 for that frame and its handle reset, the path the game takes after every read, instead of reading past the report rows. On valid rows the game's code runs unchanged. | `0` runs the game's code as shipped: a bad row index reads far past the rows and crashes, the class Weeping of the Empire met while using Ultrahand and aiming. | Risky |
 | `shutter_fix` (default `1`) | Patch set on 1.4.3 only (set `shutter`, main+0x25e55d0): the speed the AI node QueryBlackboardGetF32FromActorForOunce returns is scaled by 1 + 0.065 x (1 - frame ratio)^2 when the actor's shouldUseOunceSpeed flag is set, which only the two launchers of Tenbez Shrine (Dungeon034) set (#1215). Every other actor gets its value unchanged; 1.0 at 30 fps and below. | `0` runs the game's code: above about 45 fps the ball leaves the launcher too slowly and stays on the rim of the other launcher or falls into the pit. Measured: on dev at 60 fps the ball stuck from the first shots; with the set at 60 and 120 fps it went back and forth as at 30. | Safe |
+
+## VR
+
+Settings of VR (`--vr` or `vr = 1`; `docs/vr.md`). The first table is the player's (F1 > VR has the comfort ones). The second holds switches for single VR fixes, with the values tested in the headset as defaults: leave them alone, they exist to narrow a VR problem down (turn one off, see whether the problem changes).
+
+| Setting | What it does | Effect of changing it | Safety |
+| --- | --- | --- | --- |
+| `vr` (default `0`) | `1` plays in a SteamVR headset through OpenXR (`docs/vr.md`); the same as starting with `--vr`. Sets `output_res` to the headset's picture size and shape (SteamVR's recommended eye size over the headset's view, noted per headset in `vr-headset.txt`; square on its first start, 2048x2048 when SteamVR gives no size), `window_size` the same shape 1024 high, `fullscreen` 0, `hud_width` full, `hdr` 0 and `render_scale` from `vr_render_scale` over the flat values (the environment still wins), switches on the `vr` patch set and starts OpenXR. Without a headset or runtime the game plays flat and the log says why. | Read at start. Every frame is drawn twice (once per eye): about twice the flat game's frame rate is needed at the headset's refresh rate. | Safe |
+| `vr_render_scale` (default `200`) | `render_scale` in VR (the flat setting stays for flat play). 200 renders 4096x4096 per eye. | Read at start. Lower values (150, 100) cost less GPU time and look softer. | Safe |
+| `vr_cam_height` (default `0`) | Metres added to the height of the camera behind Link (F1 > VR). | Live. | Safe |
+| `vr_head_aim` (default `1`) | While the bow (ZR) or a throw (R) is held, or the camera / scope viewfinder is open, the game aims where the head looks (F1 > VR). `0`: aim with the right stick. | Live. | Safe |
+| `vr_head_aim_hold` (default `400`) | Milliseconds head aim stays on after ZR / R is let go (the arrow or throw leaves in that direction). | Read at start. | Safe |
+| `vr_level` (default `1`) | The VR camera stays on a level orbit behind Link: the right stick's up/down tilt and the game camera's height changes don't move it (the head looks up and down instead). | Live. `0`: the camera follows the game camera's height. | Safe |
+| `vr_head_position` (default `0`) | `1`: the headset's position moves the camera too (leaning in). Off, only the head's rotation counts. | Live. The position is measured from the play area's origin, so standing away from it shifts the view. | Safe |
+| `vr_scale` (default `1`) | Game units per metre of head motion and eye distance (1: the game's own scale). | Live. Larger values give a smaller-looking world. | Safe |
+| `vr_margin` (default `5`) | Degrees the game draws beyond the headset's widest view, so fast head turns don't show the picture's edge. | Live. More margin costs resolution at the same render scale. | Safe |
+| `vr_hud` (default `1`) | The HUD on a floating panel in front of the player (the game's HUD draws replayed onto it). `0`: no HUD in VR. | Read at start. | Safe |
+| `vr_hud_size` (default `2`) | The HUD panel's width in metres. | Live. | Safe |
+| `vr_hud_aspect` (default `0`) | The HUD panel's width / height. `0`: the HUD picture's own shape when its layout for the picture's shape is loaded (the HUD undistorted), else 16:9. The panel's width stays `vr_hud_size`. | Live. | Safe |
+| `vr_hud_distance` (default `2`) | The HUD panel's distance in metres. | Live. | Safe |
+| `vr_hud_follow` (default `25`) | Degrees the head may turn away from the HUD panel before it follows (lazily). With the camera or scope open it stays straight ahead. | Live. | Safe |
+| `vr_worldhud` (default `1`) | World markers (names, enemy health, lock-on, speech balloons, the stamina wheel's place) drawn by the game into each eye, at their place in the world. | Live. `0`: they go on the HUD panel. | Safe |
+| `vr_worldhud_dist` (default `4`) | Metres at which world markers are shown when their depth is not known. | Live. | Safe |
+| `vr_markers3d` (default `1`) | Each world marker and the aim reticle at the depth of what it marks. | Live. `0`: one layer at `vr_worldhud_dist`. | Safe |
+| `vr_marker_ref` (default `4`) | Metres at which markers keep their flat size; nearer ones grow, farther ones shrink. | Live. | Safe |
+| `vr_marker_min` (default `0.05`) | Smallest marker size, as a share of the flat size. | Live. | Safe |
+| `vr_marker_max` (default `2`) | Largest marker size, as a multiple of the flat size. | Live. | Safe |
+| `vr_stamina_move` (default `1`) | The stamina wheel goes to a fixed place on the HUD panel instead of beside Link. | Read at start. | Safe |
+| `vr_stamina_pos` (default `0.725,0.94`) | Where the stamina wheel's bottom-right corner sits on the HUD panel (x,y, 0..1). | Read at start. | Safe |
+| `vr_viewfinder` (default `CameraPointer_00,Scope_00`) | HUD layouts that mean a viewfinder is open (head aim and a head-locked panel while they show), comma-separated; `-` for none. | Read at start. | Safe |
+| `vr_pad` (default `1`) | The VR controllers are read as a gamepad (Steam Frame controllers mapped like one; other controllers through a Touch-style layout). A normal gamepad keeps working beside them. | Read at start. | Safe |
+| `vr_gyro_invert` (default `0`) | `1` turns the right controller's up/down motion (used as the gyro) the other way. | Live. | Safe |
+| `vr_framepad` (default `0`) | `1` also opens Steam's gamepad mirror of the Steam Frame controllers through SDL (normally left aside: the game reads them through OpenXR, and the mirror would keep a real gamepad from being used). | Read at start. | Safe |
+| `vr_pace` (default `1`) | The game presents in step with the headset's frames (a left and a right frame per headset frame, per second one above 110 Hz) and its game step follows the headset. | Live. `0`: the game paces itself; pictures then reach the headset unevenly. | Safe |
+
+### VR troubleshooting
+
+| Setting | What it does | Effect of changing it | Safety |
+| --- | --- | --- | --- |
+| `vr_rslot` (default `1`) | The renderer's camera records get a copy of the game camera with the head pose, so everything drawn (shadows, culling, effects) follows the head. | Without it the view doesn't follow the head properly. | Caution |
+| `vr_onepose` (default `1`) | One head pose per frame: the renderer, the frame's label and SteamVR's reprojection all use it. | Off: pictures can wobble against the head. | Caution |
+| `vr_linkanchor` (default `1`) | The level camera is placed relative to Link, not to the game camera's look-at point (which moves while targeting or with the shield up). | Off: the view can drift while targeting. | Caution |
+| `vr_pincam` (default `1`) | The game camera itself is moved to the VR camera's place, so everything that reads the camera position (sky, probes, the shield camera) agrees with the view. | Off: sky effects can move with the stick. | Caution |
+| `vr_chasegate` (default `1`) | The level camera only applies in the game's normal camera modes; ladders, lock-on, aiming, warps and events use the game camera with the head. | Off: the level camera in every mode. | Caution |
+| `vr_lockall` (default `1`) | In the other camera modes the height is still held at Link + the level height. | Off: those modes keep the game camera's height. | Caution |
+| `vr_lvlguard` (default `1`) | The level camera only learns its distance and height while the game camera rests level. | Off: learns all the time (the distance can pump). | Caution |
+| `vr_collide` (default `0`) | `1`: the VR camera comes in when the game camera does (walls behind Link). | Off by default: the game camera's distance also changes with the stick's tilt. | Caution |
+| `vr_nudge` (default `0.05`) | Degrees a game camera lying exactly on the world axes (ladders, the level shield camera) is turned, so camera rows are never mistaken for world vectors. `0`: off. | Read at start. | Caution |
+| `vr_rcam` (default `1`) | The render camera object's views count as camera versions too. | Live. | Caution |
+| `vr_rcamnear` (default `3`) | Only render camera views this close (game units) to the main camera count while the camera is pinned. `0`: any. | Off: on ladders the world can swing with the head. | Caution |
+| `vr_rcamrot` (default `0.3`) | A far render camera view with a rotation differing by more than this (teleport cameras) still counts. | Read at start. | Caution |
+| `vr_nearview` (default `3`) | setView calls with a camera this close (units) to the main one get the head copy too. | Live. | Caution |
+| `vr_raglock` (default `1`) | While Link ragdolls (heavy hits, lightning, death) the view stays where it was and glides back when he gets up. | Off: the view follows him rolling. | Caution |
+| `vr_ragfree` | Player verbs during which the ragdoll hold never applies (Link steers himself: gliding, diving, riding, surfing), comma-separated ids; empty: the built-in list, `-`: none. | Read at start. | Caution |
+| `vr_headlock` (default `1`) | While the game draws from a camera of its own (talks, title, teleports) the picture stays put in the world instead of being dragged with the head. | Off: cutscene pictures follow the head. | Caution |
+| `vr_ev3d` (default `1`) | The game's event and talk cameras are head-tracked 3D (a head copy of them). | Off: held still in the world. | Caution |
+| `vr_ev3d_delay` (default `3`) | Frames an event camera must last before it becomes head-tracked (one-frame shots, like a new item's icon, render untouched). | Read at start. | Caution |
+| `vr_pairdec` (default `1`) | The left frame of a pair decides which camera both eyes draw from. | Off: at a cut the eyes can show different shots. | Caution |
+| `vr_pairlag` (default `1`) | The pair's game step is stored for the following eye (both eyes show one moment). | `0`: the step of the frame's own eye. | Caution |
+| `vr_pairgame` (default `1`) | A pair's right eye carries its left frame's game-camera label. | Off: in fast camera pans the eyes can be shown from different places. | Caution |
+| `vr_locklabel` (default `1`) | A frame's label follows the head lock decided for that frame. | Off: one eye can turn away at a cutscene cut. | Caution |
+| `vr_rethead` (default `1`) | The Ultrahand / Recall reticle sits at the head's view centre (where the game picks targets in VR). | Off: on the game camera's aim. | Caution |
+| `vr_clothpair` (default `1`) | Hair and cloth step once per pair of eye pictures in VR, so they move at their normal speed and look the same in both eyes. | `0`: they step on every game frame with `vr_clothmin` as the shortest step, and run about twice as fast. | Safe |
+| `vr_clothmin` (default `0.0167`) | Shortest step in seconds of the hair and cloth clock in VR; only used with `vr_clothpair = 0`. | Lower: hair and cloth stiffen. | Caution |
+| `vr_pairhud` (default `31`) | HUD handling in stereo pairs (bits): 1 the eye picture after the HUD, 2 panel HUD left out of it, 4 the panel from left frames only, 8 no separate marker layer, 16 HUD draws outside any layout left out of the picture too, 32 world markers left out as well. | Read at start. | Caution |
+| `vr_rtearly` (default `1`) | Render targets are resolved before the HUD rules judge a draw. | Off: grass trampling never fades and terrain tiles can stay dark. | Caution |
+| `vr_hudoutsize` (default `1`) | The HUD's output is recognised by its texture and its size. | Off: by the texture alone. | Caution |
+| `vr_fadehud` (default `1`) | HUD drop-shadow pastes under a fade layout are treated as HUD. | Read at start. | Caution |
+| `vr_drydepth` (default `1`) | A HUD-phase draw with a depth target (a 3D item render) always draws. | Off: new item icons can show the scene. | Caution |
+| `vr_dryblit` (default `1`) | The game's image copy into item icons always draws. | Off: new item icons can show the scene. | Caution |
+| `vr_dryskip` (default `1`) | HUD draws left out of the eye picture skip the draw itself, not only its pixels. | Read at start. | Caution |
+| `vr_hudscreen` (default `1`) | HUD draws that sample a picture of the game (quick-select strips' blurred view) are left off the panel. | Read at start. | Caution |
+| `vr_hudadd` (default `1`) | Additive and multiply HUD draws keep the panel's coverage. | Off: the minimap's view cone can cut a square into the panel. | Caution |
+| `vr_hudshadow` (default `0`) | `1` keeps the HUD drop-shadow pastes in the eye pictures. | Read at start. | Caution |
+| `vr_rainband` (default `0`) | `1` keeps the rain band drawn around the camera (a ring close to the head in stereo). | Read at start. | Caution |
+| `vr_sceneany` (default `1`) | Any eye's scene since the last present means no menu. | Off: a game frame can flash on the panel (Ascend, falls). | Caution |
+| `vr_striphold` (default `1`) | After a quick-select strip or the ability wheel the 3D view stays until the scene returns. | Off: a frozen frame can cover the view. | Caution |
+| `vr_noscene_pace` (default `1`) | Without a 3D scene (movies, title, loading) the game presents once per headset frame instead of twice (there is nothing to pair). | Off: the game runs at twice the headset rate there too; on NVIDIA SteamVR's compositor can then miss its turn and the GPU stops (Xid 109) during the opening movies. Read at start. | Caution |
+| `vr_movie_dark` (default `1`) | While a movie plays, the world around the panel is left dark (the movie shows on the panel like a cinema screen). | Off: the last 3D picture stays around the movie. Read at start. | Caution |
+| `vr_noscene_ms` (default `400`) | Milliseconds without a scene (and without a menu layout) before the panel shows the presented frame (title, loading, movies). | Lower: item pickups can flash a frame on the panel. | Caution |
+| `vr_force_render` (default `-1`) | Render when SteamVR doesn't ask for frames: `-1` after 3 s of a running session that never got there, `1` always, `0` only when asked. | Read at start. | Caution |

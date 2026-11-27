@@ -69,6 +69,13 @@ static const char *const known[] = {
     "SWKBD_TEST", "TEST_OOM", "TEST_PAD", "TEST_PAD_RUMBLE_MS", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_BLOCK_MIB", "TEX_HEAP_EXTRA_MB", "TEX_MEMO", "TEX_RELEASED_MIB", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UB_OVERLAY", "UB_OVERLAY_OUT", "UPSCALER", "VB_USED", "VERT_PLUS", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64", "VK_NO_HOST_IMPORT",
     "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VMA_BLOCK_MIB", "VOLUME", "VOLUME_MASK_BIAS", "VOLUME_MUSIC", "VOLUME_SFX", "VOLUME_VOICE", "VRAM_HEADROOM", "VRAM_LIMIT_MIB", "VS_OUTS",
     "WALK_KEY", "WALK_SCALE", "WB_EAGER", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
+    "VR", "VR_RENDER_SCALE", "VR_CAM_HEIGHT", "VR_HEAD_AIM", "VR_HEAD_AIM_HOLD", "VR_LEVEL", "VR_HEAD_POSITION", "VR_SCALE", "VR_MARGIN", "VR_HUD", "VR_HUD_SIZE",
+    "VR_HUD_ASPECT", "VR_HUD_DISTANCE", "VR_HUD_FOLLOW", "VR_WORLDHUD", "VR_WORLDHUD_DIST", "VR_MARKERS3D", "VR_MARKER_REF", "VR_MARKER_MIN",
+    "VR_MARKER_MAX", "VR_STAMINA_MOVE", "VR_STAMINA_POS", "VR_VIEWFINDER", "VR_PAD", "VR_GYRO_INVERT", "VR_FRAMEPAD", "VR_PACE", "VR_RSLOT",
+    "VR_ONEPOSE", "VR_LINKANCHOR", "VR_PINCAM", "VR_CHASEGATE", "VR_LOCKALL", "VR_LVLGUARD", "VR_COLLIDE", "VR_NUDGE", "VR_RCAM", "VR_RCAMNEAR",
+    "VR_RCAMROT", "VR_NEARVIEW", "VR_RAGLOCK", "VR_RAGFREE", "VR_HEADLOCK", "VR_EV3D", "VR_EV3D_DELAY", "VR_PAIRDEC", "VR_PAIRLAG", "VR_PAIRGAME",
+    "VR_LOCKLABEL", "VR_RETHEAD", "VR_CLOTHMIN", "VR_CLOTHPAIR", "VR_PAIRHUD", "VR_RTEARLY", "VR_HUDOUTSIZE", "VR_FADEHUD", "VR_DRYDEPTH", "VR_DRYBLIT",
+    "VR_DRYSKIP", "VR_HUDSCREEN", "VR_HUDADD", "VR_HUDSHADOW", "VR_RAINBAND", "VR_SCENEANY", "VR_STRIPHOLD", "VR_NOSCENE_PACE", "VR_MOVIE_DARK", "VR_NOSCENE_MS", "VR_FORCE_RENDER",
     "ZSTD_CHECK", "ZSTD_NATIVE",
 };
 
@@ -88,6 +95,17 @@ static const struct { const char *key, *section; } sections[] = {
     {"HDR_UI_NITS", "display"}, {"HDR_HUE", "display"}, {"SHADOW_RES", "display"},
     {"SCENE_UPSCALER", "display"}, {"DLAA", "display"}, {"DLSS", "display"}, {"FSR_SHARPNESS", "display"}, {"DLSS_PRESET", "display"}, {"DLSS_CHAR_MASK", "display"}, {"DLSS_FIXED_EXPOSURE", "display"}, {"DLAA_EFFECTS_AFTER", "display"}, {"REFLEX", "display"}, {"FXAA", "display"},
     {"DEVICE_PROFILE", "display"}, {"ASSUME_FOCUS", "display"},
+    {"VR", "vr"}, {"VR_RENDER_SCALE", "vr"}, {"VR_CAM_HEIGHT", "vr"}, {"VR_HEAD_AIM", "vr"}, {"VR_HEAD_AIM_HOLD", "vr"}, {"VR_LEVEL", "vr"}, {"VR_HEAD_POSITION", "vr"},
+    {"VR_SCALE", "vr"}, {"VR_MARGIN", "vr"}, {"VR_HUD", "vr"}, {"VR_HUD_SIZE", "vr"}, {"VR_HUD_ASPECT", "vr"}, {"VR_HUD_DISTANCE", "vr"},
+    {"VR_HUD_FOLLOW", "vr"}, {"VR_WORLDHUD", "vr"}, {"VR_WORLDHUD_DIST", "vr"}, {"VR_MARKERS3D", "vr"}, {"VR_MARKER_REF", "vr"},
+    {"VR_MARKER_MIN", "vr"}, {"VR_MARKER_MAX", "vr"}, {"VR_STAMINA_MOVE", "vr"}, {"VR_STAMINA_POS", "vr"}, {"VR_VIEWFINDER", "vr"}, {"VR_PAD", "vr"},
+    {"VR_GYRO_INVERT", "vr"}, {"VR_FRAMEPAD", "vr"}, {"VR_PACE", "vr"}, {"VR_RSLOT", "vr"}, {"VR_ONEPOSE", "vr"}, {"VR_LINKANCHOR", "vr"},
+    {"VR_PINCAM", "vr"}, {"VR_CHASEGATE", "vr"}, {"VR_LOCKALL", "vr"}, {"VR_LVLGUARD", "vr"}, {"VR_COLLIDE", "vr"}, {"VR_NUDGE", "vr"},
+    {"VR_RCAM", "vr"}, {"VR_RCAMNEAR", "vr"}, {"VR_RCAMROT", "vr"}, {"VR_NEARVIEW", "vr"}, {"VR_RAGLOCK", "vr"}, {"VR_RAGFREE", "vr"},
+    {"VR_HEADLOCK", "vr"}, {"VR_EV3D", "vr"}, {"VR_EV3D_DELAY", "vr"}, {"VR_PAIRDEC", "vr"}, {"VR_PAIRLAG", "vr"}, {"VR_PAIRGAME", "vr"},
+    {"VR_LOCKLABEL", "vr"}, {"VR_RETHEAD", "vr"}, {"VR_CLOTHMIN", "vr"}, {"VR_CLOTHPAIR", "vr"}, {"VR_PAIRHUD", "vr"}, {"VR_RTEARLY", "vr"}, {"VR_HUDOUTSIZE", "vr"},
+    {"VR_FADEHUD", "vr"}, {"VR_DRYDEPTH", "vr"}, {"VR_DRYBLIT", "vr"}, {"VR_DRYSKIP", "vr"}, {"VR_HUDSCREEN", "vr"}, {"VR_HUDADD", "vr"},
+    {"VR_HUDSHADOW", "vr"}, {"VR_RAINBAND", "vr"}, {"VR_SCENEANY", "vr"}, {"VR_STRIPHOLD", "vr"}, {"VR_NOSCENE_PACE", "vr"}, {"VR_MOVIE_DARK", "vr"}, {"VR_NOSCENE_MS", "vr"}, {"VR_FORCE_RENDER", "vr"},
     {"DISCORD_RPC", "discord"}, {"DISCORD_APP_ID", "discord"}, {"DISCORD_IMAGE", "discord"},
     {"CONSOLE", "diagnostics"},
     {"SHADOW_SCALE", "display"}, {"SHADOW_RANGE", "display"}, {"GRASS_RANGE", "display"}, {"CONTACT_SHADOWS", "display"},
@@ -175,6 +193,31 @@ static const CfgMeta metas[] = {
     {"LANG", "", "ja|en-US|fr|de|it|es|zh-CN|ko|nl|pt|ru|zh-TW|en-GB|fr-CA|es-419|zh-Hans|zh-Hant|pt-BR", RESTART},
     {"OPERATION_MODE", "docked", "docked|handheld", RESTART},
     {"ASSUME_FOCUS", "1", "0|1", LIVE},   // read on every focus change (ov_system.c)
+    // VR (--vr, vk_xr.c / vr_camera.c): the headset view, HUD panel and controllers
+    {"VR", "0", "0|1", RESTART}, {"VR_RENDER_SCALE", "200", "50|67|75|100|125|150|200", RESTART}, {"VR_CAM_HEIGHT", "0", "-2..3", LIVE}, {"VR_HEAD_AIM", "1", "0|1", LIVE},
+    {"VR_HEAD_AIM_HOLD", "400", "0..5000", RESTART}, {"VR_LEVEL", "1", "0|1", LIVE}, {"VR_HEAD_POSITION", "0", "0|1", LIVE},
+    {"VR_SCALE", "1", "0.1..10", LIVE}, {"VR_MARGIN", "5", "0..20", LIVE}, {"VR_HUD", "1", "0|1", RESTART}, {"VR_HUD_SIZE", "2", "0.2..10", LIVE},
+    {"VR_HUD_ASPECT", "0", "0..4", LIVE}, {"VR_HUD_DISTANCE", "2", "0.3..20", LIVE}, {"VR_HUD_FOLLOW", "25", "0..90", LIVE},
+    {"VR_WORLDHUD", "1", "0|1", LIVE}, {"VR_WORLDHUD_DIST", "4", "0.3..100", LIVE}, {"VR_MARKERS3D", "1", "0|1", LIVE},
+    {"VR_MARKER_REF", "4", "0.5..50", LIVE}, {"VR_MARKER_MIN", "0.05", "0.01..1", LIVE}, {"VR_MARKER_MAX", "2", "1..5", LIVE},
+    {"VR_STAMINA_MOVE", "1", "0|1", RESTART}, {"VR_STAMINA_POS", "0.725,0.94", NULL, RESTART},
+    {"VR_VIEWFINDER", "CameraPointer_00,Scope_00", NULL, RESTART}, {"VR_PAD", "1", "0|1", RESTART}, {"VR_GYRO_INVERT", "0", "0|1", LIVE},
+    {"VR_FRAMEPAD", "0", "0|1", RESTART}, {"VR_PACE", "1", "0|1", LIVE},
+    // VR troubleshooting: each one turns a VR fix off (or tunes it); the defaults are the values tested in the headset
+    {"VR_RSLOT", "1", "0|1", LIVE}, {"VR_ONEPOSE", "1", "0|1", LIVE}, {"VR_LINKANCHOR", "1", "0|1", LIVE}, {"VR_PINCAM", "1", "0|1", LIVE},
+    {"VR_CHASEGATE", "1", "0|1", RESTART}, {"VR_LOCKALL", "1", "0|1", RESTART}, {"VR_LVLGUARD", "1", "0|1", RESTART},
+    {"VR_COLLIDE", "0", "0|1", RESTART}, {"VR_NUDGE", "0.05", "0..1", RESTART}, {"VR_RCAM", "1", "0|1", LIVE},
+    {"VR_RCAMNEAR", "3", "0..50", RESTART}, {"VR_RCAMROT", "0.3", "0..4", RESTART}, {"VR_NEARVIEW", "3", "0..50", LIVE},
+    {"VR_RAGLOCK", "1", "0|1", RESTART}, {"VR_RAGFREE", "", NULL, RESTART}, {"VR_HEADLOCK", "1", "0|1", RESTART}, {"VR_EV3D", "1", "0|1", RESTART},
+    {"VR_EV3D_DELAY", "3", "0..60", RESTART}, {"VR_PAIRDEC", "1", "0|1", RESTART}, {"VR_PAIRLAG", "1", "0..2", RESTART},
+    {"VR_PAIRGAME", "1", "0|1", RESTART}, {"VR_LOCKLABEL", "1", "0|1", RESTART}, {"VR_RETHEAD", "1", "0|1", RESTART},
+    {"VR_CLOTHMIN", "0.0167", "0..0.1", RESTART}, {"VR_CLOTHPAIR", "1", "0|1", RESTART}, {"VR_PAIRHUD", "31", "0..31", RESTART}, {"VR_RTEARLY", "1", "0|1", RESTART},
+    {"VR_HUDOUTSIZE", "1", "0|1", RESTART}, {"VR_FADEHUD", "1", "0|1", RESTART}, {"VR_DRYDEPTH", "1", "0|1", RESTART},
+    {"VR_DRYBLIT", "1", "0|1", RESTART}, {"VR_DRYSKIP", "1", "0|1", RESTART}, {"VR_HUDSCREEN", "1", "0|1", RESTART},
+    {"VR_HUDADD", "1", "0|1", RESTART}, {"VR_HUDSHADOW", "0", "0|1", RESTART}, {"VR_RAINBAND", "0", "0|1", RESTART},
+    {"VR_SCENEANY", "1", "0|1", RESTART}, {"VR_STRIPHOLD", "1", "0|1", RESTART}, {"VR_NOSCENE_PACE", "1", "0|1", RESTART},
+    {"VR_MOVIE_DARK", "1", "0|1", RESTART}, {"VR_NOSCENE_MS", "400", "0..5000", RESTART},
+    {"VR_FORCE_RENDER", "-1", "-1..60", RESTART},
     // Sound, Controls, Menu
     {"VOLUME", "100", "0..100", LIVE}, {"VOLUME_MUSIC", "100", "0..100", LIVE}, {"VOLUME_SFX", "100", "0..100", LIVE}, {"VOLUME_VOICE", "100", "0..100", LIVE}, {"AUDIO_CHANNELS", "stereo", "auto|stereo|5.1", RESTART},
     {"AUDIO_DEVICE", "", NULL, LIVE},   // audio_mixer.c output_worker: a device name, empty for the system default
@@ -269,6 +312,7 @@ static int is_known(const char *key) {
 static void clear(void) {
     for (int i = 0; i < n_entries; i++) free(entries[i].key), free(entries[i].value);
     n_entries = 0;
+    __atomic_add_fetch(&version, 1, __ATOMIC_RELEASE);   // cfg_get's lookup cache: these values are gone
 }
 
 static char *trim(char *s) {
@@ -343,6 +387,7 @@ int cfg_load(const char *path) {
     }
     free(data);
     migrate();
+    __atomic_add_fetch(&version, 1, __ATOMIC_RELEASE);   // cfg_get's lookup cache: new values
     return 1;
 }
 
@@ -421,6 +466,7 @@ static const unsigned SHAPED[][2] = {
     {1920, 1280}, {2160, 1440}, {2256, 1504}, {2880, 1920}, {3000, 2000}, // 3:2
     {1440, 1080}, {1600, 1200}, {2048, 1536}, {2732, 2048},             // 4:3 (CRT monitors, iPads)
     {2340, 1080}, {3120, 1440}, {2400, 1080}, {3200, 1440},             // 19.5:9 and 20:9 (phones, streamed)
+    {2048, 2048},                                                       // 1:1: VR eye images and the HUD panel (TOTK_VR)
 };
 
 // The shapes a UI layout can be made for (tools/ultrawide_layout.py works on any aspect ratio between these): from 4:3
@@ -445,6 +491,12 @@ int cfg_shape_size(unsigned w, unsigned h, unsigned out[2]) {
     }
     if (best >= 0) {
         out[0] = SHAPED[best][0], out[1] = SHAPED[best][1];
+        return 1;
+    }
+    // VR: every headset's shape has a layout of its own, named at 2048 high with the width in steps of 64 (the steps
+    // of 1/32 vk_xr.c vh_size holds the picture's aspect to, so a headset keeps its folder from session to session)
+    if (cfg_bool("TOTK_VR") && r >= 0.5 && r <= 2) {
+        out[0] = 64 * (unsigned)floor(r * 32 + 0.5), out[1] = 2048;
         return 1;
     }
     if (r < SHAPE_MIN || r > SHAPE_MAX) return 0;
@@ -499,7 +551,7 @@ int cfg_screen_size(unsigned out[2]) {
     return 1;
 }
 
-const char *cfg_get(const char *name) {
+static const char *cfg_get_uncached(const char *name) {
     const char *v = raw_get(name);
     if (v || strncmp(name, PREFIX, PREFIX_LEN)) return v;
     if (!profile_of())
@@ -508,6 +560,23 @@ const char *cfg_get(const char *name) {
     for (size_t i = 0; i < sizeof DECK / sizeof *DECK; i++)
         if (!strcasecmp(DECK[i].key, name + PREFIX_LEN)) return DECK[i].value;
     return NULL;
+}
+
+// Lookup cache: cfg_get is called by name in per-draw paths (VR work); raw_get scans the environment
+// and the entries with string compares each time (~6% of the replay thread in a profile). Per thread, keyed by the name's
+// pointer and checked against its text; any cfg_set / plat_setenv bumps the version and empties every thread's cache.
+void cfg_env_changed(void) { __atomic_add_fetch(&version, 1, __ATOMIC_RELEASE); }
+const char *cfg_get(const char *name) {
+    enum { N = 256 };
+    static __thread struct { const char *ptr; unsigned ver; char key[48]; const char *val; } C[N];
+    size_t len = strlen(name);
+    if (len >= sizeof C[0].key) return cfg_get_uncached(name);
+    unsigned ver = __atomic_load_n(&version, __ATOMIC_ACQUIRE);
+    unsigned h = (unsigned)(((uintptr_t)name >> 3) * 2654435761u) % N;
+    if (C[h].ptr == name && C[h].ver == ver && !memcmp(C[h].key, name, len + 1)) return C[h].val;
+    const char *v = cfg_get_uncached(name);
+    if (__atomic_load_n(&version, __ATOMIC_ACQUIRE) == ver) C[h].ptr = name, C[h].ver = ver, memcpy(C[h].key, name, len + 1), C[h].val = v;
+    return v;
 }
 
 // Whether name's value comes from the player (the environment or totk.ini), not a profile or the table.
@@ -584,7 +653,19 @@ void cfg_each_active(void (*cb)(const char *key, const char *value, int from_env
     }
 }
 
-const CfgMeta *cfg_meta(const char *key) {
+static const CfgMeta *cfg_meta_uncached(const char *key);
+const CfgMeta *cfg_meta(const char *key) {   // the rows never change: cached per thread by the key's pointer and text
+    enum { N = 256 };
+    static __thread struct { const char *ptr; char key[48]; const CfgMeta *m; } C[N];
+    size_t len = strlen(key);
+    if (len >= sizeof C[0].key) return cfg_meta_uncached(key);
+    unsigned h = (unsigned)(((uintptr_t)key >> 3) * 2654435761u) % N;
+    if (C[h].ptr == key && !memcmp(C[h].key, key, len + 1)) return C[h].m;
+    const CfgMeta *m = cfg_meta_uncached(key);
+    C[h].ptr = key, memcpy(C[h].key, key, len + 1), C[h].m = m;
+    return m;
+}
+static const CfgMeta *cfg_meta_uncached(const char *key) {
     char k[64];
     snprintf(k, sizeof k, "%s", key);
     const char *name = norm_key(k);
@@ -877,8 +958,41 @@ static void load_ini(void) {
     }
 }
 
+// VR (--vr / vr = 1, docs/vr.md): the display settings VR draws with, over totk.ini's flat ones, before anything sizes
+// memory or the window for them: the headset's picture size and shape per eye (vk_xr.c vk_xr_output_size; the HUD laid
+// out for that shape, cfg_shape_size), the HUD at full width, SDR, a window as preview, and the render scale of
+// vr_render_scale on top. The environment still wins (TOTK_OUTPUT_RES fixes the picture's size).
+static void vr_defaults(void) {
+    if (!cfg_bool("TOTK_VR")) return;
+    // OpenXR must start first (loader, runtime, a headset): without it the game plays exactly as without --vr (the VR
+    // patch set, stereo pairs, the square output and the VR tab all stay off); the log says what is missing.
+    int vk_xr_probe(void);   // vk_xr.c
+    if (!vk_xr_probe()) {
+        plat_setenv("TOTK_VR", "0");
+        rt_log("vr: VR was asked for but OpenXR could not start (see the vr: lines above); playing without VR");
+        return;
+    }
+    const char *rs = cfg_get("TOTK_VR_RENDER_SCALE");
+    // The picture per eye: this headset's size and shape (vk_xr.c vk_xr_output_size: SteamVR's recommended eye size,
+    // the view remembered from its last session), else the square 2048x2048
+    int vk_xr_output_size(unsigned out[2], unsigned win[2]);
+    unsigned o[2], w[2];
+    char out_s[24] = "2048x2048", win_s[24] = "1024x1024";
+    if (vk_xr_output_size(o, w))
+        snprintf(out_s, sizeof out_s, "%ux%u", o[0], o[1]), snprintf(win_s, sizeof win_s, "%ux%u", w[0], w[1]);
+    const struct { const char *key, *value; } vr[] = {
+        {"TOTK_OUTPUT_RES", out_s}, {"TOTK_WINDOW_SIZE", win_s}, {"TOTK_FULLSCREEN", "0"},
+        {"TOTK_HUD_WIDTH", "full"}, {"TOTK_HDR", "0"}, {"TOTK_RENDER_SCALE", rs && *rs ? rs : "200"},
+    };
+    for (size_t i = 0; i < sizeof vr / sizeof *vr; i++)
+        if (!getenv(vr[i].key)) plat_setenv(vr[i].key, vr[i].value);
+    rt_log("vr: on: %s per eye, render scale %s, HUD %s, HDR %s", cfg_get("TOTK_OUTPUT_RES"), cfg_get("TOTK_RENDER_SCALE"),
+           cfg_get("TOTK_HUD_WIDTH"), cfg_bool("TOTK_HDR") ? "on" : "off");
+}
+
 void cfg_init(void) {
     load_ini();
+    vr_defaults();
     if (!profile_of()) screen_default();
     if (profile_of())
         rt_log("cfg: device profile Steam Deck: defaults for the keys totk.ini does not set (TOTK_DEVICE_PROFILE=desktop "

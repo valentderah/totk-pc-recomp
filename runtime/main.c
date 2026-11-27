@@ -612,7 +612,7 @@ static int probe_crash(int null) {
 }
 
 static int usage(const char *argv0) {
-    fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] [--selftest | --probe-loader | "
+    fprintf(stderr, "usage: %s [--vr] [--exefs DIR] [--romfs DIR] [--profile DIR] [--selftest | --probe-loader | "
                     "--probe-cfg | --probe-dpi | --probe-mods | --probe-playtime | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-vkmem | "
                     "--probe-vkexec | --probe-astc | --probe-movie | --probe-crash-call | --probe-crash-null | --probe-discord | "
@@ -652,7 +652,20 @@ static void portable_paths(RtConfig *c) {
     c->profile = portable_path(exe, "TOTK_PROFILE_DIR", "profile", NULL, pp_profile, sizeof pp_profile, c->profile);
 }
 
+// --vr: play in a SteamVR headset (docs/vr.md): sets TOTK_VR (as vr = 1 in totk.ini does) before anything reads the
+// settings; cfg.c vr_defaults adds the display settings VR draws with. Taken out of argv; a restart from the menu (or
+// plat_reexec, which reads the command line again) keeps it through the environment.
+static void vr_arg(int *argc, char **argv) {
+    for (int i = 1; i < *argc; i++)
+        if (!strcmp(argv[i], "--vr")) {
+            memmove(&argv[i], &argv[i + 1], (size_t)(*argc - i) * sizeof *argv);   // with the NULL after the last
+            (*argc)--, i--;
+            if (!getenv("TOTK_VR")) plat_setenv("TOTK_VR", "1");
+        }
+}
+
 int main(int argc, char **argv) {
+    vr_arg(&argc, argv);   // before mem_init: it reads totk.ini and sizes memory for the output resolution
     mem_init();   // first: claim the guest address space before anything else can land there; reads totk.ini
     // The build that wrote the log, at its top: an attached log from another install or version shows at a glance.
     rt_log("version: TotK Recomp %s, game %d.%d.%d", rt_port_version, rt_game_version / 100, rt_game_version / 10 % 10,

@@ -720,6 +720,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                     "list.",
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u of its code patch sites are overridden by %s, which is higher in the list.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "It overrides %u code patch sites of %s, which is lower in the list.",
+    [UI_MENU_TAB_VR] = "VR",
+    [UI_MENU_VR_CAM_HEIGHT] = "Camera height",
+    [UI_MENU_VR_CAM_HEIGHT_DESC] = "Raises or lowers the floating VR camera behind Link, in metres, on top of the height the game's own camera uses when it looks level. 0 keeps that height.",
+    [UI_MENU_VR_HEAD_AIM] = "Aim with your head",
+    [UI_MENU_VR_HEAD_AIM_DESC] = "While the bow is drawn (ZR), a throw is held (R) or the camera or scope is open, the game aims where you look instead of where the camera points. Off: aim with the right stick and gyro as in the flat game.",
 };
 
 static const char *const text_ru[UI_TEXT_COUNT] = {
@@ -1405,6 +1410,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_OVERRIDES_DATA] = "%u байт его изменений данных игры заменяют изменения мода %s, он ниже в списке.",
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u мест его патчей кода перекрыты модом %s, он выше в списке.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Он перекрывает %u мест патчей кода мода %s, он ниже в списке.",
+    [UI_MENU_TAB_VR] = "VR",
+    [UI_MENU_VR_CAM_HEIGHT] = "Высота камеры",
+    [UI_MENU_VR_CAM_HEIGHT_DESC] = "Поднимает или опускает парящую VR-камеру за Линком, в метрах, относительно высоты, которую использует камера игры, когда смотрит горизонтально. 0 оставляет эту высоту.",
+    [UI_MENU_VR_HEAD_AIM] = "Прицел головой",
+    [UI_MENU_VR_HEAD_AIM_DESC] = "Пока натянут лук (ZR), удерживается бросок (R) или открыта камера либо подзорная труба, игра целится туда, куда вы смотрите, а не туда, куда направлена камера. Выкл.: прицел правым стиком и гироскопом, как в обычной игре.",
 };
 
 static const char *const text_pt_br[UI_TEXT_COUNT] = {
@@ -2128,6 +2138,11 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u pontos dos seus patches de código são sobrepostos por %s, que está acima na "
                                      "lista.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Ele sobrepõe %u pontos dos patches de código de %s, que está abaixo na lista.",
+    [UI_MENU_TAB_VR] = "VR",
+    [UI_MENU_VR_CAM_HEIGHT] = "Altura da câmera",
+    [UI_MENU_VR_CAM_HEIGHT_DESC] = "Sobe ou desce a câmera VR flutuante atrás do Link, em metros, acima da altura que a câmera do próprio jogo usa quando olha na horizontal. 0 mantém essa altura.",
+    [UI_MENU_VR_HEAD_AIM] = "Mirar com a cabeça",
+    [UI_MENU_VR_HEAD_AIM_DESC] = "Enquanto o arco está puxado (ZR), um arremesso está seguro (R) ou a câmera ou a luneta está aberta, o jogo mira para onde você olha em vez de para onde a câmera aponta. Desligado: mire com o analógico direito e o giroscópio, como no jogo normal.",
 };
 
 // Simplified Chinese: this row covers the software keyboard and the whole menu, so the menu and the overlay read Chinese
@@ -2898,6 +2913,11 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_OVERRIDES_DATA] = "它对游戏数据的修改中有 %u 字节取代了列表中更靠下的 %s 的修改。",
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "它有 %u 处代码补丁位置被列表中更靠上的 %s 覆盖。",
     [UI_MENU_MODS_OVERRIDES_CODE] = "它覆盖了 %u 处代码补丁位置，这些位置原属于列表中更靠下的 %s。",
+    [UI_MENU_TAB_VR] = "VR",
+    [UI_MENU_VR_CAM_HEIGHT] = "相机高度",
+    [UI_MENU_VR_CAM_HEIGHT_DESC] = "在游戏自身相机水平时所用的高度之上，升高或降低林克身后悬浮的 VR 相机（单位：米）。0 保持该高度。",
+    [UI_MENU_VR_HEAD_AIM] = "用头部瞄准",
+    [UI_MENU_VR_HEAD_AIM_DESC] = "拉弓（ZR）、准备投掷（R）或打开相机、望远镜时，游戏会瞄准你看向的地方，而不是相机所指的方向。关闭：像普通游戏一样用右摇杆和陀螺仪瞄准。",
 };
 
 // German
@@ -3807,6 +3827,11 @@ static const char *const text_de[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u seiner Codepatch-Stellen werden von %s überschrieben, das weiter oben in der "
                                      "Liste steht.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Er überschreibt %u Codepatch-Stellen von %s, das weiter unten in der Liste steht.",
+    [UI_MENU_TAB_VR] = "VR",
+    [UI_MENU_VR_CAM_HEIGHT] = "Kamerahöhe",
+    [UI_MENU_VR_CAM_HEIGHT_DESC] = "Hebt oder senkt die schwebende VR-Kamera hinter Link, in Metern, über die Höhe, die die Kamera des Spiels hat, wenn sie waagerecht blickt. 0 behält diese Höhe.",
+    [UI_MENU_VR_HEAD_AIM] = "Mit dem Kopf zielen",
+    [UI_MENU_VR_HEAD_AIM_DESC] = "Während der Bogen gespannt ist (ZR), ein Wurf gehalten wird (R) oder die Kamera bzw. das Fernrohr offen ist, zielt das Spiel dorthin, wohin du schaust, statt dorthin, wohin die Kamera zeigt. Aus: Zielen mit dem rechten Stick und dem Gyro wie im normalen Spiel.",
 };
 
 // French
@@ -4739,6 +4764,11 @@ static const char *const text_fr[UI_TEXT_COUNT] = {
                                      "placé plus haut dans la liste.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Il remplace %u emplacements de correctifs de code de %s, placé plus bas dans la "
                                     "liste.",
+    [UI_MENU_TAB_VR] = "VR",
+    [UI_MENU_VR_CAM_HEIGHT] = "Hauteur de la caméra",
+    [UI_MENU_VR_CAM_HEIGHT_DESC] = "Monte ou descend la caméra VR flottante derrière Link, en mètres, au-dessus de la hauteur qu’utilise la caméra du jeu quand elle regarde à l’horizontale. 0 garde cette hauteur.",
+    [UI_MENU_VR_HEAD_AIM] = "Viser avec la tête",
+    [UI_MENU_VR_HEAD_AIM_DESC] = "Tant que l’arc est bandé (ZR), qu’un lancer est maintenu (R) ou que l’appareil photo ou la longue-vue est ouvert, le jeu vise là où vous regardez au lieu de là où pointe la caméra. Désactivé : visée au stick droit et au gyroscope, comme dans le jeu normal.",
 };
 
 // Spanish
@@ -5654,6 +5684,11 @@ static const char *const text_es[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u de sus puntos de parche de código quedan anulados por %s, que está más "
                                      "arriba en la lista.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Anula %u puntos de parche de código de %s, que está más abajo en la lista.",
+    [UI_MENU_TAB_VR] = "VR",
+    [UI_MENU_VR_CAM_HEIGHT] = "Altura de la cámara",
+    [UI_MENU_VR_CAM_HEIGHT_DESC] = "Sube o baja la cámara VR flotante detrás de Link, en metros, sobre la altura que usa la cámara del propio juego cuando mira en horizontal. 0 mantiene esa altura.",
+    [UI_MENU_VR_HEAD_AIM] = "Apuntar con la cabeza",
+    [UI_MENU_VR_HEAD_AIM_DESC] = "Mientras el arco está tensado (ZR), se mantiene un lanzamiento (R) o está abierta la cámara o el catalejo, el juego apunta adonde miras en lugar de adonde apunta la cámara. Desactivado: apunta con el stick derecho y el giroscopio, como en el juego normal.",
 };
 
 // Italian
@@ -6571,6 +6606,11 @@ static const char *const text_it[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u dei suoi punti di patch del codice sono sostituiti da %s, che è più in alto "
                                      "nell'elenco.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Sostituisce %u punti di patch del codice di %s, che è più in basso nell'elenco.",
+    [UI_MENU_TAB_VR] = "VR",
+    [UI_MENU_VR_CAM_HEIGHT] = "Altezza della telecamera",
+    [UI_MENU_VR_CAM_HEIGHT_DESC] = "Alza o abbassa la telecamera VR fluttuante dietro Link, in metri, rispetto all’altezza che usa la telecamera del gioco quando guarda in orizzontale. 0 mantiene quell’altezza.",
+    [UI_MENU_VR_HEAD_AIM] = "Mira con la testa",
+    [UI_MENU_VR_HEAD_AIM_DESC] = "Mentre l’arco è teso (ZR), si tiene un lancio (R) o è aperta la fotocamera o il cannocchiale, il gioco mira dove guardi invece che dove punta la telecamera. Disattivato: mira con la levetta destra e il giroscopio come nel gioco normale.",
 };
 
 // Dutch
@@ -7471,6 +7511,11 @@ static const char *const text_nl[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u van zijn codepatchplaatsen worden overschreven door %s, dat hoger in de "
                                      "lijst staat.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Hij overschrijft %u codepatchplaatsen van %s, dat lager in de lijst staat.",
+    [UI_MENU_TAB_VR] = "VR",
+    [UI_MENU_VR_CAM_HEIGHT] = "Camerahoogte",
+    [UI_MENU_VR_CAM_HEIGHT_DESC] = "Zet de zwevende VR-camera achter Link hoger of lager, in meters, boven de hoogte die de eigen camera van het spel gebruikt als die recht vooruit kijkt. 0 houdt die hoogte.",
+    [UI_MENU_VR_HEAD_AIM] = "Richten met je hoofd",
+    [UI_MENU_VR_HEAD_AIM_DESC] = "Terwijl de boog gespannen is (ZR), een worp vastgehouden wordt (R) of de camera of verrekijker open is, richt het spel waar je kijkt in plaats van waar de camera wijst. Uit: richten met de rechterstick en de gyro zoals in het gewone spel.",
 };
 
 // Japanese
@@ -8226,6 +8271,11 @@ static const char *const text_ja[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_OVERRIDES_DATA] = "ゲームデータの変更のうち %u バイトが、リストでより下にある %s のものを置き換えます。",
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "コードパッチ箇所のうち %u 個は、リストでより上にある %s のものが優先されます。",
     [UI_MENU_MODS_OVERRIDES_CODE] = "%u 個のコードパッチ箇所で、リストでより下にある %s より優先されます。",
+    [UI_MENU_TAB_VR] = "VR",
+    [UI_MENU_VR_CAM_HEIGHT] = "カメラの高さ",
+    [UI_MENU_VR_CAM_HEIGHT_DESC] = "リンクの後ろに浮かぶ VR カメラを、ゲームのカメラが水平を向いているときの高さを基準に、メートル単位で上げ下げします。0 でその高さのままです。",
+    [UI_MENU_VR_HEAD_AIM] = "頭の向きで狙う",
+    [UI_MENU_VR_HEAD_AIM_DESC] = "弓を引いている間（ZR）、投げる構えの間（R）、またはカメラや望遠鏡を開いている間、ゲームはカメラの向きではなく、あなたが見ている方向を狙います。オフ：通常のゲームと同じく右スティックとジャイロで狙います。",
 };
 
 // Korean
@@ -8982,6 +9032,11 @@ static const char *const text_ko[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_OVERRIDES_DATA] = "게임 데이터 변경 %u바이트가 목록에서 더 아래에 있는 %s의 변경을 대체합니다.",
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "코드 패치 위치 %u곳은 목록에서 더 위에 있는 %s의 패치가 우선합니다.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "코드 패치 위치 %u곳에서 목록에서 더 아래에 있는 %s의 패치보다 우선합니다.",
+    [UI_MENU_TAB_VR] = "VR",
+    [UI_MENU_VR_CAM_HEIGHT] = "카메라 높이",
+    [UI_MENU_VR_CAM_HEIGHT_DESC] = "게임 카메라가 수평을 볼 때의 높이를 기준으로, 링크 뒤에 떠 있는 VR 카메라를 미터 단위로 올리거나 내립니다. 0이면 그 높이를 유지합니다.",
+    [UI_MENU_VR_HEAD_AIM] = "머리로 조준",
+    [UI_MENU_VR_HEAD_AIM_DESC] = "활을 당기는 동안(ZR), 던지기를 들고 있는 동안(R), 또는 카메라나 망원경을 연 동안, 게임은 카메라가 향한 곳이 아니라 당신이 보는 곳을 조준합니다. 끄기: 일반 게임처럼 오른쪽 스틱과 자이로로 조준합니다.",
 };
 
 // Vietnamese: the software keyboard and the whole menu, so the menu and the overlay read Vietnamese when the menu
@@ -9614,6 +9669,11 @@ static const char *const text_vi[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_OVERRIDES_DATA] = "%u byte thay đổi dữ liệu game của nó thay của %s, mod thấp hơn trong danh sách.",
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u vị trí vá mã của nó bị %s ghi đè, mod cao hơn trong danh sách.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Nó ghi đè %u vị trí vá mã của %s, mod thấp hơn trong danh sách.",
+    [UI_MENU_TAB_VR] = "VR",
+    [UI_MENU_VR_CAM_HEIGHT] = "Độ cao camera",
+    [UI_MENU_VR_CAM_HEIGHT_DESC] = "Nâng hoặc hạ camera VR lơ lửng sau lưng Link, tính bằng mét, so với độ cao camera của trò chơi khi nhìn ngang. 0 giữ nguyên độ cao đó.",
+    [UI_MENU_VR_HEAD_AIM] = "Ngắm bằng đầu",
+    [UI_MENU_VR_HEAD_AIM_DESC] = "Khi đang kéo cung (ZR), đang giữ để ném (R) hoặc đang mở máy ảnh hay ống nhòm, trò chơi ngắm vào nơi bạn nhìn thay vì nơi camera hướng tới. Tắt: ngắm bằng cần phải và con quay như trong trò chơi thường.",
 };
 
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}

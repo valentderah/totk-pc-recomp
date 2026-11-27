@@ -393,7 +393,7 @@ extern "C" void menu_vk_release(void) {
 // TOTK_MENU_TEST_SET=<frame>:<key>=<value>[,<key>=<value>...][;<frame>:...]: cfg_set of each key (TOTK_ prefix
 // optional) at that presented frame; changes live settings with no input, menu open or not. totk.ini is written only by
 // the pseudo-key SAVE=1 (cfg_save, as a row change does; a failed write shows the menu's save note).
-enum { TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_AMIIBO, TAB_MENU, TAB_ADVANCED, TAB_MODS, TAB_CHEATS, TAB_COUNT };
+enum { TAB_SCREEN, TAB_GAME, TAB_VR, TAB_SOUND, TAB_CONTROLS, TAB_AMIIBO, TAB_MENU, TAB_ADVANCED, TAB_MODS, TAB_CHEATS, TAB_COUNT };
 enum { TEST_PAGE_FRAMES = 30, TEST_SETS = 16 };
 struct TestSet { uint64_t frame; char key[64], value[64]; };
 static struct {
@@ -919,6 +919,14 @@ static void row_audio_device(void) {
                     cur);
 }
 
+// ---- VR (--vr): comfort settings, every row live
+static void tab_vr(float scale) {
+    opt_begin("##vr", scale);
+    opt_slider("TOTK_VR_CAM_HEIGHT", UI_MENU_VR_CAM_HEIGHT, -2, 3, UI_MENU_VR_CAM_HEIGHT_DESC, 0.1f, "%+.1f m");
+    opt_toggle("TOTK_VR_HEAD_AIM", UI_MENU_VR_HEAD_AIM, UI_MENU_VR_HEAD_AIM_DESC);
+    opt_end();
+}
+
 static void tab_sound(float scale) {
     opt_begin("##sound", scale);
     opt_slider("TOTK_VOLUME", UI_MENU_VOLUME, 0, 100, UI_MENU_VOLUME_DESC, 5, "%.0f %%");
@@ -1382,7 +1390,16 @@ static void tab_advanced(float scale) {
     }
 }
 
-static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN,   UI_MENU_TAB_GAME,   UI_MENU_TAB_SOUND,
+// The VR tab shows only while VR is on (--vr / vr = 1 and OpenXR started: vk_xr.c); everyone else's menu is unchanged.
+extern "C" int vk_xr_world(void);
+static bool tab_shown(int k) { return k != TAB_VR || vk_xr_world(); }
+static int tab_step(int from, int step) {   // the next shown tab in that direction
+    int k = from;
+    do k = (k + step + TAB_COUNT) % TAB_COUNT;
+    while (!tab_shown(k) && k != from);
+    return k;
+}
+static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN,   UI_MENU_TAB_GAME,   UI_MENU_TAB_VR, UI_MENU_TAB_SOUND,
                                               UI_MENU_TAB_CONTROLS, UI_MENU_TAB_AMIIBO, UI_MENU_TAB_MENU,
                                               UI_MENU_TAB_ADVANCED, UI_MENU_TAB_MODS,   UI_MENU_TAB_CHEATS};
 static int g_tab;               // the tab shown
@@ -1559,13 +1576,14 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
              : ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
              : ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) ? -1
                                                                                                          : 0;
-    if (step) g_tab_request = (g_tab + step + TAB_COUNT) % TAB_COUNT;
+    if (step) g_tab_request = tab_step(g_tab, step);
     if (g_tab_request >= 0) g_focus_page = g_tab_request;   // the new page's first row takes the cursor
 
     const ImGuiStyle &st = ImGui::GetStyle();
     float bottom = ImGui::GetFrameHeight() + st.ItemSpacing.y * 2;
     if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_NoTabListScrollingButtons)) {
         for (int k = 0; k < TAB_COUNT; k++) {
+            if (!tab_shown(k)) continue;
             char label[128];
             snprintf(label, sizeof label, "  %s  ###tab%d", menu_text(kTabNames[k]), k);   // the id stays per language
             if (!ImGui::BeginTabItem(label, nullptr, g_tab_request == k ? ImGuiTabItemFlags_SetSelected : 0)) continue;
@@ -1582,6 +1600,7 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
             switch (k) {
             case TAB_SCREEN: tab_screen(scale); break;
             case TAB_GAME: tab_game(scale); break;
+            case TAB_VR: tab_vr(scale); break;
             case TAB_MODS: tab_mods(scale); break;
             case TAB_SOUND: tab_sound(scale); break;
             case TAB_CONTROLS: tab_controls(scale); break;
@@ -2046,7 +2065,9 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
         const char *dir = cfg_get("TOTK_MENU_TEST_DIR");
         snprintf(path, sizeof path, "%s/menu-test-%llu-%d.png", dir ? dir : ".", (unsigned long long)frame, g_test.page);
         *shot = path;
-        if (++g_test.page == TAB_COUNT) {
+        do ++g_test.page;
+        while (g_test.page < TAB_COUNT && !tab_shown(g_test.page));
+        if (g_test.page == TAB_COUNT) {
             g_test.page = -1;
             set_open(0);   // the next frame lays out nothing
         } else {

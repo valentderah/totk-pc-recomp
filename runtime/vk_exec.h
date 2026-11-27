@@ -215,6 +215,7 @@ void vk_exec_pass_end(VkExec *ex);
 // it. Skipped when nothing was recorded since the last one.
 void vk_exec_barrier(VkExec *ex);
 int vk_exec_barrier_merge_on(void);   // TOTK_BARRIER_MERGE, read once (vk_exec.c barrier_merges)
+int vk_exec_hud_shift(const VkExec *ex, float *dx, float *dy);   // the stamina wheel's move on the HUD panel (vk_exec.c STM)
 // UpdateUniformBuffer overlays (vk_exec_draw.c): the copies into the real buffers that updates inside a pass left for
 // the next barrier (barrier_to records them first), and a GPU write of another kind into [addr, addr+n) of this
 // submission (a copy, a fill, a storage write), which retires the overlays it touches.
@@ -321,6 +322,12 @@ uint64_t vk_exec_xfer_written(const VkExec *ex, uint32_t op, const void *payload
 // vk_contact.c: a pass about to begin (its targets resolved, no pass open), and a dispatch or copy about to be recorded.
 // vk_contact_plan is what they do in replay order (pass: the first; else the second), for the scan; 1: a march is due (j).
 void vk_contact_pass_begin(VkExec *ex);
+int vk_exec_walk2(void);
+int vk_exec_vr_scene_on(void);
+const VkTexImage *vk_exec_walk2_clear_target(const VkTexImage *img);
+void vk_exec_draw_forget(struct VkExec *ex);
+int vk_exec_hud_replay(void);
+void vk_exec_hud_state(struct VkExec *ex);    // vk_exec_draw.c: the layer's blend on the current state
 void vk_contact_flush(VkExec *ex);
 int vk_contact_plan(const VkExec *ex, int pass, VkExecJob *j);
 void vk_contact_exec(VkExec *ex, const VkExecJob *j);

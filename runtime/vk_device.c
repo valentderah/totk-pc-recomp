@@ -135,7 +135,7 @@ static void mesa_cache_beside_exe(void) {
 
 static int create_instance(void) {
     mesa_cache_beside_exe();
-    const char *ext[12];
+    const char *ext[32];
     uint32_t n_ext = (uint32_t)gfx_window_vk_extensions(ext, 7);
     const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
     int validate = cfg_bool("TOTK_VK_VALIDATION");
@@ -149,6 +149,7 @@ static int create_instance(void) {
     if (vk_hdr_wanted() && instance_ext_present(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME))   // HDR10 surface formats
         ext[n_ext++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
     vk_dlaa_instance_exts(ext, &n_ext, 12);
+    vk_xr_instance_exts(ext, &n_ext, 32);   // TOTK_VR: starts OpenXR and adds its instance extensions (vk_xr.c)
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "TotK Recomp",
                              .pEngineName = "TotK Recomp", .apiVersion = VK_API_VERSION_1_3};
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
@@ -245,6 +246,9 @@ static int pick_device(void) {
         free(pd);
         return 0;
     }
+    VkPhysicalDevice xp = vk_xr_physical(g_vk.instance);   // TOTK_VR: the GPU SteamVR renders on
+    for (uint32_t i = 0; xp && i < n; i++)
+        if (pd[i] == xp && (int)i != best) rt_log("vr: using gpu %u, the one the VR runtime renders on", i), best = (int)i;
     g_vk.phys = pd[best];
     g_vk.device_index = best;
     free(pd);
@@ -300,7 +304,7 @@ static int create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-    const char *ext[52];
+    const char *ext[72];
     uint32_t n_ext = 0;
     for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext; i++) ext[n_ext++] = k_required_ext[i];
     // VK_EXT_external_memory_host is optional: without it (or with TOTK_VK_NO_HOST_IMPORT=1, which tests that path on
@@ -475,6 +479,7 @@ static int create_device(void) {
                                           .queueFamilyIndex = g_vk.xfer_family, .queueCount = 1, .pQueuePriorities = &prio};
         nqi = 2;
     }
+    vk_xr_device_exts(ext, &n_ext, 72);   // TOTK_VR: the VR runtime's device extensions
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &c->f2, .queueCreateInfoCount = nqi,
                              .pQueueCreateInfos = qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VkResult r = vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.device);
@@ -549,7 +554,7 @@ int vk_init(void) {
     if (!g_ready) {
         memset(&g_vk, 0, sizeof g_vk);
         if (create_instance() && pick_device() && create_device())
-            g_ready = 1, vk_mem_host_probe(), vk_upload_pools_init(), vk_headroom_start(), vk_dlaa_init(), vk_fg_init();
+            g_ready = 1, vk_mem_host_probe(), vk_upload_pools_init(), vk_headroom_start(), vk_dlaa_init(), vk_fg_init(), vk_xr_start();
         else destroy_all();
     }
     int ok = g_ready;

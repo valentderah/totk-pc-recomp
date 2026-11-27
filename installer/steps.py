@@ -40,6 +40,7 @@ import sys
 import threading
 import time
 import urllib.request
+import zipfile
 from pathlib import Path
 
 if os.name == 'nt':
@@ -1704,7 +1705,7 @@ class Shapes(Step):
 
     def wanted(self, ctx):
         if not hasattr(ctx, 'shapes_wanted'):
-            ctx.shapes_wanted = screens.wanted(ctx.dest)
+            ctx.shapes_wanted = screens.wanted(ctx.dest, vr=getattr(getattr(ctx, 'options', None), 'vr', False))
         return ctx.shapes_wanted
 
     def key(self, ctx):
@@ -1921,7 +1922,136 @@ class Fsr(Step):
         return {'installed': FSR_VERSION}
 
 
-# ---- 9. clean up
+# ---- 9. VR
+
+# VR through SteamVR (docs/vr.md, the game's --vr). With --vr the setup makes a "TotK VR" shortcut that starts the
+# game with --vr: on Linux a .desktop file in the app menu and in the install folder, on Windows a shortcut in the Start
+# menu, on the desktop and in the install folder. The one in the install folder marks the install as set up for VR
+# (screens.vr_set_up): the Shapes step keeps the square HUD layouts VR draws with. On Windows the game needs the
+# OpenXR loader next to totk.exe: the setup does not ship it, with --vr it downloads Khronos's NuGet package of it
+# from the OpenXR SDK's release at a pinned version, checks its hash and takes openxr_loader.dll out of it. On Linux
+# the game loads the system's libopenxr_loader.so.1 (the distribution's OpenXR loader package). Nothing here stops
+# the install: a failure warns, and the next run tries again.
+VR_NAME = 'TotK VR'
+OPENXR_VERSION = '1.1.65'
+OPENXR_URL = (f'https://github.com/KhronosGroup/OpenXR-SDK-Source/releases/download/release-{OPENXR_VERSION}/'
+              f'OpenXR.Loader.{OPENXR_VERSION}.nupkg')
+OPENXR_PKG = (1928301, '05638c526f07ba3a5f1084bbc3308d654d5167f844ffa1e35515325cb72e0c34')   # size, SHA-256
+OPENXR_MEMBER = 'native/x64/release/bin/openxr_loader.dll'
+OPENXR_DLL = ('openxr_loader.dll', 2673664, 'b0d0eed4e2b6aeb3ce529d82daf3daa5db104857d65c872884b4661142366ce2')
+OPENXR_LICENSE = f'https://github.com/KhronosGroup/OpenXR-SDK-Source/blob/release-{OPENXR_VERSION}/LICENSE'
+# A PowerShell script for the Windows shortcuts (WScript.Shell); the paths come in the environment, never quoted into it
+VR_LNK_PS = (
+    "$ErrorActionPreference = 'Stop'; $sh = New-Object -ComObject WScript.Shell; "
+    "foreach ($dir in @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Desktop'), $env:TOTK_DIR)) {"
+    " if (-not $dir) { continue }; $p = Join-Path $dir ($env:TOTK_NAME + '.lnk'); $s = $sh.CreateShortcut($p);"
+    " $s.TargetPath = $env:TOTK_EXE; $s.Arguments = '--vr'; $s.WorkingDirectory = $env:TOTK_DIR;"
+    " $s.IconLocation = $env:TOTK_EXE + ',0'; $s.Description = 'Tears of the Kingdom in a SteamVR headset'; $s.Save();"
+    " Write-Output $p }")
+
+
+def desktop_exec_quote(path):
+    """A path as one argument of a .desktop Exec line (the Desktop Entry spec's quoting)."""
+    return '"' + re.sub(r'(["`$\\])', r'\\\1', str(path)) + '"'
+
+
+class Vr(Step):
+    """With --vr: the TotK VR shortcuts and, on Windows, the OpenXR loader (see above). Without it nothing is touched:
+    shortcuts and a loader from an earlier run stay."""
+
+    id = 'vr'
+
+    def key(self, ctx):
+        if not getattr(ctx.options, 'vr', False):
+            return fingerprint('vr-1', 'off')
+        return fingerprint('vr-1', OPENXR_VERSION if os.name == 'nt' else 'system loader', str(ctx.dest))
+
+    def current(self, ctx, record):
+        if record.get('failed'):
+            return False
+        return all(Path(p).is_file() for p in record.get('shortcuts', [])) and (
+            not record.get('loader') or (ctx.dest / OPENXR_DLL[0]).is_file())
+
+    def run(self, ctx):
+        if not getattr(ctx.options, 'vr', False):
+            return {}
+        rep, out = ctx.reporter, {}
+        if os.name == 'nt':
+            out.update(self.loader(ctx))
+        try:
+            out['shortcuts'] = self.windows_shortcuts(ctx) if os.name == 'nt' else self.linux_shortcuts(ctx)
+            rep.log('vr: shortcuts ' + ', '.join(out['shortcuts']))
+        except (OSError, subprocess.SubprocessError) as e:
+            rep.warning('warn.vr_shortcut_failed', detail=str(e)[:300])
+            out['failed'] = True
+        return out
+
+    def linux_shortcuts(self, ctx):
+        dest = ctx.dest
+        icon = ctx.layout.runtime / 'totk.ico'
+        if icon.is_file():
+            shutil.copyfile(icon, dest / 'totk.ico')
+        text = ('[Desktop Entry]\nType=Application\nName=TotK VR\n'
+                'Comment=Tears of the Kingdom in a SteamVR headset\n'
+                f'Exec={desktop_exec_quote(dest / "totk")} --vr\nPath={dest}\nTerminal=false\nCategories=Game;\n'
+                + (f'Icon={dest / "totk.ico"}\n' if icon.is_file() else ''))
+        apps = Path(os.environ.get('XDG_DATA_HOME') or Path.home() / '.local' / 'share') / 'applications'
+        made = []
+        for path in (dest / screens.VR_SHORTCUT, apps / 'totk-vr.desktop'):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding='utf-8')
+            path.chmod(0o755)   # trusted by file managers that ask before running a .desktop file
+            made.append(str(path))
+        return made
+
+    def windows_shortcuts(self, ctx):
+        env = dict(os.environ, TOTK_NAME=VR_NAME, TOTK_EXE=str(ctx.dest / 'totk.exe'), TOTK_DIR=str(ctx.dest))
+        r = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', VR_LNK_PS], env=env,
+                           capture_output=True, text=True, timeout=60,
+                           creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        if r.returncode:
+            raise OSError(f'PowerShell {r.returncode}: {(r.stderr or r.stdout).strip()[:250]}')
+        return [line.strip() for line in r.stdout.splitlines() if line.strip()]
+
+    def loader(self, ctx):
+        rep, name, size, sha = ctx.reporter, *OPENXR_DLL
+        path = ctx.dest / name
+        if path.is_file():
+            if file_sha256(path) == sha:
+                return {'loader': OPENXR_VERSION}
+            rep.warning('warn.vr_loader_kept', path=str(path))   # one the player put there: kept
+            return {'loader': 'kept'}
+        part = ctx.temp / f'OpenXR.Loader.{OPENXR_VERSION}.nupkg.part'
+        rep.progress('vr', 'download', 0, OPENXR_PKG[0], 'bytes', force=True)
+        rep.log(f'vr: {OPENXR_URL} (license {OPENXR_LICENSE})')
+        try:
+            part.parent.mkdir(parents=True, exist_ok=True)
+            h, got = hashlib.sha256(), 0
+            with urllib.request.urlopen(OPENXR_URL, timeout=60) as r, open(part, 'wb') as f:
+                while block := r.read(1 << 20):
+                    f.write(block)
+                    h.update(block)
+                    got += len(block)
+                    rep.progress('vr', 'download', min(got, OPENXR_PKG[0]), OPENXR_PKG[0], 'bytes')
+            if got != OPENXR_PKG[0] or h.hexdigest() != OPENXR_PKG[1]:
+                raise OSError(f'{got} bytes, SHA-256 {h.hexdigest()[:16]}, not the expected package')
+            with zipfile.ZipFile(part) as z:
+                data = z.read(OPENXR_MEMBER)
+            if len(data) != size or hashlib.sha256(data).hexdigest() != sha:
+                raise OSError(f'{OPENXR_MEMBER}: not the expected file')
+            tmp = ctx.temp / (name + '.part')
+            tmp.write_bytes(data)
+            replace_file(tmp, path)
+        # urllib's errors, timeouts, a bad package; a connection cut mid-file raises http.client.IncompleteRead
+        except (OSError, http.client.HTTPException, zipfile.BadZipFile, KeyError) as e:
+            rep.warning('warn.vr_download_failed', url=OPENXR_URL, detail=str(e)[:300])
+            return {'failed': True}
+        finally:
+            remove(part)
+        return {'loader': OPENXR_VERSION}
+
+
+# ---- 10. clean up
 
 class Cleanup(Step):
     id = 'cleanup'
@@ -2004,4 +2134,4 @@ def romfs_problem(romfs, expected):
 
 def all_steps():
     return [Check(), Kit(), Fonts(), Extract(), Lift(), Compile(), Prepare(), PcPrompts(), Shapes(), Dlss(), Fsr(),
-            Cleanup()]
+            Vr(), Cleanup()]
