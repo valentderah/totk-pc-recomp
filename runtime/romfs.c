@@ -1848,7 +1848,7 @@ void *romfs_load(const char *rel, size_t *n, const char *why) {
 }
 
 // Calls cb for every RomFS image path that starts with prefix, in index order (sorted). Files a mod adds are not listed.
-void romfs_list(const char *prefix, void (*cb)(const char *rel, void *ctx), void *ctx) {
+void romfs_image_list(const char *prefix, void (*cb)(const char *rel, void *ctx), void *ctx) {
     size_t n = strlen(prefix);
     for (uint64_t i = lower(prefix); i < file_count; i++) {
         const char *name = entry_name(entry(i));

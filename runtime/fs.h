@@ -41,7 +41,7 @@ enum { FS_DIR_DIRECTORIES = 1, FS_DIR_FILES = 2, FS_DIR_NO_FILE_SIZE = (int)0x80
 #define ROMFS_HANDLE_BASE 0x100000000ull
 #define ROMFS_MOUNTS 8                                     // RomFS mount names at once (nn::fs::MountRom)
 void *romfs_load(const char *rel, size_t *n, const char *why);   // a RomFS file as the game reads it; malloc'd
-void romfs_list(const char *prefix, void (*cb)(const char *rel, void *ctx), void *ctx);   // image paths under prefix
+void romfs_image_list(const char *prefix, void (*cb)(const char *rel, void *ctx), void *ctx);   // image paths under prefix
 // SARC member name of archive[0..n): its start and size; 0 when it is not there.
 int romfs_sarc_member(const void *archive, size_t n, const char *name, size_t *at, size_t *size);
 // The dictionary member ("pack.zsdic") of Pack/ZsDic.pack.zs as served: bytes valid for the run; 0 when missing.

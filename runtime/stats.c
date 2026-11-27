@@ -222,8 +222,8 @@ static void names_load(void) {
         if (lang && !strcmp(lang, langs[i].code)) mals = langs[i].mals;
     char prefix[64], rel[256] = "";
     snprintf(prefix, sizeof prefix, "Mals/%s.Product.", mals);
-    romfs_list(prefix, mals_found, rel);
-    if (!*rel) romfs_list("Mals/USen.Product.", mals_found, rel);
+    romfs_image_list(prefix, mals_found, rel);
+    if (!*rel) romfs_image_list("Mals/USen.Product.", mals_found, rel);
     size_t n, raw_n;
     uint8_t *zs = *rel ? romfs_load(rel, &n, "statistics show internal names") : NULL;
     uint8_t *raw = zs ? romfs_zs_unpack(zs, n, 256u << 20, &raw_n) : NULL;
@@ -1068,7 +1068,7 @@ static void stats_main(void *arg) {
         int saved = plat_xchg32(&pending, 0);
         if (!ready) {
             if (!saved) continue;
-            romfs_list("Pack/Actor/", actor_found, NULL);
+            romfs_image_list("Pack/Actor/", actor_found, NULL);
             if (!nactors) {
                 plat_xchg32(&pending, 1);   // the RomFS is not open yet
                 continue;
