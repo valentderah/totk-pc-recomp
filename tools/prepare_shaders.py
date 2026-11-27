@@ -120,7 +120,8 @@ def answers(deps, stage, control):
         tex[int(slot)] = TEX.index('2d' if t == '*' else t)   # "*": any kind, translated as the plain 2D it stands for
     for slot, o in deps.get('img', {}).items():
         img[int(slot)] = TEX.index(o['type'])
-        fmt[int(slot)] = FMT.index(o['fmt']) if o.get('fmt') in FMT else 0
+        name = o.get('fmt')  # absent for a storage image whose format was unspecified in play
+        fmt[int(slot)] = FMT.index(name) if name in FMT else 0
     for loc, t in deps.get('attr', {}).items():
         attr[int(loc)] = TYPES[t]
     for idx, t in deps.get('fout', {}).items():

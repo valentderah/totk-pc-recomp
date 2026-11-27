@@ -453,6 +453,7 @@ def build_sources(out, pgo):
     for d in TOOLS_DIRS:
         copy_tree(ROOT / 'tools' / d, out / 'tools' / d, lambda r: '__pycache__' in r or r.endswith('.md'))
     (out / 'data').mkdir(exist_ok=True)
+    # tools/data/ above carries the supplement separately: --no-supplement needs the original upstream rows.
     text = shader_list.history(MAIN_ROOT / 'refs' / 'MacNativeGames', MNG_COMMIT)
     (out / 'data' / 'shader_list.tsv').write_text(text, encoding='utf-8', newline='\n')
     for p in pgo.values():

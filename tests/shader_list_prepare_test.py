@@ -36,6 +36,37 @@ def fake_program(stage=0, code_body=b'\x01\x02\x03\x04' * 16, c1=b'\xaa\xbb'):
 
 
 class ShaderListPrepareTest(unittest.TestCase):
+    def test_refs_and_release_keep_a_base_only_list(self):
+        import make_release
+
+        base = 'V\t' + '0' * 64 + '\t{}\n'
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(sl, 'git', side_effect=lambda repo, cmd, *_: {
+                 'rev-parse': 'false', 'show': base, 'log': 'upstream'}[cmd]):
+            release = Path(tmp)
+            # No bundle: read upstream history from refs. The default still adds the repository rows.
+            with mock.patch.object(ps, 'BUNDLED_LIST', release / 'missing.tsv'):
+                self.assertEqual(ps.read_list(None, supplement=False), base)
+                merged = ps.read_list(None)
+                self.assertNotEqual(merged, base)
+
+            # Assemble the release sources; the base and supplement must also be separable without refs.
+            with mock.patch.object(make_release, 'version', return_value='test'):
+                make_release.build_sources(release, {})
+            bundled = release / 'data' / 'shader_list.tsv'
+            self.assertEqual((release / 'tools' / 'data' / sl.SUPPLEMENT.name).read_bytes(), sl.SUPPLEMENT.read_bytes())
+            with mock.patch.object(ps, 'BUNDLED_LIST', bundled):
+                self.assertEqual(ps.read_list(None, supplement=False), base)
+                self.assertEqual(ps.read_list(None), merged)
+
+    def test_unspecified_storage_image_format_roundtrips(self):
+        _, _, ctrl, _, _, _ = fake_program(4)
+        packed = bytearray(147)
+        packed[32 + 3] = ps.TEX.index('2d')
+        deps = hsl.unpack_deps(packed, 4)
+        self.assertEqual(deps['img']['3'], {'type': '2d'})
+        self.assertEqual(ps.answers(deps, 4, ctrl), packed)
+
     def test_merge_supplement_appends_unique_non_comment_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
             extra = Path(tmp) / 'supp.tsv'
@@ -105,6 +136,25 @@ class ShaderListPrepareTest(unittest.TestCase):
             by_k = {k: deps for k, deps in variants}
             self.assertEqual(ps.answers(by_k[vs_key], 0, vs_ctrl), packed_vs)
             self.assertEqual(ps.answers(by_k[cs_key], 5, cs_ctrl), packed_cs)
+
+            # A direct answers-file argument finds the sibling program map AND the prepared hit.
+            (d / 'shader-prepared.bin').write_bytes(b'TOTKSPRP' + struct.pack('<II', 1, 36) + bytes(4) + iid_cs)
+            for source in (d, d / 'shader-answers.bin'):
+                rows, counts = hsl.harvest([source], base_path=base_tsv)
+                self.assertEqual((counts['unmapped'], counts['prepared_hits']), (0, 1))
+                self.assertEqual([key for key, _ in ps.parse_list('\n'.join(rows))[0]], [vs_key])
+
+            # Replacing an existing supplement from the same captures and raw upstream history is repeatable.
+            (d / 'shader-prepared.bin').unlink()
+            (d / 'refs' / 'MacNativeGames').mkdir(parents=True)
+            merge = sl.merge_supplement
+            with mock.patch.object(hsl, 'ROOT', d), mock.patch.object(ps, 'BUNDLED_LIST', d / 'missing.tsv'), \
+                 mock.patch.object(sl, 'git', side_effect=['false', '', 'upstream']), \
+                 mock.patch.object(sl, 'merge_supplement', side_effect=lambda text: merge(text, supp)), \
+                 mock.patch.object(sys, 'argv', ['harvest', str(d), '--warm', '--replace', '--out', str(supp)]):
+                before = supp.read_bytes()
+                self.assertEqual(hsl.main(), 0)
+                self.assertEqual(supp.read_bytes(), before)
 
     def test_prepare_shaders_cli_with_mvprev_and_supplement(self):
         vs_key, _, vs_ctrl, vs_code, _, _ = fake_program(0, b'\x44' * 64, b'\x55' * 4)

@@ -49,4 +49,4 @@ def history(repo, rev='origin/HEAD'):
             if line.startswith('V\t') and line not in seen:
                 seen.add(line)
                 lines.append(line)
-    return merge_supplement('\n'.join(lines) + '\n')
+    return '\n'.join(lines) + '\n'

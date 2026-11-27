@@ -9,9 +9,7 @@ keys. This tool maps each recorded code hash back to its shader_census key and e
   - optional S / C warm rows (--warm) elevating shaders actually seen in play from priority 2 to priority 1
 
 Run:
-    .venv-py314\\Scripts\\python tools\\harvest_shader_list.py F:\\Games\\TOTK_decomp build\\v110-verify \\
-        --base F:\\Games\\TOTK_decomp\\build-kit\\data\\shader_list.tsv --warm \\
-        --out tools\\data\\shader_list_supplement.tsv
+    .venv-py314\\Scripts\\python tools\\harvest_shader_list.py build\\v110 --warm
 """
 import argparse
 import hashlib
@@ -115,8 +113,11 @@ def unpack_deps(packed, stage):
         it = packed[32 + slot]
         if it and it < len(prepare_shaders.TEX):
             fi = packed[64 + slot]
-            fmt = prepare_shaders.FMT[fi] if fi < len(prepare_shaders.FMT) and prepare_shaders.FMT[fi] else 'R8G8B8A8Unorm'
-            img[str(slot)] = {'type': prepare_shaders.TEX[it], 'fmt': fmt}
+            img[str(slot)] = {'type': prepare_shaders.TEX[it]}
+            if fi:
+                if fi >= len(prepare_shaders.FMT):
+                    raise ValueError(f'unknown storage image format {fi} at slot {slot}')
+                img[str(slot)]['fmt'] = prepare_shaders.FMT[fi]
     attr = {}
     if stage == 0:
         for loc in range(32):
@@ -149,8 +150,8 @@ def differs_from_default(deps):
     return any(t != '2d' for t in deps.get('tex', {}).values())
 
 
-def load_base(path, romfs=None, exefs=None):
-    """Existing V rows -> {key: [packed_comparable...]} and warm prio dict from a base shader_list.tsv."""
+def load_base(path):
+    """Read upstream variants and priorities without using the supplement being regenerated."""
     if path:
         text = Path(path).read_text(encoding='utf-8')
     elif prepare_shaders.BUNDLED_LIST.is_file():
@@ -160,10 +161,9 @@ def load_base(path, romfs=None, exefs=None):
         text = shader_list.history(mng) if mng.is_dir() else ''
     variants, prio = prepare_shaders.parse_list(text) if text else ([], {})
     by_key = {}
-    dummy_ctrl = bytes(prepare_shaders.CONTROL)
     for k, deps in variants:
         by_key.setdefault(k, []).append(deps)
-    return by_key, prio, set(text.splitlines())
+    return by_key, prio
 
 
 def harvest(sources, romfs=None, exefs=None, base_path=None, include_warm=False, check_prepared=True):
@@ -171,7 +171,7 @@ def harvest(sources, romfs=None, exefs=None, base_path=None, include_warm=False,
     ch_map = {}
     if romfs and exefs:
         ch_map.update(inventory_map(romfs, exefs))
-    base_v, base_prio, _ = load_base(base_path)
+    base_v, base_prio = load_base(base_path)
 
     known_variant_keys = set()
     for k, deps_list in base_v.items():
@@ -184,12 +184,11 @@ def harvest(sources, romfs=None, exefs=None, base_path=None, include_warm=False,
 
     for src in sources:
         src = Path(src)
-        prg_path = src / 'shader-programs.bin' if src.is_dir() else None
         ans_path = src / 'shader-answers.bin' if src.is_dir() else src
-        prp_path = src / 'shader-prepared.bin' if (check_prepared and src.is_dir()) else None
-        if prg_path and prg_path.is_file():
+        prg_path = ans_path.with_name('shader-programs.bin')
+        if prg_path.is_file():
             ch_map.update(read_programs_map(prg_path))
-        prepared = read_prepared_iids(prp_path) if prp_path else set()
+        prepared = read_prepared_iids(ans_path.with_name('shader-prepared.bin')) if check_prepared else set()
 
         for stage, ch, iid, packed in read_answers(ans_path):
             stats['records'] += 1

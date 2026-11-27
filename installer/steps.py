@@ -370,8 +370,9 @@ def migrate_state(ctx):
 
 
 def shader_list_text(layout):
+    """Upstream rows only. prepare_shaders.read_list adds the supplement when it builds the seed."""
     if layout.shader_list:
-        return shader_list.merge_supplement(layout.shader_list.read_text(encoding='utf-8'))
+        return layout.shader_list.read_text(encoding='utf-8')
     try:
         return shader_list.history(layout.root / 'refs' / 'MacNativeGames')
     except subprocess.CalledProcessError:
@@ -1500,7 +1501,7 @@ class Prepare(Step):
                                             'button_icons.py')]
         # not the compile key: a rebuild for the mods' code cheats keeps the prepared shaders
         return fingerprint('prepare-2', ctx.keys['extract'], runtime_key(ctx), layout.xlate, xlate_id,
-                           shader_list_text(layout), *tools)
+                           shader_list.merge_supplement(shader_list_text(layout)), *tools)
 
     def current(self, ctx, record):
         dest = ctx.dest
