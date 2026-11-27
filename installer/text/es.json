@@ -164,6 +164,7 @@
  "ui.close": "Cerrar",
  "ui.back": "Atrás",
  "ui.open_folder": "Abrir carpeta",
+ "ui.graphics_drivers": "Descargar controladores gráficos",
  "ui.update_mode": "Esta carpeta contiene una instalación anterior. El instalador la continúa o la actualiza; los archivos del juego solo se piden si vuelven a ser necesarios.",
  "ui.need_dest": "Elige la carpeta de instalación.",
  "ui.need_base": "Elige el archivo del juego base.",

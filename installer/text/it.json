@@ -164,6 +164,7 @@
  "ui.close": "Chiudi",
  "ui.back": "Indietro",
  "ui.open_folder": "Apri cartella",
+ "ui.graphics_drivers": "Scarica i driver grafici",
  "ui.update_mode": "Questa cartella contiene un'installazione precedente. L'installazione la prosegue o la aggiorna; i file del gioco vengono chiesti solo se servono di nuovo.",
  "ui.need_dest": "Scegli la cartella di installazione.",
  "ui.need_base": "Scegli il file del gioco base.",

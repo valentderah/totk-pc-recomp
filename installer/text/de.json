@@ -164,6 +164,7 @@
  "ui.close": "Schließen",
  "ui.back": "Zurück",
  "ui.open_folder": "Ordner öffnen",
+ "ui.graphics_drivers": "Grafiktreiber herunterladen",
  "ui.update_mode": "Dieser Ordner enthält eine frühere Installation. Das Setup setzt sie fort oder aktualisiert sie; die Spieldateien werden nur verlangt, wenn sie erneut gebraucht werden.",
  "ui.need_dest": "Wähle den Installationsordner.",
  "ui.need_base": "Wähle die Hauptspieldatei.",

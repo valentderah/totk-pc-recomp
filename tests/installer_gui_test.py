@@ -280,6 +280,21 @@ class FormTest(unittest.TestCase):
         return path
 
 
+class DriverHelpTest(unittest.TestCase):
+    def test_driver_errors_offer_the_vendor_pages(self):
+        from installer import guilogic
+        for id in ('check.vulkan_missing', 'check.vulkan_no_device', 'check.vulkan_too_old'):
+            self.assertTrue(guilogic.driver_help((id, {}, 'check')), id)
+        for error in (None, ('check.disk_space', {}, 'check'), ('compile.failed', {}, 'compile')):
+            self.assertFalse(guilogic.driver_help(error), error)
+
+    def test_every_page_is_a_vendor_https_page(self):
+        from installer import guilogic
+        self.assertEqual([v for v, _ in guilogic.DRIVER_PAGES], ['NVIDIA', 'AMD', 'Intel'])
+        for vendor, url in guilogic.DRIVER_PAGES:
+            self.assertTrue(url.startswith(f'https://www.{vendor.lower()}.com/'), url)
+
+
 class CatalogTest(unittest.TestCase):
     def test_every_language_covers_english_with_the_same_placeholders(self):
         en = Catalog('en').english

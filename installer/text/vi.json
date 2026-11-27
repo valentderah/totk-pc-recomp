@@ -164,6 +164,7 @@
  "ui.close": "Đóng",
  "ui.back": "Quay lại",
  "ui.open_folder": "Mở thư mục",
+ "ui.graphics_drivers": "Tải trình điều khiển đồ họa",
  "ui.update_mode": "Thư mục này có một bản cài đặt trước đó. Trình cài đặt sẽ tiếp tục hoặc cập nhật bản cài đặt đó; các tệp trò chơi chỉ được yêu cầu nếu cần dùng lại.",
  "ui.need_dest": "Hãy chọn thư mục cài đặt.",
  "ui.need_base": "Hãy chọn tệp trò chơi gốc.",
