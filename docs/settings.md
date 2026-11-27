@@ -93,6 +93,12 @@ Many rows below are developer tools that only act together with another setting 
 | `test_pad_rumble_ms` | `<n>` gives the `test_pad` gamepad rumble, and each rumble write to it takes n ms, as a slow Bluetooth write does. | Only with `test_pad`; checks that a slow rumble write does not hold up the game thread. | Caution |
 | `test_prepare_shaders` | `1` translates every recorded shader on all usable CPUs during start. | Start takes longer and fills the shader cache folder; the CPU is fully used while it runs. | Caution |
 
+## Companion apps
+
+| Setting | What it does | Effect of changing it | Safety |
+| --- | --- | --- | --- |
+| `control` (default `0`) | A port number (1 to 65535) opens the control socket (`runtime/control.c`, [control.md](control.md)): a local text endpoint on `127.0.0.1` that answers `help`, `pos` (Link's position and facing) and `state`, one JSON line per request, for a companion app such as a progress map. `0` or unset: no socket. The Menu tab of the F1 menu switches it ("Connection for map apps", port 7777 unless the line names another); a change applies at once. | Opens a TCP listener on the loopback address only; a connection whose first line looks like HTTP is closed, and switching it off closes the listener and every connection. The commands only read guest memory; with no request waiting, the present thread does two atomic loads per frame and no socket call. If the port is taken the log and the menu say so and the game runs without it. | Safe |
+
 ## Input
 
 | Setting | What it does | Effect of changing it | Safety |
