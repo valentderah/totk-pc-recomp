@@ -3822,6 +3822,9 @@ static const char *const text_de[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u seiner Codepatch-Stellen werden von %s überschrieben, das weiter oben in der "
                                      "Liste steht.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Er überschreibt %u Codepatch-Stellen von %s, das weiter unten in der Liste steht.",
+    [UI_MENU_ANTIALIASING] = "Kantenglättung",
+    [UI_MENU_ANTIALIASING_DESC] = "SMAA glättet gezackte Kanten des fertigen Bildes in der Auflösung des Spiels, bevor es auf das Fenster skaliert wird. Das HUD wird mitgeglättet. Wirkt sofort.",
+    [UI_MENU_ANTIALIASING_SMAA] = "SMAA", [UI_MENU_ANTIALIASING_OFF] = "Aus",
 };
 
 // French
@@ -4754,6 +4757,9 @@ static const char *const text_fr[UI_TEXT_COUNT] = {
                                      "placé plus haut dans la liste.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Il remplace %u emplacements de correctifs de code de %s, placé plus bas dans la "
                                     "liste.",
+    [UI_MENU_ANTIALIASING] = "Anticrénelage",
+    [UI_MENU_ANTIALIASING_DESC] = "SMAA lisse les bords crénelés de l'image finie à la résolution du jeu, avant sa mise à l'échelle de la fenêtre. Le HUD est lissé aussi. S'applique tout de suite.",
+    [UI_MENU_ANTIALIASING_SMAA] = "SMAA", [UI_MENU_ANTIALIASING_OFF] = "Désactivé",
 };
 
 // Spanish
@@ -5669,6 +5675,9 @@ static const char *const text_es[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u de sus puntos de parche de código quedan anulados por %s, que está más "
                                      "arriba en la lista.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Anula %u puntos de parche de código de %s, que está más abajo en la lista.",
+    [UI_MENU_ANTIALIASING] = "Antialiasing",
+    [UI_MENU_ANTIALIASING_DESC] = "SMAA suaviza los bordes dentados de la imagen terminada a la resolución del juego, antes de escalarla a la ventana. El HUD también se suaviza. Se aplica al momento.",
+    [UI_MENU_ANTIALIASING_SMAA] = "SMAA", [UI_MENU_ANTIALIASING_OFF] = "No",
 };
 
 // Italian
@@ -6586,6 +6595,9 @@ static const char *const text_it[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u dei suoi punti di patch del codice sono sostituiti da %s, che è più in alto "
                                      "nell'elenco.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Sostituisce %u punti di patch del codice di %s, che è più in basso nell'elenco.",
+    [UI_MENU_ANTIALIASING] = "Antialiasing",
+    [UI_MENU_ANTIALIASING_DESC] = "SMAA smussa i bordi seghettati dell'immagine finita alla risoluzione del gioco, prima del ridimensionamento alla finestra. Anche l'HUD viene smussato. Si applica subito.",
+    [UI_MENU_ANTIALIASING_SMAA] = "SMAA", [UI_MENU_ANTIALIASING_OFF] = "No",
 };
 
 // Dutch
@@ -7486,6 +7498,9 @@ static const char *const text_nl[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u van zijn codepatchplaatsen worden overschreven door %s, dat hoger in de "
                                      "lijst staat.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Hij overschrijft %u codepatchplaatsen van %s, dat lager in de lijst staat.",
+    [UI_MENU_ANTIALIASING] = "Anti-aliasing",
+    [UI_MENU_ANTIALIASING_DESC] = "SMAA maakt kartelranden van het afgewerkte beeld glad op de resolutie van het spel, voordat het naar het venster wordt geschaald. Ook de HUD wordt gladgemaakt. Werkt meteen.",
+    [UI_MENU_ANTIALIASING_SMAA] = "SMAA", [UI_MENU_ANTIALIASING_OFF] = "Uit",
 };
 
 // Japanese
@@ -8241,6 +8256,9 @@ static const char *const text_ja[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_OVERRIDES_DATA] = "ゲームデータの変更のうち %u バイトが、リストでより下にある %s のものを置き換えます。",
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "コードパッチ箇所のうち %u 個は、リストでより上にある %s のものが優先されます。",
     [UI_MENU_MODS_OVERRIDES_CODE] = "%u 個のコードパッチ箇所で、リストでより下にある %s より優先されます。",
+    [UI_MENU_ANTIALIASING] = "アンチエイリアス",
+    [UI_MENU_ANTIALIASING_DESC] = "SMAA は完成した画像のギザギザをゲームの解像度で滑らかにしてから、ウィンドウに合わせて拡大縮小します。HUD も滑らかになります。すぐに反映されます。",
+    [UI_MENU_ANTIALIASING_SMAA] = "SMAA", [UI_MENU_ANTIALIASING_OFF] = "オフ",
 };
 
 // Korean
@@ -8997,6 +9015,9 @@ static const char *const text_ko[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_OVERRIDES_DATA] = "게임 데이터 변경 %u바이트가 목록에서 더 아래에 있는 %s의 변경을 대체합니다.",
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "코드 패치 위치 %u곳은 목록에서 더 위에 있는 %s의 패치가 우선합니다.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "코드 패치 위치 %u곳에서 목록에서 더 아래에 있는 %s의 패치보다 우선합니다.",
+    [UI_MENU_ANTIALIASING] = "안티에일리어싱",
+    [UI_MENU_ANTIALIASING_DESC] = "SMAA는 완성된 화면의 계단 현상을 게임 해상도에서 부드럽게 한 뒤 창 크기에 맞춰 확대·축소합니다. HUD도 함께 부드러워집니다. 즉시 적용됩니다.",
+    [UI_MENU_ANTIALIASING_SMAA] = "SMAA", [UI_MENU_ANTIALIASING_OFF] = "끄기",
 };
 
 // Vietnamese: the software keyboard and the whole menu, so the menu and the overlay read Vietnamese when the menu
@@ -9629,6 +9650,9 @@ static const char *const text_vi[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_OVERRIDES_DATA] = "%u byte thay đổi dữ liệu game của nó thay của %s, mod thấp hơn trong danh sách.",
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u vị trí vá mã của nó bị %s ghi đè, mod cao hơn trong danh sách.",
     [UI_MENU_MODS_OVERRIDES_CODE] = "Nó ghi đè %u vị trí vá mã của %s, mod thấp hơn trong danh sách.",
+    [UI_MENU_ANTIALIASING] = "Khử răng cưa",
+    [UI_MENU_ANTIALIASING_DESC] = "SMAA làm mịn các cạnh răng cưa của hình hoàn chỉnh ở độ phân giải của game, trước khi phóng theo cửa sổ. HUD cũng được làm mịn. Áp dụng ngay.",
+    [UI_MENU_ANTIALIASING_SMAA] = "SMAA", [UI_MENU_ANTIALIASING_OFF] = "Tắt",
 };
 
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}
