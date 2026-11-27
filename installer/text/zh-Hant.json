@@ -1,4 +1,6 @@
 {
+ "check.libraries_missing": "此系統缺少遊戲所需的程式庫：{libraries}。請使用系統的套件管理員安裝提供這些程式庫的套件{packages}，然後重新執行安裝程式。",
+ "prepare.libraries_missing": "遊戲已建置完成，但系統缺少 {libraries}，因此無法啟動。請使用系統的套件管理員安裝提供這些程式庫的套件{packages}，然後重新執行安裝程式。詳情：{log}",
  "step.check": "檢查電腦和遊戲檔案",
  "step.kit": "正在把建置工具包複製到遊戲資料夾",
  "step.fonts": "正在提取系統字型",

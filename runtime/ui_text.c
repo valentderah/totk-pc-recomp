@@ -2904,6 +2904,38 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
 static const char *const text_zh_hant[UI_TEXT_COUNT] = {
     SWKBD("文字輸入", "請輸入名字", "馬兒", "確定", "取消", "手把：A 確定，B 取消"),
 
+    [UI_MENU_VERT_PLUS] = "保持 16:9 寬度",
+    [UI_MENU_VERT_PLUS_DESC] = "在比 16:9 更窄的螢幕上（Steam Deck、16:10、4:3），鏡頭顯示與 16:9 相同寬度的世界，上下顯示更多。16:9 或更寬的螢幕不受影響。",
+    [UI_MENU_SYNC_AHEAD] = "領先 GPU 一幀",
+    [UI_MENU_SYNC_AHEAD_DESC] = "遊戲在顯示卡仍在繪製上一幀時就開始準備下一幀。幀率更高，輸入延遲多一幀。",
+    [UI_MENU_HOST_CHECKPOINT] = "快速交出核心",
+    [UI_MENU_HOST_CHECKPOINT_DESC] = "遊戲執行緒一離開移植版的程式碼，就把虛擬核心讓給更重要的執行緒，而不是等到下一次系統呼叫。",
+    [UI_LW_STAGE_START] = "準備中",
+    [UI_LW_STAGE_GPU] = "啟動圖形",
+    [UI_LW_STAGE_FILES] = "準備遊戲檔案",
+    [UI_LW_STAGE_SHADERS] = "載入著色器",
+    [UI_LW_STAGE_PIPELINES] = "建置管線",
+    [UI_LW_STAGE_GAME] = "啟動遊戲",
+    [UI_LW_FAILED] = "遊戲已停止",
+    [UI_LW_FAILED_HINT] = "原因見下方記錄。請複製記錄用於錯誤回報，然後關閉此視窗。",
+    [UI_LW_VERSION] = "v%s · 遊戲 %s",
+    [UI_LW_COUNT] = "%s / %s",
+    [UI_LW_LEFT_ITEMS] = "剩餘 %s",
+    [UI_LW_LEFT_SEC] = "還需約 %d 秒",
+    [UI_LW_LEFT_MIN] = "還需約 %d 分鐘",
+    [UI_LW_LEFT_FEW] = "還需幾秒",
+    [UI_LW_ALSO] = "同時：%s",
+    [UI_LW_GAME_SEC] = "約 %d 秒後啟動遊戲",
+    [UI_LW_GAME_MIN] = "約 %d 分鐘後啟動遊戲",
+    [UI_LW_GAME_SOON] = "遊戲即將啟動",
+    [UI_LW_ELAPSED] = "已用時間 %d:%02d",
+    [UI_LW_DETAILS] = "詳細資訊",
+    [UI_LW_HIDE] = "隱藏詳細資訊",
+    [UI_LW_COPY] = "複製記錄",
+    [UI_LW_COPIED] = "已複製",
+    [UI_LW_CLOSE] = "關閉並結束遊戲",
+    [UI_LW_THOUSANDS] = ",",
+
     [UI_MENU_TITLE] = "設定",
     [UI_MENU_TAB_SCREEN] = "顯示",
     [UI_MENU_TAB_GAME] = "遊戲",
@@ -3338,10 +3370,11 @@ static const char *const text_zh_hant[UI_TEXT_COUNT] = {
                             "基礎實例），而不是讀取零值。",
     [UI_MENU_FIX_ZERO] = "清零新的 GPU 記憶體",
     [UI_MENU_FIX_ZERO_DESC] = "新的 GPU 記憶體池初始內容為零，與 Switch 記憶體一致。",
-    [UI_MENU_DLAA_EFFECTS_AFTER] = "DLAA 之後繪製霧和粒子",
-    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "開啟 DLAA 時，霧、灰塵和其他粒子繪製在 DLSS 已平滑的畫面之上，與遊戲不用 DLSS 時的"
-                                        "繪製方式相同：霧中的細小粒子（神廟中）不再消失，也不再留下拖影。關閉：DLSS 也處理這些效果，與以"
-                                        "前相同。僅用於 DLAA 模式；提升解析度的 DLSS 模式始終處理它們。立即生效。",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "DLAA 之後繪製粒子",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "開啟 DLAA 時，灰塵和其他粒子繪製在 DLSS 已平滑的畫面之上，與遊戲不用 DLSS 時的"
+                                          "繪製方式相同：霧中的細小粒子（神廟中）不再消失，也不再留下拖影。霧和雲仍由 DLSS 處理，"
+                                          "因此天空背景前的遠處輪廓仍然清晰。關閉：DLSS 也處理粒子，與以前相同。僅用於 DLAA 模式；"
+                                          "提升解析度的 DLSS 模式始終處理這些效果。立即生效。",
     [UI_MENU_DLSS_FIXED_EXPOSURE] = "固定 DLSS 曝光",
     [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS 直接使用遊戲畫面的亮度，而不是逐幀自行估算曝光：在暗場景（地底）中，"
                                          "視角移動時大片霧中區域不再忽暗忽亮一幀。關閉：DLSS 自行估算曝光，與以前相同。立即生效。",
@@ -3442,7 +3475,7 @@ static const char *const text_zh_hant[UI_TEXT_COUNT] = {
     [UI_MENU_ANISO_GAME] = "遊戲",
     [UI_MENU_LOD_STEADY] = "負載下保持細節",
     [UI_MENU_LOD_STEADY_DESC] = "跳過遊戲在幀率下降時降低模型和紋理細節的設定，與模擬器模組 Disable LOD Quality "
-                                "Reduction 的作用相同。僅適用於遊戲版本 1.2.1 和 1.4.3。低階電腦請勿開啟：在那裡正是這種降低維持了幀率。",
+                                  "Reduction 的作用相同。適用於遊戲版本 1.1.0、1.2.1 和 1.4.3。低階電腦請勿開啟：在那裡正是這種降低維持了幀率。",
     [UI_MENU_HDR_GROUP] = "HDR",
     [UI_MENU_HDR] = "HDR 輸出",
     [UI_MENU_HDR_DESC] = "在 HDR 顯示器上呈現明亮的高光。需要在 Windows 中開啟 HDR（「使用 HDR」），或使用帶色彩管理的 Wayland 合成器；否則畫面保持 "
@@ -3464,7 +3497,7 @@ static const char *const text_zh_hant[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_PLAYSTATION] = "PlayStation",
     [UI_MENU_PROMPTS_PC] = "PC",
     [UI_MENU_MOUSE_MODE] = "滑鼠視角",
-    [UI_MENU_MOUSE_MODE_DESC] = "直接：視角按滑鼠移動的距離轉動，與電腦遊戲相同，沒有搖桿死區和反應曲線（遊戲 1.4.3 和 1.2.1；1.1.0 使用搖桿模擬）。搖桿模擬：滑鼠相當於右搖桿。",
+    [UI_MENU_MOUSE_MODE_DESC] = "直接：視角按滑鼠移動的距離轉動，與電腦遊戲相同，沒有搖桿死區和反應曲線。搖桿模擬：滑鼠相當於右搖桿。",
     [UI_MENU_MOUSE_STICK] = "搖桿模擬",
     [UI_MENU_MOUSE_DIRECT] = "直接",
     [UI_MENU_MENU_CURSOR] = "在遊戲選單中使用滑鼠",
