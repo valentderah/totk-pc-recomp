@@ -108,9 +108,16 @@ def ui_language_for_locale(loc):
     loc = loc.lower().replace('-', '_')
     if loc.startswith('pt_br'):
         return 'pt-BR'
-    region = loc.split('.')[0].split('@')[0].split('_')
-    if region[0] == 'es' and len(region) > 1 and region[1] not in ('es', ''):
-        return 'es-419'
+    parts = loc.split('.')[0].split('@')[0].split('_')
+    if parts[0] == 'es':
+        region = ''
+        for part in parts[1:]:
+            if len(part) == 1:   # extensions/private use do not select the region
+                break
+            if (len(part) == 2 and part.isalpha()) or (len(part) == 3 and part.isdigit()):
+                region = part
+                break
+        return 'es-419' if region and region != 'es' else 'es'
     lang = loc.split('_')[0].split('.')[0]
     if lang == 'zh':
         return 'zh-Hans'

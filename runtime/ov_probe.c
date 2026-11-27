@@ -33,6 +33,7 @@ static Ov ovs[] = {
     // ov_system.c: nn::oe
     {"oe.Initialize", "_ZN2nn2oe10InitializeEv"},
     {"oe.GetDesiredLanguage", "_ZN2nn2oe18GetDesiredLanguageEv"},
+    {"settings.GetLanguageCode", "_ZN2nn8settings6detail15GetLanguageCodeEPNS0_12LanguageCodeE"},
     {"oe.SetPerformanceConfiguration", "_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi"},
     {"oe.SetCpuBoostMode", "_ZN2nn2oe15SetCpuBoostModeENS0_12CpuBoostModeE"},
     {"oe.GetOperationMode", "_ZN2nn2oe16GetOperationModeEv"},
@@ -261,26 +262,32 @@ static void probe_oe(void) {
         {"en-US", NULL, "en-US"}, {"zh-CN", NULL, "zh-Hans"}, {"zh-TW", NULL, "zh-Hant"},
         {"zh-Hans", NULL, "zh-Hans"}, {"zh-Hant", NULL, "zh-Hant"}};
     int bad = 0;
+    char *settings_code = guest_alloc(8);
     printf("oe: configured language (TOTK_LANG=%s) is %s\n", keep_lang ? keep_lang : "", lang());
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
-        set_env("TOTK_LANG", cases[i].lang);
-        set_env("TOTK_LOCALE", cases[i].locale);
+        set_live("TOTK_LANG", cases[i].lang);
+        set_live("TOTK_LOCALE", cases[i].locale);
         const char *got = lang();
         if (strcmp(got, cases[i].want)) {
             bad++;
             printf("  FAIL: language for TOTK_LANG=%s TOTK_LOCALE=%s is %s, not %s\n", cases[i].lang ? cases[i].lang : "",
                    cases[i].locale ? cases[i].locale : "", got, cases[i].want);
         }
+        memset(settings_code, 0xff, 8);
+        CHECK(CALL("settings.GetLanguageCode", U(settings_code)) == 0 &&
+                  !strncmp(settings_code, cases[i].want, 8),
+              "settings language for TOTK_LANG=%s TOTK_LOCALE=%s disagrees with %s",
+              cases[i].lang ? cases[i].lang : "", cases[i].locale ? cases[i].locale : "", cases[i].want);
     }
-    set_env("TOTK_LANG", NULL);
-    set_env("TOTK_LOCALE", NULL);
+    set_live("TOTK_LANG", NULL);
+    set_live("TOTK_LOCALE", NULL);
     char sys[16];
     snprintf(sys, sizeof sys, "%s", lang());
-    set_env("TOTK_LOCALE", "en-US");
+    set_live("TOTK_LOCALE", "en-US");
     char def[16];
     snprintf(def, sizeof def, "%s", lang());
-    set_env("TOTK_LANG", keep_lang);
-    set_env("TOTK_LOCALE", keep_locale);
+    set_live("TOTK_LANG", keep_lang);
+    set_live("TOTK_LOCALE", keep_locale);
     free(keep_lang);
     free(keep_locale);
     checks++;
@@ -1100,6 +1107,29 @@ static void probe_menu_text(void) {
     CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("es", UI_MENU_CONTINUE), "es-ES does not get the es menu");
     CHECK(strcmp(ui_text_in("es-419", UI_MENU_RUMBLE_STRENGTH_DESC), ui_text_in("es", UI_MENU_RUMBLE_STRENGTH_DESC)),
           "es-419 shows the Spain Spanish text");
+    // Scripts and extension/private-use subtags do not replace the region.
+    static const struct { const char *locale, *want; } regional_locales[] = {
+        {"es-Latn-ES.UTF-8", "es"},
+        {"ES-latn-es", "es"},
+        {"es-ES-u-ca-gregory", "es"},
+        {"es-Latn-MX", "es-419"},
+        {"es-419", "es-419"},
+        {"es-Latn", "es"},
+        {"es-u-nu-latn", "es"},
+        {"es-x-mx", "es"},
+        {"es-ES-x-mx", "es"},
+        {"es-u-rg-MX", "es"},
+        {"es-MX-u-rg-eszzzz", "es-419"},
+        {"es.UTF-8@mexican", "es"},
+    };
+    for (size_t i = 0; i < sizeof regional_locales / sizeof *regional_locales; i++) {
+        const char *locale = regional_locales[i].locale, *want = regional_locales[i].want;
+        CHECK(!strcmp(ui_text_lang(locale), want), "catalog for %s is not %s", locale, want);
+        set_live("TOTK_MENU_LANG", locale);
+        CHECK(menu_text(UI_MENU_RUMBLE_STRENGTH_DESC) == ui_text_in(want, UI_MENU_RUMBLE_STRENGTH_DESC),
+              "menu text for MENU_LANG=%s is not %s", locale, want);
+    }
+    set_live("TOTK_MENU_LANG", "");
     // Traditional Chinese (zh-TW, zh-HK) reads the Simplified Chinese menu
     cfg_set("TOTK_MENU_LANG", "zh-TW");
     CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("zh-Hans", UI_MENU_TITLE), "zh-TW does not get the zh-Hans menu");

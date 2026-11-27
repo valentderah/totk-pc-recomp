@@ -4,6 +4,7 @@
 // Traditional Chinese (English, Russian, Brazilian Portuguese, Simplified Chinese, German, French, Spanish, Italian,
 // Dutch, Japanese, Korean), and Vietnamese. Latin American Spanish (es-419) has a row of its own; en-GB and fr-CA read
 // the en and fr rows.
+#include <ctype.h>
 #include <stdatomic.h>
 #include <string.h>
 
@@ -10535,6 +10536,28 @@ static const Row rows[] = {
     {"ko", text_ko}, {"pt-BR", text_pt_br}, {"vi", text_vi},
 };
 
+// The region precedes extensions/private use; an optional script is not a region.
+static int locale_region(const char *tag, const char *language, char region[4]) {
+    size_t n = strcspn(tag, "-_.@");
+    if (n != 2 || tolower((unsigned char)tag[0]) != language[0] ||
+        tolower((unsigned char)tag[1]) != language[1]) return 0;
+    region[0] = 0;
+    for (const char *p = tag + n; *p && *p != '.' && *p != '@';) {
+        p += strspn(p, "-_");
+        size_t k = strcspn(p, "-_.@");
+        if (k == 1) break;
+        if ((k == 2 && isalpha((unsigned char)p[0]) && isalpha((unsigned char)p[1])) ||
+            (k == 3 && isdigit((unsigned char)p[0]) && isdigit((unsigned char)p[1]) &&
+             isdigit((unsigned char)p[2]))) {
+            for (size_t i = 0; i < k; i++) region[i] = (char)tolower((unsigned char)p[i]);
+            region[k] = 0;
+            break;
+        }
+        p += k;
+    }
+    return 1;
+}
+
 const char *ui_text_lang(const char *code) {
     static const struct { const char *code, *lang; } map[] = {
         {"en-US", "en"}, {"en-GB", "en"}, {"fr-CA", "fr"}, {"es-ES", "es"},
@@ -10542,8 +10565,9 @@ const char *ui_text_lang(const char *code) {
     };
     for (size_t i = 0; i < sizeof map / sizeof *map; i++)
         if (!strcmp(code, map[i].code)) return map[i].lang;
-    // Spanish of a region other than Spain (es-MX, es-AR, es-US, ...): the Latin American row, as the game's USes text
-    if (!strncmp(code, "es-", 3) && strcmp(code, "es-419")) return "es-419";
+    // No region, or Spain: es. Every other actual region: the Latin American row.
+    char region[4];
+    if (locale_region(code, "es", region)) return *region && strcmp(region, "es") ? "es-419" : "es";
     return code;
 }
 
