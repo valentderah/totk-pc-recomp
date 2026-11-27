@@ -33,6 +33,7 @@ static Ov ovs[] = {
     // ov_system.c: nn::oe
     {"oe.Initialize", "_ZN2nn2oe10InitializeEv"},
     {"oe.GetDesiredLanguage", "_ZN2nn2oe18GetDesiredLanguageEv"},
+    {"settings.GetLanguageCode", "_ZN2nn8settings6detail15GetLanguageCodeEPNS0_12LanguageCodeE"},
     {"oe.SetPerformanceConfiguration", "_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi"},
     {"oe.SetCpuBoostMode", "_ZN2nn2oe15SetCpuBoostModeENS0_12CpuBoostModeE"},
     {"oe.GetOperationMode", "_ZN2nn2oe16GetOperationModeEv"},
@@ -263,26 +264,33 @@ static void probe_oe(void) {
         {"zh-Hans", NULL, "zh-Hans"}, {"zh-Hant", NULL, "zh-Hant"}, {NULL, "pt-BR", br}, {NULL, "pt_BR.UTF-8", br},
         {NULL, "pt-PT", br}, {NULL, "pt", br}, {"pt-BR", NULL, br}};
     int bad = 0;
+    char *settings_code = guest_alloc(8);
     printf("oe: configured language (TOTK_LANG=%s) is %s\n", keep_lang ? keep_lang : "", lang());
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
-        set_env("TOTK_LANG", cases[i].lang);
-        set_env("TOTK_LOCALE", cases[i].locale);
+        // The ini's language must not mask the locale case. Restore both effective settings after the probe.
+        set_live("TOTK_LANG", cases[i].lang);
+        set_live("TOTK_LOCALE", cases[i].locale);
         const char *got = lang();
         if (strcmp(got, cases[i].want)) {
             bad++;
             printf("  FAIL: language for TOTK_LANG=%s TOTK_LOCALE=%s is %s, not %s\n", cases[i].lang ? cases[i].lang : "",
                    cases[i].locale ? cases[i].locale : "", got, cases[i].want);
         }
+        memset(settings_code, 0xff, 8);
+        CHECK(CALL("settings.GetLanguageCode", U(settings_code)) == 0 &&
+                  !strncmp(settings_code, cases[i].want, 8),
+              "settings language for TOTK_LANG=%s TOTK_LOCALE=%s disagrees with %s",
+              cases[i].lang ? cases[i].lang : "", cases[i].locale ? cases[i].locale : "", cases[i].want);
     }
-    set_env("TOTK_LANG", NULL);
-    set_env("TOTK_LOCALE", NULL);
+    set_live("TOTK_LANG", NULL);
+    set_live("TOTK_LOCALE", NULL);
     char sys[16];
     snprintf(sys, sizeof sys, "%s", lang());
-    set_env("TOTK_LOCALE", "en-US");
+    set_live("TOTK_LOCALE", "en-US");
     char def[16];
     snprintf(def, sizeof def, "%s", lang());
-    set_env("TOTK_LANG", keep_lang);
-    set_env("TOTK_LOCALE", keep_locale);
+    set_live("TOTK_LANG", keep_lang);
+    set_live("TOTK_LOCALE", keep_locale);
     free(keep_lang);
     free(keep_locale);
     checks++;
