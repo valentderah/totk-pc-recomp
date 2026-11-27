@@ -207,6 +207,7 @@ int probe_window(void) {
     if (rate < 60.0 * 0.995 || rate > 60.0 * 1.005) return fail("vsync rate");
 
     source_destroy(&s);
+    vk_mem_shutdown();
     vk_shutdown();
     long errors = vk_validation_errors_total();
     if (errors) {
