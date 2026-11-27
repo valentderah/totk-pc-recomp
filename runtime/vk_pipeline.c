@@ -1247,8 +1247,10 @@ static Layout *layout_pair(Bindings *B, Bindings *F) {
         free(l);
         return NULL;
     }
-    l->tpl[0] = make_tpl(l->b, n0, l->set, l->push, l->layout, 0);
-    l->tpl[1] = make_tpl(l->b + n0, n - n0, l->set1, l->push1, l->layout, 1);
+    // The 1.4.363 validation layer faults while unpacking templated pushes across independent graphics layouts.
+    // Submit explicit writes for those push sets so the layer sees the binding and descriptor type of every write.
+    if (!(l->push && vk_ctx()->validation)) l->tpl[0] = make_tpl(l->b, n0, l->set, l->push, l->layout, 0);
+    if (!(l->push1 && vk_ctx()->validation)) l->tpl[1] = make_tpl(l->b + n0, n - n0, l->set1, l->push1, l->layout, 1);
     l->next = *head;
     *head = l;
     P.stats.layouts++;

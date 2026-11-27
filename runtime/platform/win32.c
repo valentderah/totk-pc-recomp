@@ -1018,6 +1018,10 @@ void plat_exit(int code) {
 #endif
     fflush(stdout);
     fflush(stderr);
+    // Gameplay exits with worker threads still running. ExitProcess stops them before sending DLL_PROCESS_DETACH;
+    // the validation layer can then wait forever for a lock a stopped thread held. The immediate-exit path has
+    // already flushed the game's state. Skip DLL detach when that layer is loaded, preserving the caller's status.
+    if (GetModuleHandleW(L"VkLayer_khronos_validation.dll")) TerminateProcess(GetCurrentProcess(), (UINT)code);
     ExitProcess((UINT)code);
 }
 
