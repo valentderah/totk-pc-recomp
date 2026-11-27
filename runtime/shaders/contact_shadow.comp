@@ -8,12 +8,15 @@ layout(local_size_x = 8, local_size_y = 8) in;
 layout(binding = 0) uniform sampler2D lin_depth;                // the game's linear depth: view distance / far
 layout(binding = 1, r11f_g11f_b10f) uniform image2D scene;      // the lit scene colour, darkened in place
 layout(binding = 2) uniform sampler2D sun_vis;                  // half-resolution lighting: alpha is sun visibility
+layout(binding = 3) uniform sampler2D up_face;                  // the game's enclosure cube, its upward face (R16F)
 
 layout(push_constant) uniform Params {
     vec4 proj;    // projection x scale, y scale, far plane, strength (0..1)
     vec4 light;   // view-space direction toward the sun (xyz), march length in metres at 10 m (w)
     vec4 size;    // width, height, 1/width, 1/height
-    vec4 opt;     // x: debug (1: the shadow factor as grey, 2: the sun visibility), y: 1 with sun_vis bound
+    vec4 opt;     // x: debug (1: the shadow factor as grey, 2: the sun visibility, 3: the overhead cover in red and
+                  // the up face's centre in green, magenta without the cube), y: 1 with sun_vis bound,
+                  // z: 1 with up_face bound
 } pc;
 
 vec3 view_pos(vec2 uv, float z) {   // z: distance in front of the camera
@@ -62,6 +65,24 @@ void main() {
     // Direct sunlight on this pixel as the game's lighting found it: 0 in the shadow maps' shadow and underground, where
     // darkening would take away ambient light and texture detail (flat caves). Without that pass every pixel counts as lit.
     float vis = pc.opt.y > 0.5 ? textureLod(sun_vis, uv, 0.0).a : 1.0;
+    // Some caves (the Rauru Settlement Ruins well) get a sun visibility of 1 from the game, so their walls took contact
+    // shadows from a sun that cannot reach them. The game's enclosure cube says whether rock is overhead: around the
+    // camera it renders the depth of each cube face and keeps, per texel of a 16x16 face, clamp((distance - 5 m) / 5 m),
+    // 0 where geometry is within 5 m. A camera whose upward face is mostly covered within reach is under rock, and the
+    // march is left out there; open sky reads 1 on the whole face. 16 texels spread over the face are enough.
+    if (pc.opt.z > 0.5) {
+        float covered = 0.0;
+        for (int i = 0; i < 4; i++)
+            for (int j = 0; j < 4; j++) covered += 1.0 - clamp(texelFetch(up_face, ivec2(i * 4 + 1, j * 4 + 1), 0).x, 0.0, 1.0);
+        vis *= 1.0 - smoothstep(0.25, 0.5, covered / 16.0);
+        if (pc.opt.x > 2.5) {
+            imageStore(scene, px, vec4(covered / 16.0, texelFetch(up_face, ivec2(8, 8), 0).x, 0.0, 1.0));
+            return;
+        }
+    } else if (pc.opt.x > 2.5) {
+        imageStore(scene, px, vec4(1.0, 0.0, 1.0, 1.0));
+        return;
+    }
     if (pc.opt.x > 1.5) {
         imageStore(scene, px, vec4(vis, vis, vis, 1.0));
         return;

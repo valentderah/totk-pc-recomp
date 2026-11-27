@@ -77,6 +77,7 @@ typedef struct VkExecJob {
                                          // (mask) or the scaling pass's target (evaluation; no tex: in place)
     VkExecTarget sun;                    // contact: the half-resolution lighting target whose alpha is sun visibility
                                          // (no img: none in this frame)
+    VkExecTarget encl;                   // contact: the game's enclosure cube (vk_contact.c is_enclosure; no img: none)
     float pc[16];                        // the march's push constants
 } VkExecJob;
 
