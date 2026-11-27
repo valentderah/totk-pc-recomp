@@ -195,21 +195,27 @@ int input_map_set_key(InputMap *m, int action, int slot, int key) {
     uint8_t list[INPUT_BINDING_MAX];
     int n = input_map_keys_of(m, action, list, INPUT_BINDING_MAX), lost = -1;
     if (key != KEY_NONE) {
-        for (int i = 0; i < m->nkeys; i++)
+        // Explicit bind lines may share a key across actions. Moving it in Controls takes it from each of them;
+        // keeping only the last match would leave the other actions pressed by the moved key.
+        int keep = 0;
+        for (int i = 0; i < m->nkeys; i++) {
             if (m->keys[i].key == key && m->keys[i].action != action) lost = m->keys[i].action;
-        if (lost >= 0) {
-            uint8_t other[INPUT_BINDING_MAX];
-            int c = 0;
-            for (int i = 0; i < m->nkeys; i++)
-                if (m->keys[i].action == lost && m->keys[i].key != key) other[c++] = m->keys[i].key;
-            keys_put(m, lost, other, c);
+            else m->keys[keep++] = m->keys[i];
         }
-        int w = 0;   // the key once in this action's list too
-        for (int i = 0; i < n; i++)
-            if (list[i] != key) list[w++] = list[i];
-        n = w;
+        m->nkeys = keep;
+        // Replace the selected slot before removing duplicates: removing its current key first would shift the
+        // following key into this slot and overwrite it even when the player chose the same key again.
         if (slot < n) list[slot] = (uint8_t)key;
         else if (n < INPUT_BINDING_MAX) list[n++] = (uint8_t)key;
+        int w = 0, have = 0;
+        for (int i = 0; i < n; i++) {
+            if (list[i] == key) {
+                if (have) continue;
+                have = 1;
+            }
+            list[w++] = list[i];
+        }
+        n = w;
     } else if (slot < n) {
         memmove(list + slot, list + slot + 1, (size_t)(n - slot - 1));
         n--;

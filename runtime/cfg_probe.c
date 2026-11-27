@@ -539,6 +539,23 @@ int probe_cfg(void) {
     input_map_set_key(&mp, B_SL_UP, 0, KEY_NONE);
     input_map_line(&mp, B_SL_UP, line, sizeof line);
     CHECK(!strcmp(line, "none"), "edit: a stick direction without keys is none");
+    mp = input_map;
+    CHECK(input_map_set_key(&mp, B_Y, 0, KEY_MOUSE_L) == -1 &&
+              input_map_keys_of(&mp, B_Y, ks, 8) == 2 && ks[0] == KEY_MOUSE_L && ks[1] == KEY_T,
+          "edit: choosing the current first key keeps its alternate");
+    input_map_bind("A", "key:u, key:e, pad:default");
+    input_map_bind("B", "key:u, key:lshift, pad:default");
+    input_map_bind("X", "key:u, key:space, pad:default");
+    mp = input_map;
+    CHECK(input_map_set_key(&mp, B_Y, 0, KEY_U) == B_X, "edit: a shared key reports the last action that lost it");
+    input_map = mp;
+    memset(dn, 0, sizeof dn); dn[KEY_U] = 1;
+    CHECK(input_map_buttons(dn) == 1ull << B_Y, "edit: moving a shared key takes it from every previous action");
+    CHECK(input_map_keys_of(&mp, B_A, ks, 8) == 1 && ks[0] == KEY_E &&
+              input_map_keys_of(&mp, B_B, ks, 8) == 1 && ks[0] == KEY_LSHIFT &&
+              input_map_keys_of(&mp, B_X, ks, 8) == 1 && ks[0] == KEY_SPACE,
+          "edit: previous actions keep their other keys");
+    input_map_reset();
     // defaults live in the CfgMeta table: cfg_value and the typed accessors fall back to it
     cfg_load("cfg-probe-missing.ini");
     plat_setenv("TOTK_FPS60", NULL);
