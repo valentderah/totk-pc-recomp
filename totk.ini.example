@@ -506,6 +506,13 @@
 # with no stick dead zone or response curve (games 1.4.3 and 1.2.1; 1.1.0 uses stick emulation). Stick makes the
 # mouse a right stick. Neither changes the gamepad. The Controls tab changes this while the game runs.
 # mouse_mode = direct
+# Mouse in the screens only. 0 (the default) leaves the mouse and the pad side by side everywhere, so a keyboard and
+# mouse player is unchanged by a pad that is merely connected. 1: while a gamepad is connected the mouse no longer turns
+# the camera or reaches the game at all, so a hand resting on it cannot fight the pad for the camera. It keeps working in
+# the screens you open yourself (the game's menus, the map, the Purah Pad's camera and dialogue boxes): moving it there
+# gives it that screen's pointer, and any pad input takes the screen back. Without a gamepad the mouse is unchanged.
+# The Controls tab changes this while the game runs.
+# mouse_menu_only = 0
 # The mouse in the game's menus, 1.4.3 only (title, inventory, System tab, Options, shops, dialogue choices): while a
 # menu has the game's focus box the pointer shows, the item under it takes the focus, a left click is A on it and a
 # right click is B. On the map the mouse moves the map's cursor and the scroll wheel zooms. 0 leaves the menus and

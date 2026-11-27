@@ -33,7 +33,25 @@ static volatile int32_t g_block, g_menu;   // text entry / host menu: 0 off, 1 o
 // within one poll (a slow deliberate move does; a desk bump does not), the keyboard with any key or mouse button.
 enum { PAD_USED = 16384, MOUSE_USED = 6 };
 static volatile int32_t g_kbm_last = 1;
-int input_kbm_last(void) { return __atomic_load_n(&g_kbm_last, __ATOMIC_RELAXED); }
+// A gamepad is connected (input_pad_connected): set in pad_physical, the one place that decides whether the open handle is
+// a live controller. -1 until the first read, so a caller that asks before any poll (the settings menu drawing itself)
+// sees "no gamepad" rather than "a gamepad" and leaves the mouse alone.
+static volatile int32_t g_pad_connected = -1;
+int input_pad_connected(void) { return __atomic_load_n(&g_pad_connected, __ATOMIC_RELAXED) > 0; }
+// TOTK_MOUSE_MENU_ONLY, with a gamepad connected: the mouse is a screen device, so a hand resting on it cannot fight the
+// pad for the camera. g_mouse_locked: the lock holds this poll. g_mouse_menu: the mouse moved in a screen that is open
+// (the game's menus, the map, the Purah Pad's camera, a dialogue box), so the mouse is that screen's device and the
+// screen shows its pointer; a pad input clears it, the same way the pad takes the whole game. Both are decided once per
+// poll in poll_merged, before anything reads them.
+static volatile int32_t g_mouse_locked, g_mouse_menu;
+int input_mouse_locked(void) { return __atomic_load_n(&g_mouse_locked, __ATOMIC_RELAXED) != 0; }
+int input_mouse_menu(void) { return __atomic_load_n(&g_mouse_menu, __ATOMIC_RELAXED) != 0; }
+int input_kbm_last(void) {
+    // With TOTK_MOUSE_MENU_ONLY and a gamepad connected the mouse is a menu device, so the game's menus show their pointer
+    // for it only once it moved in one (input_mouse_menu), not for whichever device was used last anywhere.
+    if (input_mouse_locked()) return __atomic_load_n(&g_mouse_menu, __ATOMIC_RELAXED);
+    return __atomic_load_n(&g_kbm_last, __ATOMIC_RELAXED);
+}
 int input_gameplay_active(void) { return !g_menu && !g_block && ikb_foreground() && ikb_captured(); }
 static SDL_Gamepad *pad;
 static uint64_t next_scan;
@@ -274,7 +292,7 @@ static void rec_apply(uint64_t b, const int32_t sl[2], const int32_t sr[2]) {
 void input_direct_mouse_sample(int enabled, int32_t *dx, int32_t *dy) {
     plat_mutex_lock(&lock);
     // the moving free camera takes the mouse (freecam_gate)
-    enabled = enabled && !g_block && !g_menu && freecam_state() != FREECAM_MOVE;
+    enabled = enabled && !g_block && !g_menu && freecam_state() != FREECAM_MOVE && !(input_mouse_locked() && !input_mouse_menu());
     *dx = script_mouse[0]; *dy = script_mouse[1];
     script_mouse[0] = script_mouse[1] = 0;
     if (!enabled) { *dx = *dy = 0; }
@@ -402,6 +420,15 @@ static void mouse_camera(int32_t out[2], int selector) {
         was_selector = 0; cursor[0] = cursor[1] = 0; row = (InputMouseRow){0};
         ikb_mouse_take(&dx, &dy);   // release the wheel without sending its last movement to the camera
         held[0] = held[1] = out[0] = out[1] = 0; frame = ~0ull;
+        return;
+    }
+    // Locked to the menus (TOTK_MOUSE_MENU_ONLY with a gamepad) and none of them has the mouse: the camera takes nothing
+    // from it, and the counts are dropped so the deflection cannot come back when a screen opens. In a screen the mouse
+    // is that screen's, which on the map means the left stick it moves the cursor with.
+    if (input_mouse_locked() && !input_mouse_menu()) {
+        ikb_mouse_take(&dx, &dy);
+        held[0] = held[1] = out[0] = out[1] = 0;
+        frame = ~0ull;
         return;
     }
     if (input_direct_mouse_active()) {
@@ -812,6 +839,7 @@ static void wheel_route(uint64_t *bp, int32_t sl[2], int32_t sr[2]) {
 static int pad_physical(uint8_t pd[PAD_COUNT]) {
     if ((!pad || !SDL_GamepadConnected(pad) || pad_hidden) && plat_now_ns() / 1000000u >= next_scan) { next_scan = plat_now_ns() / 1000000u + RESCAN_MS; scan_pads(); }
     SDL_UpdateGamepads();
+    __atomic_store_n(&g_pad_connected, pad && SDL_GamepadConnected(pad) ? 1 : 0, __ATOMIC_RELAXED);
     if (!pad || !SDL_GamepadConnected(pad)) return 0;
     for (int p = PAD_SOUTH; p < PAD_ZL; p++) pd[p] = SDL_GetGamepadButton(pad, pad_sdl[p]);
     pd[PAD_ZL] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > TRIGGER_ON;
@@ -992,6 +1020,30 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
         if (state == 1) pad_read(&b, sl, sr);
         int pad_used = b || abs(sl[0]) > PAD_USED || abs(sl[1]) > PAD_USED || abs(sr[0]) > PAD_USED ||
                        abs(sr[1]) > PAD_USED, kbm_used = 0;
+        // TOTK_MOUSE_MENU_ONLY, with a gamepad connected: the mouse is a menu device, so a hand resting on it no longer
+        // fights the pad for the camera. The lock holds for the whole game; the menus still take the mouse, and moving it
+        // there is what gives them their pointer (g_mouse_menu, read by input_kbm_last).
+        int mouse_lock = input_pad_connected() && cfg_bool("TOTK_MOUSE_MENU_ONLY");
+        __atomic_store_n(&g_mouse_locked, mouse_lock, __ATOMIC_RELAXED);
+        // While the lock is on the mouse is a screen device. Moving it in a screen that is open (the game's menus, the
+        // map, the Purah Pad's camera, a dialogue box) makes it that screen's device, which is what gives the screen its
+        // pointer (input_kbm_last); a gamepad input in the same poll takes the screen back, as it does the game. Decided
+        // here, before the camera reads anything, so the poll that moves the mouse is the poll that hands it over.
+        static uint32_t travel_seen;
+        static int mouse_menu;
+        uint32_t travel = ikb_mouse_travel();
+        int moved = travel - travel_seen >= MOUSE_USED;
+        travel_seen = travel;
+        if (mouse_lock) {
+            int screen = g_menu || g_block || menu_cursor_menu() || menu_cursor_map() || menu_cursor_camera() ||
+                         menu_cursor_dialogue();
+            if (!screen || pad_used) mouse_menu = 0;
+            else if (moved) mouse_menu = 1;
+            __atomic_store_n(&g_mouse_menu, mouse_menu, __ATOMIC_RELAXED);
+        } else {
+            mouse_menu = 0;
+            __atomic_store_n(&g_mouse_menu, 0, __ATOMIC_RELAXED);
+        }
         if (ikb_foreground()) {
             uint8_t down[KEY_COUNT] = {0};
             // Mouse buttons count only while the cursor is captured, and a button already held when the capture began
@@ -1065,10 +1117,9 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             if (shake) sr[0] = shake, sr[1] = 0;
             // A mouse shake (mouse_direct.c) moves the stick with the mouse, side by side, and lets go when it rests
             else if (input_direct_mouse_shake()) sr[0] = input_direct_mouse_shake() * STICK_MAX, sr[1] = 0;
-            static uint32_t travel_seen;
-            uint32_t travel = ikb_mouse_travel();
-            if (travel - travel_seen >= MOUSE_USED) kbm_used = 1;
-            travel_seen = travel;
+            // A mouse at rest on the desk no longer counts as the device in use while the lock is on, or every small
+            // knock would take the game back from the pad. The keyboard still does, and the mouse does in a screen.
+            if (moved && (!mouse_lock || mouse_menu)) kbm_used = 1;
         }
         // A press or a full-way stick on the pad wins over keys held in the same poll: the player picked it up
         if (pad_used) __atomic_store_n(&g_kbm_last, 0, __ATOMIC_RELAXED);

@@ -7,8 +7,17 @@
 // Sticks are -32767..32767, up is +y. TOTK_INPUT=none reports no input. Callable from any thread.
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
 // 1 when keyboard and mouse are the device the player used last, 0 when the gamepad is: what is shown for pointing
-// (menu_cursor.c shows the pointer in the game's menus only for the keyboard and mouse)
+// (menu_cursor.c shows the pointer in the game's menus only for the keyboard and mouse). With input_mouse_locked it
+// answers for the mouse alone, which only counts once it moved in an open screen (input_mouse_menu).
 int input_kbm_last(void);
+// TOTK_MOUSE_MENU_ONLY with a gamepad connected: the mouse belongs to the menus, and the game reads nothing from it.
+// Decided once per poll (input.c poll_merged). Any thread; mouse_direct.c and mouse_camera both check it.
+int input_mouse_locked(void);
+// The mouse moved in an open screen since the screen opened, so the menus are its and show its pointer. Only meaningful
+// with input_mouse_locked; a gamepad input clears it.
+int input_mouse_menu(void);
+// A gamepad is connected now. Any thread, 0 until the first pad read.
+int input_pad_connected(void);
 // Direct mouse input is consumed by the game's camera-input update, after its stick response. While that update
 // accepts camera input, the HID right stick contains only the controller and keyboard. Selectors route mouse input
 // separately: a persistent radial cursor for the ability wheel, discrete steps for horizontal quick lists.
