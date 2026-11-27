@@ -1,8 +1,9 @@
 // Host check of the installer's first step, compiled with the bundled clang at install time: does the CPU run
-// -march=x86-64-v3 code (or only x86-64-v2), and does a Vulkan 1.3 device exist. Prints one JSON object on stdout.
+// -march=x86-64-v3 code (or only x86-64-v2), and which runtime GPU requirements are missing. Prints JSON.
 // The Vulkan loader is opened at run time, so a machine without one gets "loader": false instead of a failed start.
 #include <cpuid.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <vulkan/vulkan.h>
 #ifdef _WIN32
@@ -83,6 +84,10 @@ int main(void) {
     }
     PFN_vkEnumeratePhysicalDevices enumerate = (PFN_vkEnumeratePhysicalDevices)gipa(inst, "vkEnumeratePhysicalDevices");
     PFN_vkGetPhysicalDeviceProperties props = (PFN_vkGetPhysicalDeviceProperties)gipa(inst, "vkGetPhysicalDeviceProperties");
+    PFN_vkEnumerateDeviceExtensionProperties extensions =
+        (PFN_vkEnumerateDeviceExtensionProperties)gipa(inst, "vkEnumerateDeviceExtensionProperties");
+    PFN_vkGetPhysicalDeviceFeatures2 features =
+        (PFN_vkGetPhysicalDeviceFeatures2)gipa(inst, "vkGetPhysicalDeviceFeatures2");
     PFN_vkDestroyInstance destroy = (PFN_vkDestroyInstance)gipa(inst, "vkDestroyInstance");
     VkPhysicalDevice devs[16];
     uint32_t n = 16;
@@ -93,8 +98,56 @@ int main(void) {
         props(devs[i], &p);
         printf("%s{\"name\": ", i ? ", " : "");
         json_string(p.deviceName);
-        printf(", \"api\": [%u, %u, %u], \"type\": %d}", VK_API_VERSION_MAJOR(p.apiVersion),
+        printf(", \"api\": [%u, %u, %u], \"type\": %d, \"missing_extensions\": [", VK_API_VERSION_MAJOR(p.apiVersion),
                VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion), (int)p.deviceType);
+        // runtime/vk_device.c k_required_ext (tests/installer_host_test.py compares the two lists).
+        // VK_EXT_external_memory_host is optional there: without it the game runs on shadow storage.
+        const char *required[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
+                                 VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME};
+        uint32_t count = 0;
+        VkResult er = extensions ? extensions(devs[i], NULL, &count, NULL) : VK_ERROR_INITIALIZATION_FAILED;
+        VkExtensionProperties *ep = NULL;
+        if (er == VK_SUCCESS && count) {
+            ep = calloc(count, sizeof *ep);
+            er = ep ? extensions(devs[i], NULL, &count, ep) : VK_ERROR_OUT_OF_HOST_MEMORY;
+        }
+        int comma = 0;
+        for (unsigned j = 0; j < sizeof required / sizeof *required; j++) {
+            int found = 0;
+            if (er == VK_SUCCESS)
+                for (uint32_t k = 0; k < count; k++)
+                    if (!strcmp(ep[k].extensionName, required[j])) found = 1;
+            if (!found) {
+                if (comma++) putchar(',');
+                json_string(required[j]);
+            }
+        }
+        free(ep);
+        printf("], \"extension_query_ok\": %s, \"missing_features\": [", er == VK_SUCCESS ? "true" : "false");
+        VkPhysicalDeviceDepthClipControlFeaturesEXT clip = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_CONTROL_FEATURES_EXT};
+        VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+                                               .pNext = &clip};
+        VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+                                               .pNext = &f13};
+        VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f12};
+        if (features) features(devs[i], &f2);
+        // Keep this list aligned with runtime/vk_device.c create_device's required-feature gate.
+        const struct { const char *name; VkBool32 supported; } required_features[] = {
+            {"timelineSemaphore", f12.timelineSemaphore}, {"dynamicRendering", f13.dynamicRendering},
+            {"synchronization2", f13.synchronization2},
+            {"shaderStorageImageWriteWithoutFormat", f2.features.shaderStorageImageWriteWithoutFormat},
+            {"depthClipControl", clip.depthClipControl}, {"shaderInt64", f2.features.shaderInt64},
+            {"samplerAnisotropy", f2.features.samplerAnisotropy}, {"independentBlend", f2.features.independentBlend},
+            {"geometryShader", f2.features.geometryShader}, {"textureCompressionBC", f2.features.textureCompressionBC}};
+        comma = 0;
+        for (unsigned j = 0; j < sizeof required_features / sizeof *required_features; j++) {
+            if (!required_features[j].supported) {
+                if (comma++) printf(", ");
+                json_string(required_features[j].name);
+            }
+        }
+        printf("], \"feature_query_ok\": %s}", features ? "true" : "false");
     }
     printf("]}\n");
     destroy(inst, NULL);

@@ -223,5 +223,6 @@
  "lang.ru": "Tiếng Nga",
  "lang.ko": "Tiếng Hàn",
  "lang.zh-Hans": "Tiếng Trung (Giản thể)",
- "lang.zh-Hant": "Tiếng Trung (Phồn thể)"
+ "lang.zh-Hant": "Tiếng Trung (Phồn thể)",
+ "check.gpu_requirements": "Không có card đồ họa Vulkan 1.3 nào báo cáo đủ các tiện ích mở rộng và tính năng cần thiết: {devices}. Hãy cập nhật trình điều khiển đồ họa; phần cứng có thể không hỗ trợ các yêu cầu này."
 }
