@@ -2001,12 +2001,12 @@ void vk_dlaa_frame(void) {
 // stretched over the whole screen.
 static const uint64_t FXAA_FS[] = {0xf450003ebeb3dc52ull, 0x0a12f4bc2a9a4fbeull, 0x5c43ae18948d52cbull,
                                    0xaad42238801d31d8ull, 0xde20aef90fea4ce6ull, 0x755964e8dce7f34dull};
-// The fragment shader of the FXAA's first pass, the copy of the scene target into the scratch target (another hash
-// leaves the draw alone): this build's translator, seen in 1.4.3 frame logs, and the one with patch 0017, whose two
-// support buffer fields change every fragment shader's hash (as with FXAA_FS above), read by codexx-dev from a 1.4.3
-// run with FSR on (pull request #1245). See vk_dlaa_skip_draw for why FSR's frames skip it where it copies the scene
-// target onto itself.
-static const uint64_t FXAA_COPY_FS[] = {0xa0fd34391f2af811ull, 0x9d065204aac9766bull};
+// The draw on the scene target with fragment shader a0fd34391f2af811 (9d065204aac9766b with patch 0017) samples the
+// scene target and writes it in place, which reads like the FXAA's first pass copying it onto itself, but on 1.4.3 it
+// is the game's tonemap: it adds the bloom (the 320x180 target) to the light target and compresses it with
+// 1 - exp(-x) and a saturation term. Skipped in FSR's frames, the picture showed the linear light clipped, brighter
+// and washed out (frame dumps with scene_upscaler = off and fsr3 at Lookout Landing: 12 % higher mean), so
+// vk_dlaa_skip_draw never skips it.
 
 // Chunks of one submission look shaders up side by side: an entry's hash is stored before its shader, and entries are
 // added under the lock.
@@ -2052,12 +2052,11 @@ int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
         }
     }
     // FSR 3.1 or FSR 4 in place (the scene as large as the output, so no scaling draw follows) goes without the game's
-    // FXAA and its copy of the scene target onto itself on every frame, as codexx-dev found for FSR (pull request
-    // #1245, vk_dlaa.c vk_dlaa_skip_draw there). Measured there on 1.4.3 at a 2560x1440 scene and output: with the
-    // upscaler on the game ran its FXAA, which also sharpens, on 17 frames in every 96 and on the others drew its copy
-    // shader from the scene target onto itself, so the picture went soft and sharp in turns. Here the dynamic
-    // resolution stays at 100 % while FSR runs (resolution.c res_dynres_live) and FSR sharpens its own output
-    // (fsr_sharpness, fsr_evaluate) in place of the FXAA's sharpening. Scaled frames (D.up) need nothing more: there
+    // FXAA on every frame, as codexx-dev found for FSR (pull request #1245, vk_dlaa.c vk_dlaa_skip_draw there), and
+    // keeps the tonemap that follows it (the comment after FXAA_FS). Measured there on 1.4.3 at a 2560x1440 scene and
+    // output: with the upscaler on the game ran its FXAA, which also sharpens, on 17 frames in every 96, so the picture
+    // went soft and sharp in turns. Here the dynamic resolution stays at 100 % while FSR runs (resolution.c
+    // res_dynres_live) and FSR sharpens its own output (fsr_sharpness, fsr_evaluate) in place of the FXAA's sharpening. Scaled frames (D.up) need nothing more: there
     // FSR's picture already replaces the scaling FXAA draw below.
     int fsr_in_place = D.done && !D.up && D.fsr;
     if (fxaa && !D.up && !fsr_in_place) return 0;   // nothing to skip: no shader lookup per draw at the defaults
@@ -2081,19 +2080,11 @@ int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
     int known = 0;
     for (size_t i = 0; i < sizeof FXAA_FS / sizeof FXAA_FS[0]; i++) known |= h == FXAA_FS[i];
     if (fsr_in_place) {
-        static int logged_fxaa, logged_copy;
+        static int logged_fxaa;
         if (known && ex->depth.image) {
             if (!logged_fxaa)
                 logged_fxaa = 1, rt_log("dlaa: FSR skips the game's FXAA (fragment shader %016llx) and sharpens its "
                                         "own picture (fsr_sharpness)", (unsigned long long)h);
-            return 1;
-        }
-        int copy = 0;
-        for (size_t i = 0; i < sizeof FXAA_COPY_FS / sizeof FXAA_COPY_FS[0]; i++) copy |= h == FXAA_COPY_FS[i];
-        if (copy && ex->color[0].image == D.color.image && vk_exec_draw_samples(ex, fs, D.color.img)) {
-            if (!logged_copy)
-                logged_copy = 1, rt_log("dlaa: FSR skips the game's copy of the scene target onto itself (fragment "
-                                        "shader %016llx)", (unsigned long long)h);
             return 1;
         }
         if (fxaa) return 0;

@@ -2686,14 +2686,28 @@ static void stage_ranges(VkCommandBuffer cb, MRange *a, int n, uint64_t fence) {
     }
     uint64_t t0 = qpc(), bytes = 0;
     qsort(a, (size_t)n, sizeof *a, range_cmp);
+    // Several consumers may request the same dirty pages. Stage their union once: two regions of one
+    // vkCmdCopyBuffer must not write the same destination bytes. Only the sealed prefix may be compacted.
+    int used = 0;
+    for (int j = 0; j < n; j++) {
+        MRange cur = a[j];
+        uint64_t pool_size = cur.r->import_hi - cur.r->import_lo;
+        if (cur.off >= pool_size || !cur.size) continue;
+        if (cur.size > pool_size - cur.off) cur.size = pool_size - cur.off;
+        MRange *prev = used ? &a[used - 1] : NULL;
+        if (prev && prev->r == cur.r && cur.off <= prev->off + prev->size) {
+            uint64_t end = cur.off + cur.size;
+            if (end > prev->off + prev->size) prev->size = end - prev->off;
+        } else a[used++] = cur;
+    }
+    n = used;
     const uint64_t lim = STG_BLOCK / 2;
     int i = 0;
     uint64_t at_i = 0;   // bytes of a[i] already staged
     while (i < n) {
         uint64_t total = 0, jo = at_i;
         for (int j = i; j < n && total < lim;) {
-            uint64_t lim_j = a[j].r->import_hi - a[j].r->import_lo, sz = a[j].off >= lim_j ? 0
-                           : a[j].off + a[j].size > lim_j ? lim_j - a[j].off : a[j].size;
+            uint64_t sz = a[j].size;
             uint64_t left = sz - jo, take = left < lim - total ? left : lim - total;
             total += take;
             if (take == left) j++, jo = 0;
@@ -2707,8 +2721,7 @@ static void stage_ranges(VkCommandBuffer cb, MRange *a, int n, uint64_t fence) {
         PoolRec *kr = NULL;
         for (uint64_t at = 0; at < total;) {
             PoolRec *r = a[i].r;
-            uint64_t lim_i = r->import_hi - r->import_lo, sz = a[i].off >= lim_i ? 0
-                           : a[i].off + a[i].size > lim_i ? lim_i - a[i].off : a[i].size;
+            uint64_t sz = a[i].size;
             uint64_t left = sz - at_i, take = left < total - at ? left : total - at;
             if (take) {
                 if (kr != r && k) vkCmdCopyBuffer(cb, sb, kr->mbuf, (uint32_t)k, mregions), k = 0;
