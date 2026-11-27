@@ -1,0 +1,73 @@
+#version 460
+// Ray tracing geometry version 2, the mesh cache (runtime/vk_rt.c): a draw drawn the same two frames in a row was
+// captured into the frame's range of the world buffer this frame; this copies its triangles to its range in the cache
+// part of the same buffer (after the capture's) and takes their bounds, which the CPU reads back some frames later to
+// keep the mesh in the scene while it is off the screen. One job per mesh (gl_WorkGroupID.y), one triangle per thread.
+// The bounds are floats ordered as uints (ord), so atomicMin / atomicMax order them; dead triangles (left out by the
+// unprojection, w 0) are copied as NaN (inactive in the cell's BLAS) and not counted.
+// A job whose slot has bit 31 compares instead: a ready mesh captured again against its copy, the largest difference
+// of a corner (metres) into dev[slot] (after the bounds), which vk_rt.c reads back to find meshes that move; +inf when
+// a triangle is dead in one and alive in the other.
+// A job whose slot has bit 30 (not 31) refreshes a cached mesh's material word: its draw came with another texture word
+// (the game streamed a new texture in); x the new word, y the cache triangle, z the triangles.
+layout(local_size_x = 256) in;
+
+layout(binding = 0, std430) buffer World { vec4 world[]; };
+layout(binding = 1, std430) readonly buffer Jobs { uvec4 jobs[]; };   // source triangle, cache triangle, triangles, bounds slot
+layout(binding = 2, std430) buffer Bounds { uint bnd[]; };          // per slot: min xyz, max xyz (ordered); then dev[]
+const uint MESH_MAX = 16384u;                                        // vk_rt.c's
+// materials: the triangles' UVs (rt_unproject.comp), copied with them; a 16-byte stand-in when materials are off
+layout(binding = 3, std430) buffer WAttr { vec4 wattr[]; };
+// step 6: the triangles' varyings (ext) and pointers (wext, rt_unproject.comp); per job the cache's vec4 its mesh's go
+// to (xjobs: 0xfffffffe none, its pointers cleared; ~0 step 6 off or not a copy)
+layout(binding = 4, std430) buffer PExt { vec4 pext[]; };
+layout(binding = 5, std430) buffer PWext { uint wext[]; };
+layout(binding = 6, std430) readonly buffer XJobs { uint xjobs[]; };
+
+uint ord(float f) { uint u = floatBitsToUint(f); return (u & 0x80000000u) != 0u ? ~u : u | 0x80000000u; }
+
+void main() {
+    uvec4 j = jobs[gl_WorkGroupID.y];
+    uint t = gl_GlobalInvocationID.x;
+    if (t >= j.z) return;
+    if ((j.w & 0xc0000000u) == 0x40000000u) {
+        uint ti = (j.y + t) * 2u + 1u;
+        if (uint(wattr.length()) > ti && (floatBitsToUint(wattr[ti].w) & 0x80000000u) != 0u) wattr[ti].w = uintBitsToFloat(j.x);
+        return;
+    }
+    vec4 v[3];
+    for (int k = 0; k < 3; k++) v[k] = world[(j.x + t) * 3u + uint(k)];
+    bool dead = v[0].w == 0.0 || any(isnan(v[0].xyz + v[1].xyz + v[2].xyz));
+    if ((j.w & 0x80000000u) != 0u) {
+        // a triangle alive in one and dead in the other (culled by distance, say): the shape changed, +inf
+        vec4 o0 = world[(j.y + t) * 3u];
+        bool odead = isnan(o0.x) || o0.w == 0.0;
+        float d = dead != odead ? uintBitsToFloat(0x7f800000u) : 0.0;
+        for (int k = 0; k < 3 && !dead && !odead; k++) {
+            vec3 a = abs(v[k].xyz - world[(j.y + t) * 3u + uint(k)].xyz);
+            d = max(d, max(a.x, max(a.y, a.z)));
+        }
+        if (d > 0.0) atomicMax(bnd[MESH_MAX * 6u + (j.w & 0x7fffffffu)], floatBitsToUint(d));
+        return;
+    }
+    float nan = uintBitsToFloat(0x7fc00000u);
+    for (int k = 0; k < 3; k++) world[(j.y + t) * 3u + uint(k)] = dead ? vec4(nan) : v[k];
+    if (uint(wattr.length()) > (j.y + t) * 2u + 1u)
+        wattr[(j.y + t) * 2u] = wattr[(j.x + t) * 2u], wattr[(j.y + t) * 2u + 1u] = wattr[(j.x + t) * 2u + 1u];
+    uint xj = xjobs[gl_WorkGroupID.y];
+    if (xj != 0xffffffffu && uint(wext.length()) > j.y + t) {
+        uint xw = wext[j.x + t], slm = (xw >> 27) & 15u, nsl = (slm == 15u ? 0u : slm) + 1u;
+        if (xj == 0xfffffffeu || xw == 0u || dead) {
+            wext[j.y + t] = 0u;
+        } else {
+            uint src = xw & 0x07ffffffu, dst = xj + t * 3u * nsl;
+            for (uint i = 0u; i < 3u * nsl; i++) pext[dst + i] = pext[src + i];
+            wext[j.y + t] = dst | (nsl - 1u) << 27 | (xw & 0x80000000u);
+        }
+    }
+    if (dead) return;
+    vec3 lo = min(v[0].xyz, min(v[1].xyz, v[2].xyz)), hi = max(v[0].xyz, max(v[1].xyz, v[2].xyz));
+    uint b = j.w * 6u;
+    atomicMin(bnd[b], ord(lo.x)), atomicMin(bnd[b + 1u], ord(lo.y)), atomicMin(bnd[b + 2u], ord(lo.z));
+    atomicMax(bnd[b + 3u], ord(hi.x)), atomicMax(bnd[b + 4u], ord(hi.y)), atomicMax(bnd[b + 5u], ord(hi.z));
+}

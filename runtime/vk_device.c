@@ -286,6 +286,9 @@ typedef struct {
     VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gpl;
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT fbl;
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr;
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR as;      // vk_rt.c (TOTK_RT_TEST)
+    VkPhysicalDeviceRayQueryFeaturesKHR rq;
+    VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR pf;
     VkPhysicalDeviceAddressBindingReportFeaturesEXT abr;
     VkPhysicalDevicePresentIdFeaturesKHR pid;
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop;   // FSR 4 (vk_ffx.c)
@@ -300,7 +303,7 @@ static int create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-    const char *ext[52];
+    const char *ext[64];
     uint32_t n_ext = 0;
     for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext; i++) ext[n_ext++] = k_required_ext[i];
     // VK_EXT_external_memory_host is optional: without it (or with TOTK_VK_NO_HOST_IMPORT=1, which tests that path on
@@ -399,6 +402,25 @@ static int create_device(void) {
             rt_log("Reflex: VK_NV_low_latency2 not available");
         }
     }
+    // Ray tracing (vk_rt.c): acceleration structures and ray queries from compute shaders, only when asked for
+    int has_as = 0, has_pf = 0;
+    int rt_exts = has_ext(ep, ne, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
+                  has_ext(ep, ne, VK_KHR_RAY_QUERY_EXTENSION_NAME) &&
+                  has_ext(ep, ne, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+    vk_rt_device_supported(rt_exts);
+    if (vk_rt_wanted() && rt_exts) {
+        has_as = 1;
+        ext[n_ext++] = VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME;
+        ext[n_ext++] = VK_KHR_RAY_QUERY_EXTENSION_NAME;
+        ext[n_ext++] = VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME;
+        CHAIN(as, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR);
+        CHAIN(rq, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR);
+        if (has_ext(ep, ne, VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME)) {
+            has_pf = 1;
+            ext[n_ext++] = VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME;
+            CHAIN(pf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_POSITION_FETCH_FEATURES_KHR);
+        }
+    }
     // Graphics pipeline library: chained last so it can be dropped again when vk_caps_gpl declines it.
     void **gpl_link = NULL;
     if (has_ext(ep, ne, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME) && has_ext(ep, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME)) {
@@ -454,6 +476,14 @@ static int create_device(void) {
     }
     if (g_vk.has_amd_antilag) rt_log("Anti-Lag: AMD Anti-Lag 2 on (VK_AMD_anti_lag)");
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
+    if (vk_rt_wanted()) {
+        c->as.accelerationStructureCaptureReplay = c->as.accelerationStructureHostCommands = VK_FALSE;
+        vk_rt_device_null(g_vk.has_robustness2 && c->rob2.nullDescriptor);
+        // the scene is captured with transform feedback (vk_pipeline.c vk_pipeline_xfb): without it, no ray tracing
+        vk_rt_device_caps(has_as && c->as.accelerationStructure && c->rq.rayQuery && c->f12.bufferDeviceAddress &&
+                              g_vk.has_transform_feedback && c->xfb.transformFeedback,
+                          has_pf && c->pf.rayTracingPositionFetch);
+    }
     {
         const char *e = cfg_get("TOTK_FEEDBACK");
         int layout_ok = has_fbl && has_lr && c->fbl.attachmentFeedbackLoopLayout && c->lr.dynamicRenderingLocalRead;

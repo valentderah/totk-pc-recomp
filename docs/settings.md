@@ -262,3 +262,31 @@ These names are code patch sets built into the generated game code (`recomp/patc
 | `patch_scene` (default `0`) | Patch set that makes the game use the configured scene render size. | The resolution code switches this set from the render size setting; a manual value is replaced. | Unknown |
 | `report_guard` (default `1`) | Patch set on 1.4.3 only: in the model scene's report loop (main+0xa22d8, main+0xa2310) an object whose report handle is negative or whose row index is 0x8000 or more gets coverage 0 for that frame and its handle reset, the path the game takes after every read, instead of reading past the report rows. On valid rows the game's code runs unchanged. | `0` runs the game's code as shipped: a bad row index reads far past the rows and crashes, the class Weeping of the Empire met while using Ultrahand and aiming. | Risky |
 | `shutter_fix` (default `1`) | Patch set on 1.4.3 only (set `shutter`, main+0x25e55d0): the speed the AI node QueryBlackboardGetF32FromActorForOunce returns is scaled by 1 + 0.065 x (1 - frame ratio)^2 when the actor's shouldUseOunceSpeed flag is set, which only the two launchers of Tenbez Shrine (Dungeon034) set (#1215). Every other actor gets its value unchanged; 1.0 at 30 fps and below. | `0` runs the game's code: above about 45 fps the ball leaves the launcher too slowly and stays on the rim of the other launcher or falls into the pit. Measured: on dev at 60 fps the ball stuck from the first shots; with the set at 60 and 120 fps it went back and forth as at 30. | Safe |
+
+## Ray tracing (device and scene capture)
+
+Hardware ray-query device setup, transform-feedback geometry capture, and static mesh BLAS/TLAS cache (`runtime/vk_rt.c`). Off by default until `rt_device = 1` is set; requires Vulkan ray query, acceleration structure, and transform feedback extensions.
+
+| Setting | What it does | Effect of changing it | Safety |
+| --- | --- | --- | --- |
+| `rt_cache` (default `1`) | Enables the static mesh BLAS cache across frames (spatial cells around the camera). | `0` rebuilds only the per-frame dynamic BLAS each frame. | Caution |
+| `rt_cache_keep` (default `600`) | Frames an unseen cached mesh is retained before eviction. | Larger values keep distant/off-screen meshes longer at higher VRAM cost. | Caution |
+| `rt_cache_new` (default `80000`) | Maximum new triangles admitted into the static mesh cache per frame. | Lower values smooth frame spikes during fast travel at the cost of slower cache fill. | Caution |
+| `rt_cascade_keep` (default `1`) | Keeps G-buffer meshes cached while the sun shadow cascades continue to draw them. | `0` evicts off-screen G-buffer meshes even if still drawn by shadow cascades. | Caution |
+| `rt_cascade_keep_m` (default `40`) | Distance in metres within which `rt_cascade_keep` retains meshes. | Larger values retain more off-screen caster geometry around the camera. | Caution |
+| `rt_cell` (default `64`) | Spatial cell edge length in metres for the static mesh BLAS cache. | Smaller cells give finer eviction/rebuild granularity; larger cells mean fewer BLAS instances. | Caution |
+| `rt_compact` (default `1`) | Compacts static cell BLASes after build via `VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR`. | `0` skips compaction, using more VRAM for cached BLASes. | Caution |
+| `rt_device` (default `0`) | `1` enables the Vulkan ray-tracing/transform-feedback device extensions and scene capture/TLAS build at start. | `0` leaves device creation, render targets, and shaders completely unchanged. | Safe |
+| `rt_edge` (default `100`) | Maximum triangle edge length in metres accepted into the captured scene. | Rejects oversized sky/water/backdrop triangles from the acceleration structure. | Caution |
+| `rt_geom` (default `1`) | Enables transform-feedback capture of G-buffer geometry when `rt_device = 1`. | `0` disables geometry capture while keeping the RT device initialized. | Caution |
+| `rt_gklog` (default `0`) | Debug: `1` logs large cascade and G-buffer draws every 300 frames. | Diagnostic logging only. | Caution |
+| `rt_invis` (default `1`) | Filters out invisible/culled placeholder geometry from capture. | `0` keeps invisible draws in the captured scene. | Caution |
+| `rt_keepcas` (default `1`) | Keeps cascade-drawn meshes in the cache when they pass the cascade keep check. | `0` drops them on the drawn test. | Caution |
+| `rt_prof` (default `0`) | Debug: `1` records GPU timestamps around compute dispatches and acceleration-structure builds. | Adds timestamp queries and periodic timing logs. | Caution |
+| `rt_radius` (default `200`) | Maximum capture distance in metres around the camera. | Larger values capture more distant geometry at higher memory and build cost. | Caution |
+| `rt_refit` (default `1`) | Refits the per-frame dynamic BLAS in place when its topology is unchanged. | `0` performs a full BLAS rebuild every frame. | Caution |
+| `rt_shadow` (default `1`) | Captures off-screen sun-cascade geometry into the static cache for off-screen casters. | `0` captures only on-screen G-buffer geometry. | Caution |
+| `rt_shadow_early` (default `1`) | Builds the frame's TLAS on the first shadow pass rather than waiting for the second pass. | `0` defers the scene build by one pass. | Caution |
+| `rt_shadow_radius` (default `80`) | Distance in metres around the camera within which off-screen shadow-cascade meshes are cached. | Larger values cache more off-screen casters at higher VRAM cost. | Caution |
+| `rt_vis` (default `1`) | Depth-buffer visibility filter for captured triangles. | `0` skips the visibility test and keeps occluded triangles. | Caution |
+| `rt_vislog` (default `0`) | Debug: logs the first `n` meshes with triangles rejected by the visibility test. | Diagnostic logging only. | Caution |
