@@ -22,8 +22,9 @@ The built-in table is [recomp/patches-v110.txt](../recomp/patches-v110.txt). The
 | audiodrain | 1 | Sends the audio thread back to its command ring after each list (main+0x7bf0d0 -> main+0x7bec38), so every queued list is drained per 5 ms audio frame (#337). Follows `TOTK_AUDIO_DRAIN_FIX`. |
 | mouse_direct | 82 | Direct raw-count mouse camera across camera input, activity, free orbit, Ultrahand and the 16 `ExecutePlayerCamera*` modes (`runtime/mouse_direct.c`, `layout_110`); follows `TOTK_MOUSE_DIRECT_PATCH` and `mouse_mode = direct`. |
 | optref | 1 | Treat a negative optional reference at object +0x6b0 (`main+0x163159c`) as absent instead of dereferencing it (#1005). Follows `TOTK_OPTREF_GUARD`. |
+| lightning | 3 | Scale the three thunderstorm chance draws by the time object's 30 Hz ratio, at most 1; `TOTK_LIGHTNING_FIX` defaults on. |
 
-The table has 21 sets and 152 instruction sites in total. Its 889 spin back-edges are unchanged. The sets use the existing runtime page and settings; no new allocator or renderer path is introduced.
+The table has 22 sets and 155 instruction sites in total. Its 889 spin back-edges are unchanged. The sets use the existing runtime page and settings; no new allocator or renderer path is introduced.
 
 The camera sites were cross-checked by normalized instruction-window matching from the local 1.0.0 main. The viewport routine has two matching copies: both are patched. Other sites were checked through their data flow: the equipment timer and its gate, the map clock, the ability clock, the NVN texture storage/package calls, the shadow size publication, the cascade parameter constructor and the shadow controller's per-frame cascade boundary stores (main+0xd076f4 and main+0xd0774c, where x3, s16 and s17 are dead). FOV's s8 is overwritten by the next original instruction; x10 is saved. The cursor sites use the same scratch registers as their 1.2.1 counterparts.
 
@@ -47,6 +48,48 @@ python tests/patches_v110_check.py --exefs <local ExeFS directory>
 Without ExeFS, the test uses synthetic memory and the patch table only. It compares the complete integer/SIMD register state, SP and NZCV of the lifted C and Unicorn for all 17 additions, on and off, at 30/60/120 Hz, including pool offsets immediately below and above 2 GiB and at the end of the 32-bit range. Windows test mappings respect its 64 KiB allocation granularity. With ExeFS it additionally validates every original word and spin target. Extracted images and generated C are local build artifacts, never repository content.
 
 These checks establish instruction and code-generation contracts. World-scene visual acceptance, texture packs allocating a pool above 2 GiB, physical gyro and comparisons of shadow quality still require gameplay checks.
+
+## Lightning
+
+The 1.1.0 thunderstorm update is main+0xbdd27c..0xbddf88 (an .eh_frame_hdr function, one call from main+0xbdcad4, one
+ret at 0xbdd91c, no landing pads). Its state field at +0x34 selects six states through the byte table at
+main+0x382c61c; state 1 runs the 150..450 frame-step timer, 3 and 4 the 30 and 240 ones, and 5 replaces 1. Three
+chances are drawn per update and compared with a random number in [0, 1). They are rodata constants here:
+0.013333 at main+0x3816c5c for the distant bolt (bit 0 of the +8 flags, every state but 0), and 0.01 at
+main+0x3816f50 for the near strike (state 1 draws twice through s9 and stores the 90-unit countdown at +0xa0) and
+for bit 3. The three loads are main+0xbddb30 (`ldr s1,[x8,#0xc5c]`), main+0xbddd70 (`ldr s1,[x8,#0xf50]`) and
+main+0xbdddf4 (`ldr s9,[x8,#0xf50]`); each replacement keeps the load and multiplies it by the frame ratio at
+most 1, exactly as [recomp/patches-v143.txt](../recomp/patches-v143.txt) does.
+
+The ratio is the guest time object's +0x38, read the way the game's own slow-motion check reads it at main+0xbee7d8
+(set bounce): its GOT slot main+0x4630920, the storage that slot points at, then +0xc8. The 1.1.0 slot is a GOT
+entry to the singleton's storage, so the local chain needs one dereference more than the 1.2.1 and 1.4.3 slots.
+The time object is written by the game every frame, so the set does not read the patch page and stays correct with
+`TOTK_REALTIME=0`; at 30 fps and slower the ratio is 1 and the chance is unchanged bit for bit.
+
+Each site's block is reachable, each use of the loaded chance is in the same block, and liveness over the full
+control-flow graph (dispatch table and `blr` calls included) shows x10, s2, s3 and s4 dead after every site, so the
+clamp uses s3/s4 and x10 like the 1.4.3 sites. s9's prologue save keeps the caller's value. `runtime/cfg.c` already
+lists `LIGHTNING_FIX` (default 1, group "frame rate"), so the set needs no runtime change.
+
+| Window | Length | SHA-256 |
+| --- | ---: | --- |
+| +0xbddb10 | 64 bytes | 8dcb5cfa49320817b226f6c1703317cbc46bfb7d93f3e2ef021436ee2388e2e0 |
+| +0xbddd50 | 64 bytes | dcc9217db839dc30a1fa036c73d06ba3c1fb555d24c1885b40f35437f15ffb45 |
+| +0xbdddd4 | 64 bytes | c4864d703ba6837ac786d4e4b2400de4f2f5455fa114654aca6f5bc9bcf65377 |
+
+```sh
+python tests/patches_v110_lightning_check.py
+python tests/patches_v110_lightning_check.py --cflags=-march=x86-64-v2
+python tests/patches_v110_lightning_check.py --exefs <local ExeFS directory>
+```
+
+Without `--exefs` the test checks the table and the lifted replacement against Unicorn for the three sites on and
+off at 30, 60, 120 and 240 fps steps, a NaN ratio and ratios on both sides of 1, with all GPRs, full SIMD, SP, NZCV
+and scratch memory compared; only x10, s3, s4 and the chance may change. With `--exefs` it also checks the three
+original words, the window hashes above, the rodata chances and the chain instructions at main+0xbee70c..0xbee7e0.
+Whether a storm shows the upstream rates (distant bolts per minute at 30/60/120 fps, near strikes, bit 3) needs a
+gameplay check with a build that counts the draws.
 
 ## Climbing and gears
 
