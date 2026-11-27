@@ -26,6 +26,7 @@ Prompts drawn as fixed images (some tutorial animations) keep the Switch icons.
 Needs fontTools (tools/requirements-installer.txt, tools/requirements-py314.txt).
 """
 import io
+import re
 import struct
 import zlib
 
@@ -306,14 +307,19 @@ def pc_binds(ini_text=None, text=False):
     or with key:default, keeps the default). text: the binds the button font is drawn with, where a button of
     PC_TEXT_KEYS shows its first key that is not a mouse button (PC_TEXT_KEYS's without a line)."""
     binds = dict(PC_BINDS, **(PC_TEXT_KEYS if text else {}))
-    for line in (ini_text or '').splitlines():
-        line = line.split('#')[0].split(';')[0].strip()
-        if not line.lower().startswith('bind_') or '=' not in line:
+    values = {}
+    for line in (ini_text or '').lstrip('\ufeff').splitlines():
+        m = re.match(r'^\s*(?:totk_)?bind_(\w+)\s*=(.*)$', line, re.IGNORECASE)
+        if not m:
             continue
-        action, value = (s.strip() for s in line.split('=', 1))
+        value = m.group(2).strip()
+        if len(value) >= 2 and value[0] == value[-1] == '"':
+            value = value[1:-1]
+        if value:   # cfg.c ignores empty values; the last nonempty value wins, including key:default.
+            values[m.group(1).upper()] = value
+    for button, value in values.items():
         keys = [e.strip()[4:].strip().lower() for e in value.split(',') if e.strip().lower().startswith('key:')]
         keys = [k for k in keys if k != 'default']
-        button = action[5:].upper()
         if text and button in PC_TEXT_KEYS:
             keys = [k for k in keys if not k.startswith('mouse_')] or keys
         if keys and button in binds:

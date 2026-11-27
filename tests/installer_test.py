@@ -1257,6 +1257,18 @@ class ShapesTest(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         self.assertEqual(self.calls[0][-2:], ['--binds', str(self.dest / 'totk.ini')])
 
+    def test_pc_prompts_pass_prefixed_and_bom_bindings_and_track_changes(self):
+        self.ctx.keys['extract'] = 'e'
+        path = self.dest / 'totk.ini'
+        step = steps.PcPrompts()
+        path.write_text('\ufeffTOTK_BIND_A = "key:f"\n', encoding='utf-8')
+        before = step.key(self.ctx)
+        self.assertEqual(steps.pc_binds(self.dest), ['--binds', path])
+        path.write_text('\ufeffTOTK_BIND_A = "key:g"\n', encoding='utf-8')
+        self.assertNotEqual(step.key(self.ctx), before)
+        self.assertEqual(step.run(self.ctx), {})
+        self.assertEqual(self.calls[-1][-2:], ['--binds', str(path)])
+
 
 class FontsTest(unittest.TestCase):
     """The fonts step: keyed by language and firmware, a no-op without firmware, writes dest/shared-fonts."""

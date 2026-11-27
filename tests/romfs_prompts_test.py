@@ -755,6 +755,31 @@ class PromptsTest(unittest.TestCase):
         self.assertEqual(y('bind_Y = key:default'), 't')
         self.assertEqual(y('bind_Y = key:h, key:mouse_l', text=False), 'h')
 
+    def test_pc_bindings_follow_runtime_ini_syntax(self):
+        for line in ('bind_A = "key:f"', 'TOTK_BIND_A = key:f', '\ufeffbind_A = key:f',
+                     '  ToTk_BiNd_A = "pad:east, key:F"  '):
+            with self.subTest(line=line):
+                self.assertEqual(icons.pc_binds(line)['A'], 'f')
+        text = 'bind_A = key:q\nTOTK_BIND_A = "key:f"\nbind_A =\nbind_A = ""\n'
+        self.assertEqual(icons.pc_binds(text)['A'], 'f')
+        self.assertEqual(icons.pc_binds('bind_A = key:f\nTOTK_BIND_A = key:default\n')['A'], icons.PC_BINDS['A'])
+
+    def test_pc_prompt_output_matches_equivalent_ini_spellings(self):
+        romfs = self.romfs['v143']
+        base = self.base / 'ini-spellings'
+        base.mkdir()
+        outputs = []
+        for i, text in enumerate(('bind_A = key:f\n', '\ufeffTOTK_BIND_A = "key:f"\n')):
+            ini = base / f'binds-{i}.ini'
+            ini.write_text(text, encoding='utf-8')
+            out = base / f'out-{i}'
+            proc = romfs.run(out, '--prompts', 'pc', '--binds', str(ini))
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            outputs.append(out)
+            panes = pane_texts(sarc_files(romfs.read(out, romfs.common))['blyt/DoCommand_00.bflyt'])
+            self.assertEqual(panes['T_A_00'], 'F')
+        self.assertEqual((outputs[0] / 'manifest.tsv').read_bytes(), (outputs[1] / 'manifest.tsv').read_bytes())
+
     def test_same_input_same_output_and_the_older_flag(self):
         romfs = self.romfs['v121']
         for flags in (('--prompts', 'xbox'), ('--xbox-prompts',)):
