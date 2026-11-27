@@ -12,15 +12,15 @@ The built-in table is [recomp/patches-v110.txt](../recomp/patches-v110.txt). The
 | fov | 2 | The two camera projections multiply their vertical angle by page +60. The field-of-view setting is live; 100 leaves the original path. |
 | pooloff | 2 | Widen texture-pool offsets unsigned, covering 2..4 GiB without changing offsets below 2 GiB. Enabled by default; `TOTK_POOL_OFFSET_PATCH=0` retains the original path. |
 | shadow | 1 | The sun shadow map takes its fixed size from page +92 before rounding. The shadow-resolution setting enables it; `shadow_res=game` leaves the game's sizing. |
-| cascade | 4 | Read the four sun shadow cascade defaults from page +64..76. Shadow range 100 leaves the original constructor. |
+| cascade | 6 | Read the four sun shadow cascade defaults from page +64..76, and scale the shadow controller's per-frame d[1..n] stores by page +64 / 20. Shadow range 100 leaves both paths unchanged. |
 | climb | 1 | Climbing speed above 60 fps: the 1.2.1 climb factor in the 1.1.0 climb controller. Follows `TOTK_CLIMB_FIX` and needs the real-time step. |
 | gears | 2 | The gear rotation check scales its one-frame threshold by the update's frame delta, so shrine gears read as turning above 30 fps. Follows `TOTK_HIGHFPS_FIX`. |
 | ability | 2 | Check the Recall / Ultrahand target actor and drop stale or non-writable targets before the game dereferences them (`TOTK_ABILITY_GUARD`, `runtime/ov_ability.c`). |
 | audiodrain | 1 | Sends the audio thread back to its command ring after each list (main+0x7bf0d0 -> main+0x7bec38), so every queued list is drained per 5 ms audio frame (#337). Follows `TOTK_AUDIO_DRAIN_FIX`. |
 
-The table has 18 sets and 57 instruction sites in total. Its 889 spin back-edges are unchanged. The sets use the existing runtime page and settings; no new allocator or renderer path is introduced.
+The table has 18 sets and 59 instruction sites in total. Its 889 spin back-edges are unchanged. The sets use the existing runtime page and settings; no new allocator or renderer path is introduced.
 
-The camera sites were cross-checked by normalized instruction-window matching from the local 1.0.0 main. The viewport routine has two matching copies: both are patched. Other sites were checked through their data flow: the equipment timer and its gate, the map clock, the ability clock, the NVN texture storage/package calls, the shadow size publication and the cascade parameter constructor. FOV's s8 is overwritten by the next original instruction; x10 is saved. The cursor sites use the same scratch registers as their 1.2.1 counterparts.
+The camera sites were cross-checked by normalized instruction-window matching from the local 1.0.0 main. The viewport routine has two matching copies: both are patched. Other sites were checked through their data flow: the equipment timer and its gate, the map clock, the ability clock, the NVN texture storage/package calls, the shadow size publication, the cascade parameter constructor and the shadow controller's per-frame cascade boundary stores (main+0xd076f4 and main+0xd0774c, where x3, s16 and s17 are dead). FOV's s8 is overwritten by the next original instruction; x10 is saved. The cursor sites use the same scratch registers as their 1.2.1 counterparts.
 
 ## Deliberately separate
 
