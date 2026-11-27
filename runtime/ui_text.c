@@ -1,8 +1,9 @@
 // Catalog of the text the host shows the player (ui_text.h). One array per catalog language, indexed by UiTextId: a new
 // string gets an id in ui_text.h and an entry in every language that has one (a missing entry falls back to English).
-// The software keyboard has every language; the menu has every game language except Portugal's Portuguese and
-// Traditional Chinese (English, Russian, Brazilian Portuguese, Simplified Chinese, German, French, Spanish, Italian,
-// Dutch, Japanese, Korean), and Vietnamese.
+// The software keyboard has every language; the menu has every game language except Portugal's Portuguese (English,
+// Russian, Brazilian Portuguese, Simplified Chinese, Traditional Chinese, German, French, Spanish, Italian, Dutch,
+// Japanese, Korean), and Vietnamese. The regional game languages (en-GB, fr-CA, es-419) read their language's row.
+#include <ctype.h>
 #include <stdatomic.h>
 #include <string.h>
 
@@ -2898,6 +2899,775 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_OVERRIDES_DATA] = "它对游戏数据的修改中有 %u 字节取代了列表中更靠下的 %s 的修改。",
     [UI_MENU_MODS_CODE_OVERRIDDEN] = "它有 %u 处代码补丁位置被列表中更靠上的 %s 覆盖。",
     [UI_MENU_MODS_OVERRIDES_CODE] = "它覆盖了 %u 处代码补丁位置，这些位置原属于列表中更靠下的 %s。",
+};
+
+static const char *const text_zh_hant[UI_TEXT_COUNT] = {
+    SWKBD("文字輸入", "請輸入名字", "馬兒", "確定", "取消", "手把：A 確定，B 取消"),
+
+    [UI_MENU_VERT_PLUS] = "保持 16:9 寬度",
+    [UI_MENU_VERT_PLUS_DESC] = "在比 16:9 更窄的螢幕上（Steam Deck、16:10、4:3），鏡頭顯示與 16:9 相同寬度的世界，上下顯示更多。16:9 或更寬的螢幕不受影響。",
+    [UI_MENU_SYNC_AHEAD] = "領先 GPU 一幀",
+    [UI_MENU_SYNC_AHEAD_DESC] = "遊戲在顯示卡仍在繪製上一幀時就開始準備下一幀。幀率更高，輸入延遲多一幀。",
+    [UI_MENU_HOST_CHECKPOINT] = "快速交出核心",
+    [UI_MENU_HOST_CHECKPOINT_DESC] = "遊戲執行緒一離開移植版的程式碼，就把虛擬核心讓給更重要的執行緒，而不是等到下一次系統呼叫。",
+    [UI_LW_STAGE_START] = "準備中",
+    [UI_LW_STAGE_GPU] = "啟動圖形",
+    [UI_LW_STAGE_FILES] = "準備遊戲檔案",
+    [UI_LW_STAGE_SHADERS] = "載入著色器",
+    [UI_LW_STAGE_PIPELINES] = "建置管線",
+    [UI_LW_STAGE_GAME] = "啟動遊戲",
+    [UI_LW_FAILED] = "遊戲已停止",
+    [UI_LW_FAILED_HINT] = "原因見下方記錄。請複製記錄用於錯誤回報，然後關閉此視窗。",
+    [UI_LW_VERSION] = "v%s · 遊戲 %s",
+    [UI_LW_COUNT] = "%s / %s",
+    [UI_LW_LEFT_ITEMS] = "剩餘 %s",
+    [UI_LW_LEFT_SEC] = "還需約 %d 秒",
+    [UI_LW_LEFT_MIN] = "還需約 %d 分鐘",
+    [UI_LW_LEFT_FEW] = "還需幾秒",
+    [UI_LW_ALSO] = "同時：%s",
+    [UI_LW_GAME_SEC] = "約 %d 秒後啟動遊戲",
+    [UI_LW_GAME_MIN] = "約 %d 分鐘後啟動遊戲",
+    [UI_LW_GAME_SOON] = "遊戲即將啟動",
+    [UI_LW_ELAPSED] = "已用時間 %d:%02d",
+    [UI_LW_DETAILS] = "詳細資訊",
+    [UI_LW_HIDE] = "隱藏詳細資訊",
+    [UI_LW_COPY] = "複製記錄",
+    [UI_LW_COPIED] = "已複製",
+    [UI_LW_CLOSE] = "關閉並結束遊戲",
+    [UI_LW_THOUSANDS] = ",",
+
+    [UI_MENU_TITLE] = "設定",
+    [UI_MENU_TAB_SCREEN] = "顯示",
+    [UI_MENU_TAB_GAME] = "遊戲",
+    [UI_MENU_TAB_SOUND] = "聲音",
+    [UI_MENU_TAB_CONTROLS] = "操作",
+    [UI_MENU_TAB_AMIIBO] = "amiibo",
+    [UI_MENU_TAB_MENU] = "選單",
+    [UI_MENU_TAB_ADVANCED] = "進階",
+    [UI_MENU_TAB_MODS] = "模組",
+    [UI_MENU_PLAY_TIME] = "遊戲時間",
+    [UI_MENU_PLAY_TIME_DESC] = "所有執行累計的遊戲時間，僅在遊戲視窗處於焦點且遊戲正在繪製畫面時計時。"
+                               "儲存在設定資料夾的 playtime.txt 中，與存檔放在一起。",
+    [UI_MENU_PLAY_TIME_HM] = "%llu 小時 %02u 分鐘", [UI_MENU_PLAY_TIME_SESSION] = "本次執行：%s",
+    [UI_MENU_MODS_BUILTIN] = "移植版內建", [UI_MENU_MODS_INSTALLED] = "已安裝的模組",
+    [UI_MENU_MODS_NONE] = "還沒有模組。把模組解壓縮到 mods 資料夾，每個模組一個資料夾，裡面放 romfs 資料夾，然後重新啟動遊戲。"
+                          "TKMM 也可以把合併後的模組匯出到那裡的一個資料夾。",
+    [UI_MENU_MODS_OPEN] = "開啟模組資料夾",
+    [UI_MENU_MODS_OPEN_DESC] = "顯示遊戲載入模組的資料夾。不存在時會建立它。",
+    [UI_MENU_MODS_ROW_DESC] = "替換的遊戲檔案：%u。新增的檔案：%u。",
+    [UI_MENU_MODS_OVERRIDDEN] = "它的 %u 個檔案改用清單中更靠上的 %s 的檔案。",
+    [UI_MENU_MODS_MOVE_HINT] = "上方按鈕或 Ctrl+上 上移，左側按鈕或 Ctrl+下 下移。兩個模組修改同一個檔案、遊戲資料或程式碼時，以靠上的為準。更改在重新啟動後生效。",
+    [UI_MENU_MODS_EMPTY] = "此資料夾中沒有 romfs、exefs 或 cheats 檔案。",
+    [UI_MENU_MODS_SUBSDK] = "此模組帶有自己的遊戲程式碼（subsdk 外掛或替換的 main）。移植版無法載入程式碼模組，因此整個模組保持關閉。開啟下方它的「不帶程式碼使用 ...」開關即可使用其餘部分。",
+    [UI_MENU_MODS_EXEFS_LATER] = "此模組修改遊戲程式碼（exefs）。遊戲會在下次啟動時把這些補丁建置進去（重新建置需要幾分鐘）；在此之前整個模組保持關閉。",
+    [UI_MENU_MODS_CHEATS] = "金手指：%d 個。在「金手指」標籤頁中開關。",
+    [UI_MENU_MODS_CHEATS_FILE] = "此遊戲版本的金手指在啟動時從此模組的 cheats\\%s 讀取。",
+    [UI_MENU_MODS_BAD_NAME] = "資料夾名稱含有 |，模組清單用它分隔名稱。請重新命名該資料夾。",
+    [UI_MENU_MODS_OTHER_VERSION] = "它有 %u 個檔案的檔名帶有其他遊戲版本號。只有在有內容請求這些檔名時，遊戲才會讀取它們。"
+                                   "如果模組不起作用，請尋找適用於你的遊戲版本的此模組。",
+    [UI_MENU_MODS_UNUSED] = "未使用",
+    [UI_MENU_MODS_FPS60] = "60 FPS 補丁",
+    [UI_MENU_MODS_FPS60_DESC] = "移植版內建的 60 幀補丁。在「遊戲」頁的幀率上限中設定。",
+    [UI_MENU_MODS_RES] = "解析度補丁",
+    [UI_MENU_MODS_RES_DESC] = "移植版內建的 1080p 以上解析度補丁。在「顯示」頁的遊戲解析度中設定。",
+    [UI_MENU_MODS_QUICKMENU] = "快捷畫面修復",
+    [UI_MENU_MODS_QUICKMENU_DESC] = "移植版對 60 FPS 下武器、盾牌和材料快捷畫面黑色背景的修復。",
+    [UI_MENU_CONTINUE] = "繼續",
+    [UI_MENU_QUIT] = "結束遊戲",
+    [UI_MENU_ON] = "開",
+    [UI_MENU_OFF] = "關",
+    [UI_MENU_AUTO] = "自動",
+    [UI_MENU_DEFAULT_MARK] = "預設",
+    [UI_MENU_AFTER_RESTART] = "重新啟動後生效",
+    [UI_MENU_SET_BY_ENV] = "由環境變數設定",
+    [UI_MENU_SAVE_FAILED] = "無法儲存設定",
+    [UI_MENU_VERSION] = "TotK Recomp %s，遊戲 %s",
+    [UI_MENU_FULLSCREEN] = "全螢幕",
+    [UI_MENU_FULLSCREEN_DESC] = "遊戲鋪滿螢幕；按 F11 切換。",
+    [UI_MENU_WINDOW_SIZE] = "視窗大小",
+    [UI_MENU_WINDOW_SIZE_DESC] = "非全螢幕時遊戲視窗的大小。",
+    [UI_MENU_WINDOW_SIZE_CUSTOM] = "自訂",
+    [UI_MENU_PRESENT] = "呈現模式",
+    [UI_MENU_PRESENT_DESC] = "渲染完成的幀如何顯示到螢幕上。",
+    [UI_MENU_PRESENT_MAILBOX] = "Mailbox",
+    [UI_MENU_PRESENT_VSYNC] = "垂直同步",
+    [UI_MENU_PRESENT_IMMEDIATE] = "立即",
+    [UI_MENU_PRESENT_IN_USE] = "使用中：%s",
+    [UI_MENU_GPU] = "顯示卡",
+    [UI_MENU_GPU_DESC] = "用於渲染遊戲的 Vulkan 裝置。",
+    [UI_MENU_GPU_AUTO] = "自動",
+    [UI_MENU_PERF_OVERLAY] = "效能疊加層",
+    [UI_MENU_PERF_OVERLAY_DESC] = "在右上角顯示幀率。「完整」還會顯示帶圖表的幀時間、CPU、"
+                                  "GPU 和記憶體佔用、溫度，以及渲染執行緒的等待時間。"
+                                  "按 F10 循環切換模式。",
+    [UI_MENU_PERF_OFF] = "關",
+    [UI_MENU_PERF_FPS] = "FPS",
+    [UI_MENU_PERF_FULL] = "完整",
+
+    [UI_PERF_LINE_FPS] = "%.0f fps",
+    [UI_PERF_LINE_FPS_GEN] = "繪製 %.0f fps，顯示 %.0f",
+
+    [UI_MENU_GRAPHICS] = "畫面",
+    [UI_MENU_OUTPUT_RES] = "遊戲解析度",
+    [UI_MENU_OUTPUT_RES_DESC] = "遊戲繪製畫面和介面的尺寸。"
+                                "高於 1920 x 1080 會佔用更多視訊記憶體和 GPU 時間。"
+                                "更寬的尺寸（21:9）會擴大視野，並把介面移到螢幕四角；"
+                                "更高的尺寸（16:10、3:2）則移到上下邊緣。",
+    [UI_MENU_HUD_WIDTH] = "介面寬度",
+    [UI_MENU_HUD_WIDTH_DESC] = "在比 16:9 更寬的螢幕上，介面左右兩側相距多遠。"
+                               "「整個螢幕」把它們放在螢幕邊緣；21:9 或 16:9 則把介面保持在螢幕中間該比例的區域內。"
+                               "缺少的佈局會在背景製作，重新啟動遊戲後生效。",
+    [UI_MENU_HUD_WIDTH_FULL] = "整個螢幕",
+    [UI_MENU_RENDER_SCALE] = "3D 渲染比例",
+    [UI_MENU_RENDER_SCALE_DESC] = "3D 場景相對於遊戲解析度的尺寸；"
+                                  "遊戲的 FSR 會將其縮放到該尺寸。"
+                                  "高於 100% 會平滑鋸齒邊緣（超取樣），但 GPU 負擔很高。",
+    [UI_MENU_RENDER_SCALE_GAME] = "遊戲（83%）",
+    [UI_MENU_DYNAMIC_RES] = "動態解析度",
+    [UI_MENU_DYNAMIC_RES_DESC] = "讓遊戲把 3D 場景降到 90 % 或 80 %。它依據為 Switch 制定的估算，不考慮你的顯示卡，因此即使在高效能 PC 上寬場景也會降低。關閉時保持渲染比例。",
+    [UI_MENU_UPSCALER] = "放大到視窗",
+    [UI_MENU_UPSCALER_DESC] = "視窗大於遊戲解析度時畫面的放大方式。"
+                              "FSR 比雙線性更能保留邊緣和細節。",
+    [UI_MENU_UPSCALER_FSR] = "AMD FSR 1",
+    [UI_MENU_UPSCALER_BILINEAR] = "雙線性",
+    [UI_MENU_ASPECT] = "畫面寬高比",
+    [UI_MENU_ASPECT_DESC] = "當視窗寬高比和遊戲解析度不同時（21:9 螢幕上顯示 16:9 畫面）："
+                            "用黑邊保持畫面比例，或拉伸鋪滿視窗。",
+    [UI_MENU_ASPECT_FIT] = "黑邊",
+    [UI_MENU_ASPECT_STRETCH] = "拉伸",
+    [UI_MENU_MOVIE_ASPECT] = "影片畫面比例",
+    [UI_MENU_MOVIE_ASPECT_DESC] = "當遊戲解析度不是 16:9 時：用黑邊保持過場影片的原有比例，或拉伸鋪滿整個畫面。"
+                                  "從下一段影片起生效。",
+    [UI_MENU_MOVIE_ASPECT_KEEP] = "黑邊",
+    [UI_MENU_MOVIE_ASPECT_STRETCH] = "拉伸",
+    [UI_MENU_FOV] = "視野",
+    [UI_MENU_FOV_DESC] = "視角能看到多大範圍，以遊戲自身視野的百分比表示。"
+                          "支援遊戲版本 1.1.0、1.2.1 和 1.4.3。",
+    [UI_MENU_SHARPNESS] = "FSR 銳度",
+    [UI_MENU_SHARPNESS_DESC] = "FSR 縮放後的銳化強度；0 為關閉。",
+    [UI_MENU_COLOR] = "色彩",
+    [UI_MENU_COLOR_PRESET] = "色彩設定",
+    [UI_MENU_COLOR_PRESET_DESC] = "同時設定下面四項。鮮豔：對比度和飽和度更高，暗部略微提亮（為 OLED 螢幕調校）。"
+                                  "清晰：對比度、飽和度和亮度都略高。改動任一項後，設定變為自訂。"
+                                  "HUD 隨畫面一起變化，本選單不隨之變化。",
+    [UI_MENU_COLOR_DEFAULT] = "遊戲原樣", [UI_MENU_COLOR_VIVID] = "鮮豔（OLED）",
+    [UI_MENU_COLOR_CLARITY] = "清晰", [UI_MENU_COLOR_CUSTOM] = "自訂",
+    [UI_MENU_COLOR_BRIGHTNESS] = "亮度",
+    [UI_MENU_COLOR_BRIGHTNESS_DESC] = "疊加到每種顏色上；0 表示不調整。",
+    [UI_MENU_COLOR_CONTRAST] = "對比度",
+    [UI_MENU_COLOR_CONTRAST_DESC] = "把顏色從中灰向外拉開（高於 100%）或向中灰收攏；"
+                                     "100% 表示不調整。",
+    [UI_MENU_COLOR_SATURATION] = "飽和度",
+    [UI_MENU_COLOR_SATURATION_DESC] = "顏色相對灰色的強度；100% 表示不調整。",
+    [UI_MENU_COLOR_GAMMA] = "伽馬",
+    [UI_MENU_COLOR_GAMMA_DESC] = "小於 1 提亮暗部與中間調，大於 1 壓暗；1 表示不調整。",
+    [UI_MENU_FPS_LIMIT] = "幀率上限",
+    [UI_MENU_FPS_LIMIT_DESC] = "遊戲每秒繪製的最高幀數。高於 60 幀為實驗性功能，"
+                               "需要開啟「遊戲速度跟隨時鐘」。",
+    [UI_MENU_FPS_30] = "30 FPS",
+    [UI_MENU_FPS_40] = "40 FPS",
+    [UI_MENU_FPS_45] = "45 FPS",
+    [UI_MENU_FPS_60] = "60 FPS",
+    [UI_MENU_FPS_90] = "90 FPS",
+    [UI_MENU_FPS_120] = "120 FPS",
+    [UI_MENU_FPS_144] = "144 FPS",
+    [UI_MENU_FPS_DISPLAY] = "顯示器重新整理率",
+    [UI_MENU_FPS_DISPLAY_HZ] = "顯示器重新整理率（%.0f Hz）",
+    [UI_MENU_FRAME_QUEUE] = "幀佇列",
+    [UI_MENU_FRAME_QUEUE_DESC] = "前一幀等待顯示時遊戲就開始繪製下一幀：在幀率上限下掉幀大幅減少，輸入延遲最多增加一幀。立即生效。",
+    [UI_MENU_FRAME_GEN] = "幀生成", [UI_MENU_FRAME_GEN_OFF] = "關", [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
+    [UI_MENU_FRAME_GEN_DESC] = "在遊戲繪製的每兩幀之間插入一幀生成畫面：螢幕上的幀數翻倍，遊戲以幀率上限的一半執行，操作反應約晚半幀。適合 120 Hz 及以上的顯示器。不能與 DLSS 或 HDR 同時使用。立即生效。",
+    [UI_MENU_REALTIME] = "遊戲速度跟隨時鐘",
+    [UI_MENU_REALTIME_DESC] = "按真實時間推進遊戲，幀率低時遊戲速度也不會變慢。",
+    [UI_MENU_CLOTH_REALTIME] = "布料跟隨時鐘",
+    [UI_MENU_CLOTH_REALTIME_DESC] = "布料和頭髮也按真實時間推進。",
+    [UI_MENU_HIGHFPS_FIX] = "高幀率修正",
+    [UI_MENU_HIGHFPS_FIX_DESC] = "修正幀率高於 30 時出現異常的物理效果，"
+                                 "以及幀率高於 60 時一直半透明或不可見的物體。",
+    [UI_MENU_CLIMB_FIX] = "攀爬速度修正",
+    [UI_MENU_CLIMB_FIX_DESC] = "幀率高於 60 時讓攀爬牆壁和梯子保持正常速度，林克能爬到頂。",
+    [UI_MENU_GAME_LANG] = "遊戲語言",
+    [UI_MENU_GAME_LANG_DESC] = "遊戲文字和語音的語言。",
+    [UI_MENU_GAME_LANG_AUTO] = "自動",
+    [UI_MENU_OPERATION_MODE] = "主機模式",
+    [UI_MENU_OPERATION_MODE_DESC] = "遊戲認為自己處於TV模式還是手提模式。",
+    [UI_MENU_MODE_DOCKED] = "TV模式",
+    [UI_MENU_MODE_HANDHELD] = "手提模式",
+    [UI_MENU_ASSUME_FOCUS] = "背景保持執行",
+    [UI_MENU_ASSUME_FOCUS_DESC] = "開啟（預設）時，切到其他視窗遊戲仍會繼續執行，"
+                                  "但鍵盤要等視窗回到前景才會反應。關閉時，"
+                                  "視窗失去焦點即暫停，如同在 Switch 上按 Home 鍵；"
+                                  "這樣被打斷的讀取可能會永久卡住。",
+    [UI_MENU_VOLUME] = "音量",
+    [UI_MENU_VOLUME_DESC] = "遊戲的主音量。",
+    [UI_MENU_VOLUME_MUSIC] = "音樂音量",
+    [UI_MENU_VOLUME_MUSIC_DESC] = "背景音樂的音量。",
+    [UI_MENU_VOLUME_SFX] = "音效音量",
+    [UI_MENU_VOLUME_SFX_DESC] = "聲音特效的音量。",
+    [UI_MENU_VOLUME_VOICE] = "語音音量",
+    [UI_MENU_VOLUME_VOICE_DESC] = "角色語音的音量。",
+    [UI_MENU_AUDIO_CHANNELS] = "揚聲器",
+    [UI_MENU_AUDIO_CHANNELS_DESC] = "立體聲或 5.1 環繞聲輸出。選擇自動時，若 Windows 揚聲器設定有六個或更多聲道則使用 5.1。重新啟動後生效。",
+    [UI_MENU_CHANNELS_AUTO] = "自動", [UI_MENU_CHANNELS_STEREO] = "立體聲", [UI_MENU_CHANNELS_51] = "5.1 環繞聲",
+    [UI_MENU_AUDIO_DEVICE] = "輸出裝置",
+    [UI_MENU_AUDIO_DEVICE_DESC] = "聲音從哪個裝置播放。系統預設跟隨 Windows 的預設裝置。所選裝置被拔出時改用系統預設，"
+                                  "裝置重新連線後恢復。立即生效。",
+    [UI_MENU_AUDIO_DEVICE_DEFAULT] = "系統預設",
+    [UI_MENU_MOTION] = "體感操作",
+    [UI_MENU_MOTION_DESC] = "用手把的陀螺儀瞄準。",
+    [UI_MENU_GYRO_CALIBRATION] = "陀螺儀偏置校準",
+    [UI_MENU_GYRO_CALIBRATION_DESC] = "減去下面校準行測得的手把靜止偏移。關閉時測量值仍然保留。",
+    [UI_MENU_GYRO_CALIBRATE] = "校準陀螺儀",
+    [UI_MENU_GYRO_CALIBRATE_DESC] = "測量並消除陀螺儀的靜止偏移。請放下手把或保持靜止兩秒。",
+    [UI_MENU_GYRO_CALIBRATE_WAIT] = "校準中...",
+    [UI_MENU_GYRO_CALIBRATED] = "%s，已校準",
+    [UI_MENU_GYRO_CALIBRATE_FAILED] = "校準失敗",
+    [UI_MENU_GYRO_CALIBRATE_MOVED] = "手把移動了：請保持靜止後重試",
+    [UI_MENU_GYRO_AUTO_BIAS] = "靜止時學習陀螺儀漂移",
+    [UI_MENU_GYRO_AUTO_BIAS_DESC] = "手把平放在桌上不動時測量陀螺儀的剩餘漂移並將其減去。適用於校準後弓箭準星仍緩慢漂"
+                                    "移的情況。手持時不會測量。實驗性功能。",
+    [UI_MENU_RUMBLE_STRENGTH] = "振動強度",
+    [UI_MENU_RUMBLE_STRENGTH_DESC] = "手把振動的強弱。",
+    [UI_MENU_RUMBLE_CURVE] = "振動曲線",
+    [UI_MENU_RUMBLE_CURVE_DESC] = "數值越低，弱振動越強。",
+    [UI_MENU_RUMBLE_TRIGGERS] = "扳機振動（Xbox）",
+    [UI_MENU_RUMBLE_TRIGGERS_DESC] = "Xbox 手把的扳機也會振動。",
+    [UI_MENU_PAD_LAYOUT] = "按鍵佈局",
+    [UI_MENU_PAD_LAYOUT_DESC] = "哪個按鍵是 A。Nintendo：右側按鍵，與 Switch 相同。Xbox：下方按鍵，"
+                                "與 Xbox 手把上的標註一致（PlayStation 手把上為叉鍵）。自動："
+                                "帶 Nintendo 標註的手把使用 Nintendo 佈局，其他手把使用 Xbox 佈局。"
+                                "Xbox 按鍵提示：A 仍是右側鍵，但遊戲顯示 Xbox 標註（A 顯示為 B、"
+                                "B 顯示為 A、X 顯示為 Y、Y 顯示為 X），重新啟動後生效。"
+                                "這些字母來自遊戲檔案，因此在「操作」中重新對應過的按鍵，"
+                                "螢幕上仍顯示原來的字母。",
+    [UI_MENU_PAD_LAYOUT_AUTO] = "自動",
+    [UI_MENU_PAD_LAYOUT_NINTENDO] = "Nintendo（A 在右）",
+    [UI_MENU_PAD_LAYOUT_XBOX] = "Xbox（A 在下）",
+    [UI_MENU_PAD_LAYOUT_IN_USE] = "使用中：%s",
+    [UI_MENU_GROUP_STICKS] = "搖桿",
+    [UI_MENU_LSTICK_DEADZONE] = "左搖桿死區", [UI_MENU_RSTICK_DEADZONE] = "右搖桿死區",
+    [UI_MENU_STICK_DEADZONE_DESC] = "手把搖桿要推動多遠遊戲才會反應。如果角色或視角會自己移動，"
+                                    "請調高此值：鬆開搖桿，檢視「目前搖桿」，把死區設得比它高幾個百分點。",
+    [UI_MENU_STICK_DEADZONE_NOW] = "目前搖桿：%.0f %%",
+    [UI_MENU_MOUSE_SENS] = "滑鼠視角靈敏度",
+    [UI_MENU_MOUSE_SENS_DESC] = "滑鼠轉動視角的速度。",
+
+    [UI_BINDS_HELP] = "選中一個格子後按 A 或 Enter，再按鍵、滑鼠鍵或手把按鍵。"
+                      "Delete 或 X 清除格子。已佔用的按鍵會移到這裡；"
+                      "手把按鍵與它替換的那個對調。",
+    [UI_BINDS_COL_KEY1] = "按鍵 1",
+    [UI_BINDS_COL_KEY2] = "按鍵 2",
+    [UI_BINDS_COL_PAD] = "手把",
+    [UI_BINDS_GROUP_BUTTONS] = "按鍵",
+    [UI_BINDS_GROUP_MOVE] = "移動",
+    [UI_BINDS_GROUP_CAMERA] = "視角",
+    [UI_BINDS_PRESS_KEY] = "請為「%s」按下一個鍵或滑鼠鍵",
+    [UI_BINDS_PRESS_PAD] = "請為「%s」按下一個手把按鍵",
+    [UI_BINDS_CANCEL_HINT] = "Esc 取消，或等待 %d 秒",
+    [UI_BINDS_TAKEN] = "%s 已從 %s 移走",
+    [UI_BINDS_SWAPPED] = "%s 已與 %s 對調",
+    [UI_BINDS_RESET] = "重設所有按鍵",
+    [UI_BINDS_RESET_DESC] = "恢復預設的鍵盤和手把按鍵。上方的按鍵佈局會再次生效："
+                            "重新對應過的手把按鍵會一直保留到此次重設。",
+    [UI_BIND_A] = "A",
+    [UI_BIND_B] = "B",
+    [UI_BIND_X] = "X",
+    [UI_BIND_Y] = "Y",
+    [UI_BIND_LCLICK] = "左搖桿按下",
+    [UI_BIND_RCLICK] = "右搖桿按下",
+    [UI_BIND_L] = "L",
+    [UI_BIND_R] = "R",
+    [UI_BIND_ZL] = "ZL",
+    [UI_BIND_ZR] = "ZR",
+    [UI_BIND_PLUS] = "+ 鍵",
+    [UI_BIND_MINUS] = "- 鍵",
+    [UI_BIND_LEFT] = "十字鍵左",
+    [UI_BIND_UP] = "十字鍵上",
+    [UI_BIND_RIGHT] = "十字鍵右",
+    [UI_BIND_DOWN] = "十字鍵下",
+    [UI_BIND_LSTICK_LEFT] = "向左移動",
+    [UI_BIND_LSTICK_UP] = "向前移動",
+    [UI_BIND_LSTICK_RIGHT] = "向右移動",
+    [UI_BIND_LSTICK_DOWN] = "向後移動",
+    [UI_BIND_RSTICK_LEFT] = "視角左轉",
+    [UI_BIND_RSTICK_UP] = "視角上抬",
+    [UI_BIND_RSTICK_RIGHT] = "視角右轉",
+    [UI_BIND_RSTICK_DOWN] = "視角下壓",
+    [UI_BIND_DESC_A] = "互動、拾取、對話。",
+    [UI_BIND_DESC_B] = "奔跑、取消、返回。",
+    [UI_BIND_DESC_X] = "跳躍。",
+    [UI_BIND_DESC_Y] = "攻擊。",
+    [UI_BIND_DESC_LCLICK] = "蹲下。",
+    [UI_BIND_DESC_RCLICK] = "第一人稱視角。",
+    [UI_BIND_DESC_L] = "能力。",
+    [UI_BIND_DESC_R] = "投擲武器。",
+    [UI_BIND_DESC_ZL] = "舉盾、注視。",
+    [UI_BIND_DESC_ZR] = "弓箭。",
+    [UI_BIND_DESC_PLUS] = "選單、背包。",
+    [UI_BIND_DESC_MINUS] = "地圖。",
+    [UI_BIND_DESC_DPAD] = "快捷選擇。",
+    [UI_BIND_DESC_MOVE] = "像左搖桿一樣移動林克。手把的左搖桿始終可用。",
+    [UI_BIND_DESC_CAMERA] = "像右搖桿一樣轉動視角。滑鼠和手把的右搖桿始終可用。",
+    [UI_BIND_SHAKE] = "晃動視角搖桿",
+    [UI_BIND_DESC_SHAKE] = "讓右搖桿左右晃動：把究極手抓著的物體上黏著的零件拆下。按住該鍵會一直晃動。",
+    [UI_KEY_SPACE] = "空白鍵",
+    [UI_KEY_TAB] = "Tab",
+    [UI_KEY_LSHIFT] = "左 Shift",
+    [UI_KEY_LCTRL] = "左 Ctrl",
+    [UI_KEY_UP] = "上方向鍵",
+    [UI_KEY_DOWN] = "下方向鍵",
+    [UI_KEY_LEFT] = "左方向鍵",
+    [UI_KEY_RIGHT] = "右方向鍵",
+    [UI_KEY_MOUSE_L] = "滑鼠左鍵",
+    [UI_KEY_MOUSE_R] = "滑鼠右鍵",
+    [UI_KEY_MOUSE_M] = "滑鼠中鍵",
+    [UI_KEY_MOUSE_X1] = "滑鼠側鍵 4",
+    [UI_KEY_MOUSE_X2] = "滑鼠側鍵 5",
+    [UI_KEY_ENTER] = "Enter",
+    [UI_KEY_BACKSPACE] = "退格",
+    [UI_KEY_RSHIFT] = "右 Shift",
+    [UI_KEY_RCTRL] = "右 Ctrl",
+    [UI_KEY_LALT] = "Alt",
+    [UI_KEY_CAPSLOCK] = "Caps Lock",
+    [UI_KEY_INSERT] = "Insert",
+    [UI_KEY_DELETE] = "Delete",
+    [UI_KEY_HOME] = "Home",
+    [UI_KEY_END] = "End",
+    [UI_KEY_PAGEUP] = "Page Up",
+    [UI_KEY_PAGEDOWN] = "Page Down",
+    [UI_KEY_NUM_FMT] = "小鍵盤 %s",
+    [UI_PAD_SOUTH] = "下方按鍵",
+    [UI_PAD_EAST] = "右側按鍵",
+    [UI_PAD_WEST] = "左側按鍵",
+    [UI_PAD_NORTH] = "上方按鍵",
+    [UI_PAD_LSTICK] = "左搖桿",
+    [UI_PAD_RSTICK] = "右搖桿",
+    [UI_PAD_L] = "左肩鍵",
+    [UI_PAD_R] = "右肩鍵",
+    [UI_PAD_START] = "Start",
+    [UI_PAD_BACK] = "Back",
+    [UI_PAD_DPAD_LEFT] = "十字鍵左",
+    [UI_PAD_DPAD_UP] = "十字鍵上",
+    [UI_PAD_DPAD_RIGHT] = "十字鍵右",
+    [UI_PAD_DPAD_DOWN] = "十字鍵下",
+    [UI_PAD_ZL] = "左扳機",
+    [UI_PAD_ZR] = "右扳機",
+    [UI_PAD_LPADDLE1] = "左背鍵",
+    [UI_PAD_RPADDLE1] = "右背鍵",
+    [UI_PAD_LPADDLE2] = "左背鍵 2",
+    [UI_PAD_RPADDLE2] = "右背鍵 2",
+    [UI_PAD_TOUCHPAD] = "觸控板按下",
+    [UI_PAD_CROSS] = "叉鍵",
+    [UI_PAD_CIRCLE] = "圓圈鍵",
+    [UI_PAD_SQUARE] = "方塊鍵",
+    [UI_PAD_TRIANGLE] = "三角鍵",
+
+    [UI_MENU_AMIIBO_DIR] = "amiibo 資料夾",
+    [UI_MENU_AMIIBO_OPEN] = "開啟",
+    [UI_MENU_AMIIBO_DEFAULT_DIR] = "預設資料夾",
+    [UI_MENU_AMIIBO_REFRESH] = "重新整理",
+    [UI_MENU_AMIIBO_PICK] = "amiibo 傾印（540 位元組的 .bin 或 .nfc 檔案）：",
+    [UI_MENU_AMIIBO_NO_DIR] = "無法開啟資料夾 %s",
+    [UI_MENU_AMIIBO_READER] = "NFC 讀取器",
+    [UI_MENU_AMIIBO_STATE] = "讀取器：",
+    [UI_MENU_AMIIBO_STATE_IDLE] = "就緒",
+    [UI_MENU_AMIIBO_STATE_SEARCHING] = "遊戲正在等待 amiibo",
+    [UI_MENU_AMIIBO_STATE_FOUND] = "amiibo 已放在讀取器上",
+    [UI_MENU_AMIIBO_STATE_MOUNTED] = "遊戲正在讀取 amiibo",
+    [UI_MENU_AMIIBO_STATE_OFF] = "已關閉",
+    [UI_MENU_AMIIBO_FILE] = "已選檔案：",
+    [UI_MENU_AMIIBO_NO_FILE] = "（未選擇檔案）",
+    [UI_MENU_AMIIBO_TAP] = "放上 amiibo",
+    [UI_MENU_AMIIBO_REMOVE] = "拿開 amiibo",
+    [UI_MENU_AMIIBO_AUTO_REMOVE] = "放上後自動拿開 amiibo",
+    [UI_MENU_AMIIBO_HOLD] = "停留時間",
+    [UI_MENU_AMIIBO_SECONDS] = "%.1f 秒",
+    [UI_MENU_AMIIBO_TAG] = "讀取器上的 amiibo：",
+    [UI_MENU_AMIIBO_NO_TAG] = "讀取器上沒有 amiibo。",
+    [UI_MENU_AMIIBO_TAG_FILE] = "檔案：%s",
+    [UI_MENU_AMIIBO_TAG_ID] = "角色 %s，系列 %02x，編號 %04x，類型 %02x",
+    [UI_MENU_AMIIBO_TAG_UID] = "UID：%s",
+    [UI_MENU_AMIIBO_READY] = "就緒",
+    [UI_MENU_AMIIBO_TAPPED] = "已放上：%s",
+    [UI_MENU_AMIIBO_LOAD_FAILED] = "不是 amiibo 傾印（NTAG215，540 位元組）：%s",
+    [UI_MENU_AMIIBO_REMOVED] = "已拿開 amiibo",
+    [UI_MENU_AMIIBO_STATUS] = "狀態：%s",
+    [UI_MENU_MENU_LANG] = "選單語言",
+    [UI_MENU_MENU_LANG_DESC] = "本選單和效能疊加層的語言。",
+    [UI_MENU_MENU_LANG_AUTO] = "自動（跟隨 Windows）",
+    [UI_MENU_DISCORD_RPC] = "Discord Rich Presence",
+    [UI_MENU_DISCORD_RPC_DESC] = "遊戲執行時在 Discord 狀態中顯示「正在玩 TotK Recomp」及遊戲時長。totk.ini 中的 "
+                                 "discord_app_id 和 discord_image 選擇應用程式。",
+    [UI_MENU_ADV_WARNING] = "這些設定用於測試和排查問題，請在瞭解原因後再修改。",
+    [UI_MENU_GROUP_SCHED] = "排程",
+    [UI_MENU_GROUP_SHADERS] = "著色器和管線",
+    [UI_MENU_GROUP_TEXMEM] = "紋理和記憶體",
+    [UI_MENU_GROUP_FIXES] = "渲染修正",
+    [UI_MENU_GROUP_VULKAN] = "Vulkan",
+    [UI_MENU_GROUP_DIAG] = "診斷",
+    [UI_MENU_ASYNC_PREEMPT] = "虛擬核心搶佔",
+    [UI_MENU_ASYNC_PREEMPT_DESC] = "允許同一虛擬核心上的一個遊戲執行緒打斷另一個。",
+    [UI_MENU_PREEMPT_OFF] = "關",
+    [UI_MENU_PREEMPT_ON] = "開",
+    [UI_MENU_PREEMPT_INHERIT] = "僅繼承",
+    [UI_MENU_REPLAY_ASYNC] = "GPU 幀準備獨立執行緒",
+    [UI_MENU_REPLAY_ASYNC_DESC] = "在單獨的執行緒而不是遊戲執行緒上為 GPU 準備幀。"
+                                  "最多增加一幀延遲。",
+    [UI_MENU_REPLAY_WORKERS] = "GPU 幀準備執行緒數",
+    [UI_MENU_REPLAY_WORKERS_DESC] = "同時在多個執行緒上為 GPU 錄製大幀。CPU 限制幀率時有幫助；需要 8 個或更多邏輯處理器。"
+                                    "關：在單個執行緒上錄製。",
+    [UI_MENU_REPLAY_WORKERS_NOW] = "目前：%s",
+    [UI_MENU_TIMER_1MS] = "1 ms Windows 計時器",
+    [UI_MENU_TIMER_1MS_DESC] = "將系統計時器精度提高到 1 ms，使幀間隔更平穩。",
+    [UI_MENU_PIPE_WAIT] = "等待中繪製的處理",
+    [UI_MENU_PIPE_WAIT_DESC] = "預設保留目前排程，並為等待中的繪製預留一個工作執行緒；"
+                               "舊版（繪製）沿用先前的排程。",
+    [UI_MENU_PIPE_WAIT_DEFAULT] = "預設",
+    [UI_MENU_PIPE_WAIT_DRAW] = "舊版（繪製）",
+    [UI_MENU_PIPE_SKIP] = "建置管線時跳過的繪製",
+    [UI_MENU_PIPE_SKIP_DESC] = "哪些繪製會被直接丟棄，而不是等待其管線建置完成。",
+    [UI_MENU_PIPE_SKIP_STRICT] = "嚴格",
+    [UI_MENU_PIPE_SKIP_ANY] = "任意",
+    [UI_MENU_PIPE_SKIP_FULLSCREEN] = "全螢幕通道",
+    [UI_MENU_LIB_PREBUILD] = "階段庫預建置",
+    [UI_MENU_LIB_PREBUILD_DESC] = "在背景提前建置著色器階段庫。",
+    [UI_MENU_LIB_PREBUILD_THREADS] = "階段庫預建置執行緒數",
+    [UI_MENU_LIB_PREBUILD_THREADS_DESC] = "預建置使用的執行緒數；自動會根據你的 CPU 選擇。",
+    [UI_MENU_PIPE_PREBUILD] = "管線預建置",
+    [UI_MENU_PIPE_PREBUILD_DESC] = "提前建置已知的管線。",
+    [UI_MENU_PREWARM_XLATE] = "著色器轉譯預熱",
+    [UI_MENU_PREWARM_XLATE_DESC] = "啟動時轉譯已知著色器的執行緒數；自動取 CPU 執行緒數的一半，"
+                                   "最多 16。",
+    [UI_MENU_GPL] = "圖形管線庫",
+    [UI_MENU_GPL_DESC] = "使用 Vulkan 管線庫擴充功能；驅動對此有問題時請關閉。",
+    [UI_MENU_ASTC] = "ASTC 紋理解碼",
+    [UI_MENU_ASTC_DESC] = "壓縮的 ASTC 紋理在哪裡解碼。",
+    [UI_MENU_ASTC_AUTO] = "自動",
+    [UI_MENU_ASTC_GPU] = "GPU 著色器",
+    [UI_MENU_ASTC_NATIVE] = "原生",
+    [UI_MENU_ASTC_CPU] = "CPU",
+    [UI_MENU_MEMORY] = "GPU 記憶體模式",
+    [UI_MENU_MEMORY_DESC] = "遊戲記憶體如何與 GPU 共享。",
+    [UI_MENU_MEMORY_AUTO] = "自動",
+    [UI_MENU_MEMORY_IMPORT] = "匯入",
+    [UI_MENU_MEMORY_MIRROR] = "鏡像",
+    [UI_MENU_MEMORY_VERIFY] = "校驗",
+    [UI_MENU_TEX_ALIAS] = "紋理別名",
+    [UI_MENU_TEX_ALIAS_DESC] = "在仍在使用的紋理記憶體上新建紋理時，新紋理沿用原有內容，"
+                               "而不是從空白開始。",
+    [UI_MENU_TEX_VRAM_PRESSURE] = "紋理視訊記憶體上限",
+    [UI_MENU_TEX_VRAM_PRESSURE_DESC] = "視訊記憶體佔用超過這個百分比後，遊戲已釋放的紋理會被丟棄，"
+                                       "再次用到時從儲存重新載入。0 表示不丟棄。",
+    [UI_MENU_ASTC_BC] = "ASTC 壓縮為 BC3",
+    [UI_MENU_ASTC_BC_DESC] = "配合 GPU 解碼器使用：把解碼後的 ASTC 紋理重新編碼為 BC3，"
+                             "視訊記憶體佔用只有四分之一。紋理會出現輕微色塊。"
+                             "自動：視訊記憶體 4 GB 及以下的顯示卡上開啟。",
+    [UI_MENU_LOD_GUARD] = "LOD 保護",
+    [UI_MENU_LOD_GUARD_DESC] = "等待遊戲改寫完細節層次資料後再讓 GPU 讀取，"
+                               "避免物體錯位閃現，或遠景有一幀變平。",
+    [UI_MENU_FIX_C0] = "常數緩衝區修正",
+    [UI_MENU_FIX_C0_DESC] = "填充驅動保留的常數組 c0（儲存緩衝區大小、派發大小、點大小、"
+                            "基礎實例），而不是讀取零值。",
+    [UI_MENU_FIX_ZERO] = "清零新的 GPU 記憶體",
+    [UI_MENU_FIX_ZERO_DESC] = "新的 GPU 記憶體池初始內容為零，與 Switch 記憶體一致。",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "DLAA 之後繪製粒子",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "開啟 DLAA 時，灰塵和其他粒子繪製在 DLSS 已平滑的畫面之上，與遊戲不用 DLSS 時的"
+                                          "繪製方式相同：霧中的細小粒子（神廟中）不再消失，也不再留下拖影。霧和雲仍由 DLSS 處理，"
+                                          "因此天空背景前的遠處輪廓仍然清晰。關閉：DLSS 也處理粒子，與以前相同。僅用於 DLAA 模式；"
+                                          "提升解析度的 DLSS 模式始終處理這些效果。立即生效。",
+    [UI_MENU_DLSS_FIXED_EXPOSURE] = "固定 DLSS 曝光",
+    [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS 直接使用遊戲畫面的亮度，而不是逐幀自行估算曝光：在暗場景（地底）中，"
+                                         "視角移動時大片霧中區域不再忽暗忽亮一幀。關閉：DLSS 自行估算曝光，與以前相同。立即生效。",
+    [UI_MENU_BIND_SKIP] = "跳過重複繫結",
+    [UI_MENU_BIND_SKIP_DESC] = "最佳化：跳過沒有變化的繫結。",
+    [UI_MENU_SHADER_MEMO] = "著色器查詢快取",
+    [UI_MENU_SHADER_MEMO_DESC] = "最佳化：記住著色器的查詢結果。",
+    [UI_MENU_PIPE_MEMO] = "管線快取",
+    [UI_MENU_PIPE_MEMO_DESC] = "最佳化：狀態重複時重複使用上一次繪製的管線。",
+    [UI_MENU_TEX_MEMO] = "紋理繫結快取",
+    [UI_MENU_TEX_MEMO_DESC] = "最佳化：在多次繪製之間記住紋理描述符。",
+    [UI_MENU_DESC_TEMPLATE] = "描述符模板",
+    [UI_MENU_DESC_TEMPLATE_DESC] = "最佳化：批次更新描述符。",
+    [UI_MENU_PUSH_SKIP] = "跳過重複推送常數",
+    [UI_MENU_PUSH_SKIP_DESC] = "最佳化：跳過沒有變化的推送常數。",
+    [UI_MENU_SPLIT_DRAWS] = "提前提交 GPU 工作",
+    [UI_MENU_SPLIT_DRAWS_DESC] = "在渲染通道之間每隔 N 次繪製分批提交 GPU 工作，讓 GPU 更早開始；"
+                                 "0 為關閉。",
+    [UI_MENU_VK_VALIDATION] = "驗證層",
+    [UI_MENU_VK_VALIDATION_DESC] = "檢查每一次 Vulkan 呼叫，會大幅拖慢遊戲。",
+    [UI_MENU_VK_VALIDATION_MISSING] = "未安裝驗證層。",
+    [UI_MENU_VK_DYN_VERTEX] = "動態頂點狀態",
+    [UI_MENU_VK_DYN_VERTEX_DESC] = "強制開關動態頂點輸入；預設值取決於顯示卡。",
+    [UI_MENU_VK_DYN_A2C] = "動態 Alpha 覆蓋",
+    [UI_MENU_VK_DYN_A2C_DESC] = "強制開關動態 Alpha 覆蓋。預設：AMD RDNA 2 及更早的驅動上為關閉，"
+                                "開啟會導致人物變黑；Intel 整合顯示卡的 Windows 驅動上也為關閉，開啟會使植被出現彩色噪點；"
+                                "其他顯示卡上為開啟。",
+    [UI_MENU_VK_SUBGROUP_PIN] = "固定子群大小",
+    [UI_MENU_VK_SUBGROUP_PIN_DESC] = "固定著色器的子群大小。",
+    [UI_MENU_TRACE] = "效能記錄",
+    [UI_MENU_TRACE_DESC] = "把每幀耗時寫入檔案。",
+    [UI_MENU_FLIGHT] = "飛行記錄儀",
+    [UI_MENU_FLIGHT_DESC] = "保留一小段歷史記錄，在畫面卡住時儲存。",
+    [UI_MENU_FLIGHT_SPIKE_MS] = "卡頓閾值（ms）",
+    [UI_MENU_FLIGHT_SPIKE_MS_DESC] = "算作卡頓的幀時間。",
+    [UI_MENU_PASS_CRUMBS] = "GPU 渲染通道標記",
+    [UI_MENU_PASS_CRUMBS_DESC] = "GPU 崩潰後，記錄會寫出當時正在執行的渲染通道。自動：僅 AMD。開：NVIDIA 也啟用，有少量負擔。",
+    [UI_MENU_INPUT_RECORD] = "輸入錄製",
+    [UI_MENU_INPUT_RECORD_DESC] = "把你的輸入寫入檔案，用於回報問題。",
+    [UI_MENU_OPEN_LOG] = "開啟記錄資料夾",
+    [UI_MENU_OPEN_LOG_DESC] = "顯示存放記錄檔的資料夾。",
+    [UI_MENU_COPY_INFO] = "複製系統資訊",
+    [UI_MENU_COPY_INFO_DESC] = "把顯示卡、驅動、CPU、記憶體和改動過的設定複製到剪貼簿。",
+    [UI_MENU_COPY_INFO_DONE] = "已複製",
+    [UI_MENU_ACTION_FAILED] = "操作失敗",
+    [UI_MENU_RESET] = "將所有設定恢復為預設值",
+    [UI_MENU_RESET_DESC] = "對所有標籤頁生效。",
+    [UI_MENU_RESET_CONFIRM] = "要將所有設定恢復為預設值嗎？",
+    [UI_MENU_RESET_YES] = "重設",
+    [UI_MENU_RESET_NO] = "取消",
+    [UI_MENU_OV_FPS] = "%.0f FPS",
+    [UI_MENU_OV_FRAME_MS] = "%.1f ms",
+    [UI_MENU_OV_GAME_PCT] = "遊戲 %.0f%%",
+    [UI_MENU_OV_MAX_MS] = "最長 %.1f ms",
+    [UI_MENU_OV_FPS_LABEL] = "FPS", [UI_MENU_OV_FRAME_LABEL] = "幀時間", [UI_MENU_OV_FMT_FPS] = "%.0f",
+    [UI_MENU_OV_LOW1] = "1%% 低 %.0f", [UI_MENU_OV_LOW01] = "0.1%% 低 %.0f",
+    [UI_MENU_OV_GPU] = "GPU",
+    [UI_MENU_OV_CPU] = "CPU",
+    [UI_MENU_OV_RAM] = "記憶體",
+    [UI_MENU_OV_VRAM] = "視訊記憶體",
+    [UI_MENU_OV_TEMP] = "溫度",
+    [UI_MENU_OV_POWER] = "功耗",
+    [UI_MENU_OV_CLOCK] = "頻率",
+    [UI_MENU_OV_NONE] = "-",
+    [UI_MENU_OV_REPLAY] = "GPU 幀準備",
+    [UI_MENU_OV_GPU_TIME] = "每幀 GPU 忙碌時間",
+    [UI_MENU_OV_PIPE_WAIT] = "管線等待",
+    [UI_MENU_OV_SHADER_WAIT] = "著色器等待",
+    [UI_MENU_OV_TEX_UPLOADS] = "紋理上傳",
+    [UI_MENU_OV_FMT_PCT] = "%.0f%%",
+    [UI_MENU_OV_FMT_TEMP] = "%.0f °C",
+    [UI_MENU_OV_FMT_POWER] = "%.0f W",
+    [UI_MENU_OV_FMT_MHZ] = "%.0f MHz",
+    [UI_MENU_OV_FMT_GB] = "%.1f GB",
+    [UI_MENU_OV_FMT_GB_OF] = "/ %.1f GB",
+    [UI_MENU_OV_GAME_GB] = "遊戲 %.1f GB",
+    [UI_MENU_OV_FMT_MS] = "%.2f ms",
+    [UI_MENU_OV_PER_FRAME] = "每幀 %.1f",
+    [UI_MENU_OV_WINDOW] = "視窗",
+    [UI_MENU_OV_OUTPUT] = "遊戲畫面",
+    [UI_MENU_OV_SCENE] = "3D 場景",
+    [UI_MENU_OV_UPSCALER] = "3D 超分",
+    [UI_MENU_OV_SCALING] = "縮放",
+    [UI_MENU_OV_LIMIT] = "幀率上限",
+    [UI_MENU_OV_PRESENT] = "呈現模式",
+    [UI_MENU_OV_SHOWN] = "顯示幀率",
+    [UI_MENU_OV_FMT_SIZE] = "%ux%u",
+    [UI_MENU_OV_FMT_SCENE] = "%ux%u，%.0f%%",
+    [UI_MENU_OV_FMT_FSR] = "AMD FSR 1，銳度 %d%%",
+    [UI_MENU_OV_SCALE_NONE] = "無（1:1）",
+    [UI_MENU_OV_SCALE_BILINEAR] = "雙線性",
+    [UI_MENU_SHADOW_RES] = "陰影貼圖尺寸",
+    [UI_MENU_SHADOW_RES_DESC] = "太陽陰影貼圖的尺寸。遊戲自身的尺寸隨視角變化，靠近地面時降到約 400，因此樹葉陰影顯得塊狀並且跳動；固定尺寸能讓陰影穩定、更清晰。高於 1024 時陰影會佔用更多 "
+                                "GPU 時間和視訊記憶體；256 比遊戲自身的尺寸更粗糙，適合視訊記憶體頻寬不足的整合顯示卡。",
+    [UI_MENU_SHADOW_RES_GAME] = "遊戲預設（會變化）",
+    [UI_MENU_ANISO] = "紋理過濾",
+    [UI_MENU_ANISO_DESC] = "表面紋理的各向異性過濾：以小角度看到的地面、道路和牆壁在遠處依然清晰，而不會模糊。遊戲：使用遊戲請求的級別，與 Switch 上相同。",
+    [UI_MENU_ANISO_GAME] = "遊戲",
+    [UI_MENU_LOD_STEADY] = "負載下保持細節",
+    [UI_MENU_LOD_STEADY_DESC] = "跳過遊戲在幀率下降時降低模型和紋理細節的設定，與模擬器模組 Disable LOD Quality "
+                                  "Reduction 的作用相同。適用於遊戲版本 1.1.0、1.2.1 和 1.4.3。低階電腦請勿開啟：在那裡正是這種降低維持了幀率。",
+    [UI_MENU_HDR_GROUP] = "HDR",
+    [UI_MENU_HDR] = "HDR 輸出",
+    [UI_MENU_HDR_DESC] = "在 HDR 顯示器上呈現明亮的高光。需要在 Windows 中開啟 HDR（「使用 HDR」），或使用帶色彩管理的 Wayland 合成器；否則畫面保持 "
+                         "SDR。重新啟動後生效。上方的色彩設定用於 SDR，在 HDR 下不使用。",
+    [UI_MENU_HDR_PEAK] = "峰值亮度",
+    [UI_MENU_HDR_PEAK_DESC] = "顯示器的峰值亮度（尼特）；最亮的高光止於此。",
+    [UI_MENU_HDR_GAME] = "遊戲亮度",
+    [UI_MENU_HDR_GAME_DESC] = "畫面白色（紙白）的尼特值。203 為 HDR 參考值；在明亮的房間裡可調高。",
+    [UI_MENU_HDR_UI] = "HUD 和選單亮度",
+    [UI_MENU_HDR_UI_DESC] = "HUD 和本選單白色的尼特值。",
+    [UI_MENU_PROMPTS] = "按鍵提示",
+    [UI_MENU_PROMPTS_DESC] = "遊戲的按鍵提示顯示哪種手把的按鍵。Nintendo：遊戲原有的提示。Xbox：LB、RB、LT、RT、Menu、View 和十字鍵，以及上方佈局所按下的按鍵上標註的 "
+                             "A、B、X、Y（使用 Nintendo（A 在右）時右側按鍵標為 B，因此 A 的提示顯示 "
+                             "B）。PlayStation：PlayStation 手把上的符號（○ × △ □、L1、R1、L2、R2、Options 和 Share），"
+                             "顯示在上方佈局所按下的按鍵上。PC：鍵盤預設佈局的按鍵和滑鼠按鍵（E、Shift、空白鍵、左鍵……），視角用滑鼠。"
+                             "遊戲在啟動時讀取按鍵提示，因此重新啟動後才會改變。提示屬於遊戲檔案，在「操作」中重新對應的按鍵在螢幕上仍顯示原來的提示。",
+    [UI_MENU_PROMPTS_NINTENDO] = "Nintendo",
+    [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_PLAYSTATION] = "PlayStation",
+    [UI_MENU_PROMPTS_PC] = "PC",
+    [UI_MENU_MOUSE_MODE] = "滑鼠視角",
+    [UI_MENU_MOUSE_MODE_DESC] = "直接：視角按滑鼠移動的距離轉動，與電腦遊戲相同，沒有搖桿死區和反應曲線。搖桿模擬：滑鼠相當於右搖桿。",
+    [UI_MENU_MOUSE_STICK] = "搖桿模擬",
+    [UI_MENU_MOUSE_DIRECT] = "直接",
+    [UI_MENU_MENU_CURSOR] = "在遊戲選單中使用滑鼠",
+    [UI_MENU_MENU_CURSOR_DESC] = "在遊戲自身的選單中（標題、背包、商店、對話選項）顯示指標：指標下的項目被選中，左鍵確認，右鍵返回。僅在最後使用的是滑鼠或鍵盤時生效，因此使用手把時選單保持不變（遊戲 1.4.3）。",
+    [UI_MENU_MAP_CLICK] = "在地圖上按一下左鍵",
+    [UI_MENU_MAP_CLICK_DESC] = "在遊戲地圖上，滑鼠左鍵在地圖游標處按下 A 鍵，而不是按下它所繫結的按鍵（預設為 Y）。需要開啟「在遊戲選單中使用滑鼠」（遊戲 1.4.3）。",
+    [UI_MENU_DIALOGUE_CLICK] = "對話中的滑鼠點選",
+    [UI_MENU_DIALOGUE_CLICK_DESC] = "對話窗開啟時，滑鼠左鍵按下 B 鍵（繼續對話並跳過文字滾動），右鍵按下 A 鍵，而不是它們所繫結的按鍵（預設為 Y，會開啟對話記錄；以及 ZL）。對話選項仍使用指標：左鍵選擇（遊戲 1.4.3）。",
+    [UI_MENU_POINTER_IMAGE] = "遊戲指標",
+    [UI_MENU_POINTER_IMAGE_DESC] = "游標未被捕獲時（遊戲選單、本選單、按 Esc 之後），視窗顯示內建的金色箭頭，而不是系統箭頭，大小隨螢幕縮放。",
+    [UI_MENU_QUICKSAVE] = "快速存檔與讀檔",
+    [UI_MENU_QUICKSAVE_DESC] = "一個鍵立即儲存遊戲，另一個鍵讀取該存檔（見下方兩行：預設 F6 和 F7，與 Half-Life 相同），螢幕上不會出現任何選單。僅限鍵盤和滑鼠按鍵，僅限遊戲 1.4.3。快速存檔會讓遊戲自己進行一次自動存檔，因此會替換最舊的自動存檔（手動存檔保留），並將其副本儲存為快速存檔（設定檔案中的 quicksave 資料夾），畫面頂部顯示「遊戲已儲存」。快速讀檔時畫面停留在「正在讀取快速存檔」，同時在背景走完遊戲的讀檔清單，遊戲隨即讀取快速存檔（約 5 秒）。在遊戲本身不會自動存檔的地方（過場動畫、對話），不會儲存，並會顯示提示。",
+    [UI_MENU_QUICKSAVE_KEY] = "快速存檔鍵",
+    [UI_MENU_QUICKLOAD_KEY] = "快速讀檔鍵",
+    [UI_MENU_QUICKSAVE_KEY_DESC] = "啟動快速存檔或快速讀檔的按鍵；預設 F6 和 F7，與 Half-Life 相同。選中該格後按下任意鍵盤按鍵或滑鼠按鍵；按 Delete 則該操作沒有按鍵。快速存檔開啟時，這兩個鍵不再有其他作用（若按鍵對應也使用該鍵，值下方會有提示）。totk.ini 接受按鍵對應中的任意按鍵名（quicksave_key、quickload_key）。",
+    [UI_QS_SAVED] = "遊戲已儲存",
+    [UI_QS_LOADING] = "正在讀取快速存檔",
+    [UI_QS_NOT_NOW] = "現在無法快速存檔",
+    [UI_QS_NONE] = "還沒有快速存檔（按快速存檔鍵建立）",
+    [UI_QS_FAILED] = "快速存檔失敗：請檢視 totk.log",
+    [UI_QS_LOAD_FAILED] = "快速讀檔失敗：請檢視 totk.log",
+    [UI_MENU_PROMPTS_MISSING] = "缺少按鍵提示檔案：請重新執行安裝程式",
+    [UI_MENU_PROMPTS_FAILED] = "按鍵提示檔案已損壞：請重新執行安裝程式",
+    [UI_MENU_PROMPTS_RESTART] = "按鍵提示重新啟動後生效",
+    [UI_MENU_PROMPTS_OFF_SHAPE] = "此遊戲解析度下關閉（未為其製作佈局）",
+    [UI_MENU_OUTPUT_RES_NO_LAYOUT] = "未為此比例製作佈局：請重新執行安裝程式",
+    [UI_MENU_OUTPUT_RES_PREPARING] = "佈局正在背景製作；下次啟動時使用",
+    [UI_MENU_PROMPTS_PREPARING] = "按鍵提示檔案正在背景製作；下次啟動時使用",
+    [UI_MENU_PREPARE_RETRY] = "重試",
+    [UI_MENU_PREPARE_RETRY_DESC] = "再次啟動安裝程式的工具，在背景製作缺少的介面佈局或按鍵提示檔案。遊戲繼續執行；下次啟動時生效。",
+    [UI_MENU_SHAPE_PREPARE_FAILED] = "安裝程式的工具未能啟動：請重新執行安裝程式",
+    [UI_MENU_PROMPTS_OFF_MODS] = "已關閉：RomFS 模組替換了它們的檔案",
+    [UI_MENU_PROMPTS_OFF_PATCHES] = "設定了 TOTK_ROMFS_PATCHES 時關閉",
+    [UI_MENU_RESTART] = "立即重新啟動",
+    [UI_MENU_RESTART_DESC] = "關閉遊戲並以新的按鍵提示重新啟動。上次存檔之後的進度將會遺失。",
+    [UI_MENU_RESTART_CONFIRM] = "現在重新啟動遊戲？上次存檔之後的進度將會遺失。",
+    [UI_MENU_RESTART_YES] = "重新啟動",
+    [UI_MENU_RESTART_SAVING] = "遊戲正在存檔：稍後即可重新啟動。",
+    [UI_MENU_STICK_SENS] = "搖桿視角速度",
+    [UI_MENU_STICK_SENS_DESC] = "在遊戲的五檔視角靈敏度下，按倍數調整右搖桿的視角轉動速度（包括最高速度）。滑鼠使用自己的設定。",
+    [UI_MENU_WALK_KEY] = "步行鍵",
+    [UI_MENU_WALK_KEY_DESC] = "按住時鍵盤模擬的搖桿只推到一部分，使鍵盤操作走路而不是奔跑。推動幅度由步行幅度決定。手把和滑鼠不受影響。",
+    [UI_MENU_WALK_KEY_TAKEN] = "同時為 %s",
+    [UI_MENU_WALK_SCALE] = "步行幅度",
+    [UI_MENU_WALK_SCALE_DESC] = "按住步行鍵時鍵盤搖桿的推動幅度。一半為走路，推滿為奔跑。",
+    [UI_MENU_FREECAM] = "自由視角",
+    [UI_MENU_FREECAM_DESC] = "允許用下方的組合鍵或按鍵讓視角脫離林克自由飛行。預設關閉：關閉時遊戲的視角程式碼保持原樣執行。重新啟動後生效。僅限遊戲版本 1.4.3。",
+    [UI_MENU_FREECAM_OFF_NOTE] = "請先開啟上方的「自由視角」，然後重新啟動",
+    [UI_MENU_FREECAM_PAD] = "自由視角組合鍵",
+    [UI_MENU_FREECAM_PAD_DESC] = "同時按下的手把按鍵，讓視角依次切換三個階段：脫離林克自由飛行、停在原處而林克恢復操作、回到林克。飛行期間遊戲不接收輸入：左搖桿沿視線方向和左右移動，扳機鍵上升和下降，右搖桿轉動視角，每按一次 L 或 R 速度減半或加倍。視角固定時，林克朝左搖桿在螢幕上指向的方向移動。遊戲版本 1.4.3。",
+    [UI_MENU_FREECAM_PAD_V143] = "僅限遊戲版本 1.4.3",
+    [UI_MENU_FREECAM_KEY] = "自由視角鍵",
+    [UI_MENU_FREECAM_KEY_DESC] = "讓視角依次切換相同階段的按鍵：脫離林克自由飛行、停在原處而林克恢復操作、回到林克。飛行期間：W A S D 沿視線方向和左右移動，ZR 和 ZL 對應的按鍵（預設 X 和 Z）上升和下降，滑鼠和方向鍵轉動視角，L 和 R 對應的按鍵（預設 Q 和 R）讓速度減半或加倍。遊戲版本 1.4.3。",
+    [UI_MENU_GROUP_GAMEPLAY_TWEAKS] = "遊戲操作微調",
+    [UI_MENU_GAMEPLAY_TWEAKS_ENABLED] = "啟用操作微調",
+    [UI_MENU_GAMEPLAY_TWEAKS_ENABLED_DESC] = "使用滑鼠滾輪控制究極手物體旋轉與距離、武器與道具切換以及地圖平滑縮放。",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_ROTATE] = "究極手滾輪旋轉",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_ROTATE_DESC] = "究極手抓取物體時直接使用滑鼠滾輪旋轉物體，無需按住 R 鍵。",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_C_AXIS] = "究極手 C 軸旋轉",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_C_AXIS_DESC] = "滾動滾輪時按住 C 鍵可繞第三軸旋轉物體。",
+    [UI_MENU_GAMEPLAY_ROTATION_SENSITIVITY] = "究極手旋轉靈敏度",
+    [UI_MENU_GAMEPLAY_ROTATION_SENSITIVITY_DESC] = "滑鼠滾輪旋轉物體的靈敏度倍率。",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_DISTANCE] = "究極手滾輪推拉距離",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_DISTANCE_DESC] = "按住滑鼠右鍵滾動滾輪可推遠或拉近物體。",
+    [UI_MENU_GAMEPLAY_DISTANCE_SENSITIVITY] = "究極手距離靈敏度",
+    [UI_MENU_GAMEPLAY_DISTANCE_SENSITIVITY_DESC] = "滑鼠滾輪推拉物體距離的靈敏度倍率。",
+    [UI_MENU_GAMEPLAY_WEAPON_WHEEL] = "自由狀態滾輪切換武器",
+    [UI_MENU_GAMEPLAY_WEAPON_WHEEL_DESC] = "在自由行動時滾動滑鼠滾輪切換武器，按 E 鍵確認。",
+    [UI_MENU_GAMEPLAY_WEAPON_SENSITIVITY] = "武器切換滾輪靈敏度",
+    [UI_MENU_GAMEPLAY_WEAPON_SENSITIVITY_DESC] = "滾輪切換下一個武器所需的滾動步數靈敏度。",
+    [UI_MENU_GAMEPLAY_ITEM_WHEEL] = "快捷畫面滾輪選擇",
+    [UI_MENU_GAMEPLAY_ITEM_WHEEL_DESC] = "快捷畫面開啟時透過滑鼠滾輪快速切換選擇物品。",
+    [UI_MENU_GAMEPLAY_ITEM_SENSITIVITY] = "快捷畫面滾輪靈敏度",
+    [UI_MENU_GAMEPLAY_ITEM_SENSITIVITY_DESC] = "在快捷畫面中切換下一個物品所需的滾輪靈敏度。",
+    [UI_MENU_GAMEPLAY_ITEM_AD] = "快捷畫面 A / D 鍵切換",
+    [UI_MENU_GAMEPLAY_ITEM_AD_DESC] = "快捷畫面開啟時按 A / D 鍵向左或向右切換選擇物品。",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM] = "地圖平滑縮放",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM_DESC] = "在普爾亞平板地圖上使用滑鼠滾輪進行平滑慣性縮放。",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM_SENSITIVITY] = "地圖縮放靈敏度",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM_SENSITIVITY_DESC] = "滑鼠滾輪縮放地圖的靈敏度倍率。",
+    [UI_MENU_OV_SCALE_DOWN] = "雙線性（FSR 只能放大）",
+    [UI_MENU_HDR_HUE] = "高光色調校正",
+    [UI_MENU_HDR_HUE_DESC] = "火焰、火花等明亮色彩像遊戲自身的 SDR 畫面一樣趨向白色，與它們發出的光一致；0 保持完全飽和。",
+    [UI_MENU_SHADOW_SCALE] = "陰影解析度",
+    [UI_MENU_SHADOW_SCALE_DESC] = "將太陽陰影貼圖的每條邊繪製為遊戲 960x960 的若干倍：陰影邊緣和樹葉陰影更清晰。下次啟動時生效。",
+    [UI_MENU_SHADOW_RANGE] = "陰影級聯範圍",
+    [UI_MENU_SHADOW_RANGE_DESC] = "把陰影變柔和的分界（遊戲中為 20、40、80 和 160 公尺）推得更遠。陰影貼圖會覆蓋更大的地面，請同時提高陰影解析度。下次啟動時生效。",
+    [UI_MENU_GRASS_RANGE] = "草地範圍",
+    [UI_MENU_GRASS_RANGE_DESC] = "視角周圍長草的距離（遊戲中為 62.5 公尺）。調高後草地延伸得更遠，不會在你面前才長出來；調低則少畫一些草。下次啟動時生效。",
+    [UI_MENU_CONTACT_SHADOWS] = "接觸陰影",
+    [UI_MENU_CONTACT_SHADOWS_DESC] = "陰影貼圖遺漏的細小太陽陰影：腳下、石頭下、草叢和褶皺中。在光照之後於螢幕空間追蹤。下次啟動時生效。",
+    [UI_MENU_PCSS] = "柔和陰影",
+    [UI_MENU_PCSS_DESC] = "物體接觸地面處的太陽陰影銳利，陰影投得越遠越柔和（PCSS）。0 保留遊戲自身的過濾。下次啟動時生效。",
+    [UI_MENU_DLSS] = "超分模式",
+    [UI_MENU_DLSS_DESC] = "原生以全解析度對 3D 場景做抗鋸齒。品質、平衡、效能和超高效能分別以 67%、58%、50% 和 33% 繪製，再由超分"
+                          "（DLSS 或 FSR 3.1）放大，以節省 GPU 時間；它們會取代 3D 渲染比例。立即生效。",
+    [UI_MENU_DLSS_DLAA] = "原生",
+    [UI_MENU_DLSS_QUALITY] = "品質",
+    [UI_MENU_DLSS_BALANCED] = "平衡",
+    [UI_MENU_DLSS_PERFORMANCE] = "效能",
+    [UI_MENU_DLSS_ULTRA] = "超高效能",
+    [UI_MENU_DLSS_PRESET] = "DLSS 模型",
+    [UI_MENU_DLSS_PRESET_DESC] = "執行哪個 DLSS 模型。自動按 NVIDIA 對各模式的建議：DLAA、品質和平衡用 K，效能用 M，超高效能用 L。"
+                                 "J：移動角色身後的拖影略少，閃爍略多。K：所有模式都用最清晰的模型。立即生效。",
+    [UI_MENU_DLSS_PRESET_DEFAULT] = "自動", [UI_MENU_DLSS_PRESET_K] = "K（最清晰）",
+    [UI_MENU_DLSS_PRESET_J] = "J（拖影更少）",
+    [UI_MENU_DLSS_CHARS] = "DLSS 角色拖影",
+    [UI_MENU_DLSS_CHARS_DESC] = "減少移動中的角色、動物及其手持物品身後的淡淡拖影：DLSS 在這些位置少用之前的幀。越強拖影越少，"
+                                "這些邊緣也略欠平滑。立即生效。",
+    [UI_MENU_DLSS_CHARS_OFF] = "關", [UI_MENU_DLSS_CHARS_LIGHT] = "弱", [UI_MENU_DLSS_CHARS_MEDIUM] = "中",
+    [UI_MENU_DLSS_CHARS_FULL] = "強",
+    [UI_MENU_FXAA] = "遊戲抗鋸齒（FXAA）",
+    [UI_MENU_FXAA_DESC] = "遊戲自身的 FXAA 邊緣平滑。會讓細節略微模糊；開啟 DLAA 時不需要。",
+    [UI_MENU_REFLEX] = "低延遲",
+    [UI_MENU_REFLEX_DESC] = "降低系統延遲。開使用 NVIDIA Reflex (VK_NV_low_latency2);開 + 增強 (On + Boost) 還會在 CPU 瓶頸時保持 NVIDIA 顯示卡高頻率。自動在 NVIDIA 顯示卡上使用 Reflex,在 AMD 顯示卡上使用 AMD Anti-Lag 2 (VK_AMD_anti_lag)。重新啟動後生效。",
+    [UI_MENU_REFLEX_AUTO] = "自動",
+    [UI_MENU_REFLEX_OFF] = "關",
+    [UI_MENU_REFLEX_ON] = "開",
+    [UI_MENU_REFLEX_BOOST] = "開 + 增強",
+    [UI_MENU_SCENE_UPSCALER] = "3D 場景超分",
+    [UI_MENU_SCENE_UPSCALER_DESC] = "用於 3D 場景的時間性超分：邊緣更平滑，閃爍更少；低於「原生」的模式會以更小的尺寸繪製場景再放大，以節省 GPU "
+                                    "時間。NVIDIA DLSS 需要 NVIDIA RTX 顯示卡，並將 " DLSS_FILE " 放在 " EXE_FILE " 旁；AMD "
+                                    "FSR 3.1 可在任何顯示卡上執行；AMD FSR 4（Windows）需要 AMD 為其提供 FSR 4 的 Radeon 顯示卡，並將 " FFX_FILES
+                                    " 放在 " EXE_FILE " 旁。「關」保留遊戲自己的縮放和 FXAA。HUD 不受影響；上方的縮放"
+                                    "方式和銳度仍負責把遊戲畫面適配到視窗。重新啟動後生效。",
+    [UI_MENU_SCENE_UPSCALER_OFF] = "關", [UI_MENU_SCENE_UPSCALER_DLSS] = "NVIDIA DLSS",
+    [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1", [UI_MENU_SCENE_UPSCALER_FSR4] = "AMD FSR 4",
+    [UI_MENU_SCENE_UPSCALER_NO_FSR4_GPU] = "FSR 4：此顯示卡不提供",
+    [UI_MENU_SCENE_UPSCALER_NO_FSR4_DLL] = "FSR 4：缺少 AMD 的 FSR 函式庫",
+    [UI_MENU_SCENE_UPSCALER_NO_FSR4_OS] = "FSR 4：僅限 Windows",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU] = "DLSS：需要 NVIDIA RTX 顯示卡",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL] = "DLSS：缺少 " DLSS_FILE,
+    [UI_MENU_FSR_SHARPNESS] = "FSR 銳度",
+    [UI_MENU_FSR_SHARPNESS_DESC] = "AMD FSR 3.1 或 FSR 4 之後 3D 場景的銳化強度；0 為關閉。",
+    [UI_MENU_TAB_CHEATS] = "金手指",
+    [UI_MENU_CHEATS_NONE] = "此遊戲版本沒有金手指。模組的金手指是它的 cheats 資料夾中以遊戲建置命名的 Atmosphere "
+                            "金手指檔案：mods\\<模組>\\cheats\\%s。重新啟動遊戲後才會讀取。對於修改遊戲程式碼的金手指，"
+                            "遊戲會在啟動時自行重新建置（幾分鐘）。",
+    [UI_MENU_CHEATS_MOD] = "%s：%d 個金手指",
+    [UI_MENU_CHEAT_CODE_DESC] = "修改遊戲程式碼。立即開關。",
+    [UI_MENU_CHEAT_KEY_DESC] = "按住 %s 時修改遊戲程式碼。立即開關。",
+    [UI_MENU_CHEAT_DATA_DESC] = "開啟時每幀寫入遊戲記憶體。",
+    [UI_MENU_CHEAT_MASTER] = "始終開啟",
+    [UI_MENU_CHEAT_MASTER_DESC] = "檔案的主程式碼：始終開啟。",
+    [UI_MENU_CHEAT_RESTORE] = "無需使用",
+    [UI_MENU_CHEAT_RESTORE_DESC] = "它只會寫回遊戲原本的程式碼。關閉金手指時已經會這樣做。",
+    [UI_MENU_CHEAT_REBUILD] = "重新建置後",
+    [UI_MENU_CHEAT_REBUILD_DESC] = "此金手指修改遊戲程式碼，並且是在遊戲建置後新增或修改的。遊戲會在下次啟動時把它建置進去（幾分鐘），也可以使用「立即重新建置遊戲」。",
+    [UI_MENU_CHEAT_UNSUPPORTED] = "不支援",
+    [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "此金手指不能用於此遊戲版本：",
+    [UI_MENU_CHEATS_REBUILD] = "立即重新建置遊戲",
+    [UI_MENU_CHEATS_REBUILD_DESC] = "有些金手指會修改遊戲程式碼，但尚未建置進遊戲：它們是新增或修改的，或上次重新建置失敗或被取消。將關閉遊戲；安裝程式會把它們建置進去（幾分鐘）並重新啟動遊戲。上次存檔之後的進度會遺失。",
+    [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "此模組修改遊戲程式碼（exefs）的方式本移植無法套用，因此整個模組保持關閉。開啟下方它的「不帶程式碼使用 ...」開關即可使用其餘部分。%s",
+    [UI_MENU_MODS_EXEFS_OTHER] = "它的程式碼補丁（exefs）是為其他遊戲版本製作的。",
+    [UI_MENU_MODS_EXEFS_ON] = "正在使用的程式碼補丁：%d 個檔案。",
+    [UI_MENU_MODS_REPLACES_BUILTIN] = "正在使用的程式碼補丁：%d 個檔案。它們取代本移植內建的補丁 %s，此模組開啟時該補丁保持關閉。",
+    [UI_MENU_MODS_CODE_SKIPPED] = "它內建的遊戲程式碼（%s）不會載入：模組的其餘部分照常使用。如果遊戲因此表現異常，請關閉此模組。",
+    [UI_MENU_MODS_PLUGIN_ON] = "它的外掛正在執行：遊戲程式碼中有 %d 處掛鉤。",
+    [UI_MENU_MODS_PLUGIN_REFUSED] = "它的外掛 %s 無法在移植版中執行：%s。",
+    [UI_MENU_MODS_PLUGIN_STAYS_OFF] = "整個模組保持關閉。開啟下方它的「不帶程式碼使用 ...」開關即可使用其餘部分。",
+    [UI_MENU_MODS_PLUGIN_OFF] = "它的外掛本次保持關閉：啟動情況與建置時不同（%s）。遊戲會在下次啟動時重新建置它。",
+    [UI_MENU_MODS_WITHOUT_CODE] = "不帶程式碼使用 %s",
+    [UI_MENU_MODS_WITHOUT_CODE_DESC] = "上方的模組帶有移植版無法執行的程式碼：它自己的遊戲程式碼（subsdk 外掛或替換的 main），或移植版無法套用的程式碼補丁（exefs）。關閉：整個模組保持關閉。開啟：跳過這些程式碼，使用模組的其餘部分：其 RomFS 檔案、金手指和可用的程式碼補丁。它的檔案可能依賴缺失的程式碼；如果遊戲表現異常，請再次關閉。下次啟動時生效。",
+    [UI_MENU_MODS_WITHOUT_CODE_ALL] = "已對所有模組開啟：totk.ini 中 mods_without_code = 1。",
+    [UI_MENU_MODS_EXEFS_SKIPPED] = "它有 %u 個程式碼補丁檔案（exefs）無法套用，已跳過：模組的其餘部分照常使用。%s",
+    [UI_MENU_MODS_OVERRIDES_FILES] = "它的 %u 個檔案取代了清單中更靠下的 %s 的檔案。",
+    [UI_MENU_MODS_DATA_OVERRIDDEN] = "它對遊戲資料的修改中有 %u 位元組改用清單中更靠上的 %s 的修改。",
+    [UI_MENU_MODS_OVERRIDES_DATA] = "它對遊戲資料的修改中有 %u 位元組取代了清單中更靠下的 %s 的修改。",
+    [UI_MENU_MODS_CODE_OVERRIDDEN] = "它有 %u 處程式碼補丁位置被清單中更靠上的 %s 覆蓋。",
+    [UI_MENU_MODS_OVERRIDES_CODE] = "它覆蓋了 %u 處程式碼補丁位置，這些位置原屬於清單中更靠下的 %s。",
 };
 
 // German
@@ -9618,7 +10388,6 @@ static const char *const text_vi[UI_TEXT_COUNT] = {
 
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}
 SWKBD_ONLY(text_pt, "Inserir texto", "Introduz um nome", "Cavalo", "OK", "Cancelar", "Comando: A = OK, B = Cancelar");
-SWKBD_ONLY(text_zh_hant, "文字輸入", "請輸入名字", "馬兒", "確定", "取消", "手把：A 確定，B 取消");
 
 static const Row rows[] = {
     {"en", text_en}, {"ja", text_ja}, {"fr", text_fr}, {"de", text_de}, {"it", text_it}, {"es", text_es},
@@ -9629,7 +10398,7 @@ static const Row rows[] = {
 const char *ui_text_lang(const char *code) {
     static const struct { const char *code, *lang; } map[] = {
         {"en-US", "en"}, {"en-GB", "en"}, {"fr-CA", "fr"}, {"es-419", "es"},
-        {"zh-CN", "zh-Hans"}, {"zh-TW", "zh-Hant"},
+        {"zh-CN", "zh-Hans"}, {"zh-SG", "zh-Hans"}, {"zh-TW", "zh-Hant"}, {"zh-HK", "zh-Hant"}, {"zh-MO", "zh-Hant"},
     };
     for (size_t i = 0; i < sizeof map / sizeof *map; i++)
         if (!strcmp(code, map[i].code)) return map[i].lang;
@@ -9679,34 +10448,57 @@ void ui_text_visit(const char *lang, void (*visit)(void *ctx, const char *text),
         if (r->text[id] && *r->text[id]) visit(ctx, r->text[id]);
 }
 
-// The menu language, re-read when cfg_version changes. TOTK_MENU_LANG names a catalog language ("en", "ru", "pt-BR",
-// "zh-Hans"); unset, it follows the system UI language, through the same code map the game language uses ("zh-CN" ->
-// "zh-Hans"). Windows names a region with it ("ru-RU"), so a tag without menu text tries its language alone ("ru"). A
-// language whose row has no menu text (only the software keyboard does) shows English, so other Windows locales keep the
-// English menu.
-static const char *resolve_menu_lang(void) {
-    const char *v = cfg_value("TOTK_MENU_LANG");
-    const char *sys = plat_ui_language();
-    const char *lang = v && *v ? ui_text_lang(v) : sys && *sys ? ui_text_lang(sys) : "en";
+// Chinese locale tags can name both script and region. The script is explicit (zh-Hans-TW still means Simplified);
+// only without one does the region choose it. Subtags after a singleton belong to an extension or private use.
+static const char *chinese_menu_lang(const char *tag) {
+    size_t n = strcspn(tag, "-_.@");
+    if (n != 2 || tolower((unsigned char)tag[0]) != 'z' || tolower((unsigned char)tag[1]) != 'h') return NULL;
+    char script[5] = "", region[3] = "";
+    for (const char *p = tag + n; *p && *p != '.' && *p != '@';) {
+        p += strspn(p, "-_");
+        size_t k = strcspn(p, "-_.@");
+        if (k == 1) break;
+        if (k == 4 && !*script) {
+            for (size_t i = 0; i < k; i++) script[i] = (char)tolower((unsigned char)p[i]);
+        } else if (k == 2 && !*region) {
+            for (size_t i = 0; i < k; i++) region[i] = (char)tolower((unsigned char)p[i]);
+        }
+        p += k;
+    }
+    if (!strcmp(script, "hans")) return "zh-Hans";
+    return !strcmp(script, "hant") || !strcmp(region, "tw") || !strcmp(region, "hk") || !strcmp(region, "mo")
+               ? "zh-Hant" : "zh-Hans";
+}
+
+// A menu setting and the system UI locale use the same selection. A tag without menu text tries its base language;
+// a language with only software-keyboard text keeps the English menu. ui_text_lang's Switch-code mapping is unchanged.
+const char *ui_text_menu_lang(const char *locale) {
+    const char *lang = ui_text_lang(locale && *locale ? locale : "en");
     if (ui_text_defined(lang, UI_MENU_TITLE)) return lang;
-    static char base[16];   // menu_text calls this on one thread at a time, on a cfg_version change
+    const char *chinese = chinese_menu_lang(lang);
+    if (chinese) return chinese;
+    char base[16];
     size_t n = strcspn(lang, "-");
     if (n < sizeof base && lang[n]) {
         memcpy(base, lang, n), base[n] = 0;
         if (ui_text_defined(base, UI_MENU_TITLE)) return find_row(base)->lang;
     }
-    // Traditional Chinese has no menu text: a Chinese reader gets the Simplified Chinese menu, not the English one.
+    // Any other Chinese tag ("zh" alone): the Simplified Chinese menu rather than the English one.
     if (!strncmp(lang, "zh", 2)) return "zh-Hans";
     return "en";
 }
 
-const char *menu_text(UiTextId id) {
+const char *menu_text_lang(void) {
     static _Atomic(const char *) lang = "en";
     static _Atomic unsigned seen = ~0u;
     unsigned v = cfg_version();
     if (v != atomic_load_explicit(&seen, memory_order_relaxed)) {
-        atomic_store_explicit(&lang, resolve_menu_lang(), memory_order_relaxed);
+        const char *setting = cfg_value("TOTK_MENU_LANG");
+        atomic_store_explicit(&lang, ui_text_menu_lang(setting && *setting ? setting : plat_ui_language()),
+                              memory_order_relaxed);
         atomic_store_explicit(&seen, v, memory_order_relaxed);
     }
-    return ui_text_in(atomic_load_explicit(&lang, memory_order_relaxed), id);
+    return atomic_load_explicit(&lang, memory_order_relaxed);
 }
+
+const char *menu_text(UiTextId id) { return ui_text_in(menu_text_lang(), id); }

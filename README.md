@@ -50,8 +50,8 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 ## Languages
 
 The game keeps the text and voices of every language it shipped with. The port's own setup and in-game menu (F1) come
-in these; both follow the Windows display language, and the menu has its own choice on its Menu tab. A Traditional
-Chinese Windows gets the Simplified Chinese setup and menu.
+in these; both follow the Windows display language, and the menu has its own choice on its Menu tab. Taiwan, Hong Kong
+and Macau get the Traditional Chinese setup and menu, other Chinese Windows the Simplified Chinese ones.
 
 | Language | Setup | In-game menu |
 |---|:---:|:---:|
