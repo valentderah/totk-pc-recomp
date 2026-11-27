@@ -446,6 +446,22 @@ static int resolve_check_on(void) {
 
 static int resolve_locked(uint64_t addr, uint64_t size, VkMemSpan *out);
 
+// vk_mem_resolve_peek resolves without marking the pool for the shadow sync (peek_only). The uniform
+// snapshot (vk_usnap.c) resolves every uniform region only to check its pool and then copies the bytes from guest
+// memory itself; the mark made the next prologue query and copy those pools too, although the draws take the
+// uniforms from the snapshot (820 pool syncs a frame at Lookout Landing, 2.7 MiB copied). A bind that does read the
+// pool's buffer resolves it then and marks it, before its part is submitted.
+static _Thread_local int peek_only;
+
+int vk_mem_resolve_peek(uint64_t addr, uint64_t size, VkMemSpan *out) {
+    static int on = -1;   // TOTK_USNAP_PEEK (vk_ran_default); 0: mark the pool
+    if (on < 0) on = rt_knob("USNAP_PEEK", vk_ran_default());
+    peek_only = RT_KNOB_ON(on);
+    int r = vk_mem_resolve(addr, size, out);
+    peek_only = 0;
+    return r;
+}
+
 int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *out) {
     memset(out, 0, sizeof *out);
     uint64_t g = __atomic_load_n(&pool_gen, __ATOMIC_ACQUIRE), end = addr + size;
@@ -458,7 +474,7 @@ int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *out) {
         out->cls = h->cls;
         out->pool = h->pool;
         if (h->alloc) out->alloc_offset = out->offset;
-        if (shadow_on && h->pool && !((PoolRec *)h->pool)->stouched) shadow_touch(h->pool);
+        if (shadow_on && h->pool && !((PoolRec *)h->pool)->stouched && !peek_only) shadow_touch(h->pool);
         if (resolve_check_on()) {
             VkMemSpan s;
             if (!resolve_locked(addr, size, &s) || memcmp(&s, out, sizeof s))
@@ -497,7 +513,7 @@ static int resolve_locked(uint64_t addr, uint64_t size, VkMemSpan *out) {
         out->buffer = r->buf;
         out->offset = addr - r->import_lo;
         out->avail = r->import_hi - addr;
-        if (r->smap && !r->stouched) shadow_touch(r);
+        if (r->smap && !r->stouched && !peek_only) shadow_touch(r);
         ok = 1;
     } else if (r && r->kind == POOL_PHYS) {
         out->buffer = r->buf;

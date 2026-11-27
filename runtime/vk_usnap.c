@@ -168,7 +168,7 @@ static void collect(const op_hdr *h, int depth) {
                     if (k && known) {
                         if (!(nc[ci].ok >> (k + 1) & 1)) continue;
                     } else if (k) {
-                        if (!vk_mem_resolve(lo, at + n - lo, &sp) || sp.alloc || !sp.pool || sp.avail < at + n - lo ||
+                        if (!vk_mem_resolve_peek(lo, at + n - lo, &sp) || sp.alloc || !sp.pool || sp.avail < at + n - lo ||
                             (sp.cls != VK_MCLS_HOST_CACHED && sp.cls != VK_MCLS_HOST_UNC))
                             continue;
                         ok |= 1 << (k + 1);
@@ -295,7 +295,7 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
             host |= U.col[i].host;
         }
         VkMemSpan sp;
-        if (!vk_mem_resolve(lo, hi - lo, &sp) || sp.alloc || !sp.pool || sp.avail < hi - lo ||
+        if (!vk_mem_resolve_peek(lo, hi - lo, &sp) || sp.alloc || !sp.pool || sp.avail < hi - lo ||
             (sp.cls != VK_MCLS_HOST_CACHED && sp.cls != VK_MCLS_HOST_UNC)) {
             U.refused++;
             continue;

@@ -391,6 +391,7 @@ void vk_headroom_pool(VmaPool pool, uint32_t type, VkDeviceSize block);
 void vk_headroom_release(void);   // after a failed allocation: frees the spare blocks and keeps none for a while;
                                  // any thread that holds no VMA lock (takes only the headroom lock)
 int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *out);   // 1 when all of [addr, addr+size) is backed
+int vk_mem_resolve_peek(uint64_t addr, uint64_t size, VkMemSpan *out);   // the same, the pool not marked for a shadow sync
 // "1" in the one configuration the Steam Deck switches ran in (RADV in the Linux build, imported memory), else "0":
 // the default of those switches. Final after the device's memory mode is decided (vk_mem_class_log).
 const char *vk_ran_default(void);
