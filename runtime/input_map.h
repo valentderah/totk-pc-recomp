@@ -137,8 +137,8 @@ double input_stick_percent(int32_t x, int32_t y);
 // action's keys (table order) / its gamepad buttons in layout, at most max; returns how many.
 int input_map_keys_of(const InputMap *m, int action, uint8_t *out, int max);
 int input_map_pads_of(const InputMap *m, int action, int layout, uint8_t *out, int max);
-// Key slot (0 or 1) of action becomes key; KEY_NONE clears the slot. A key another action has moves here: returns that
-// action, -1 when none lost it.
+// Key slot (0 or 1) of action becomes key; KEY_NONE clears the slot. The key moves here from every other action that
+// has it. Returns the last action that lost it, -1 when none.
 int input_map_set_key(InputMap *m, int action, int slot, int key);
 // action's gamepad button in layout becomes pad; PAD_NONE clears it. The action that had pad takes action's old button
 // (a swap): returns it, -1 when none. A remapped button is physical, so the face buttons (A B X Y) and the changed actions
