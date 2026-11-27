@@ -195,8 +195,7 @@ int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
     }
     case WM_MOUSEWHEEL:
         if (input_gameplay_active())
-            gameplay_tweaks_wheel(-(double)(short)HIWORD(w) / WHEEL_DELTA,
-                                  ikb_down(KEY_C), ikb_down(KEY_MOUSE_R));
+            gameplay_tweaks_wheel(-(double)(short)HIWORD(w) / WHEEL_DELTA);
         break;
     case WM_SETCURSOR:
         if (LOWORD(l) == HTCLIENT) {

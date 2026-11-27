@@ -1096,6 +1096,14 @@ static void restart_confirm(void) {
     ImGui::EndPopup();
 }
 
+// Resolve the key as the runtime does, including none and invalid-name fallback.
+static int gameplay_modifier_id(const char *setting) {
+    const char *value = cfg_value(setting);
+    if (!strcasecmp(value, "none")) return KEY_NONE;
+    int key = input_key_id(value);
+    return key != KEY_NONE ? key : input_key_id(cfg_meta(setting)->def);
+}
+
 static void rows_gameplay_tweaks(void) {
     opt_group(UI_MENU_GROUP_GAMEPLAY_TWEAKS);
     opt_toggle("TOTK_GAMEPLAY_TWEAKS_ENABLED", UI_MENU_GAMEPLAY_TWEAKS_ENABLED, UI_MENU_GAMEPLAY_TWEAKS_ENABLED_DESC);
@@ -1103,9 +1111,80 @@ static void rows_gameplay_tweaks(void) {
 
     opt_toggle("TOTK_GAMEPLAY_ULTRAHAND_ROTATE", UI_MENU_GAMEPLAY_ULTRAHAND_ROTATE, UI_MENU_GAMEPLAY_ULTRAHAND_ROTATE_DESC);
     opt_toggle("TOTK_GAMEPLAY_ULTRAHAND_C_AXIS", UI_MENU_GAMEPLAY_ULTRAHAND_C_AXIS, UI_MENU_GAMEPLAY_ULTRAHAND_C_AXIS_DESC);
+    opt_toggle("TOTK_GAMEPLAY_ULTRAHAND_DISTANCE", UI_MENU_GAMEPLAY_ULTRAHAND_DISTANCE, UI_MENU_GAMEPLAY_ULTRAHAND_DISTANCE_DESC);
+
+    static const char *const wheel_values[] = {
+        "rotate_x", "rotate_y", "distance"
+    };
+
+    const char *wheel_names[] = {
+        menu_text(UI_MENU_GAMEPLAY_ULTRAHAND_ACTION_X),
+        menu_text(UI_MENU_GAMEPLAY_ULTRAHAND_ACTION_Y),
+        menu_text(UI_MENU_GAMEPLAY_ULTRAHAND_ACTION_DISTANCE)
+    };
+
+    const char *action = cfg_value("TOTK_GAMEPLAY_ULTRAHAND_DEFAULT_ACTION");
+    int selected = !strcasecmp(action, "rotate_y") ? 1 :
+                   !strcasecmp(action, "distance") ? 2 : 0;
+
+    opt_choice_list(
+        "TOTK_GAMEPLAY_ULTRAHAND_DEFAULT_ACTION",
+        UI_MENU_GAMEPLAY_ULTRAHAND_DEFAULT_ACTION,
+        wheel_values, wheel_names, 3,
+        UI_MENU_GAMEPLAY_ULTRAHAND_DEFAULT_ACTION_DESC,
+        selected
+    );
+
+    // Read again so modifier labels update in the same frame.
+    action = cfg_value("TOTK_GAMEPLAY_ULTRAHAND_DEFAULT_ACTION");
+    selected = !strcasecmp(action, "rotate_y") ? 1 :
+               !strcasecmp(action, "distance") ? 2 : 0;
+
+    UiTextId first_label = selected == 1 ?
+        UI_MENU_GAMEPLAY_ULTRAHAND_X_MODIFIER :
+        UI_MENU_GAMEPLAY_ULTRAHAND_ROTATION_KEY;
+
+    UiTextId second_label = selected == 2 ?
+        UI_MENU_GAMEPLAY_ULTRAHAND_X_MODIFIER :
+        UI_MENU_GAMEPLAY_ULTRAHAND_DISTANCE_KEY;
+
+    int rotation_key = gameplay_modifier_id(
+        "TOTK_GAMEPLAY_ULTRAHAND_ROTATION_KEY");
+    int distance_key = gameplay_modifier_id(
+        "TOTK_GAMEPLAY_ULTRAHAND_DISTANCE_KEY");
+
+    bool rotate = cfg_bool("TOTK_GAMEPLAY_ULTRAHAND_ROTATE");
+    bool alternate = cfg_bool("TOTK_GAMEPLAY_ULTRAHAND_C_AXIS");
+    bool distance = cfg_bool("TOTK_GAMEPLAY_ULTRAHAND_DISTANCE");
+
+    bool first_enabled = rotate && (selected == 1 || alternate);
+    bool second_enabled = selected == 2 ? rotate : distance;
+
+    bool conflict = rotation_key != KEY_NONE &&
+                    rotation_key == distance_key &&
+                    first_enabled && second_enabled;
+
+    static char modifier_note[2][64];
+
+    binds_key_row(
+        "TOTK_GAMEPLAY_ULTRAHAND_ROTATION_KEY",
+        first_label,
+        UI_MENU_GAMEPLAY_ULTRAHAND_MODIFIER_DESC,
+        conflict ? menu_text(UI_MENU_GAMEPLAY_ULTRAHAND_KEY_CONFLICT) :
+        key_taken("TOTK_GAMEPLAY_ULTRAHAND_ROTATION_KEY",
+                  modifier_note[0], sizeof modifier_note[0])
+    );
+
+    binds_key_row(
+        "TOTK_GAMEPLAY_ULTRAHAND_DISTANCE_KEY",
+        second_label,
+        UI_MENU_GAMEPLAY_ULTRAHAND_MODIFIER_DESC,
+        key_taken("TOTK_GAMEPLAY_ULTRAHAND_DISTANCE_KEY",
+                  modifier_note[1], sizeof modifier_note[1])
+    );
+
     opt_slider("TOTK_GAMEPLAY_ROTATION_SENSITIVITY", UI_MENU_GAMEPLAY_ROTATION_SENSITIVITY, 0.25f, 4.0f,
                UI_MENU_GAMEPLAY_ROTATION_SENSITIVITY_DESC, 0.05f, "%.2fx");
-    opt_toggle("TOTK_GAMEPLAY_ULTRAHAND_DISTANCE", UI_MENU_GAMEPLAY_ULTRAHAND_DISTANCE, UI_MENU_GAMEPLAY_ULTRAHAND_DISTANCE_DESC);
     opt_slider("TOTK_GAMEPLAY_DISTANCE_SENSITIVITY", UI_MENU_GAMEPLAY_DISTANCE_SENSITIVITY, 0.25f, 4.0f,
                UI_MENU_GAMEPLAY_DISTANCE_SENSITIVITY_DESC, 0.05f, "%.2fx");
 
