@@ -17,7 +17,8 @@ import re
 import sys
 from pathlib import Path
 
-SYM = re.compile(r'^([0-9a-f]{8}) +[0-9a-f]{8} +\d+ {2,}(\S+)$')   # In column empty: object lines have a path:(section) there
+# lld COFF LLDMapFile.cpp leaves Out and In empty for symbols: one header space plus sixteen column spaces.
+SYM = re.compile(r'^([0-9a-f]{8}) +[0-9a-f]{8} +\d+ {17}(\S.*)$')
 
 
 def load_map(path):
@@ -25,7 +26,7 @@ def load_map(path):
     with open(path, encoding='utf-8', errors='replace') as f:
         for line in f:
             m = SYM.match(line.rstrip('\n'))
-            if m and '(' not in m.group(2):
+            if m:
                 syms.setdefault(int(m.group(1), 16), m.group(2))
     addrs = sorted(syms)
     return addrs, [syms[a] for a in addrs]
