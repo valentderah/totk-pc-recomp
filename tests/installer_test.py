@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import SimpleNamespace
 from unittest import mock
 
@@ -252,6 +252,40 @@ class RunnerTest(unittest.TestCase):
         with self.assertRaises(state.StateError) as error:
             state.load(self.bed.dest)
         self.assertEqual(error.exception.id, 'state.newer_format')
+
+
+class TempFolderTest(unittest.TestCase):
+    def test_posix_parent_case_keeps_install_workspaces_separate(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(layouts, 'WIN', False):
+            layout = SimpleNamespace(temp=Path(d))
+            upper = layouts.temp_for(layout, PurePosixPath('/games/Library/TotK'))
+            lower = layouts.temp_for(layout, PurePosixPath('/games/library/TotK'))
+            (upper / 'gen').mkdir(parents=True)
+            (upper / 'gen' / 'marker').write_text('first install')
+            self.assertNotEqual(upper, lower)
+            self.assertFalse((lower / 'gen' / 'marker').exists())
+
+    def test_explicit_shared_temp_respects_posix_parent_case(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(layouts, 'WIN', False):
+            layout = SimpleNamespace(temp=Path(d) / 'default')
+            override = Path(d) / 'shared'
+            first = layouts.temp_for(layout, PurePosixPath('/games/Library/TotK'), override)
+            second = layouts.temp_for(layout, PurePosixPath('/games/library/TotK'), override)
+            self.assertNotEqual(first, second)
+            self.assertEqual(first.parent, override.resolve())
+            self.assertEqual(second.parent, override.resolve())
+
+    def test_windows_case_aliases_keep_the_same_workspace(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(layouts, 'WIN', True):
+            layout = SimpleNamespace(temp=Path(d))
+            first = layouts.temp_for(layout, PureWindowsPath('C:/Games/Library/TotK'))
+            second = layouts.temp_for(layout, PureWindowsPath('c:/games/library/TotK'))
+            self.assertEqual(first, second)
+
+    def test_release_default_stays_inside_its_destination(self):
+        layout = SimpleNamespace(temp=None)
+        dest = Path('Games') / 'TotK'
+        self.assertEqual(layouts.temp_for(layout, dest), dest / layouts.TEMP_IN_DEST)
 
 
 class ReleaseFilesTest(unittest.TestCase):
