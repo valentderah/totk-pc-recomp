@@ -1475,6 +1475,15 @@ class Compile(Step):
         replace_file(build / 'romfs-index.bin', dest / 'romfs-index.bin')
         for dll in layout.dlls:
             replace_file(dll, dest / dll.name)
+        # the settings window (docs/configurator.md): the one this build made, else the release's; a window still open
+        # keeps the old one, which the game does not need
+        window = build / ('totk-config' + EXE)
+        window = window if window.is_file() else layout.config_window
+        if window and window.is_file():
+            try:
+                replace_file(window, dest / window.name)
+            except PermissionError:
+                pass
         return {'exe_sha256': file_sha256(dest / exe.name), 'cpu': cpu}
 
 

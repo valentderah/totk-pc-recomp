@@ -595,6 +595,18 @@ const CfgMeta *cfg_meta(const char *key) {
 
 const CfgMeta *cfg_meta_at(int i) { return i >= 0 && (size_t)i < sizeof metas / sizeof *metas ? &metas[i] : NULL; }
 
+int cfg_known(const char *key) {
+    char k[128];
+    snprintf(k, sizeof k, "%s", key);
+    return is_known(norm_key(k));
+}
+
+int cfg_deck_at(int i, const char **key, const char **value) {
+    if (i < 0 || (size_t)i >= sizeof DECK / sizeof *DECK) return 0;
+    *key = DECK[i].key, *value = DECK[i].value;
+    return 1;
+}
+
 const char *cfg_value(const char *name) {
     const char *e = cfg_get(name);
     if (e && *e) return e;

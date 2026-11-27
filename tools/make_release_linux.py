@@ -17,7 +17,8 @@ the .NET 10 SDK and Python 3.12+ with Pillow (.venv). The folder holds:
     runtime/   libtotkrt.a and libtotkrt-v2.a (build_game.py --make-runtime-lib --sysroot, x86-64-v3 and v2), the
                runtime headers, the INSTALL_SIDE sources of build_game.py (compiled per install), totk.png (the window icon),
                deps/ (Vulkan headers 1.4.363, VMA, zstd built static; SDL3, Opus and libvpx come from the sysroot)
-    bin/       totk_xlate (+ .id), hactool, ninja, libSDL3.so.0 (the sysroot's; the game finds it beside itself)
+    bin/       totk_xlate (+ .id), hactool, ninja, libSDL3.so.0 (the sysroot's; the game finds it beside itself),
+               totk-config (the settings window the setup puts next to totk, tools/build_configurator.py)
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, totk.ini.example, VERSION
     AppRun, totk-setup.desktop, totk-setup.png   the AppImage entry: python/bin/python3 -m installer.gui
 
@@ -205,6 +206,14 @@ def build_bin(out, llvm, sysroot):
 
 
 # ---- runtime/ ----------------------------------------------------------------------------------------------------------
+
+def build_config_window(out, llvm, sysroot):
+    """bin/totk-config: the settings window against the sysroot's glibc; the setup copies it next to totk."""
+    build = CHECK / 'configurator'
+    run([sys.executable, ROOT / 'tools' / 'build_configurator.py', '--toolchain', llvm, '--sysroot', sysroot,
+         '--deps', out / 'runtime' / 'deps', '--out', build])
+    shutil.copy2(build / 'totk-config', out / 'bin' / 'totk-config')
+
 
 def runtime_lib(out, llvm, sysroot):
     """libtotkrt.a (x86-64-v3) and libtotkrt-v2.a (x86-64-v2), so a machine without AVX2 can install too."""
@@ -410,6 +419,7 @@ def collect_licenses(out, sysroot):
         (ROOT / 'runtime' / 'shaders' / 'ffx' / 'LICENSE.txt', 'FidelityFX-FSR-LICENSE.txt'),
         (ROOT / 'runtime' / 'third_party' / 'FidelityFX' / 'LICENSE.txt', 'FidelityFX-SDK-LICENSE.txt'),
         (WORK / 'hactool-linux' / 'LICENSE', 'hactool-LICENSE.txt'),
+        (MAIN_ROOT / 'toolchain' / 'nuklear' / 'LICENSE', 'Nuklear-LICENSE.txt'),   # in bin/totk-config
         (MAIN_ROOT / 'refs' / 'MacNativeGames' / 'LICENSE', 'MacNativeGames-LICENSE.txt'),
     ]
     for src, name in pairs:
@@ -582,6 +592,7 @@ def main():
     build_deps(out, llvm, sysroot)
     build_bin(out, llvm, sysroot)
     rtlib = runtime_lib(out, llvm, sysroot)
+    build_config_window(out, llvm, sysroot)
     build_sysroot(out, sysroot, used_sysroot_files(out, llvm, sysroot, rtlib))
     build_python(out, llvm, sysroot)
     mr.build_sources(out, {})   # no profiles: the Linux setup compiles without one (installer/layout.py, pgo_dir)

@@ -99,7 +99,7 @@ Requirements: as on Windows, plus Linux 6.7 or later and glibc 2.34 or later (Ub
 3. Pick your game files, the language and an install folder, and press *Start*.
 4. Play `totk` from the install folder.
 
-To update, run a newer setup on the same folder; saves and settings are kept. Settings are in the in-game menu and in `totk.ini` ([totk.ini.example](totk.ini.example) lists every key). Controls: [docs/controls.md](docs/controls.md).
+To update, run a newer setup on the same folder; saves and settings are kept. Settings are in the in-game menu, in `totk-config.exe` next to `totk.exe` (a settings window with profiles, for before the game starts: [docs/configurator.md](docs/configurator.md)) and in `totk.ini` ([totk.ini.example](totk.ini.example) lists every key). Controls: [docs/controls.md](docs/controls.md).
 
 ## Credits
 

@@ -29,6 +29,15 @@ This repository is public. Game data lives outside it and every derived file sta
 - Graphics bugs: [docs/maxwell.md](docs/maxwell.md) lists the Maxwell behaviour the Vulkan path must match and the TotK bugs other ports fixed.
 - Comments say what the code does and why, in words that stand on their own. Cite our code by file plus function (a line number may follow as a hint) and upstream code by project, file and function: `refs/` moves, so its line numbers rot. Commit hashes belong to the attribution of copied code.
 
+## Settings
+
+A setting is a key of `runtime/cfg.c` that `totk.ini`, a `TOTK_*` variable, the in-game menu and the settings window outside the game (`totk-config`, [docs/configurator.md](docs/configurator.md)) all share. The window has no list of its own: it reads the runtime's, so a new setting must be written in the shape it reads.
+
+- `known[]` in alphabetical order; a `metas[]` row (default, `"a|b|c"` or `"lo..hi"` or `NULL`, `LIVE` or `RESTART`) for a key the menu shows; a `sections[]` row for its `totk.ini` section.
+- Described in `totk.ini.example` (player settings) or `docs/settings.md` (the rest).
+- A menu row is `opt_toggle`, `opt_choice`, `opt_choice_list`, `opt_slider` (or `binds_key_row`, `row_threads`, `row_set_or_not`) called with the literal `"TOTK_<KEY>"` and a `UI_*` label id, in a `tab_*` function of `runtime/ui/menu.cpp` or a `row_*` / `rows_*` / `mods_*` helper it calls; choice names and values as arrays in the same function; slider bounds and step as number literals. Its texts go into `runtime/ui_text.c` in all four menu languages. The exact forms: [docs/configurator.md](docs/configurator.md), "Adding a setting".
+- Then `python tests/settings_doc_check.py` and `python tests/configurator_check.py` pass: the second fails on a menu row the window cannot read and builds and runs the window.
+
 ## Running and debugging
 
 - Running the game, screenshots, frame dumps, timings: [docs/agents/running.md](docs/agents/running.md).

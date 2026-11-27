@@ -1296,6 +1296,13 @@ def main():
         return
     for dll in dlls:   # dynamic SDL3 (zlib) and its libiconv (LGPL, unmodified DLL), found next to totk.exe
         shutil.copy2(dll, exe.parent / dll.name)
+    if (RUNTIME / 'configurator').is_dir():   # the settings window beside the game; the release ships it prebuilt
+        import build_configurator
+        try:
+            cfg_exe = build_configurator.build(out, RUNTIME, args.toolchain, DEPS, args.sysroot)
+            print(f'{below_root(cfg_exe)}: {mib(cfg_exe.stat().st_size)}')
+        except build_configurator.BuildError as e:
+            print(f'build_game: totk-config was not built: {e}', file=sys.stderr)
     sections, image = pe_sections(exe) if WIN else elf_sections(exe)
     print(f'{below_root(exe)}: file {mib(exe.stat().st_size)}, '
           f'image {mib(image)}; ' + ', '.join(f'{k} {mib(v)}' for k, v in sections.items() if k.startswith('.') and v))

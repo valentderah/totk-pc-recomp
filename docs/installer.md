@@ -25,6 +25,7 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
 ```
 <install folder>/
   totk.exe, SDL3.dll, libopus-0.dll, totk_xlate.exe
+  totk-config.exe                the settings window and profiles (configurator.md), from the release's bin/
   nvngx_dlss.dll                 NVIDIA DLSS, downloaded by the setup's DLSS step when the player keeps it ticked
   amd_fidelityfx_*_vk.dll        AMD FSR 4 (loader and upscaler), downloaded by the setup's FSR step likewise
   totk.ini                       language; the other keys as commented defaults (totk.ini.example)
@@ -221,7 +222,8 @@ recomp/, tools/       the lifter and the build, extraction and shader scripts th
 llvm/                 llvm-mingw, x86_64-only subset (Apache-2.0 with LLVM exception; mingw-w64 parts permissive)
 runtime/              libtotkrt.a, libtotkrt-v2.a and the headers the generated code and modules.c/romfs.c/patches.c
                       include
-bin/                  totk_xlate.exe, hactool.exe, SDL3.dll, libopus-0.dll, ninja.exe
+bin/                  totk_xlate.exe, hactool.exe, SDL3.dll, libopus-0.dll, ninja.exe, totk-config.exe (built once by
+                      make_release.py with llvm/; the compile step copies it into the install folder)
 data/                 shader_list.tsv (MacNativeGames, MIT); pgo-<ver>.profdata + .json, the execution profile an
                       update's code and the runtime libraries compile with (pgo.md)
 THIRD_PARTY_NOTICES.md
@@ -252,7 +254,7 @@ type-2 runtime: no libfuse2 needed on the host). The player makes it executable 
 Desktop Mode. The command-line setup needs the desktop session's display (`DISPLAY` or `WAYLAND_DISPLAY`) because preparing the
 shaders opens a window; the check step fails at once without it. Building the release also needs `make` and `pkg-config`. The bundled Tcl/Tk 9.0.4 is rebuilt with
 Xft against the sniper sysroot so Russian text uses system TrueType fonts. The setup builds the game into the folder they pick, as on Windows, and the game is `totk` there with
-`libSDL3.so.0` beside it. The folder inside the AppImage:
+`libSDL3.so.0` and the settings window `totk-config` beside it. The folder inside the AppImage:
 
 ```
 AppRun                starts python/bin/python3 -m installer.gui (no bytecode written into the read-only mount)
