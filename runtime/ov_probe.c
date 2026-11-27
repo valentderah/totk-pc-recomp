@@ -1103,6 +1103,28 @@ static void probe_menu_text(void) {
     CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("ja", UI_MENU_TITLE), "menu_text ignores MENU_LANG=ja");
     cfg_set("TOTK_MENU_LANG", "de-DE");
     CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("de", UI_MENU_TITLE), "menu_text ignores MENU_LANG=de-DE");
+    static const struct { const char *locale, *want; } portuguese_locales[] = {
+        {"pt-BR", "pt-BR"},
+        {"pt-Latn-BR", "pt-BR"},
+        {"PT_latn_br", "pt-BR"},
+        {"pt_BR.UTF-8", "pt-BR"},
+        {"pt-BR-u-ca-gregory", "pt-BR"},
+        {"pt-BR-x-pt", "pt-BR"},
+        {"pt-Latn", "pt"},
+        {"pt-PT-u-rg-brzzzz", "pt"},
+        {"pt-u-rg-BR", "pt"},
+        {"pt-x-BR", "pt"},
+        {"pt_BRazil", "pt"},
+        {"pt_Latn_PT.UTF-8", "pt"},
+    };
+    for (size_t i = 0; i < sizeof portuguese_locales / sizeof *portuguese_locales; i++) {
+        const char *locale = portuguese_locales[i].locale, *want = portuguese_locales[i].want;
+        CHECK(!strcmp(ui_text_lang(locale), want), "catalog for %s is not %s", locale, want);
+        set_live("TOTK_MENU_LANG", locale);
+        CHECK(!strcmp(menu_text(UI_MENU_TITLE), ui_text_in(want, UI_MENU_TITLE)),
+              "menu text for MENU_LANG=%s is not %s", locale, want);
+    }
+    set_live("TOTK_MENU_LANG", "");
     // Traditional Chinese (zh-TW, zh-HK) reads the Simplified Chinese menu
     cfg_set("TOTK_MENU_LANG", "zh-TW");
     CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("zh-Hans", UI_MENU_TITLE), "zh-TW does not get the zh-Hans menu");

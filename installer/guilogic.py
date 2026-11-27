@@ -104,8 +104,16 @@ def ui_language_for_locale(loc):
     """The window language for a POSIX locale such as 'de_AT.UTF-8': its language, Brazilian Portuguese only for
     pt_BR, Simplified Chinese for every Chinese, else English."""
     loc = loc.lower().replace('-', '_')
-    if loc.startswith('pt_br'):
-        return 'pt-BR'
+    parts = loc.split('.')[0].split('@')[0].split('_')
+    if parts[0] == 'pt':
+        region = ''
+        for part in parts[1:]:
+            if len(part) == 1:   # extensions/private use do not select the region
+                break
+            if (len(part) == 2 and part.isalpha()) or (len(part) == 3 and part.isdigit()):
+                region = part
+                break
+        return 'pt-BR' if region == 'br' else 'en'
     lang = loc.split('_')[0].split('.')[0]
     if lang == 'zh':
         return 'zh-Hans'
