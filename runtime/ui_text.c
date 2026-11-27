@@ -4745,8 +4745,8 @@ static const char *const text_fr[UI_TEXT_COUNT] = {
                                     "liste.",
 };
 
-// Canadian French: only the entries that differ from text_fr (no space before ! ? ;, bogue); every other id
-// reads the fr row (Row.parent).
+// Canadian French: regional entries (no space before ! ? ;, bogue) and loading text absent from text_fr; every other
+// id reads the fr row (Row.parent).
 static const char *const text_fr_ca[UI_TEXT_COUNT] = {
     [UI_MENU_FULLSCREEN_DESC] = "Le jeu remplit l'écran; F11 bascule.",
     [UI_MENU_OUTPUT_RES_DESC] = "La taille dans laquelle le jeu dessine son image et son interface. Au-delà de 1920 x "
@@ -4820,8 +4820,8 @@ static const char *const text_fr_ca[UI_TEXT_COUNT] = {
     [UI_MENU_RESTART_CONFIRM] = "Redémarrer le jeu maintenant? La progression depuis votre dernière sauvegarde est "
                                 "perdue.",
     [UI_MENU_MOUSE_MODE_DESC] = "Direct : la caméra tourne selon le déplacement de la souris, comme dans un jeu PC, "
-                                "sans zone morte ni courbe de stick (jeux 1.4.3 et 1.2.1; 1.1.0 utilise l'émulation "
-                                "du stick). Émulation du stick : la souris agit comme le stick droit.",
+                                "sans zone morte ni courbe de stick. Émulation du stick : la souris agit comme le "
+                                "stick droit.",
     [UI_MENU_QUICKSAVE_KEY_DESC] = "La touche qui lance la sauvegarde rapide ou le chargement rapide; F6 et F7 par "
                                    "défaut, comme dans Half-Life. Sélectionnez la case et appuyez sur une touche ou "
                                    "un bouton de souris; Suppr laisse celle-ci sans touche. Tant que la sauvegarde "
@@ -4843,12 +4843,14 @@ static const char *const text_fr_ca[UI_TEXT_COUNT] = {
     [UI_MENU_ASTC_BC_DESC] = "Avec le décodeur GPU : réencode les textures ASTC décodées en BC3, un quart de la "
                              "mémoire vidéo. Pour les GPU de 4 Go ou moins; les textures paraissent un peu plus "
                              "pixelisées.",
-    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Avec DLAA, le brouillard, la poussière et les autres particules sont "
-                                        "dessinés par-dessus l'image déjà lissée par DLSS, comme le jeu les dessine "
-                                        "sans DLSS : les petites particules dans le brouillard (sanctuaires) ne "
-                                        "disparaissent plus et ne laissent plus de traînées. Désactivé : DLSS traite "
-                                        "aussi ces effets, comme avant. Mode DLAA uniquement; les modes DLSS avec "
-                                        "mise à l'échelle les traitent toujours. S'applique immédiatement.",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Avec DLAA, la poussière et les autres particules sont dessinées par-dessus "
+                                        "l'image déjà lissée par DLSS, comme le jeu les dessine sans DLSS : les "
+                                        "petites particules dans le brouillard (sanctuaires) ne disparaissent plus et "
+                                        "ne laissent plus de traînées. Le brouillard et les nuages passent toujours "
+                                        "par DLSS, donc les bords lointains sur le ciel restent nets. Désactivé : "
+                                        "DLSS traite aussi les particules, comme avant. Mode DLAA uniquement; les "
+                                        "modes DLSS avec mise à l'échelle les traitent toujours. S'applique "
+                                        "immédiatement.",
     [UI_MENU_SPLIT_DRAWS_DESC] = "Envoie le travail GPU par parties tous les N draws entre les passes pour que le GPU "
                                  "commence plus tôt; 0 le désactive.",
     [UI_MENU_VK_DYN_VERTEX_DESC] = "Force l'entrée de sommets dynamique en activé ou désactivé; la valeur par défaut "
@@ -4867,6 +4869,32 @@ static const char *const text_fr_ca[UI_TEXT_COUNT] = {
                                        "qui fonctionnent. Ses fichiers peuvent avoir besoin du code manquant; "
                                        "désactivez-le de nouveau si le jeu se comporte mal. S'applique au prochain "
                                        "démarrage.",
+    [UI_LW_STAGE_START] = "Préparation",
+    [UI_LW_STAGE_GPU] = "Initialisation graphique",
+    [UI_LW_STAGE_FILES] = "Préparation des fichiers du jeu",
+    [UI_LW_STAGE_SHADERS] = "Chargement des shaders",
+    [UI_LW_STAGE_PIPELINES] = "Construction des pipelines",
+    [UI_LW_STAGE_GAME] = "Démarrage du jeu",
+    [UI_LW_FAILED] = "Le jeu s'est arrêté",
+    [UI_LW_FAILED_HINT] = "Le journal ci-dessous indique pourquoi. Copiez-le pour signaler un bogue, puis fermez "
+                          "cette fenêtre.",
+    [UI_LW_VERSION] = "v%s · jeu %s",
+    [UI_LW_COUNT] = "%s sur %s",
+    [UI_LW_LEFT_ITEMS] = "%s restants",
+    [UI_LW_LEFT_SEC] = "Encore environ %d s",
+    [UI_LW_LEFT_MIN] = "Encore environ %d min",
+    [UI_LW_LEFT_FEW] = "Encore quelques secondes",
+    [UI_LW_ALSO] = "Aussi : %s",
+    [UI_LW_GAME_SEC] = "Le jeu démarre dans environ %d s",
+    [UI_LW_GAME_MIN] = "Le jeu démarre dans environ %d min",
+    [UI_LW_GAME_SOON] = "Le jeu va démarrer d'un instant à l'autre",
+    [UI_LW_ELAPSED] = "Temps écoulé : %d:%02d",
+    [UI_LW_DETAILS] = "Détails",
+    [UI_LW_HIDE] = "Masquer les détails",
+    [UI_LW_COPY] = "Copier le journal",
+    [UI_LW_COPIED] = "Copié",
+    [UI_LW_CLOSE] = "Fermer et quitter le jeu",
+    [UI_LW_THOUSANDS] = "\xC2\xA0",
 };
 
 // Spanish
