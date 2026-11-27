@@ -3,6 +3,7 @@
 // The software keyboard has every language; the menu has every game language except Portugal's Portuguese (English,
 // Russian, Brazilian Portuguese, Simplified Chinese, Traditional Chinese, German, French, Spanish, Italian, Dutch,
 // Japanese, Korean), and Vietnamese. The regional game languages (en-GB, fr-CA, es-419) read their language's row.
+#include <ctype.h>
 #include <stdatomic.h>
 #include <string.h>
 
@@ -10414,17 +10415,36 @@ void ui_text_visit(const char *lang, void (*visit)(void *ctx, const char *text),
         if (r->text[id] && *r->text[id]) visit(ctx, r->text[id]);
 }
 
-// The menu language, re-read when cfg_version changes. TOTK_MENU_LANG names a catalog language ("en", "ru", "pt-BR",
-// "zh-Hans", "zh-Hant"); unset, it follows the system UI language, through the same code map the game language uses
-// ("zh-CN" -> "zh-Hans", "zh-TW" and "zh-HK" -> "zh-Hant"). Windows names a region with it ("ru-RU"), so a tag without menu text tries its language alone ("ru"). A
-// language whose row has no menu text (only the software keyboard does) shows English, so other Windows locales keep the
-// English menu.
-static const char *resolve_menu_lang(void) {
-    const char *v = cfg_value("TOTK_MENU_LANG");
-    const char *sys = plat_ui_language();
-    const char *lang = v && *v ? ui_text_lang(v) : sys && *sys ? ui_text_lang(sys) : "en";
+// Chinese locale tags can name both script and region. The script is explicit (zh-Hans-TW still means Simplified);
+// only without one does the region choose it. Subtags after a singleton belong to an extension or private use.
+static const char *chinese_menu_lang(const char *tag) {
+    size_t n = strcspn(tag, "-_.@");
+    if (n != 2 || tolower((unsigned char)tag[0]) != 'z' || tolower((unsigned char)tag[1]) != 'h') return NULL;
+    char script[5] = "", region[3] = "";
+    for (const char *p = tag + n; *p && *p != '.' && *p != '@';) {
+        p += strspn(p, "-_");
+        size_t k = strcspn(p, "-_.@");
+        if (k == 1) break;
+        if (k == 4 && !*script) {
+            for (size_t i = 0; i < k; i++) script[i] = (char)tolower((unsigned char)p[i]);
+        } else if (k == 2 && !*region) {
+            for (size_t i = 0; i < k; i++) region[i] = (char)tolower((unsigned char)p[i]);
+        }
+        p += k;
+    }
+    if (!strcmp(script, "hans")) return "zh-Hans";
+    return !strcmp(script, "hant") || !strcmp(region, "tw") || !strcmp(region, "hk") || !strcmp(region, "mo")
+               ? "zh-Hant" : "zh-Hans";
+}
+
+// A menu setting and the system UI locale use the same selection. A tag without menu text tries its base language;
+// a language with only software-keyboard text keeps the English menu. ui_text_lang's Switch-code mapping is unchanged.
+const char *ui_text_menu_lang(const char *locale) {
+    const char *lang = ui_text_lang(locale && *locale ? locale : "en");
     if (ui_text_defined(lang, UI_MENU_TITLE)) return lang;
-    static char base[16];   // menu_text calls this on one thread at a time, on a cfg_version change
+    const char *chinese = chinese_menu_lang(lang);
+    if (chinese) return chinese;
+    char base[16];
     size_t n = strcspn(lang, "-");
     if (n < sizeof base && lang[n]) {
         memcpy(base, lang, n), base[n] = 0;
@@ -10440,7 +10460,9 @@ const char *menu_text_lang(void) {
     static _Atomic unsigned seen = ~0u;
     unsigned v = cfg_version();
     if (v != atomic_load_explicit(&seen, memory_order_relaxed)) {
-        atomic_store_explicit(&lang, resolve_menu_lang(), memory_order_relaxed);
+        const char *setting = cfg_value("TOTK_MENU_LANG");
+        atomic_store_explicit(&lang, ui_text_menu_lang(setting && *setting ? setting : plat_ui_language()),
+                              memory_order_relaxed);
         atomic_store_explicit(&seen, v, memory_order_relaxed);
     }
     return atomic_load_explicit(&lang, memory_order_relaxed);

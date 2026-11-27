@@ -336,6 +336,8 @@ void ui_text_visit(const char *lang, void (*visit)(void *ctx, const char *text),
 int ui_text_defined(const char *lang, UiTextId id);
 // The catalog language for a Switch language code ("en-GB" -> "en", "zh-CN" -> "zh-Hans", ...).
 const char *ui_text_lang(const char *switch_code);
+// The menu catalog for a system UI locale or menu language tag; English when it has no menu text.
+const char *ui_text_menu_lang(const char *locale);
 
 // The game languages the F1 menu offers for a game build (rt_game_version): one entry per Mals language file the build
 // ships, each with the Switch code TOTK_LANG takes and the id of its name. 1.4.3 adds Brazilian Portuguese (USpt).

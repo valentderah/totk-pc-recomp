@@ -110,9 +110,19 @@ def ui_language_for_locale(loc):
     if loc.startswith('pt_br'):
         return 'pt-BR'
     lang = loc.split('_')[0].split('.')[0]
-    if lang == 'zh':
-        region = loc.split('.')[0].split('@')[0].split('_')[1:]
-        return 'zh-Hant' if set(region) & {'tw', 'hk', 'mo', 'hant'} else 'zh-Hans'
+    parts = loc.split('.')[0].split('@')[0].split('_')
+    if parts[0] == 'zh':
+        script, region = '', ''
+        for part in parts[1:]:
+            if len(part) == 1:   # extensions and private use do not change the locale's script or region
+                break
+            if len(part) == 4 and not script:
+                script = part
+            elif len(part) == 2 and not region:
+                region = part
+        if script in ('hans', 'hant'):
+            return 'zh-Hans' if script == 'hans' else 'zh-Hant'
+        return 'zh-Hant' if region in ('tw', 'hk', 'mo') else 'zh-Hans'
     return lang if lang in PRIMARY_LANGS.values() else 'en'
 
 

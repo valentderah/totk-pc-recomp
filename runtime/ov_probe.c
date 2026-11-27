@@ -33,6 +33,7 @@ static Ov ovs[] = {
     // ov_system.c: nn::oe
     {"oe.Initialize", "_ZN2nn2oe10InitializeEv"},
     {"oe.GetDesiredLanguage", "_ZN2nn2oe18GetDesiredLanguageEv"},
+    {"settings.GetLanguageCode", "_ZN2nn8settings6detail15GetLanguageCodeEPNS0_12LanguageCodeE"},
     {"oe.SetPerformanceConfiguration", "_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi"},
     {"oe.SetCpuBoostMode", "_ZN2nn2oe15SetCpuBoostModeENS0_12CpuBoostModeE"},
     {"oe.GetOperationMode", "_ZN2nn2oe16GetOperationModeEv"},
@@ -261,26 +262,32 @@ static void probe_oe(void) {
         {"en-US", NULL, "en-US"}, {"zh-CN", NULL, "zh-Hans"}, {"zh-TW", NULL, "zh-Hant"},
         {"zh-Hans", NULL, "zh-Hans"}, {"zh-Hant", NULL, "zh-Hant"}};
     int bad = 0;
+    char *settings_code = guest_alloc(8);
     printf("oe: configured language (TOTK_LANG=%s) is %s\n", keep_lang ? keep_lang : "", lang());
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
-        set_env("TOTK_LANG", cases[i].lang);
-        set_env("TOTK_LOCALE", cases[i].locale);
+        set_live("TOTK_LANG", cases[i].lang);
+        set_live("TOTK_LOCALE", cases[i].locale);
         const char *got = lang();
         if (strcmp(got, cases[i].want)) {
             bad++;
             printf("  FAIL: language for TOTK_LANG=%s TOTK_LOCALE=%s is %s, not %s\n", cases[i].lang ? cases[i].lang : "",
                    cases[i].locale ? cases[i].locale : "", got, cases[i].want);
         }
+        memset(settings_code, 0xff, 8);
+        CHECK(CALL("settings.GetLanguageCode", U(settings_code)) == 0 &&
+                  !strncmp(settings_code, cases[i].want, 8),
+              "settings language for TOTK_LANG=%s TOTK_LOCALE=%s disagrees with %s",
+              cases[i].lang ? cases[i].lang : "", cases[i].locale ? cases[i].locale : "", cases[i].want);
     }
-    set_env("TOTK_LANG", NULL);
-    set_env("TOTK_LOCALE", NULL);
+    set_live("TOTK_LANG", NULL);
+    set_live("TOTK_LOCALE", NULL);
     char sys[16];
     snprintf(sys, sizeof sys, "%s", lang());
-    set_env("TOTK_LOCALE", "en-US");
+    set_live("TOTK_LOCALE", "en-US");
     char def[16];
     snprintf(def, sizeof def, "%s", lang());
-    set_env("TOTK_LANG", keep_lang);
-    set_env("TOTK_LOCALE", keep_locale);
+    set_live("TOTK_LANG", keep_lang);
+    set_live("TOTK_LOCALE", keep_locale);
     free(keep_lang);
     free(keep_locale);
     checks++;
@@ -1108,17 +1115,26 @@ static void probe_menu_text(void) {
     CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("zh-Hant", UI_MENU_TITLE), "zh-HK does not get the zh-Hant menu");
     cfg_set("TOTK_MENU_LANG", "zh-SG");
     CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("zh-Hans", UI_MENU_TITLE), "zh-SG does not get the zh-Hans menu");
+    static const struct { const char *locale, *want; } menu_locales[] = {
+        {"zh-Hant-TW", "zh-Hant"}, {"zh-Hant-CN", "zh-Hant"}, {"zh-Hans-TW", "zh-Hans"},
+        {"zh-Hans-HK", "zh-Hans"}, {"zh-Hans-MO", "zh-Hans"}, {"ZH_hAnS_tw", "zh-Hans"},
+        {"zh_TW.UTF-8", "zh-Hant"}, {"zh_CN.UTF-8", "zh-Hans"},
+        {"zh-CN-u-nu-hant", "zh-Hans"}, {"zh-TW-u-ca-gregory", "zh-Hant"},
+        {"zh-CN-x-tw", "zh-Hans"}, {"zh-CN-x-hant", "zh-Hans"}, {"zh_CN.UTF-8@hant", "zh-Hans"},
+        {"zh", "zh-Hans"}, {"de-DE", "de"}, {"pt", "en"}, {"xx", "en"}, {"", "en"},
+    };
+    for (size_t i = 0; i < sizeof menu_locales / sizeof *menu_locales; i++) {
+        const char *locale = menu_locales[i].locale, *want = menu_locales[i].want;
+        CHECK(!strcmp(ui_text_menu_lang(locale), want), "menu catalog for locale %s is not %s", locale, want);
+        cfg_set("TOTK_MENU_LANG", locale);
+        if (*locale)   // an empty setting follows the actual system UI locale, checked below
+            CHECK(!strcmp(menu_text_lang(), want) && menu_text(UI_MENU_TITLE) == ui_text_in(want, UI_MENU_TITLE),
+                  "menu text for MENU_LANG=%s is not %s", locale, want);
+    }
     cfg_set("TOTK_MENU_LANG", "");
-    // the system language as ui_text.c resolve_menu_lang takes it: the tag, else its base language (ru-RU: ru), else
-    // Simplified Chinese for any other Chinese, else en
-    const char *sys_lang = ui_text_lang(plat_ui_language());
-    char sys_base[16] = "";
-    size_t base_n = strcspn(sys_lang, "-");
-    if (sys_lang[base_n] && base_n < sizeof sys_base) memcpy(sys_base, sys_lang, base_n);
-    const char *auto_lang = ui_text_defined(sys_lang, UI_MENU_TITLE)                    ? sys_lang
-                            : *sys_base && ui_text_defined(sys_base, UI_MENU_TITLE) ? sys_base
-                            : !strncmp(sys_lang, "zh", 2)                           ? "zh-Hans"
-                                                                                    : "en";
+    // The same locale selector serves the automatic route; the table above checks its choices independently of the
+    // host's UI language. Here check that clearing the setting restores that host's selection.
+    const char *auto_lang = ui_text_menu_lang(plat_ui_language());
     CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in(auto_lang, UI_MENU_CONTINUE), "menu_text auto ignores the system language");
 }
 
