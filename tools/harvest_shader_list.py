@@ -33,11 +33,24 @@ ATTR_NAMES = {v: k for k, v in prepare_shaders.TYPES.items()}
 PRG_HEAD = 12 + 32 + prepare_shaders.CONTROL
 
 
+def read_cache(path, magic, rec_size):
+    """Check the cache header against runtime/gfx_shader.c rec_read before interpreting its records."""
+    data = Path(path).read_bytes()
+    if len(data) < 16 or data[:8] != magic:
+        raise ValueError(f'{path}: expected {magic!r} header')
+    version, size = struct.unpack_from('<II', data, 8)
+    if version != 1:
+        raise ValueError(f'{path}: unsupported cache version {version} (expected 1)')
+    if size != rec_size:
+        raise ValueError(f'{path}: expected record size {rec_size}, got {size}')
+    if size and (len(data) - 16) % size:
+        raise ValueError(f'{path}: incomplete final record')
+    return data
+
+
 def read_programs_map(path):
     """Map code_hash -> (census_key, stage) from shader-programs.bin without touching RomFS."""
-    data = Path(path).read_bytes()
-    if len(data) < 16 or data[:8] != PRG_MAGIC:
-        raise ValueError(f'{path}: expected {PRG_MAGIC!r} header')
+    data = read_cache(path, PRG_MAGIC, 0)
     out, off, end = {}, 16, len(data)
     while end - off >= PRG_HEAD:
         stage, length, c1_len = struct.unpack_from('<III', data, off)
@@ -45,11 +58,13 @@ def read_programs_map(path):
         control = data[off + 44:off + 44 + prepare_shaders.CONTROL]
         size = PRG_HEAD + length + c1_len
         if length > (64 << 20) or c1_len > length or off + size > end:
-            break
+            raise ValueError(f'{path}: invalid program length at offset {off}')
         code = data[off + PRG_HEAD:off + PRG_HEAD + length]
         census_key = hashlib.sha256(control + code).hexdigest()
         out[code_hash] = (census_key, stage)
         off += size
+    if off != end:
+        raise ValueError(f'{path}: incomplete final program record')
     return out
 
 
@@ -74,25 +89,14 @@ def read_prepared_iids(path):
     p = Path(path)
     if not p.is_file():
         return set()
-    data = p.read_bytes()
-    if len(data) < 16 or data[:8] != PRP_MAGIC:
-        raise ValueError(f'{path}: expected {PRP_MAGIC!r} header')
-    rec = struct.unpack_from('<I', data, 12)[0]
-    if rec != 36:
-        raise ValueError(f'{path}: unexpected record size {rec}')
-    return {data[i + 4:i + 36] for i in range(16, len(data) - (len(data) - 16) % rec, rec)}
+    data = read_cache(p, PRP_MAGIC, 36)
+    return {data[i + 4:i + 36] for i in range(16, len(data), 36)}
 
 
 def read_answers(path):
     """Yield (stage, code_hash, iid, packed_147) from shader-answers.bin."""
-    data = Path(path).read_bytes()
-    if len(data) < 16 or data[:8] != ANS_MAGIC:
-        raise ValueError(f'{path}: expected {ANS_MAGIC!r} header')
-    rec = struct.unpack_from('<I', data, 12)[0]
-    if rec != ANS_REC:
-        raise ValueError(f'{path}: expected record size {ANS_REC}, got {rec}')
-    limit = 16 + ((len(data) - 16) // rec) * rec
-    for off in range(16, limit, rec):
+    data = read_cache(path, ANS_MAGIC, ANS_REC)
+    for off in range(16, len(data), ANS_REC):
         stage = struct.unpack_from('<I', data, off)[0]
         code_hash = data[off + 4:off + 36]
         iid = data[off + 36:off + 68]
@@ -256,12 +260,20 @@ def main():
     ap.add_argument('--exefs', type=Path, help='optional extracted ExeFS directory for code_hash resolution')
     ap.add_argument('--base', type=Path, help='base shader_list.tsv for deduplication and existing warm priorities')
     ap.add_argument('--warm', action='store_true', help='also emit S/C warm rows (prio 1) for met shaders')
-    ap.add_argument('--all', action='store_true', help='ignore shader-prepared.bin and harvest all non-default variants')
-    ap.add_argument('--replace', action='store_true', help='overwrite --out instead of merging with existing rows')
+    ap.add_argument('--all', action='store_true', help='ignore prepared IDs and emit candidate variants, not confirmed misses')
+    ap.add_argument('--replace', action='store_true', help='replace --out only if there are records and all can be mapped')
     ap.add_argument('--out', type=Path, default=shader_list.SUPPLEMENT, help='output TSV path')
     a = ap.parse_args()
-    lines, stats = harvest(a.sources, romfs=a.romfs, exefs=a.exefs, base_path=a.base, include_warm=a.warm,
-                           check_prepared=not a.all)
+    try:
+        lines, stats = harvest(a.sources, romfs=a.romfs, exefs=a.exefs, base_path=a.base, include_warm=a.warm,
+                               check_prepared=not a.all)
+    except (OSError, ValueError) as exc:
+        ap.error(str(exc))
+    if a.replace and not stats['records']:
+        ap.error('refusing --replace: no recorded shader answers')
+    if a.replace and stats['unmapped']:
+        ap.error(f"refusing --replace: {stats['unmapped']} of {stats['records']} shader answers could not be mapped; "
+                 'provide matching shader-programs.bin or --romfs and --exefs')
     total_v, total_w = write_output(a.out, lines, merge_existing=not a.replace)
     print(f'harvested {stats["v_rows"]} new V rows and {stats["warm_rows"]} warm rows from {stats["records"]} records '
           f'(prepared_hits={stats["prepared_hits"]}, unmapped={stats["unmapped"]}); wrote {total_v} V + {total_w} warm '

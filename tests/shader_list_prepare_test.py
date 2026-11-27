@@ -7,6 +7,7 @@ Run: .venv-py314\\Scripts\\python tests\\shader_list_prepare_test.py
 import hashlib
 import json
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -36,6 +37,36 @@ def fake_program(stage=0, code_body=b'\x01\x02\x03\x04' * 16, c1=b'\xaa\xbb'):
 
 
 class ShaderListPrepareTest(unittest.TestCase):
+    def test_failed_replace_preserves_existing_supplement(self):
+        _, ch, ctrl, code, length, c1 = fake_program()
+        program = struct.pack('<III', 0, length, len(c1)) + ch + ctrl + code + c1
+        record = struct.pack('<I', 0) + ch + bytes(ps.ANS_REC - 36)
+        headers = {name: struct.pack('<8sII', magic, 1, size) for name, magic, size in (
+            ('programs', hsl.PRG_MAGIC, 0), ('answers', hsl.ANS_MAGIC, ps.ANS_REC), ('prepared', hsl.PRP_MAGIC, 36))}
+        valid = dict(headers, programs=headers['programs'] + program, answers=headers['answers'] + record)
+        cases = [(name, buf[:8] + struct.pack('<I', 0) + buf[12:], 'unsupported cache version')
+                 for name, buf in valid.items()]
+        cases += [('answers', headers['answers'], 'no recorded shader answers'),
+                  ('answers', valid['answers'] + bytes(ps.ANS_REC), '1 of 2'),
+                  ('answers', valid['answers'] + b'x', 'incomplete final record'),
+                  ('prepared', valid['prepared'] + b'x', 'incomplete final record'),
+                  ('programs', valid['programs'][:-1], 'invalid program length')]
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            base, output = d / 'base.tsv', d / 'supplement.tsv'
+            base.write_bytes(b'')
+            before = b'# Keep original bytes and line endings\r\nV\texisting\t{}\r\n'
+            output.write_bytes(before)
+            for name, bad, message in cases:
+                with self.subTest(cache=name, error=message):
+                    for kind, contents in valid.items():
+                        (d / f'shader-{kind}.bin').write_bytes(bad if name == kind else contents)
+                    run = subprocess.run([sys.executable, hsl.__file__, d, '--base', base, '--replace', '--out', output],
+                                         capture_output=True, text=True)
+                    self.assertNotEqual(run.returncode, 0)
+                    self.assertIn(message, run.stderr)
+                    self.assertEqual(output.read_bytes(), before)
+
     def test_refs_and_release_keep_a_base_only_list(self):
         import make_release
 
