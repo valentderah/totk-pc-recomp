@@ -33,6 +33,7 @@ static Ov ovs[] = {
     // ov_system.c: nn::oe
     {"oe.Initialize", "_ZN2nn2oe10InitializeEv"},
     {"oe.GetDesiredLanguage", "_ZN2nn2oe18GetDesiredLanguageEv"},
+    {"settings.GetLanguageCode", "_ZN2nn8settings6detail15GetLanguageCodeEPNS0_12LanguageCodeE"},
     {"oe.SetPerformanceConfiguration", "_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi"},
     {"oe.SetCpuBoostMode", "_ZN2nn2oe15SetCpuBoostModeENS0_12CpuBoostModeE"},
     {"oe.GetOperationMode", "_ZN2nn2oe16GetOperationModeEv"},
@@ -259,28 +260,43 @@ static void probe_oe(void) {
         {NULL, "fr-CA", "fr-CA"}, {NULL, "es-MX", "es-419"}, {NULL, "es_ES", "es"},     {NULL, "zh-Hant-TW", "zh-Hant"},
         {NULL, "zh-CN", "zh-Hans"}, {NULL, "en-GB", "en-GB"}, {NULL, "ru", "ru"},       {"ja", "fr-FR", "ja"},
         {"en-US", NULL, "en-US"}, {"zh-CN", NULL, "zh-Hans"}, {"zh-TW", NULL, "zh-Hant"},
-        {"zh-Hans", NULL, "zh-Hans"}, {"zh-Hant", NULL, "zh-Hant"}};
+        {"zh-Hans", NULL, "zh-Hans"}, {"zh-Hant", NULL, "zh-Hant"},
+        {NULL, "zh-Hans-TW", "zh-Hans"}, {NULL, "zh-Hans-HK", "zh-Hans"},
+        {NULL, "zh-Hans-MO", "zh-Hans"}, {NULL, "ZH_hAnS_tw", "zh-Hans"},
+        {NULL, "zh-Hant-CN", "zh-Hant"}, {NULL, "zh-TW", "zh-Hant"},
+        {NULL, "zh-HK", "zh-Hant"}, {NULL, "zh-MO", "zh-Hant"},
+        {NULL, "zh-CN-u-nu-hant", "zh-Hans"}, {NULL, "zh-TW-u-ca-gregory", "zh-Hant"},
+        {NULL, "en-GB-u-ca-gregory", "en-GB"}, {NULL, "fr-FR-u-ca-gregory", "fr"},
+        {NULL, "es-ES-u-nu-latn", "es"}, {NULL, "zh-CN-x-tw", "zh-Hans"},
+        {NULL, "zh-CN-x-hant", "zh-Hans"}, {"ja", "zh-Hans-TW", "ja"}};
     int bad = 0;
+    char *settings_code = guest_alloc(8);
     printf("oe: configured language (TOTK_LANG=%s) is %s\n", keep_lang ? keep_lang : "", lang());
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
-        set_env("TOTK_LANG", cases[i].lang);
-        set_env("TOTK_LOCALE", cases[i].locale);
+        // Clear the file-backed value too, so a player's lang in totk.ini cannot mask the locale under test.
+        set_live("TOTK_LANG", cases[i].lang);
+        set_live("TOTK_LOCALE", cases[i].locale);
         const char *got = lang();
         if (strcmp(got, cases[i].want)) {
             bad++;
             printf("  FAIL: language for TOTK_LANG=%s TOTK_LOCALE=%s is %s, not %s\n", cases[i].lang ? cases[i].lang : "",
                    cases[i].locale ? cases[i].locale : "", got, cases[i].want);
         }
+        memset(settings_code, 0xff, 8);
+        CHECK(CALL("settings.GetLanguageCode", U(settings_code)) == 0 &&
+                  !strncmp(settings_code, cases[i].want, 8),
+              "settings language for TOTK_LANG=%s TOTK_LOCALE=%s disagrees with %s",
+              cases[i].lang ? cases[i].lang : "", cases[i].locale ? cases[i].locale : "", cases[i].want);
     }
-    set_env("TOTK_LANG", NULL);
-    set_env("TOTK_LOCALE", NULL);
+    set_live("TOTK_LANG", NULL);
+    set_live("TOTK_LOCALE", NULL);
     char sys[16];
     snprintf(sys, sizeof sys, "%s", lang());
-    set_env("TOTK_LOCALE", "en-US");
+    set_live("TOTK_LOCALE", "en-US");
     char def[16];
     snprintf(def, sizeof def, "%s", lang());
-    set_env("TOTK_LANG", keep_lang);
-    set_env("TOTK_LOCALE", keep_locale);
+    set_live("TOTK_LANG", keep_lang);
+    set_live("TOTK_LOCALE", keep_locale);
     free(keep_lang);
     free(keep_locale);
     checks++;
