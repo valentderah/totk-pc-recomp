@@ -85,6 +85,17 @@ int main(void) {
         version++;
         expect(7, "ignored tail beyond parser prefix does not reconfigure");
     }
+    if (INPUT_BINDING_TEXT_MAX > 256) {
+        memset(values, 0, sizeof values);
+        strcpy(values[0], "key:");
+        memset(values[0] + 4, ' ', 300);
+        strcpy(values[0] + 304, "t");
+        version++;
+        expect(8, "apply a binding key beyond the old parser prefix");
+        values[0][304] = 'y';
+        version++;
+        expect(9, "refresh a key change beyond the old parser prefix");
+    }
     puts("Binding refresh checks passed");
     return 0;
 }

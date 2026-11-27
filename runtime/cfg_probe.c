@@ -522,6 +522,43 @@ int probe_cfg(void) {
     input_map_set_key(&mp, B_SL_UP, 0, KEY_NONE);
     input_map_line(&mp, B_SL_UP, line, sizeof line);
     CHECK(!strcmp(line, "none"), "edit: a stick direction without keys is none");
+    // Compact user lines must survive the menu's spaced formatting and an unrelated action edit.
+    static const char crowded[] =
+        "key:a,key:b,key:c,key:d,key:e,key:f,key:g,key:h,key:i,key:j,key:k,key:l,key:m,"
+        "key:n,key:o,key:p,key:q,key:r,key:s,key:t,key:u,key:v,key:w,key:x,key:y,key:z,"
+        "key:space,key:tab,key:lshift,key:lctrl,key:up,key:down,key:left,key:right,key:enter,pad:default";
+    char full_line[INPUT_BINDING_TEXT_MAX];
+    uint8_t before_keys[INPUT_BINDING_MAX], after_keys[INPUT_BINDING_MAX];
+    uint8_t before_pads[PAD_LAYOUT_COUNT][INPUT_PAD_BINDING_MAX];
+    int before_npads[PAD_LAYOUT_COUNT];
+    input_map_reset();
+    CHECK(strlen(crowded) == 251 && input_map_bind("A", crowded), "edit: compact 251-byte line is valid");
+    mp = input_map;
+    CHECK(input_map_keys_of(&mp, B_A, before_keys, INPUT_BINDING_MAX) == 35, "edit: compact line keeps 35 keys");
+    for (int l = 0; l < PAD_LAYOUT_COUNT; l++)
+        before_npads[l] = input_map_pads_of(&mp, B_A, l, before_pads[l], INPUT_PAD_BINDING_MAX);
+    input_map_set_key(&mp, B_B, 0, KEY_F2);
+    input_map_line(&mp, B_A, full_line, sizeof full_line);
+    CHECK(strlen(full_line) == 286 && strstr(full_line, "key:right, key:enter, pad:default"),
+          "edit: unrelated edit formats the complete 286-byte line");
+    input_map_reset();
+    CHECK(input_map_bind("A", full_line), "edit: full formatted line reparses");
+    int after_nkeys = input_map_keys_of(&input_map, B_A, after_keys, INPUT_BINDING_MAX);
+    CHECK(after_nkeys == 35 && !memcmp(before_keys, after_keys, 35), "edit: roundtrip preserves every key");
+    for (int l = 0; l < PAD_LAYOUT_COUNT; l++) {
+        uint8_t after_pads[INPUT_PAD_BINDING_MAX];
+        int after_npads = input_map_pads_of(&input_map, B_A, l, after_pads, INPUT_PAD_BINDING_MAX);
+        CHECK(after_npads == before_npads[l] && !memcmp(before_pads[l], after_pads, (size_t)after_npads),
+              "edit: roundtrip preserves each gamepad layout");
+    }
+    struct { unsigned char before; char text[8]; unsigned char after; } small = {0xa5, {'Q'}, 0x5a};
+    input_map_line(&input_map, B_A, NULL, 0);
+    input_map_line(&input_map, B_A, small.text, 0);
+    CHECK(small.text[0] == 'Q' && small.before == 0xa5 && small.after == 0x5a, "edit: zero-size output is untouched");
+    input_map_line(&input_map, B_A, small.text, sizeof small.text);
+    CHECK(small.before == 0xa5 && small.after == 0x5a && small.text[sizeof small.text - 1] == 0 &&
+              !strncmp(small.text, full_line, sizeof small.text - 1), "edit: small output is a terminated prefix");
+    input_map_reset();
     // defaults live in the CfgMeta table: cfg_value and the typed accessors fall back to it
     cfg_load("cfg-probe-missing.ini");
     plat_setenv("TOTK_FPS60", NULL);

@@ -52,7 +52,8 @@ enum {
 // north X. Xbox: south A, east B, west X, north Y, as an Xbox pad labels them (cross A, circle B on a PlayStation pad).
 enum { PAD_LAYOUT_NINTENDO, PAD_LAYOUT_XBOX, PAD_LAYOUT_COUNT };
 
-enum { INPUT_BINDING_MAX = 96, INPUT_PAD_BINDING_MAX = 48, INPUT_BINDING_TEXT_MAX = 256 };
+// A full action's 96 key and 48 pad entries serialize to less than 2401 bytes with the current names.
+enum { INPUT_BINDING_MAX = 96, INPUT_PAD_BINDING_MAX = 48, INPUT_BINDING_TEXT_MAX = 4096 };
 
 typedef struct { uint8_t key; uint8_t action; } Binding;
 typedef struct { uint8_t pad; uint8_t action; } PadBinding;

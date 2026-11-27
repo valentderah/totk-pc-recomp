@@ -600,23 +600,30 @@ static unsigned binds_seen = ~0u;
 static int binds_ready;
 static char binds_applied[ACTION_COUNT][INPUT_BINDING_TEXT_MAX];
 
-static void binds_refresh(void) {
-    unsigned v = cfg_version();
-    if (binds_ready && v == binds_seen) return;
-    binds_seen = v;
-    char now[ACTION_COUNT][INPUT_BINDING_TEXT_MAX] = {{0}};
+// Keep the text buffer off the unchanged configuration's polling stack.
+static __attribute__((noinline)) void binds_refresh_changed(void) {
+    char now[INPUT_BINDING_TEXT_MAX];
     int changed = !binds_ready;
     for (int a = 0; a < ACTION_COUNT; a++) {
         char var[32];
         snprintf(var, sizeof var, "TOTK_BIND_%s", input_action_name(a));
         const char *s = cfg_get(var);
-        snprintf(now[a], sizeof now[a], "%s", s ? s : "");
-        changed |= strcmp(now[a], binds_applied[a]) != 0;
+        snprintf(now, sizeof now, "%s", s ? s : "");
+        if (strcmp(now, binds_applied[a])) {
+            memcpy(binds_applied[a], now, strlen(now) + 1);
+            changed = 1;
+        }
     }
     if (!changed) return;
-    memcpy(binds_applied, now, sizeof now);
     binds_ready = 1;
     input_map_configure();
+}
+
+static void binds_refresh(void) {
+    unsigned v = cfg_version();
+    if (binds_ready && v == binds_seen) return;
+    binds_seen = v;
+    binds_refresh_changed();
 }
 
 // TOTK_TEST_PAD=<lx>,<ly>,<rx>,<ry> (test runs): an SDL virtual gamepad whose sticks rest at these raw SDL axis values

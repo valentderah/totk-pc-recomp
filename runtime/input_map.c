@@ -273,6 +273,7 @@ static int same_set(const uint8_t *a, int na, const uint8_t *b, int nb) {
 }
 
 void input_map_line(const InputMap *m, int action, char *out, size_t n) {
+    if (!n) return;
     uint8_t k[INPUT_BINDING_MAX], dk[INPUT_BINDING_MAX];
     int nk = input_map_keys_of(m, action, k, INPUT_BINDING_MAX);
     int key_def = same_set(k, nk, dk, input_map_keys_of(&defaults, action, dk, INPUT_BINDING_MAX));
@@ -285,7 +286,11 @@ void input_map_line(const InputMap *m, int action, char *out, size_t n) {
     out[0] = 0;
     if (key_def && pad_def) return;
     size_t len = 0;
-#define PUT(...) (len += (size_t)snprintf(out + len, len < n ? n - len : 0, __VA_ARGS__))
+#define PUT(...) do { \
+    size_t left = n - len; \
+    int wrote = snprintf(out + len, left, __VA_ARGS__); \
+    if (wrote > 0) len += (size_t)wrote < left ? (size_t)wrote : left - 1; \
+} while (0)
     if (key_def) PUT("key:default");
     else
         for (int i = 0; i < nk; i++) PUT("%skey:%s", len ? ", " : "", key_names[k[i]]);
