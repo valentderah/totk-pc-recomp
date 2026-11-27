@@ -58,6 +58,7 @@ TESTS = {
     'perf_summary_test':        ('.venv', None, [], ''),
     'pack_shader_cache_test':   ('.venv', None, [], ''),
     'spin_waits_test':          ('.venv', None, [], ''),
+    'prof_report_test':         ('.venv', None, [], ''),
     'worktree_test':            ('.venv', None, [], ''),
     'run_game_test':            ('.venv', None, [], ''),
     'installer_test':           ('.venv-py314', None, [], ''),
@@ -78,8 +79,10 @@ TESTS = {
     'ipc_probe_check':          ('.venv', 'cc', ['--cc', '<cc>'], 'compiles the IPC probe helpers with forced kernel failures'),
     'sync_ahead_check':         ('.venv', 'cc', ['--cc', '<cc>'], 'compiles the production sync-ahead wait selection'),
     'loadwin_pace':             ('.venv', 'cc', ['--cc', '<cc>'], 'compiles the loading window into a harness'),
+    'pgo_test':                 ('.venv', None, [], ''),
     'patches_v110_check':       ('.venv', 'cc', [], 'compiles synthetic patch contracts for comparison with Unicorn'),
     'patches_v110_highfps_check': ('.venv', 'cc', [], 'compiles synthetic high-fps contracts for comparison with Unicorn'),
+    'patches_v110_lightning_check': ('.venv', 'cc', [], 'compiles synthetic lightning contracts for comparison with Unicorn'),
     'diff/atomic':              ('.venv', 'cc', [], 'compiles generated atomic checks for comparison with Unicorn'),
     'diff/simd':                ('.venv', 'cc', [], 'compiles generated SIMD checks for comparison with Unicorn'),
     # ---- read the game or a build ----

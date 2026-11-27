@@ -288,11 +288,11 @@ static double scene_scale(void) {
 uint64_t res_heap_extra_bytes(void) { return ((res_heap_extra_kib() << 10) + 0x1fffff) & ~0x1fffffull; }
 
 // TOTK_GRASS_RANGE (percent, 50 to 400; 100 = the game's): how far around the camera grass blades grow. The near grass
-// map (the grass patch set, recomp/patches-v121.txt and patches-v143.txt) covers 62.5 m and draws into 256x256 and
-// 128x128 textures; other values scale the extent, its step and both textures together, so the grass keeps its detail
-// per metre. The larger textures come from the grass heap "草" of the HeapDef, which has no room for them (at 200 %
-// without growth the game stops at start on a failed allocation), so it grows by 9318 KiB, its size in 1.4.3, times
-// the textures' growth in area (k^2 - 1).
+// map (the grass patch set, recomp/patches-v110.txt, patches-v121.txt and patches-v143.txt) covers 62.5 m and draws
+// into 256x256 and 128x128 textures; other values scale the extent, its step and both textures together, so the grass
+// keeps its detail per metre. The larger textures come from the grass heap "草" of the HeapDef, which has no room for
+// them (at 200 % without growth the game stops at start on a failed allocation), so it grows by 9318 KiB, its size in
+// 1.4.3, times the textures' growth in area (k^2 - 1).
 #define GRASS_HEAP_KIB 9318
 static int grass_pct(void) {
     int pct = cfg_int("TOTK_GRASS_RANGE");
@@ -573,7 +573,8 @@ static void res_shadow_range(void) {
 }
 
 // The grass map's values on page +128..+144 (the grass patch set): extent, step, the two texture sizes, and the
-// half extent main+0x206340c picks instead of the extent. Texture sizes stay multiples of 32.
+// half extent main+0x206340c picks instead of the extent. On 1.1.0, +148 holds the reciprocal distance scale for
+// blade and cross-grass selection. Texture sizes stay multiples of 32.
 static void res_grass_range(void) {
     int pct = grass_pct(), set = rt_patch_set("grass");
     if (pct == 100) return;
@@ -587,6 +588,10 @@ static void res_grass_range(void) {
     memcpy(page + 128, f, sizeof f);
     memcpy(page + 136, t, sizeof t);
     memcpy(page + 144, &half, sizeof half);
+    if (RT_V110) {
+        float inverse = 100.0f / (float)pct;
+        memcpy(page + 148, &inverse, sizeof inverse);
+    }
     rt_patch_switch(set, 1);
     rt_log("resolution: grass map %g m, textures %ux%u and %ux%u (TOTK_GRASS_RANGE=%d)", f[0], t[0], t[0], t[1], t[1],
            pct);
