@@ -50,7 +50,8 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 ## Languages
 
 The game keeps the text and voices of every language it shipped with. The port's own setup and in-game menu (F1) come
-in these; both follow the Windows display language, and the menu has its own choice on its Menu tab. A Traditional
+in these; both follow the Windows display language, and the menu has its own choice on its Menu tab. Canadian
+French Windows gets the Canadian French setup and menu. A Traditional
 Chinese Windows gets the Simplified Chinese setup and menu.
 
 | Language | Setup | In-game menu |
