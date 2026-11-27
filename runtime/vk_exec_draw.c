@@ -4045,7 +4045,10 @@ static int mo_prev_block(int index, const p_bind_buf *u, VkDescriptorBufferInfo 
 // its parts), and the lookup with its comparison was most of the checks' time.
 static int mo_prev_cached(int index, const p_bind_buf *u, VkDescriptorBufferInfo *out, int *changed) {
     static struct { uint64_t gen, addr, size; int index, r, changed; VkDescriptorBufferInfo out; } bc[4096];
-    uint32_t i = (uint32_t)((u->addr ^ (uint64_t)index << 56 ^ u->size << 40) * 0x9E3779B97F4A7C15ull >> 52);
+    static int addr_slot = -1;
+    if (addr_slot < 0) addr_slot = vk_mv_addr_slot();
+    uint32_t i = addr_slot ? vk_mv_slot(u->addr) & 4095
+                           : (uint32_t)((u->addr ^ (uint64_t)index << 56 ^ u->size << 40) * 0x9E3779B97F4A7C15ull >> 52);
     if (bc[i].gen == mo_gen && bc[i].addr == u->addr && bc[i].size == u->size && bc[i].index == index) {
         *out = bc[i].out, *changed = bc[i].changed;
         return bc[i].r;
@@ -4145,18 +4148,25 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
         MO.nodata++, MO.why[0]++;
         return;
     }
-    static struct { uint64_t frame, key; int moving; VkDescriptorBufferInfo b[17]; uint32_t have; } memo[8192];
+    // 16 bytes an entry, read for every candidate; the blocks of a moving one are kept apart (memo_b)
+    static struct { uint64_t key; uint32_t frame, moving; } memo[8192];
+    static struct { VkDescriptorBufferInfo b[17]; uint32_t have; } memo_b[8192];
     uint64_t key = banks;
     for (int b = 3; b <= 16; b++)
         if (banks >> b & 1 && b != 4) key = (key ^ ex->ubo[NVN_STAGE_VS][b - 3].addr) * 0x100000001b3ull;
-    uint32_t mi = (uint32_t)(key * 0xff51afd7ed558ccdull >> 51);
+    // the slot from the address of the object's own block (place, else bones, else c6): vk_mv_slot
+    static int addr_slot = -1;
+    if (addr_slot < 0) addr_slot = vk_mv_addr_slot();
+    const p_bind_buf *vu = ex->ubo[NVN_STAGE_VS];
+    uint64_t own = !addr_slot ? 0 : banks >> 7 & 1 ? vu[4].addr : banks >> 5 & 1 ? vu[2].addr : banks >> 6 & 1 ? vu[3].addr : 0;
+    uint32_t mi = own ? vk_mv_slot(own) & 8191 : (uint32_t)(key * 0xff51afd7ed558ccdull >> 51);
     uint32_t have = 0;
-    if (memo[mi].frame == frame && memo[mi].key == key) {
+    if (memo[mi].frame == (uint32_t)frame && memo[mi].key == key) {
         if (!memo[mi].moving) {
             if (t0) MO.ns_still += kern_now_ns() - tp;
             return (void)MO.still++;
         }
-        memcpy(prevb, memo[mi].b, sizeof prevb), have = memo[mi].have;
+        memcpy(prevb, memo_b[mi].b, sizeof prevb), have = memo_b[mi].have;
     } else {
         MO.misses++;
         int moving = 0;
@@ -4167,8 +4177,8 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
             if (u->addr && u->size && mo_prev_cached(b - 3, u, &prevb[b], &changed))
                 have |= 1u << b, moving |= changed << b;   // the banks whose block changed
         }
-        memo[mi].frame = frame, memo[mi].key = key, memo[mi].moving = moving;
-        memcpy(memo[mi].b, prevb, sizeof prevb), memo[mi].have = have;
+        memo[mi].frame = (uint32_t)frame, memo[mi].key = key, memo[mi].moving = (uint32_t)moving;
+        if (moving) memcpy(memo_b[mi].b, prevb, sizeof prevb), memo_b[mi].have = have;
         if (!moving) {
             if (t0) MO.ns_still += kern_now_ns() - tp;
             return (void)MO.still++;

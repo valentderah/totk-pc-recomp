@@ -337,6 +337,17 @@ int vk_mvprev_kept(int index);  // a vertex-stage binding index whose blocks the
 void vk_mvprev_want(uint32_t index_mask);   // also keep these binding indices' last-frame copies (bit n: index n)   // DLAA on and TOTK_DLAA_OBJMV not 0, as of the last present
 int vk_mvprev_find(int index, uint64_t addr, uint64_t size, uint64_t *prev, int *how);
 void vk_mvprev_frame(void);   // each present, beside vk_dlaa_frame
+// The table slot of a uniform block address (the caller masks it) for the tables the per-object motion reads for
+// every scene draw: blocks 256 bytes apart get slots next to each other, and each MiB of addresses starts at a place
+// of its own. The game writes the blocks of the objects it draws in a row next to each other (one frame at the Great
+// Sky Island: 2202 blocks, 57 % within 1 KiB of the one before in their bank), so the tables are read in address order.
+// A hash of the whole address sent each read to a cache line of its own: on a Steam Deck (4 MiB of L3 cache) the code
+// that reads them took 1.6 ms a frame, and 1.0 ms with the slots in address order. TOTK_MVOBJ_ADDR_SLOT=0
+// (vk_mv_addr_slot, read once) keeps that hash.
+static inline uint32_t vk_mv_slot(uint64_t addr) {
+    return (uint32_t)(addr >> 8) + (uint32_t)((addr >> 20) * 0x9E3779B97F4A7C15ull >> 40);
+}
+int vk_mv_addr_slot(void);
 void vk_mem_mirror_begin(void);
 int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence);
 void vk_mem_mirror_seal(void);   // before vk_mem_shadow_sync: the copies the next vk_mem_mirror_prologue takes
