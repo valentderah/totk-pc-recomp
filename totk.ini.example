@@ -484,6 +484,13 @@
 # windows, 0 pauses it, auto pauses it only when Steam started the game, so the Steam overlay and Steam's menus
 # (the Quick Access menu in SteamOS's Game Mode) get the gamepad while they are open. Read at start.
 # pad_background = auto
+# Who updates the gamepad, 0 or 1. 1: one thread updates the gamepad one time each 4 ms and one more time just
+# before the game reads it, and the game reads the result. If the game reads at an unexpected time, the result is
+# 4 ms old at most, plus the time of an update that is in progress. 0: the thread of the game updates the gamepad
+# itself each time it reads it. On a Steam Deck an update took 2 to 7 ms several times a second in one measurement,
+# and with 0 the frame waits for it. Default: 1 in the Linux build, 0 in the Windows build. The value 1 was not
+# tested on Windows. Read at start.
+# pad_thread = 1
 # The buttons the game's prompts show: nintendo (the game's own), xbox (LB RB LT RT, Menu, View and a d-pad cross,
 # and A B X Y as labelled on the button pad_layout presses: with nintendo, A shows as B and X as Y), playstation
 # (○ × △ □, L1 R1 L2 R2, Options and Share, on the button pad_layout presses: with nintendo, A shows as ○), or pc

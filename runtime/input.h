@@ -6,6 +6,8 @@
 // Down=15) and the stick directions (StickLLeft..Down 16-19, StickRLeft..Down 20-23, derived from the sticks).
 // Sticks are -32767..32767, up is +y. TOTK_INPUT=none reports no input. Callable from any thread.
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
+void input_poll_game(void);   // before the game's own input_poll: the gamepad thread aims an update at the next one
+int input_pad_threaded(void);   // pad_thread: the gamepad thread updates SDL's gamepads, and the axis events are off
 // 1 when keyboard and mouse are the device the player used last, 0 when the gamepad is: what is shown for pointing
 // (menu_cursor.c shows the pointer in the game's menus only for the keyboard and mouse)
 int input_kbm_last(void);
@@ -146,13 +148,13 @@ uint16_t rumble_motor(float a, float curve, float strength);
 // TOTK_RUMBLE_TRIGGERS=1: input_rumble also drives the impulse triggers (Xbox) with the high motor's value.
 int input_rumble_triggers_enabled(void);
 
-// Motion (TOTK_MOTION=0 turns it off, live). input_motion_start starts the sensor thread once: every 4 ms it reads the
-// gamepad's gyro and accelerometer (when it has them) and feeds motion_global(). Callable from any thread.
+// Motion (TOTK_MOTION=0 turns it off, live). After input_motion_start the gamepad thread (input.c pad_main) reads the
+// gamepad's gyro and accelerometer (when it has them) every 4 ms and feeds motion_global(). Callable from any thread.
 void input_motion_start(void);
 // TOTK_MOTION is not "0" (a live setting: read again when cfg_version changes). Off: the sensor reads at rest.
 int input_motion_enabled(void);
-// The Controls tab's Calibrate gyro row: start a bias measurement on the open gamepad (starts the sensor thread when
-// the game has not yet). Callable from any thread.
+// The Controls tab's Calibrate gyro row: start a bias measurement on the open gamepad (the sensors are read from then on
+// when the game has not asked for them yet). Callable from any thread.
 void input_motion_calibrate(void);
 // What the Calibrate gyro row shows (MOTION_CALIB_*): NONE no bias for this controller, COLLECTING, DONE a bias in
 // effect (measured in this run or loaded from totk.ini), FAILED the last attempt got no samples and no bias is in

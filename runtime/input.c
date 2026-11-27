@@ -3,8 +3,14 @@
 // bindings are the tables in input_map.c (totk.ini overrides them). The keyboard and the mouse come from the window
 // system's back end (input_wsys.h: input_win.c with Win32, input_sdl.c with SDL), which also owns the cursor capture.
 // Keys and their map: docs/controls.md.
-// The gamepad also rumbles (input_rumble) and, when it has a gyro and an accelerometer, feeds the six-axis sensor from a
-// thread of its own (input_motion_start). Every SDL call on the gamepad is made under `lock`, except the rumble writes (rumble_main).
+// The gamepad also rumbles (input_rumble) and, when it has a gyro and an accelerometer, feeds the six-axis sensor.
+// One thread (pad_main) updates and reads SDL's gamepads after the start, under `sdl_lock`: it updates the gamepads,
+// opens and closes them, and publishes their buttons and axes as a snapshot (`snap`, under `lock`). The game's poll
+// and the menu read the snapshot only, so no guest thread waits for an SDL update (see pad_main). The rumble writes
+// have their own thread (rumble_main), and the gyro calibration (input_motion_calibrate) and the text entry
+// (swkbd_sdl.c) make SDL calls on their callers' threads. With pad_thread = 0 (pad_threaded) the thread that polls
+// updates the gamepads and takes the snapshot itself (pad_refresh), SDL's event pump and its events stay as SDL has
+// them, and pad_main only reads the motion sensors.
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -26,6 +32,9 @@
 enum { STICK_MAX = 32767, STICK_DIR = 16384, TRIGGER_ON = 16384, RESCAN_MS = 1000 };
 
 static PlatMutex lock = PLAT_MUTEX_INIT;
+// The SDL gamepad calls after start() and what they work on (pad, motion_extra, the scan and sensor state). Taken
+// before `lock` when both are needed, never inside it; start() itself runs under `lock` before pad_main exists.
+static PlatMutex sdl_lock = PLAT_MUTEX_INIT;
 static int state;                    // 0 not started, 1 running, -1 disabled or SDL failed
 static volatile int32_t g_block, g_menu;   // text entry / host menu: 0 off, 1 open, 2 waiting for release
 // The device the player used last (input_kbm_last): 1 keyboard and mouse, 0 the gamepad. A pad counts once a button is
@@ -42,8 +51,9 @@ static void rumble_cancel(void);
 static int pad_rumble;               // the open gamepad has rumble motors
 static volatile int32_t pad_labels[4];  // ... and the labels of its south, east, west, north buttons (PAD_LABEL_*), any thread
 static int pad_east_a;               // ... and labels its east face button A (Nintendo layout under TOTK_PAD_LAYOUT=auto)
+static unsigned pad_gen;             // counts the gamepads opened (scan_pads), so the poll sees another one
 static int pad_layout = -1;          // PAD_LAYOUT_* in effect for the open gamepad, -1 to pick again; live (cfg_version)
-static unsigned pad_layout_seen;
+static unsigned pad_layout_seen, pad_layout_gen;
 static volatile int32_t pad_layout_shown = -1;   // pad_layout for the menu (any thread), -1 without a gamepad
 // Steam Input: a game Steam starts gets SDL_GAMECONTROLLER_IGNORE_DEVICES, the vendor/product pairs of the controllers
 // Steam reads itself, and sees Steam's virtual gamepad in their place. That pad has no motion sensors, so a Steam
@@ -56,10 +66,52 @@ static int steam_hidden_n;
 static SDL_Gamepad *motion_extra;    // the hidden controller opened for its sensors only, NULL none
 static int pad_hidden;               // the open gamepad is a controller Steam hid (scan_pads' fallback)
 static uint64_t next_motion_scan;
-static SDL_JoystickID sensor_pad;    // the gamepad whose sensors the motion thread set up, 0 none
+static SDL_JoystickID sensor_pad;    // the gamepad whose sensors pad_main set up, 0 none
 static int sensor_ok;                // ... and it has both sensors, enabled
-static int motion_thread;            // 0 not started, 1 running, -1 off (TOTK_MOTION=0, no SDL)
+static PlatMutex calib_lock = PLAT_MUTEX_INIT;   // guards calib_pad_name; held for the copy only
 static char calib_pad_name[128];     // the controller the bias belongs to; empty when there is none
+
+// The open gamepad as pad_main read it last (pad_sample), under `lock`: what the game's poll and the menu get.
+// pd[PAD_*] != 0 held, pd[PAD_GUIDE] the Home / Guide button (no Switch button); trig the trigger axes 0..32767; ax the
+// raw SDL stick axes (left x, left y, right x, right y; down is +y); gen and east_a as pad_gen and pad_east_a then.
+#define PAD_GUIDE PAD_COUNT
+typedef struct { int on, east_a; unsigned gen; uint8_t pd[PAD_COUNT + 1]; int16_t trig[2], ax[4]; } PadSnap;
+static PadSnap snap;
+static void pad_thread_start(void);
+// TOTK_PAD_THREAD (read once): 1 the gamepad thread updates SDL's gamepads and publishes the snapshot (pad_main), 0
+// the thread that polls does (pad_refresh). On by default in the Linux build, where it ran (a Steam Deck); off on
+// Windows, where a poll reads the gamepad at once as before.
+static int pad_threaded(void) {
+    static volatile int32_t on = -1;   // read by the first polls of several threads
+    int32_t v = __atomic_load_n(&on, __ATOMIC_RELAXED);
+    if (v < 0) {
+#ifdef _WIN32
+        v = rt_knob("PAD_THREAD", "0") != 0;
+#else
+        v = rt_knob("PAD_THREAD", "1") != 0;
+#endif
+        __atomic_store_n(&on, v, __ATOMIC_RELAXED);
+    }
+    return v;
+}
+
+int input_pad_threaded(void) { return pad_threaded(); }
+static volatile int32_t motion_on;   // the game or the menu asked for motion: pad_main reads the sensors
+
+// When the game polled, so that pad_main can read the gamepad just before the next poll. Any thread; a lost update
+// costs one aimed update. poll_at: the newest poll (plat_now_ns); poll_gap: the time between the two polls before it.
+// TotK polls twice a frame in the world, at uneven distances (once in its menus), so the gap before the next poll is
+// about the one before the last. Polls closer than POLL_SAME_NS count as one.
+static volatile uint64_t poll_at, poll_gap, poll_gap_last;
+#define POLL_SAME_NS 1000000ull
+
+static void poll_note(void) {
+    uint64_t now = plat_now_ns(), last = __atomic_load_n(&poll_at, __ATOMIC_RELAXED);
+    if (now - last < POLL_SAME_NS) return;
+    __atomic_store_n(&poll_gap, __atomic_load_n(&poll_gap_last, __ATOMIC_RELAXED), __ATOMIC_RELAXED);
+    __atomic_store_n(&poll_gap_last, now - last, __ATOMIC_RELAXED);
+    __atomic_store_n(&poll_at, now, __ATOMIC_RELAXED);
+}
 
 // SDL buttons of the gamepad inputs (input_map.h PAD_*), by position; PAD_ZL and PAD_ZR are the triggers (axes).
 static const SDL_GamepadButton pad_sdl[PAD_COUNT] = {
@@ -451,9 +503,10 @@ static float stick_dead_get(int s) {
     return stick_dead[s];
 }
 
-// One gamepad stick through the dead zone; SDL's Y grows downwards, the Switch's upwards.
-static void stick(SDL_GamepadAxis ax, SDL_GamepadAxis ay, float dead, int32_t out[2]) {
-    input_pad_stick(SDL_GetGamepadAxis(pad, ax), -(int32_t)SDL_GetGamepadAxis(pad, ay), dead, out);
+// One gamepad stick of the snapshot (ax: its x and y) through the dead zone; SDL's Y grows downwards, the Switch's
+// upwards.
+static void stick(const int16_t ax[2], float dead, int32_t out[2]) {
+    input_pad_stick(ax[0], -(int32_t)ax[1], dead, out);
 }
 
 // Before SDL_Init: keep the controllers Steam hid (steam_hidden) and let SDL open them. The list is
@@ -517,11 +570,19 @@ static int unhidden_pad_present(void) {
     return found;
 }
 
+static void copy_name(char *dst, size_t cap, const char *src);
+
+static void calib_name_set(const char *name) {
+    plat_mutex_lock(&calib_lock);
+    copy_name(calib_pad_name, sizeof calib_pad_name, name);
+    plat_mutex_unlock(&calib_lock);
+}
+
 // Open the first gamepad when none is open or the open one went away; logs once per change. A controller Steam hid
 // (steam_hidden) is taken only when no other gamepad is there, e.g. while Steam's virtual pad is not up yet, and gives
-// way to the virtual pad once it is (pad_physical looks again every RESCAN_MS while pad_hidden): otherwise Steam's
+// way to the virtual pad once it is (pad_main looks again every RESCAN_MS while pad_hidden): otherwise Steam's
 // remapping would be lost for the session. The hidden controller then stays open for its sensors (motion_extra), so
-// its bias and orientation go on.
+// its bias and orientation go on. Under sdl_lock (pad_main, pad_refresh), or in start().
 static void scan_pads(void) {
     if (pad && SDL_GamepadConnected(pad)) {
         if (!pad_hidden || !unhidden_pad_present()) return;
@@ -539,7 +600,7 @@ static void scan_pads(void) {
         SDL_CloseGamepad(pad); pad = NULL; sensor_pad = 0; sensor_ok = 0;
         // Its bias and an attempt collecting from it go with it; the next pad gets its own in pad_bias_select.
         motion_bias_reset(motion_global());
-        calib_pad_name[0] = 0;
+        calib_name_set("");
         plat_xchg32(&pad_layout_shown, -1);
         for (int i = 0; i < 4; i++) plat_xchg32(&pad_labels[i], PAD_LABEL_NONE);
         rt_log("input: gamepad disconnected");
@@ -571,7 +632,7 @@ static void scan_pads(void) {
                                             : lb == SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE ? PAD_LABEL_TRIANGLE
                                                                                       : PAD_LABEL_NONE);
     }
-    pad_layout = -1;
+    pad_gen++;   // the poll picks the layout again (pad_layout_get)
     int motion = SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL);
     uint16_t rv, rp;
     raw_ids(SDL_GetGamepadID(pad), &rv, &rp);
@@ -580,14 +641,33 @@ static void scan_pads(void) {
            motion ? "gyro and accelerometer" : "no motion sensors", pad_east_a ? "labelled A" : "not labelled A");
 }
 
+// Under sdl_lock (pad_main, pad_refresh), or in start(): the open gamepad's inputs by position as SDL has them now, for the
+// snapshot; on = 0 without a connected gamepad.
+static void pad_sample(PadSnap *s) {
+    *s = (PadSnap){.gen = pad_gen, .east_a = pad_east_a};
+    if (!pad || !SDL_GamepadConnected(pad)) return;
+    s->on = 1;
+    s->trig[0] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+    s->trig[1] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
+    for (int p = PAD_SOUTH; p < PAD_ZL; p++) s->pd[p] = SDL_GetGamepadButton(pad, pad_sdl[p]);
+    s->pd[PAD_ZL] = s->trig[0] > TRIGGER_ON;
+    s->pd[PAD_ZR] = s->trig[1] > TRIGGER_ON;
+    for (int p = PAD_ZR + 1; p < PAD_COUNT; p++) s->pd[p] = SDL_GetGamepadButton(pad, pad_sdl[p]);   // false without paddles or touchpad
+    s->pd[PAD_GUIDE] = SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_GUIDE);
+    static const SDL_GamepadAxis axes[4] = {SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, SDL_GAMEPAD_AXIS_RIGHTX,
+                                            SDL_GAMEPAD_AXIS_RIGHTY};
+    for (int i = 0; i < 4; i++) s->ax[i] = SDL_GetGamepadAxis(pad, axes[i]);
+}
+
 // Under lock: the layout of the open gamepad, picked again when a setting or the gamepad changed; logs each change.
 static int pad_layout_get(void) {
     unsigned ver = cfg_version();
-    if (pad_layout >= 0 && ver == pad_layout_seen) return pad_layout;
+    if (pad_layout >= 0 && ver == pad_layout_seen && snap.gen == pad_layout_gen) return pad_layout;
+    int was = snap.gen == pad_layout_gen ? pad_layout : -1;   // another gamepad: the line shows again
     pad_layout_seen = ver;
-    int was = pad_layout;
+    pad_layout_gen = snap.gen;
     const char *set = cfg_value("TOTK_PAD_LAYOUT");
-    pad_layout = input_pad_layout_pick(set, pad_east_a);
+    pad_layout = input_pad_layout_pick(set, snap.east_a);
     if (pad_layout != was)
         rt_log("input: gamepad layout %s (pad_layout = %s)", pad_layout == PAD_LAYOUT_XBOX ? "xbox" : "nintendo", set);
     plat_xchg32(&pad_layout_shown, pad_layout);
@@ -688,12 +768,37 @@ static void start(void) {
     else
         rt_log("input: the gamepad pauses while the window has no focus (%s)",
                strcmp(bg, "0") ? "Steam started the game; pad_background = 1 keeps it" : "pad_background = 0");
+    // With the gamepad subsystem up, SDL's event pump (the window thread, gfx_window_sdl.c) would update the
+    // joysticks too, and wake a thousand times a second for it while a gamepad is open (SDL_events.c
+    // SDL_events_get_polling_interval). pad_main is the one that updates them: the pump leaves them alone and the
+    // window thread sleeps until an event comes.
+    if (pad_threaded()) SDL_SetHint(SDL_HINT_AUTO_UPDATE_JOYSTICKS, "0");
     if (!SDL_Init(SDL_INIT_GAMEPAD)) { state = -1; rt_log("input: SDL gamepad init failed (%s), keyboard only", SDL_GetError()); }
     else state = 1;
+    if (state == 1 && pad_threaded()) {
+        // No SDL event per changed axis or report: the state is read by polling (pad_sample; SDL keeps it with the
+        // events off, SDL_joystick.c SDL_SendJoystickAxis), and each event would wake the window thread, which
+        // drains the queue, some 250 times a second for a stick's noise. Connect and disconnect events stay, and
+        // the button events: the text entry reads SDL_EVENT_GAMEPAD_BUTTON_DOWN (swkbd_sdl.c), which SDL makes
+        // from the joystick's button and hat events (SDL_gamepad.c SDL_GamepadEventWatcher). A button that a
+        // mapping binds to an axis needs the joystick's axis event for that: the text entry turns it on while its
+        // window is open (swkbd_sdl.c open_box).
+        static const Uint32 quiet[] = {
+            SDL_EVENT_JOYSTICK_AXIS_MOTION, SDL_EVENT_JOYSTICK_BALL_MOTION, SDL_EVENT_JOYSTICK_BATTERY_UPDATED,
+            SDL_EVENT_JOYSTICK_UPDATE_COMPLETE, SDL_EVENT_GAMEPAD_AXIS_MOTION, SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN,
+            SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION, SDL_EVENT_GAMEPAD_TOUCHPAD_UP, SDL_EVENT_GAMEPAD_SENSOR_UPDATE,
+            SDL_EVENT_GAMEPAD_UPDATE_COMPLETE};
+        for (size_t i = 0; i < sizeof quiet / sizeof *quiet; i++) SDL_SetEventEnabled(quiet[i], false);
+    }
     if (state == 1) test_pad_attach();
     if (state == 1) {
+        // The first scan and snapshot are made here, so the first poll already has the gamepad; pad_main goes on
+        // (pad_thread = 0: pad_refresh does, and the thread starts with the motion sensors)
         scan_pads();
         if (!pad) rt_log("input: no gamepad (keyboard only until one is connected)");
+        SDL_UpdateGamepads();
+        pad_sample(&snap);
+        if (pad_threaded()) pad_thread_start();
     }
     if (state == -1) state = 2;   // keyboard only
 }
@@ -808,40 +913,56 @@ static void wheel_route(uint64_t *bp, int32_t sl[2], int32_t sr[2]) {
     else pick(&sl[0], &sl[1], 0, v);
 }
 
-// Under lock, state 1: the open gamepad's inputs by position (pd[PAD_*] != 0 held); 0 without a connected gamepad.
+// pad_thread = 0: the thread that reads the gamepad updates SDL's gamepads, opens one when needed and takes the
+// snapshot itself, before it takes `lock` for the read, as the poll did before the gamepad thread existed.
+static void pad_refresh(void) {
+    if (pad_threaded()) return;
+    plat_mutex_lock(&sdl_lock);
+    plat_mutex_lock(&lock);
+    if (!state) start();
+    int up = state == 1;
+    plat_mutex_unlock(&lock);
+    if (up) {
+        if ((!pad || !SDL_GamepadConnected(pad) || pad_hidden) && plat_now_ms() >= next_scan) {
+            next_scan = plat_now_ms() + RESCAN_MS;
+            scan_pads();
+        }
+        SDL_UpdateGamepads();
+        PadSnap s;
+        pad_sample(&s);
+        plat_mutex_lock(&lock);
+        snap = s;
+        plat_mutex_unlock(&lock);
+    }
+    plat_mutex_unlock(&sdl_lock);
+}
+
+// Under lock, state 1: the open gamepad's inputs by position (pd[PAD_*] != 0 held) as of the snapshot; 0 without a
+// connected gamepad.
 static int pad_physical(uint8_t pd[PAD_COUNT]) {
-    if ((!pad || !SDL_GamepadConnected(pad) || pad_hidden) && plat_now_ns() / 1000000u >= next_scan) { next_scan = plat_now_ns() / 1000000u + RESCAN_MS; scan_pads(); }
-    SDL_UpdateGamepads();
-    if (!pad || !SDL_GamepadConnected(pad)) return 0;
-    for (int p = PAD_SOUTH; p < PAD_ZL; p++) pd[p] = SDL_GetGamepadButton(pad, pad_sdl[p]);
-    pd[PAD_ZL] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > TRIGGER_ON;
-    pd[PAD_ZR] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > TRIGGER_ON;
-    for (int p = PAD_ZR + 1; p < PAD_COUNT; p++) pd[p] = SDL_GetGamepadButton(pad, pad_sdl[p]);   // false without paddles or touchpad
+    if (!snap.on) return 0;
+    memcpy(pd, snap.pd, PAD_COUNT);
     return 1;
 }
 
 // Under lock, state 1: the open gamepad's buttons (Switch bits after TOTK_PAD_LAYOUT and the TOTK_BIND_* lines) and
-// sticks; 0 without a connected gamepad.
+// sticks, from the snapshot; 0 without a connected gamepad.
 // Under lock: the last pad_read's inputs by position, [PAD_GUIDE] the Home / Guide button (no Switch button), and its
 // left and right trigger axes, 0..32767: what the gamepad combos and the free camera read
-#define PAD_GUIDE PAD_COUNT
 static uint8_t pad_seen[PAD_COUNT + 1];
 static int16_t trigger_seen[2];
 
 static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
-    uint8_t pd[PAD_COUNT] = {0};
-    if (!pad_physical(pd)) {
+    if (!snap.on) {
         memset(pad_seen, 0, sizeof pad_seen);
         memset(trigger_seen, 0, sizeof trigger_seen);
         return 0;
     }
-    memcpy(pad_seen, pd, sizeof pd);
-    pad_seen[PAD_GUIDE] = SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_GUIDE);
-    trigger_seen[0] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
-    trigger_seen[1] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
-    *b |= input_map_pad_buttons(pd, pad_layout_get());
-    stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, stick_dead_get(0), sl);
-    stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY, stick_dead_get(1), sr);
+    memcpy(pad_seen, snap.pd, sizeof pad_seen);
+    memcpy(trigger_seen, snap.trig, sizeof trigger_seen);
+    *b |= input_map_pad_buttons(snap.pd, pad_layout_get());
+    stick(&snap.ax[0], stick_dead_get(0), sl);
+    stick(&snap.ax[2], stick_dead_get(1), sr);
     return 1;
 }
 
@@ -969,11 +1090,9 @@ int input_pad_stick_percent(double pct[2]) {
     int ok = 0;
     pct[0] = pct[1] = 0;
     plat_mutex_lock(&lock);
-    if (state == 1 && pad && SDL_GamepadConnected(pad)) {   // the game's poll keeps the state fresh (SDL_UpdateGamepads)
-        pct[0] = input_stick_percent(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX),
-                                     SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY));
-        pct[1] = input_stick_percent(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX),
-                                     SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY));
+    if (state == 1 && snap.on) {   // pad_main keeps the snapshot fresh (pad_thread = 0: the last poll took it)
+        pct[0] = input_stick_percent(snap.ax[0], snap.ax[1]);
+        pct[1] = input_stick_percent(snap.ax[2], snap.ax[3]);
         ok = 1;
     }
     plat_mutex_unlock(&lock);
@@ -985,6 +1104,7 @@ static uint64_t g_buttons_last;   // the merged buttons of the last poll (input_
 static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     uint64_t b = 0;
     int32_t sl[2] = {0, 0}, sr[2] = {0, 0};
+    pad_refresh();
     plat_mutex_lock(&lock);
     if (!state) start();
     if (state > 0) {
@@ -1157,6 +1277,12 @@ static int blocked(volatile int32_t *flag, volatile uint64_t *closed, const char
     return 0;
 }
 
+// The game's own poll (ov_input.c) tells pad_main when it came (poll_note): the cheats and the probes poll too, at
+// other times, and are not counted. With pad_thread = 0 nothing reads the note, so none is made.
+void input_poll_game(void) {
+    if (pad_threaded()) poll_note();
+}
+
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     poll_merged(buttons, lx, ly, rx, ry);
     // While quick load drives the game's load menu the pointer leaves it alone and the game gets only its presses
@@ -1177,6 +1303,7 @@ void input_poll_ui(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int
 int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly) {
     uint64_t b = 0;
     int32_t sl[2] = {0, 0}, sr[2] = {0, 0};
+    pad_refresh();
     plat_mutex_lock(&lock);
     if (!state) start();
     if (state > 0) binds_refresh();
@@ -1218,6 +1345,7 @@ int input_capture(int reset, int *id) {
     int fg = ikb_foreground();
     for (int i = 1; i < KEY_COUNT; i++) k[i] = fg && ikb_down(i);
     int esc = fg && ikb_escape();
+    pad_refresh();
     plat_mutex_lock(&lock);
     if (!state) start();
     if (state == 1) pad_physical(p);
@@ -1246,14 +1374,14 @@ int input_rumble_triggers_enabled(void) {
 // while the worker is in a write are dropped except the newest (Savage Wind Recomp, commit a8ad674, does the same for
 // issue #730).
 //
-// The worker takes its own handle on the open gamepad under `lock` (SDL_OpenGamepad of an open pad's id returns the same
-// object with its reference count raised) and releases `lock` before the write, so a scan_pads close of `pad` meanwhile
-// only drops one reference and the object lives until the worker's SDL_CloseGamepad. SDL itself serialises the write
-// with its other joystick calls (SDL_RumbleJoystick runs under the joystick lock), so a poll or motion_main's
-// SDL_UpdateGamepads that lands inside a slow write still waits for it; the thread that sends rumble and the other
-// `lock` users that make no SDL gamepad call do not.
+// The worker takes its own handle on the open gamepad under `sdl_lock` (SDL_OpenGamepad of an open pad's id returns the
+// same object with its reference count raised) and releases it before the write, so a scan_pads close of `pad`
+// meanwhile only drops one reference and the object lives until the worker's SDL_CloseGamepad. SDL itself serialises
+// the write with its other joystick calls (SDL_RumbleJoystick runs under the joystick lock), so pad_main's
+// SDL_UpdateGamepads that lands inside a slow write still waits for it; the thread that sends rumble and the game's
+// poll, which reads the snapshot, do not.
 typedef struct { uint16_t low, high; uint32_t ms; int pending; } RumbleReq;
-static PlatMutex rq_lock = PLAT_MUTEX_INIT;   // guards rq, rumble_stop and rumble_thread; taken after `lock`, never before it
+static PlatMutex rq_lock = PLAT_MUTEX_INIT;   // guards rq, rumble_stop and rumble_thread; taken after `lock` or `sdl_lock`, never before them
 static PlatCond rq_cond = PLAT_COND_INIT;
 static RumbleReq rq;
 static int rumble_stop;
@@ -1262,9 +1390,9 @@ static PlatThread *rumble_thread;
 static void rumble_write(uint16_t low, uint16_t high, uint32_t ms) {
     SDL_Gamepad *g = NULL;
     int triggers = input_rumble_triggers_enabled();
-    plat_mutex_lock(&lock);
-    if (state == 1 && pad && pad_rumble) g = SDL_OpenGamepad(SDL_GetGamepadID(pad));
-    plat_mutex_unlock(&lock);
+    plat_mutex_lock(&sdl_lock);
+    if (pad && pad_rumble) g = SDL_OpenGamepad(SDL_GetGamepadID(pad));   // a pad is open only after start()
+    plat_mutex_unlock(&sdl_lock);
     if (!g) return;
     SDL_RumbleGamepad(g, low, high, ms);
     if (triggers) SDL_RumbleGamepadTriggers(g, high, high, ms);   // unsupported pads return false: ignored
@@ -1298,7 +1426,7 @@ static void rumble_exit(void) {
 }
 
 // Drops the request that has not been sent yet (the gamepad it was for went away). A request in flight holds its own
-// handle and ends by itself. Under lock.
+// handle and ends by itself. Under sdl_lock, or in start().
 static void rumble_cancel(void) {
     plat_mutex_lock(&rq_lock);
     rq.pending = 0;
@@ -1349,7 +1477,7 @@ static void copy_name(char *dst, size_t cap, const char *src) {
     dst[n] = 0;
 }
 
-// Under lock: the identity of src (motion_source) for the saved bias. Its name, plus a hash of SDL's serial when the pad
+// Under sdl_lock: the identity of src (motion_source) for the saved bias. Its name, plus a hash of SDL's serial when the pad
 // reports one (Switch and PlayStation pads report their Bluetooth address), so two controllers of one model keep their
 // own bias; the hash keeps the address out of totk.ini and the log, which players post with bug reports.
 static void pad_identity(SDL_Gamepad *src, char *dst, size_t cap) {
@@ -1370,7 +1498,7 @@ static void pad_identity(SDL_Gamepad *src, char *dst, size_t cap) {
     copy_name(dst, cap, id);
 }
 
-// Under lock, for each gamepad the sensor code sees (a first one, or one connected after another went away): the
+// Under sdl_lock, for each gamepad the sensor code sees (a first one, or one connected after another went away): the
 // previous controller's bias and any attempt still collecting from it are dropped, then the bias saved in totk.ini is
 // taken when gyro_bias_pad names this controller. It is taken with gyro_calibration off too: the switch only decides
 // whether motion_feed subtracts it, so turning the switch on mid-run applies the saved bias.
@@ -1378,16 +1506,16 @@ static void pad_bias_select(SDL_Gamepad *src) {
     char id[128];
     pad_identity(src, id, sizeof id);
     motion_bias_reset(motion_global());
-    calib_pad_name[0] = 0;
+    calib_name_set("");
     const char *saved = cfg_get("TOTK_GYRO_BIAS_PAD");
     if (saved && !strcmp(saved, id)) {
         motion_bias_load(motion_global());
-        copy_name(calib_pad_name, sizeof calib_pad_name, SDL_GetGamepadName(src));
-        rt_log("input: gyro bias loaded from totk.ini for %s", calib_pad_name);
+        calib_name_set(SDL_GetGamepadName(src));
+        rt_log("input: gyro bias loaded from totk.ini for %s", SDL_GetGamepadName(src));
     }
 }
 
-// Under lock: the gamepad the sensors are read from, NULL without one. The open pad when it has a gyro and an
+// Under sdl_lock: the gamepad the sensors are read from, NULL without one. The open pad when it has a gyro and an
 // accelerometer, or when Steam hid nothing. Otherwise (Steam's virtual pad, which has neither) the first controller
 // Steam hid that has both, looked for once a RESCAN_MS; one without them is not opened again until it reconnects.
 static SDL_Gamepad *motion_source(void) {
@@ -1429,7 +1557,7 @@ static SDL_Gamepad *motion_source(void) {
     return motion_extra ? motion_extra : pad_on ? pad : NULL;
 }
 
-// Under lock: (re)enable the sensors when the motion source changed; 1 if it has both and they are on.
+// Under sdl_lock: (re)enable the sensors when the motion source changed; 1 if it has both and they are on.
 static int sensors_ready(SDL_Gamepad *src) {
     SDL_JoystickID id = SDL_GetGamepadID(src);
     if (id == sensor_pad) return sensor_ok;
@@ -1464,23 +1592,64 @@ int input_motion_enabled(void) {
     return on;
 }
 
-// 250 Hz: the gamepads update (reports read, rumble expiry) and the newest gyro and accelerometer sample goes into the
-// fusion. Without a gamepad with sensors, or with motion off (TOTK_MOTION=0, live), nothing is fed and the six-axis
-// sensor reads at rest.
-static void motion_main(void *arg) {
+// The gamepad thread. Every PAD_PERIOD_NS (250 Hz, the report rate of the usual controllers) it updates SDL's
+// gamepads (reports read, hot plug, rumble expiry), opens one when needed, publishes the open one's inputs as the
+// snapshot and, once the game or the menu asked for motion (motion_on), feeds the newest gyro and accelerometer sample
+// into the fusion. Without a gamepad with sensors, or with motion off (TOTK_MOTION=0, live), nothing is fed and the
+// six-axis sensor reads at rest.
+//
+// Why one thread and a snapshot: an SDL gamepad call can take milliseconds. SDL makes them all under its joystick
+// lock, and a driver's update can do slow I/O under it: the Steam Deck's (SDL, SDL_hidapi_steamdeck.c,
+// HIDAPI_DriverSteamDeck_UpdateDevice) sends three feature reports, USB control transfers of a millisecond or more
+// each, on every 200th update, to keep the controller's mouse emulation off. While the game's poll, the sensor thread
+// and SDL's event pump (1000 Hz with a gamepad open) all updated the gamepads, that was about six times a second, and
+// the game's poll, on a job worker the frame waits for, took 2-7 ms several times a second (measured with the first
+// version of this thread). Now this thread alone waits for SDL, and the reports go out about twice a second.
+//
+// A snapshot taken every period would be up to a period old at the game's poll. The game polls at a steady pattern
+// (poll_note), so one more update is aimed PAD_LEAD_NS before the next poll: the game then gets inputs about as
+// fresh as its own SDL update gave it. The aimed update comes between two periodic ones and does not move them. It
+// takes no sensor sample: the sensors keep the 4 ms of the periodic updates, which the gyro calibration counts on
+// (motion_fusion.c CALIB_SETTLE, CALIB_SAMPLES).
+#define PAD_PERIOD_NS 4000000ull
+#define PAD_LEAD_NS 700000ull
+#define PAD_GAP_MIN_NS 2000000ull    // a time between polls the aimed update trusts: 2 to 50 ms
+#define PAD_GAP_MAX_NS 50000000ull
+
+static void pad_main(void *arg) {
     (void)arg;
+    int all = pad_threaded();   // 0: the motion sensors only, the poll does the rest (pad_refresh)
+    uint64_t next = plat_now_ns() + PAD_PERIOD_NS;   // the next periodic update
     for (;;) {
-        plat_wait_ns(4000000);
+        uint64_t now = plat_now_ns(), until = next;
+        uint64_t at = __atomic_load_n(&poll_at, __ATOMIC_RELAXED), gap = __atomic_load_n(&poll_gap, __ATOMIC_RELAXED);
+        int aimed = 0;   // this update is the one before the poll, between two periodic ones: no sensor sample
+        if (all && at && gap >= PAD_GAP_MIN_NS && gap <= PAD_GAP_MAX_NS) {
+            uint64_t aim = at + gap - PAD_LEAD_NS;   // just before the next poll, if the frame time holds
+            if (aim > now && aim < until) until = aim, aimed = 1;
+        }
+        if (until > now) plat_wait_ns(until - now);
+        if (!aimed) next = plat_now_ns() + PAD_PERIOD_NS;
         float a[3], g[3];
         int have = 0;
-        plat_mutex_lock(&lock);
-        SDL_Gamepad *src = motion_source();
-        if (src) {
-            SDL_UpdateGamepads();
+        PadSnap s;
+        plat_mutex_lock(&sdl_lock);
+        if (all && (!pad || !SDL_GamepadConnected(pad) || pad_hidden) && plat_now_ms() >= next_scan) {
+            next_scan = plat_now_ms() + RESCAN_MS;
+            scan_pads();
+        }
+        SDL_Gamepad *src = !aimed && __atomic_load_n(&motion_on, __ATOMIC_ACQUIRE) ? motion_source() : NULL;
+        if (all || src) SDL_UpdateGamepads();
+        if (all) pad_sample(&s);
+        if (src)
             have = sensors_ready(src) && SDL_GetGamepadSensorData(src, SDL_SENSOR_ACCEL, a, 3) &&
                    SDL_GetGamepadSensorData(src, SDL_SENSOR_GYRO, g, 3);
+        plat_mutex_unlock(&sdl_lock);
+        if (all) {
+            plat_mutex_lock(&lock);
+            snap = s;
+            plat_mutex_unlock(&lock);
         }
-        plat_mutex_unlock(&lock);
         if (!have || !input_motion_enabled()) continue;
         double acc[3], gyro[3];
         input_motion_axes(a, g, acc, gyro);
@@ -1488,54 +1657,63 @@ static void motion_main(void *arg) {
     }
 }
 
-// Under lock: the sensor thread, once; -1 when SDL is not running.
-static void motion_thread_start(void) {
-    if (!state) start();
-    if (motion_thread) return;
-    if (!input_motion_enabled()) rt_log("input: motion off (TOTK_MOTION=0); it can be turned on while the game runs");
-    if (state != 1) motion_thread = -1;
-    else {
-        if (!plat_thread_spawn(motion_main, NULL, "motion", 0)) rt_fatal("input: cannot start the motion thread");
-        motion_thread = 1;
-    }
+// State 1: the gamepad thread, once. In start(); with pad_thread = 0 when the motion sensors are first asked for.
+static void pad_thread_start(void) {
+    static volatile int32_t started;
+    if (plat_xchg32(&started, 1)) return;
+    if (!plat_thread_spawn(pad_main, NULL, "pad", 0)) rt_fatal("input: cannot start the gamepad thread");
 }
 
+// The game started the six-axis sensor: pad_main reads the motion sensors from now on.
 void input_motion_start(void) {
+    static int said;
     plat_mutex_lock(&lock);
-    motion_thread_start();
+    if (!state) start();
+    if (!said && !input_motion_enabled()) rt_log("input: motion off (TOTK_MOTION=0); it can be turned on while the game runs");
+    said = 1;
+    if (state == 1) __atomic_store_n(&motion_on, 1, __ATOMIC_RELEASE), pad_thread_start();
     plat_mutex_unlock(&lock);
 }
 
 void input_motion_calibrate(void) {
+    plat_mutex_lock(&sdl_lock);
     plat_mutex_lock(&lock);
-    // The menu can run before the game starts the six-axis sensor (the title screen): the thread starts here then.
-    if (input_gyro_calibration_enabled() && input_motion_enabled()) motion_thread_start();
+    if (!state) start();
+    int sdl_on = state == 1;
+    plat_mutex_unlock(&lock);
+    // The menu can run before the game starts the six-axis sensor (the title screen): the sensors are read from here on.
+    if (sdl_on && input_gyro_calibration_enabled() && input_motion_enabled())
+        __atomic_store_n(&motion_on, 1, __ATOMIC_RELEASE), pad_thread_start();
+    int on = __atomic_load_n(&motion_on, __ATOMIC_ACQUIRE);
     const char *why = NULL;
-    SDL_Gamepad *src = motion_thread == 1 ? motion_source() : NULL;
+    SDL_Gamepad *src = on ? motion_source() : NULL;
     if (!input_gyro_calibration_enabled()) why = "gyro_calibration is off";
     else if (!input_motion_enabled()) why = "motion is off (TOTK_MOTION=0)";
-    else if (motion_thread != 1) why = "no SDL gamepad support";
+    else if (!on) why = "no SDL gamepad support";
     else if (!src) why = "no gamepad";
-    // sensors_ready here, not at the sensor thread's next look at a new pad: that look selects the pad's bias and
-    // would cancel the attempt that starts below.
+    // sensors_ready here, not at pad_main's next look at a new pad: that look selects the pad's bias and would cancel
+    // the attempt that starts below.
     else if (!sensors_ready(src)) why = "the gamepad has no gyro and accelerometer";
     if (why) rt_log("input: calibrate gyro ignored: %s", why);
     else {
         char id[128];
         pad_identity(src, id, sizeof id);
-        copy_name(calib_pad_name, sizeof calib_pad_name, SDL_GetGamepadName(src));
+        calib_name_set(SDL_GetGamepadName(src));
         motion_calibrate_start(motion_global(), id, kern_now_ns());
-        rt_log("input: gyro calibration started on %s", calib_pad_name);
+        rt_log("input: gyro calibration started on %s", SDL_GetGamepadName(src));
     }
-    plat_mutex_unlock(&lock);
+    plat_mutex_unlock(&sdl_lock);
 }
 
 int input_gyro_calibration_enabled(void) { return motion_calibration_enabled(); }
 
 int input_motion_calib_state(char *pad, size_t cap) {
-    plat_mutex_lock(&lock);
-    int st = motion_thread == 1 ? motion_calib_poll(motion_global(), kern_now_ns()) : MOTION_CALIB_NONE;
-    if (pad && cap) snprintf(pad, cap, "%s", calib_pad_name);
-    plat_mutex_unlock(&lock);
+    int st = __atomic_load_n(&motion_on, __ATOMIC_ACQUIRE) ? motion_calib_poll(motion_global(), kern_now_ns())
+                                                            : MOTION_CALIB_NONE;
+    if (pad && cap) {
+        plat_mutex_lock(&calib_lock);
+        snprintf(pad, cap, "%s", calib_pad_name);
+        plat_mutex_unlock(&calib_lock);
+    }
     return st;
 }
