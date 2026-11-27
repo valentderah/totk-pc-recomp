@@ -62,6 +62,7 @@ TESTS = {
     'worktree_test':            ('.venv', None, [], ''),
     'run_game_test':            ('.venv', None, [], ''),
     'installer_test':           ('.venv-py314', None, [], ''),
+    'hostcheck_test':           ('.venv-py314', None, [], ''),
     'ncz_test':                 ('.venv-py314', None, [], ''),
     'romfs_prompts_test':       ('.venv-py314', None, [], ''),
     'hud_layout_test':          ('.venv-py314', None, [], ''),
