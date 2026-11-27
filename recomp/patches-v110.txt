@@ -12,6 +12,7 @@ set output   TOTK_PATCH_OUTPUT   0
 set scene    TOTK_PATCH_SCENE    0
 set shadow   TOTK_PATCH_SHADOW   0
 set cascade  TOTK_PATCH_CASCADE  0
+set grass    TOTK_PATCH_GRASS    0
 # Load-dependent quality (patches-v121.txt explains it): no sites found in this version yet, so the setting does nothing.
 set steady   TOTK_LOD_STEADY     0
 
@@ -124,6 +125,21 @@ site cascade main 115814c 52a86408 @page:x8 b9404d08
 # (d = [cascade set + 0x308]). Multiply d[1..n] by page +64 / 20.0; x3, s16 and s17 are dead at both sites.
 site cascade main d076f4 bd000446 @page:x3 bd404070 1e269011 1e311a10 1e3008d0 bd000450   # str s6, [x2, #4] -> scale by page+64 / 20.0
 site cascade main d0774c bc29d945 @page:x3 bd404070 1e269011 1e311a10 1e3008b0 bc29d950   # str s5, [x10, w9, sxtw #2] -> scale by page+64 / 20.0
+
+# Grass range (runtime/resolution.c res_grass_range; patches-v143.txt describes the set and the page). The near grass
+# map's constructor loads its extent, step and texture sizes at main+0x100e890..0x100e92c, and main+0x1a3f3b4 sets the
+# extent to 62.5 or 31.25 m, as on 1.4.3.
+site grass  main 100e890 52a84f48 @page:x8 b9408108   # mov w8, #62.5      -> ldr w8, [page+128]
+site grass  main 100e89c 52a80f48 @page:x8 b9408508   # mov w8, #3.90625   -> ldr w8, [page+132]
+site grass  main 100e8c8 52802002 @page:x2 b9408842   # mov w2, #0x100     -> ldr w2, [page+136]
+site grass  main 100e92c 52801002 @page:x2 b9408c42   # mov w2, #0x80      -> ldr w2, [page+140]
+site grass  main 1a3f41c 52a84f48 @page:x8 b9408108  # mov w8, #62.5      -> ldr w8, [page+128]
+site grass  main 1a3f428 52a83f48 @page:x8 b9409108  # mov w8, #31.25     -> ldr w8, [page+144]
+# Scale the distance used by blade cutoff/LOD and cross-grass fade by the reciprocal range at page +148.
+# Save x10 and q16 in aligned stack slots so the inserted loads leave the guest registers and flags intact.
+site grass  main 18d8848 bc408ea0 a9bf7fea 3c9f0ff0 bc408ea0 @page:x10 bd409550 1e300800 3cc107f0 a8c17fea
+site grass  main 18d8c28 bd4002a0 a9bf7fea 3c9f0ff0 bd4002a0 @page:x10 bd409550 1e300800 3cc107f0 a8c17fea
+site grass  main 128e26c bd400980 a9bf7fea 3c9f0ff0 bd400980 @page:x10 bd409550 1e300800 3cc107f0 a8c17fea
 
 # High-frame-rate climbing (#35, #276, #1001): r is in s9 in the local 1.1.0 controller at main+0x1927948.
 # The shipping formula multiplies by -0.181, doubles with fadd, then adds 1.272; keep its rounding and [0.5, 1.5] clamp.
