@@ -24,22 +24,25 @@ from . import state as statefile
 from .events import render
 
 TEXT = Path(__file__).resolve().parent / 'text'
-UI_LANGUAGES = ('en', 'ru', 'pt-BR', 'zh-Hans', 'de', 'fr', 'es', 'it', 'nl', 'ja', 'ko', 'vi')
+UI_LANGUAGES = ('en', 'ru', 'pt-BR', 'zh-Hans', 'de', 'fr', 'es', 'es-419', 'it', 'nl', 'ja', 'ko', 'vi')
 # what the language switch in the window's corner shows for each
 UI_LANGUAGE_LABELS = {'en': 'English', 'ru': 'Русский', 'pt-BR': 'Português (Brasil)', 'zh-Hans': '简体中文',
-                      'de': 'Deutsch', 'fr': 'Français', 'es': 'Español', 'it': 'Italiano', 'nl': 'Nederlands',
+                      'de': 'Deutsch', 'fr': 'Français', 'es': 'Español', 'es-419': 'Español (Latinoamérica)',
+                      'it': 'Italiano', 'nl': 'Nederlands',
                       'ja': '日本語', 'ko': '한국어', 'vi': 'Tiếng Việt'}
 STEP_ORDER = ('check', 'kit', 'fonts', 'extract', 'lift', 'compile', 'prepare', 'pc_prompts', 'shapes', 'dlss',
               'fsr', 'cleanup')
 # message parameter -> catalog id prefix of the names that replace its raw values
 PARAM_NAMES = {'lang': 'lang.', 'known': 'lang.', 'step': 'step.', 'input': 'param.input.'}
 LANG_PT_BR = 0x0416   # Portuguese (Brazil), the whole LANGID: Portugal's Portuguese stays English
+LANG_ES_ES = (0x040a, 0x0c0a)   # Spanish of Spain (traditional and modern sort); every other Spanish LANGID: es-419
 # primary language id in a Windows LANGID -> window language, for the languages whose every region gets the same text.
 # Every Chinese gets Simplified Chinese: the setup has no Traditional Chinese text, as the in-game menu has none.
 PRIMARY_LANGS = {0x04: 'zh-Hans', 0x19: 'ru', 0x07: 'de', 0x0c: 'fr', 0x0a: 'es', 0x10: 'it', 0x13: 'nl', 0x11: 'ja',
                  0x12: 'ko', 0x2a: 'vi'}
 # window language -> the game language the form starts with (default_game_language)
-GAME_LANGUAGE_FOR_UI = {'ru': 'ru', 'de': 'de', 'fr': 'fr', 'es': 'es', 'it': 'it', 'nl': 'nl', 'ja': 'ja'}
+GAME_LANGUAGE_FOR_UI = {'ru': 'ru', 'de': 'de', 'fr': 'fr', 'es': 'es', 'es-419': 'es-419', 'it': 'it', 'nl': 'nl',
+                        'ja': 'ja'}
 
 
 def load_texts(lang):
@@ -105,6 +108,16 @@ def ui_language_for_locale(loc):
     loc = loc.lower().replace('-', '_')
     if loc.startswith('pt_br'):
         return 'pt-BR'
+    parts = loc.split('.')[0].split('@')[0].split('_')
+    if parts[0] == 'es':
+        region = ''
+        for part in parts[1:]:
+            if len(part) == 1:   # extensions/private use do not select the region
+                break
+            if (len(part) == 2 and part.isalpha()) or (len(part) == 3 and part.isdigit()):
+                region = part
+                break
+        return 'es-419' if region and region != 'es' else 'es'
     lang = loc.split('_')[0].split('.')[0]
     if lang == 'zh':
         return 'zh-Hans'
@@ -116,6 +129,8 @@ def ui_language_for_langid(langid):
     for pt-BR (Portugal's stays English), else 'en'."""
     if langid == LANG_PT_BR:
         return 'pt-BR'
+    if langid & 0x3ff == 0x0a and langid not in LANG_ES_ES:
+        return 'es-419'
     return PRIMARY_LANGS.get(langid & 0x3ff, 'en')
 
 

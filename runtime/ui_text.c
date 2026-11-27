@@ -2,7 +2,9 @@
 // string gets an id in ui_text.h and an entry in every language that has one (a missing entry falls back to English).
 // The software keyboard has every language; the menu has every game language except Portugal's Portuguese and
 // Traditional Chinese (English, Russian, Brazilian Portuguese, Simplified Chinese, German, French, Spanish, Italian,
-// Dutch, Japanese, Korean), and Vietnamese.
+// Dutch, Japanese, Korean), and Vietnamese. Latin American Spanish (es-419) has a row of its own; en-GB and fr-CA read
+// the en and fr rows.
+#include <ctype.h>
 #include <stdatomic.h>
 #include <string.h>
 
@@ -5656,6 +5658,945 @@ static const char *const text_es[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_OVERRIDES_CODE] = "Anula %u puntos de parche de código de %s, que está más abajo en la lista.",
 };
 
+static const char *const text_es_419[UI_TEXT_COUNT] = {
+    SWKBD("Introducir texto", "Introduce un nombre", "Caballo", "Aceptar", "Cancelar", "Control: A = Aceptar, B = Cancelar"),
+
+    [UI_MENU_VERT_PLUS] = "Mantener el ancho de 16:9",
+    [UI_MENU_VERT_PLUS_DESC] = "En pantallas más estrechas que 16:9 (Steam Deck, 16:10, 4:3), la cámara muestra el mismo ancho del mundo que en 16:9, y más por arriba y por abajo. Sin efecto en 16:9 o más ancho.",
+    [UI_MENU_SYNC_AHEAD] = "Un fotograma por delante de la GPU",
+    [UI_MENU_SYNC_AHEAD_DESC] = "El juego prepara el siguiente fotograma mientras la tarjeta de video aún dibuja el anterior. Más fotogramas por segundo, un fotograma más de retraso de entrada.",
+    [UI_MENU_HOST_CHECKPOINT] = "Cesión rápida del núcleo",
+    [UI_MENU_HOST_CHECKPOINT_DESC] = "Un hilo del juego cede su núcleo virtual a uno más importante en cuanto sale del código del port, no en su siguiente llamada al sistema.",
+    [UI_LW_STAGE_START] = "Preparando",
+    [UI_LW_STAGE_GPU] = "Iniciando los gráficos",
+    [UI_LW_STAGE_FILES] = "Preparando los archivos del juego",
+    [UI_LW_STAGE_SHADERS] = "Cargando shaders",
+    [UI_LW_STAGE_PIPELINES] = "Compilando pipelines",
+    [UI_LW_STAGE_GAME] = "Iniciando el juego",
+    [UI_LW_FAILED] = "El juego se detuvo",
+    [UI_LW_FAILED_HINT] = "El registro de abajo indica el motivo. Cópialo para reportar el error y luego cierra esta ventana.",
+    [UI_LW_VERSION] = "v%s · juego %s",
+    [UI_LW_COUNT] = "%s de %s",
+    [UI_LW_LEFT_ITEMS] = "Faltan %s",
+    [UI_LW_LEFT_SEC] = "faltan unos %d s",
+    [UI_LW_LEFT_MIN] = "faltan unos %d min",
+    [UI_LW_LEFT_FEW] = "faltan unos segundos",
+    [UI_LW_ALSO] = "También: %s",
+    [UI_LW_GAME_SEC] = "El juego inicia en unos %d s",
+    [UI_LW_GAME_MIN] = "El juego inicia en unos %d min",
+    [UI_LW_GAME_SOON] = "El juego está por iniciar",
+    [UI_LW_ELAPSED] = "Transcurrido %d:%02d",
+    [UI_LW_DETAILS] = "Detalles",
+    [UI_LW_HIDE] = "Ocultar detalles",
+    [UI_LW_COPY] = "Copiar registro",
+    [UI_LW_COPIED] = "Copiado",
+    [UI_LW_CLOSE] = "Cerrar y salir del juego",
+    [UI_LW_THOUSANDS] = ",",
+
+    [UI_MENU_TITLE] = "Ajustes",
+    [UI_MENU_TAB_SCREEN] = "Pantalla",
+    [UI_MENU_TAB_GAME] = "Juego",
+    [UI_MENU_TAB_MODS] = "Mods",
+    [UI_MENU_TAB_SOUND] = "Sonido",
+    [UI_MENU_TAB_CONTROLS] = "Controles",
+    [UI_MENU_TAB_AMIIBO] = "Amiibo",
+    [UI_MENU_TAB_MENU] = "Menú",
+    [UI_MENU_TAB_ADVANCED] = "Avanzado",
+    [UI_MENU_CONTINUE] = "Continuar",
+    [UI_MENU_QUIT] = "Salir del juego",
+    [UI_MENU_ON] = "Sí",
+    [UI_MENU_OFF] = "No",
+    [UI_MENU_AUTO] = "Automático",
+    [UI_MENU_DEFAULT_MARK] = "predeterminado",
+    [UI_MENU_AFTER_RESTART] = "tras reiniciar",
+    [UI_MENU_SET_BY_ENV] = "fijado por una variable de entorno",
+    [UI_MENU_SAVE_FAILED] = "no se pudieron guardar los ajustes",
+    [UI_MENU_VERSION] = "TotK Recomp %s, juego %s",
+    [UI_MENU_FULLSCREEN] = "Pantalla completa",
+    [UI_MENU_FULLSCREEN_DESC] = "El juego ocupa toda la pantalla; F11 la alterna.",
+    [UI_MENU_WINDOW_SIZE] = "Tamaño de la ventana",
+    [UI_MENU_WINDOW_SIZE_DESC] = "Tamaño de la ventana del juego fuera de la pantalla completa.",
+    [UI_MENU_WINDOW_SIZE_CUSTOM] = "Personalizado",
+    [UI_MENU_PRESENT] = "Presentación",
+    [UI_MENU_PRESENT_DESC] = "Cómo llegan a la pantalla los fotogramas terminados.",
+    [UI_MENU_PRESENT_MAILBOX] = "Mailbox",
+    [UI_MENU_PRESENT_VSYNC] = "VSync",
+    [UI_MENU_PRESENT_IMMEDIATE] = "Inmediato",
+    [UI_MENU_PRESENT_IN_USE] = "en uso: %s",
+    [UI_MENU_GPU] = "Tarjeta de video",
+    [UI_MENU_GPU_DESC] = "El dispositivo Vulkan que dibuja el juego.",
+    [UI_MENU_GPU_AUTO] = "Automática",
+    [UI_MENU_PERF_OVERLAY] = "Indicador de rendimiento",
+    [UI_MENU_PERF_OVERLAY_DESC] = "Fotogramas por segundo en la esquina superior derecha. Completo añade tiempos de "
+                                  "fotograma con un gráfico, carga de CPU, GPU y memoria, temperaturas y las esperas "
+                                  "del hilo de renderizado. F10 cambia de modo.",
+    [UI_MENU_PERF_OFF] = "No",
+    [UI_MENU_PERF_FPS] = "FPS",
+    [UI_MENU_PERF_FULL] = "Completo",
+    [UI_PERF_LINE_FPS] = "%.0f fps",
+    [UI_PERF_LINE_FPS_GEN] = "%.0f fps dibujados, %.0f mostrados",
+    [UI_MENU_GRAPHICS] = "Imagen",
+    [UI_MENU_OUTPUT_RES] = "Resolución del juego",
+    [UI_MENU_OUTPUT_RES_DESC] = "El tamaño en el que el juego dibuja su imagen e interfaz. Por encima de 1920 x 1080 "
+                                "el juego necesita más memoria de video y tiempo de GPU. Un formato más ancho (21:9) "
+                                "amplía la vista de la cámara y lleva el HUD a las esquinas de la pantalla; uno más "
+                                "alto (16:10, Steam Deck) lo lleva a los bordes superior e inferior.",
+    [UI_MENU_HUD_WIDTH] = "Ancho del HUD",
+    [UI_MENU_HUD_WIDTH_DESC] = "En una pantalla más ancha que 16:9, cuánto se separan los lados izquierdo y derecho "
+                               "del HUD. Pantalla completa los lleva a los bordes de la pantalla; 21:9 o 16:9 "
+                               "mantiene el HUD en el centro de la pantalla con esa forma. Una distribución que falte "
+                               "se crea en segundo plano y se usa tras reiniciar.",
+    [UI_MENU_HUD_WIDTH_FULL] = "Pantalla completa",
+    [UI_MENU_RENDER_SCALE] = "Escala de renderizado 3D",
+    [UI_MENU_RENDER_SCALE_DESC] = "Tamaño de la escena 3D respecto a la resolución del juego; el FSR del juego la "
+                                  "escala a ese tamaño. Por encima del 100 % suaviza los bordes dentados "
+                                  "(supermuestreo) con un alto coste de GPU.",
+    [UI_MENU_RENDER_SCALE_GAME] = "Juego (83 %)",
+    [UI_MENU_DYNAMIC_RES] = "Resolución dinámica",
+    [UI_MENU_DYNAMIC_RES_DESC] = "Permite que el juego baje la escena 3D al 90 o al 80 %. Decide según una estimación "
+                                 "hecha para Switch que no tiene en cuenta tu GPU, así que las escenas amplias bajan "
+                                 "incluso en un PC rápido. No: mantiene la escala de renderizado.",
+    [UI_MENU_UPSCALER] = "Escalado a la ventana",
+    [UI_MENU_UPSCALER_DESC] = "Cómo se escala la imagen cuando la ventana es mayor que la resolución del juego. FSR "
+                              "mantiene los bordes y los detalles más nítidos que el bilineal.",
+    [UI_MENU_UPSCALER_FSR] = "AMD FSR 1",
+    [UI_MENU_UPSCALER_BILINEAR] = "Bilineal",
+    [UI_MENU_ASPECT] = "Forma de la imagen",
+    [UI_MENU_ASPECT_DESC] = "Cuando la forma de la ventana difiere de la de la resolución del juego (una imagen 16:9 "
+                            "en una pantalla 21:9): mantener la forma con franjas negras o estirarla sobre la ventana.",
+    [UI_MENU_ASPECT_FIT] = "Franjas negras",
+    [UI_MENU_ASPECT_STRETCH] = "Estirar",
+    [UI_MENU_MOVIE_ASPECT] = "Forma de videos",
+    [UI_MENU_MOVIE_ASPECT_DESC] = "Cuando la resolución del juego no es 16:9: mantener la forma propia de los videos "
+                                  "de las cinemáticas con franjas negras o estirarlos sobre toda la imagen. Se aplica "
+                                  "desde el siguiente video.",
+    [UI_MENU_MOVIE_ASPECT_KEEP] = "Franjas negras",
+    [UI_MENU_MOVIE_ASPECT_STRETCH] = "Estirar",
+    [UI_MENU_FOV] = "Campo de visión",
+    [UI_MENU_FOV_DESC] = "Cuánto del mundo muestra la cámara, en porcentaje del propio del juego. Solo la versión "
+                         "1.4.3 del juego.",
+    [UI_MENU_SHADOW_RES] = "Tamaño del mapa de sombras",
+    [UI_MENU_SHADOW_RES_DESC] = "Tamaño del mapa de sombras del sol. El tamaño del juego cambia con la vista, hasta "
+                                "unos 400 cerca del suelo, por lo que las sombras de las hojas se ven pixeladas y "
+                                "saltan; un tamaño fijo las mantiene quietas y más nítidas. Por encima de 1024 las "
+                                "sombras cuestan más tiempo de GPU y memoria de video.",
+    [UI_MENU_SHADOW_RES_GAME] = "Juego (variable)",
+    [UI_MENU_ANISO] = "Filtrado de texturas",
+    [UI_MENU_ANISO_DESC] = "Filtrado anisótropo de las texturas: el suelo, los caminos y las paredes vistos en ángulo "
+                           "rasante siguen nítidos en la distancia en lugar de difuminarse. Juego: el nivel que pide "
+                           "el juego, como en Switch.",
+    [UI_MENU_ANISO_GAME] = "Juego",
+    [UI_MENU_LOD_STEADY] = "Detalle estable con carga",
+    [UI_MENU_LOD_STEADY_DESC] = "Omite el ajuste del juego que reduce el detalle de modelos y texturas cuando bajan "
+                                "los fotogramas por segundo, como hace el mod de emulador Disable LOD Quality "
+                                  "Reduction. Versiones 1.1.0, 1.2.1 y 1.4.3 del juego. Déjalo desactivado en PC poco "
+                                "potentes: ahí esa reducción mantiene los fotogramas por segundo.",
+    [UI_MENU_SHARPNESS] = "Nitidez de FSR",
+    [UI_MENU_SHARPNESS_DESC] = "Enfoque tras el escalado FSR; 0 lo desactiva.",
+    [UI_MENU_COLOR] = "Color",
+    [UI_MENU_COLOR_PRESET] = "Perfil de color",
+    [UI_MENU_COLOR_PRESET_DESC] = "Fija los cuatro valores de abajo. Vivo: más contraste y saturación, sombras algo "
+                                  "más abiertas (pensado para pantallas OLED). Claridad: algo más de contraste, "
+                                  "saturación y brillo. Cambiar un valor pasa el perfil a Personalizado. El HUD "
+                                  "cambia con la imagen; este menú no.",
+    [UI_MENU_COLOR_DEFAULT] = "El del juego",
+    [UI_MENU_COLOR_VIVID] = "Vivo (OLED)",
+    [UI_MENU_COLOR_CLARITY] = "Claridad",
+    [UI_MENU_COLOR_CUSTOM] = "Personalizado",
+    [UI_MENU_COLOR_BRIGHTNESS] = "Brillo",
+    [UI_MENU_COLOR_BRIGHTNESS_DESC] = "Se suma a cada color; 0 lo deja igual.",
+    [UI_MENU_COLOR_CONTRAST] = "Contraste",
+    [UI_MENU_COLOR_CONTRAST_DESC] = "Aleja los colores del gris medio (por encima del 100 %) o los acerca; 100 % los "
+                                    "deja igual.",
+    [UI_MENU_COLOR_SATURATION] = "Saturación",
+    [UI_MENU_COLOR_SATURATION_DESC] = "Intensidad del color frente al gris; 100 % la deja igual.",
+    [UI_MENU_COLOR_GAMMA] = "Gamma",
+    [UI_MENU_COLOR_GAMMA_DESC] = "Por debajo de 1 aclara los tonos oscuros y medios, por encima de 1 los oscurece; 1 "
+                                 "los deja igual.",
+    [UI_MENU_HDR_GROUP] = "HDR",
+    [UI_MENU_HDR] = "Salida HDR",
+    [UI_MENU_HDR_DESC] = "Luces brillantes en una pantalla HDR. Requiere el HDR activado en Windows (\"Usar HDR\") o un "
+                         "compositor Wayland con gestión del color; sin él la imagen sigue en SDR. Se aplica tras "
+                         "reiniciar. El perfil de color de arriba es para SDR y no se usa en HDR.",
+    [UI_MENU_HDR_PEAK] = "Brillo máximo",
+    [UI_MENU_HDR_PEAK_DESC] = "El pico de tu pantalla en nits; las luces más brillantes se detienen ahí.",
+    [UI_MENU_HDR_GAME] = "Brillo del juego",
+    [UI_MENU_HDR_GAME_DESC] = "Nits del blanco de la imagen (blanco papel). 203 es la referencia HDR; súbelo en una "
+                              "habitación luminosa.",
+    [UI_MENU_HDR_UI] = "Brillo del HUD y del menú",
+    [UI_MENU_HDR_UI_DESC] = "Nits del blanco del HUD y de este menú.",
+    [UI_MENU_HDR_HUE] = "Corrección del tono de luces",
+    [UI_MENU_HDR_HUE_DESC] = "Los colores brillantes, como el fuego y las chispas, tienden al blanco como en la "
+                             "propia imagen SDR del juego, coincidiendo con la luz que emiten; 0 los mantiene "
+                             "totalmente saturados.",
+    [UI_MENU_SHADOW_SCALE] = "Resolución de sombras",
+    [UI_MENU_SHADOW_SCALE_DESC] = "Dibuja los mapas de sombras del sol tantas veces más grandes por lado que los "
+                                  "960x960 del juego: bordes de sombra y sombras de hojas más nítidos. Se aplica en "
+                                  "el próximo inicio.",
+    [UI_MENU_PCSS] = "Sombras suaves",
+    [UI_MENU_PCSS_DESC] = "Sombras del sol nítidas donde un objeto toca el suelo y más suaves cuanto más lejos cae la "
+                          "sombra (PCSS). 0 mantiene el filtro del juego. Se aplica en el próximo inicio.",
+    [UI_MENU_CONTACT_SHADOWS] = "Sombras de contacto",
+    [UI_MENU_CONTACT_SHADOWS_DESC] = "Pequeñas sombras del sol que los mapas de sombras no captan: en los pies, bajo "
+                                     "las piedras, en la hierba y en los pliegues. Calculadas en pantalla tras la "
+                                     "iluminación. Se aplica en el próximo inicio.",
+    [UI_MENU_SHADOW_RANGE] = "Alcance de las cascadas de sombras",
+    [UI_MENU_SHADOW_RANGE_DESC] = "Aleja los escalones donde las sombras se vuelven más suaves (20, 40, 80 y 160 m en "
+                                  "el juego). Reparte el mapa de sombras sobre más terreno: sube también la "
+                                  "resolución de sombras. Se aplica en el próximo inicio.",
+    [UI_MENU_GRASS_RANGE] = "Alcance de hierba",
+    [UI_MENU_GRASS_RANGE_DESC] = "Hasta qué distancia alrededor de la cámara crece la hierba (en el juego: 62,5 m). "
+                                 "Más mantiene visible la hierba de los prados más lejos en lugar de hacerla crecer "
+                                 "justo delante de ti; menos dibuja menos hierba. Se aplica en el próximo inicio.",
+    [UI_MENU_DLSS_PRESET] = "Modelo DLSS",
+    [UI_MENU_DLSS_PRESET_DESC] = "Qué modelo de DLSS se usa. Automático sigue el consejo de NVIDIA para cada modo: K "
+                                 "para DLAA, Calidad y Equilibrado, M para Rendimiento, L para Ultrarrendimiento. J: "
+                                 "algo menos de estelas tras los personajes en movimiento y algo más de parpadeo. K: "
+                                 "el modelo más nítido en todos los modos. Se aplica al momento.",
+    [UI_MENU_DLSS_PRESET_DEFAULT] = "Automático",
+    [UI_MENU_DLSS_PRESET_K] = "K (más nítido)",
+    [UI_MENU_DLSS_PRESET_J] = "J (menos estelas)",
+    [UI_MENU_DLSS_CHARS] = "Estelas de personajes en DLSS",
+    [UI_MENU_DLSS_CHARS_DESC] = "Reduce las leves estelas tras los personajes y animales en movimiento y lo que "
+                                "llevan: ahí DLSS toma menos de los fotogramas anteriores. Más fuerte elimina más "
+                                "estelas y deja esos bordes algo menos suaves. Se aplica al momento.",
+    [UI_MENU_DLSS_CHARS_OFF] = "No",
+    [UI_MENU_DLSS_CHARS_LIGHT] = "Leve",
+    [UI_MENU_DLSS_CHARS_MEDIUM] = "Medio",
+    [UI_MENU_DLSS_CHARS_FULL] = "Completo",
+    [UI_MENU_DLSS] = "Modo de escalado",
+    [UI_MENU_DLSS_DESC] = "Nativo suaviza los bordes de la escena 3D a resolución completa. Calidad, Equilibrado, "
+                          "Rendimiento y Ultrarrendimiento la dibujan al 67, 58, 50 y 33 % y dejan que el escalador "
+                          "(DLSS o FSR 3.1) la amplíe, lo que ahorra tiempo de GPU; sustituyen a la escala de "
+                          "renderizado 3D. Se aplica al momento.",
+    [UI_MENU_DLSS_DLAA] = "Nativo",
+    [UI_MENU_DLSS_QUALITY] = "Calidad",
+    [UI_MENU_DLSS_BALANCED] = "Equilibrado",
+    [UI_MENU_DLSS_PERFORMANCE] = "Rendimiento",
+    [UI_MENU_DLSS_ULTRA] = "Ultrarrendimiento",
+    [UI_MENU_FXAA] = "Antialiasing del juego (FXAA)",
+    [UI_MENU_FXAA_DESC] = "El suavizado de bordes FXAA del propio juego. Difumina un poco los detalles finos; con "
+                          "DLAA no hace falta.",
+    [UI_MENU_REFLEX] = "Baja latencia",
+    [UI_MENU_REFLEX_DESC] = "Reduce la latencia del sistema. Sí usa NVIDIA Reflex (VK_NV_low_latency2); Sí + Boost mantiene además altas las frecuencias de la GPU NVIDIA en escenas limitadas por la CPU. Automático usa Reflex en NVIDIA y AMD Anti-Lag 2 (VK_AMD_anti_lag) en AMD. Se aplica tras reiniciar.",
+    [UI_MENU_REFLEX_AUTO] = "Automático",
+    [UI_MENU_REFLEX_OFF] = "No",
+    [UI_MENU_REFLEX_ON] = "Sí",
+    [UI_MENU_REFLEX_BOOST] = "Sí + Boost",
+    [UI_MENU_SCENE_UPSCALER] = "Escalador de escena 3D",
+    [UI_MENU_SCENE_UPSCALER_DESC] = "Un escalador temporal para la escena 3D: bordes más suaves y menos centelleo, y "
+                                    "en un modo por debajo de Nativo dibuja la escena más pequeña y la amplía, lo que "
+                                    "ahorra tiempo de GPU. NVIDIA DLSS necesita una GPU NVIDIA RTX y " DLSS_FILE " "
+                                    "junto a " EXE_FILE "; AMD FSR 3.1 funciona en cualquier GPU. No: mantiene el "
+                                    "escalado y el FXAA propios del juego. El HUD no se toca; el escalado y la "
+                                    "nitidez de arriba siguen ajustando la imagen del juego a la ventana. Se aplica "
+                                    "tras reiniciar.",
+    [UI_MENU_SCENE_UPSCALER_OFF] = "No",
+    [UI_MENU_SCENE_UPSCALER_DLSS] = "NVIDIA DLSS",
+    [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU] = "DLSS: necesita una GPU NVIDIA RTX",
+    [UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL] = "DLSS: falta " DLSS_FILE,
+    [UI_MENU_FSR_SHARPNESS] = "Nitidez de FSR",
+    [UI_MENU_FSR_SHARPNESS_DESC] = "Nitidez de la escena 3D tras AMD FSR 3.1 o FSR 4; 0 la desactiva.",
+    [UI_MENU_SCENE_UPSCALER_FSR4] = "AMD FSR 4",
+    [UI_MENU_SCENE_UPSCALER_NO_FSR4_GPU] = "FSR 4: no disponible para esta GPU",
+    [UI_MENU_SCENE_UPSCALER_NO_FSR4_DLL] = "FSR 4: faltan las bibliotecas FSR de AMD",
+    [UI_MENU_SCENE_UPSCALER_NO_FSR4_OS] = "FSR 4: solo en Windows",
+    [UI_MENU_FPS_LIMIT] = "Límite de fotogramas",
+    [UI_MENU_FPS_LIMIT_DESC] = "El máximo de fotogramas por segundo que dibuja el juego. Por encima de 60 es "
+                               "experimental y requiere \"Velocidad del juego según el reloj\".",
+    [UI_MENU_FPS_30] = "30 FPS",
+    [UI_MENU_FPS_40] = "40 FPS",
+    [UI_MENU_FPS_45] = "45 FPS",
+    [UI_MENU_FPS_60] = "60 FPS",
+    [UI_MENU_FPS_90] = "90 FPS",
+    [UI_MENU_FPS_120] = "120 FPS",
+    [UI_MENU_FPS_144] = "144 FPS",
+    [UI_MENU_FPS_DISPLAY] = "Frecuencia del monitor",
+    [UI_MENU_FPS_DISPLAY_HZ] = "Frecuencia del monitor (%.0f Hz)",
+    [UI_MENU_FRAME_QUEUE] = "Cola de fotogramas",
+    [UI_MENU_FRAME_QUEUE_DESC] = "El juego empieza un fotograma mientras el anterior espera su turno en pantalla: "
+                                 "muchos menos fotogramas perdidos en el límite, hasta un fotograma más de latencia "
+                                 "de los controles. Se aplica al momento.",
+    [UI_MENU_FRAME_GEN] = "Generación de fotogramas",
+    [UI_MENU_FRAME_GEN_OFF] = "No",
+    [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
+    [UI_MENU_FRAME_GEN_DESC] = "Una imagen generada entre cada dos que dibuja el juego: el doble de imágenes en "
+                               "pantalla, el juego a la mitad del límite de fotogramas y los controles, alrededor de "
+                               "medio fotograma más tarde. Para pantallas de 120 Hz o más. No funciona con DLSS ni "
+                               "HDR. Se aplica al momento.",
+    [UI_MENU_REALTIME] = "Velocidad del juego según el reloj",
+    [UI_MENU_REALTIME_DESC] = "Avanza el juego según el tiempo real, para que un fotograma lento no ralentice el "
+                              "juego.",
+    [UI_MENU_CLOTH_REALTIME] = "Telas según el reloj",
+    [UI_MENU_CLOTH_REALTIME_DESC] = "Avanza también las telas y el pelo según el tiempo real.",
+    [UI_MENU_HIGHFPS_FIX] = "Correcciones para muchos FPS",
+    [UI_MENU_HIGHFPS_FIX_DESC] = "Corrige la física que falla por encima de 30 fotogramas por segundo y los objetos "
+                                 "que se quedan transparentes o invisibles por encima de 60.",
+    [UI_MENU_CLIMB_FIX] = "Corrección de escalada",
+    [UI_MENU_CLIMB_FIX_DESC] = "Mantiene la escalada por paredes y escaleras a velocidad completa por encima de 60 "
+                               "fotogramas por segundo, para que Link llegue arriba.",
+    [UI_MENU_GAME_LANG] = "Idioma del juego",
+    [UI_MENU_GAME_LANG_DESC] = "Idioma de los textos y las voces del juego.",
+    [UI_MENU_GAME_LANG_AUTO] = "Automático",
+    [UI_MENU_OPERATION_MODE] = "Modo de la consola",
+    [UI_MENU_OPERATION_MODE_DESC] = "Si el juego cree que funciona en modo TV o en modo portátil.",
+    [UI_MENU_MODE_DOCKED] = "Modo TV",
+    [UI_MENU_MODE_HANDHELD] = "Modo portátil",
+    [UI_MENU_ASSUME_FOCUS] = "Seguir en segundo plano",
+    [UI_MENU_ASSUME_FOCUS_DESC] = "Sí (predeterminado): el juego sigue mientras estás en otra ventana, y el teclado "
+                                  "no responde hasta que la ventana vuelve al frente. No: se pausa cuando su ventana "
+                                  "pierde el foco, como en Switch al oprimir Home; una carga interrumpida así puede "
+                                  "quedarse bloqueada.",
+    [UI_MENU_PLAY_TIME] = "Tiempo de juego",
+    [UI_MENU_PLAY_TIME_DESC] = "Tiempo en el juego en todas las sesiones, contado mientras la ventana del juego tiene "
+                               "el foco y el juego dibuja fotogramas. Se guarda en playtime.txt en la carpeta del "
+                               "perfil, junto a las partidas guardadas.",
+    [UI_MENU_PLAY_TIME_HM] = "%llu h %02u min",
+    [UI_MENU_PLAY_TIME_SESSION] = "esta sesión: %s",
+    [UI_MENU_MODS_BUILTIN] = "Incluidos en el port",
+    [UI_MENU_MODS_INSTALLED] = "Mods instalados",
+    [UI_MENU_MODS_NONE] = "Aún no hay mods. Descomprime un mod en la carpeta mods, una carpeta por mod con su carpeta "
+                          "romfs adentro, y reinicia el juego. TKMM también puede exportar ahí sus mods combinados en "
+                          "una carpeta.",
+    [UI_MENU_MODS_OPEN] = "Abrir carpeta de mods",
+    [UI_MENU_MODS_OPEN_DESC] = "Muestra la carpeta de la que el juego carga los mods. Se crea si falta.",
+    [UI_MENU_MODS_ROW_DESC] = "Archivos del juego que sustituye: %u. Archivos nuevos que añade: %u.",
+    [UI_MENU_MODS_OVERRIDDEN] = "%u de sus archivos vienen de %s, que está más arriba en la lista.",
+    [UI_MENU_MODS_MOVE_HINT] = "El botón superior o Ctrl+Arriba lo sube, el botón izquierdo o Ctrl+Abajo lo baja. "
+                               "Cuando dos mods cambian el mismo archivo, gana el de más arriba. Los cambios se "
+                               "aplican tras reiniciar.",
+    [UI_MENU_MODS_EMPTY] = "Esta carpeta no tiene archivos romfs, exefs ni cheats.",
+    [UI_MENU_MODS_SUBSDK] = "Este mod trae su propio código de juego (un plugin subsdk o un main sustituido). El port "
+                            "no puede cargar módulos de código, así que todo el mod queda desactivado.",
+    [UI_MENU_MODS_EXEFS_LATER] = "Este mod parchea el código del juego (exefs). El juego incorpora los parches en el "
+                                 "próximo inicio (una reconstrucción de unos minutos); hasta entonces todo el mod "
+                                 "queda desactivado.",
+    [UI_MENU_MODS_CHEATS] = "Trucos: %d. Actívalos en la pestaña Trucos.",
+    [UI_MENU_MODS_CHEATS_FILE] = "Los trucos para esta versión del juego se leen al iniciar desde cheats\\%s en este "
+                                 "mod.",
+    [UI_MENU_MODS_BAD_NAME] = "El nombre de la carpeta contiene |, que la lista de mods usa entre nombres. Cambia el "
+                              "nombre de la carpeta.",
+    [UI_MENU_MODS_OTHER_VERSION] = "%u de sus archivos son para otra versión del juego y se omiten. Busca una versión "
+                                   "de este mod para tu versión del juego.",
+    [UI_MENU_MODS_UNUSED] = "sin usar",
+    [UI_MENU_MODS_FPS60] = "Parche de 60 FPS",
+    [UI_MENU_MODS_FPS60_DESC] = "El parche propio del port para 60 fotogramas por segundo. Se ajusta con el límite de "
+                                "fotogramas en la pestaña Juego.",
+    [UI_MENU_MODS_RES] = "Parche de resolución",
+    [UI_MENU_MODS_RES_DESC] = "El parche propio del port para resoluciones por encima de 1080p. Se ajusta con la "
+                              "resolución del juego en la pestaña Pantalla.",
+    [UI_MENU_MODS_QUICKMENU] = "Corrección del menú rápido",
+    [UI_MENU_MODS_QUICKMENU_DESC] = "La corrección del port para el fondo negro de los menús de armas, escudos y "
+                                    "materiales a 60 FPS.",
+    [UI_MENU_VOLUME] = "Volumen",
+    [UI_MENU_VOLUME_DESC] = "Volumen general del juego.",
+    [UI_MENU_VOLUME_MUSIC] = "Volumen de música",
+    [UI_MENU_VOLUME_MUSIC_DESC] = "Volumen de la música de fondo.",
+    [UI_MENU_VOLUME_SFX] = "Volumen de efectos",
+    [UI_MENU_VOLUME_SFX_DESC] = "Volumen de los efectos de sonido.",
+    [UI_MENU_VOLUME_VOICE] = "Volumen de voces",
+    [UI_MENU_VOLUME_VOICE_DESC] = "Volumen de las voces de los personajes.",
+    [UI_MENU_AUDIO_CHANNELS] = "Altavoces",
+    [UI_MENU_AUDIO_CHANNELS_DESC] = "Salida estéreo o envolvente 5.1. Automático elige 5.1 cuando la configuración de "
+                                    "altavoces de Windows tiene seis canales o más. Se aplica tras reiniciar.",
+    [UI_MENU_CHANNELS_AUTO] = "Automático",
+    [UI_MENU_CHANNELS_STEREO] = "Estéreo",
+    [UI_MENU_CHANNELS_51] = "Envolvente 5.1",
+    [UI_MENU_AUDIO_DEVICE] = "Dispositivo de salida",
+    [UI_MENU_AUDIO_DEVICE_DESC] = "Dónde suena el sonido. Predeterminado del sistema sigue al dispositivo "
+                                  "predeterminado de Windows. Si el dispositivo elegido se desconecta, se usa el "
+                                  "predeterminado del sistema hasta que vuelva. Se aplica al momento.",
+    [UI_MENU_AUDIO_DEVICE_DEFAULT] = "Predeterminado del sistema",
+    [UI_MENU_MOTION] = "Control por movimiento",
+    [UI_MENU_MOTION_DESC] = "Apuntar con el giroscopio del control.",
+    [UI_MENU_GYRO_CALIBRATION] = "Calibración del giroscopio",
+    [UI_MENU_GYRO_CALIBRATION_DESC] = "Resta la deriva del control en reposo, medida con la fila de calibración de "
+                                      "abajo. Los valores medidos siguen guardados cuando esto está desactivado.",
+    [UI_MENU_GYRO_CALIBRATE] = "Calibrar giroscopio",
+    [UI_MENU_GYRO_CALIBRATE_DESC] = "Mide la deriva del giroscopio en reposo y la elimina. Deja el control apoyado o "
+                                    "mantenlo quieto durante dos segundos.",
+    [UI_MENU_GYRO_CALIBRATE_WAIT] = "Calibrando...",
+    [UI_MENU_GYRO_CALIBRATED] = "%s, calibrado",
+    [UI_MENU_GYRO_CALIBRATE_FAILED] = "Calibración fallida",
+    [UI_MENU_GYRO_CALIBRATE_MOVED] = "El control se movió: mantenlo quieto y vuelve a intentarlo",
+    [UI_MENU_GYRO_AUTO_BIAS] = "Aprender la deriva en reposo",
+    [UI_MENU_GYRO_AUTO_BIAS_DESC] = "Aprende la deriva que queda en el giroscopio cada vez que el control está quieto "
+                                    "sobre una mesa, y la resta. Para una mira del arco que se desliza lentamente "
+                                    "incluso tras calibrar. No aprende de un control sostenido en la mano. Experimental.",
+    [UI_MENU_RUMBLE_STRENGTH] = "Intensidad de la vibración",
+    [UI_MENU_RUMBLE_STRENGTH_DESC] = "Con qué fuerza vibra el control.",
+    [UI_MENU_RUMBLE_CURVE] = "Curva de vibración",
+    [UI_MENU_RUMBLE_CURVE_DESC] = "Los valores bajos refuerzan la vibración débil.",
+    [UI_MENU_RUMBLE_TRIGGERS] = "Vibración de gatillos (Xbox)",
+    [UI_MENU_RUMBLE_TRIGGERS_DESC] = "Hace vibrar también los gatillos de un control Xbox.",
+    [UI_MENU_PAD_LAYOUT] = "Distribución de botones",
+    [UI_MENU_PAD_LAYOUT_DESC] = "Qué botón es A. Nintendo: el derecho, como en Switch. Xbox: el inferior, como está "
+                                "rotulado en un control Xbox (cruz en un control PlayStation). Automático elige Nintendo "
+                                "para controles con rótulos de Nintendo y Xbox para los demás. El control que muestran los "
+                                "avisos del juego se elige en Iconos de botones.",
+    [UI_MENU_PAD_LAYOUT_AUTO] = "Automático",
+    [UI_MENU_PAD_LAYOUT_NINTENDO] = "Nintendo (A a la derecha)",
+    [UI_MENU_PAD_LAYOUT_XBOX] = "Xbox (A abajo)",
+    [UI_MENU_PAD_LAYOUT_IN_USE] = "en uso: %s",
+    [UI_MENU_PROMPTS] = "Iconos de botones",
+    [UI_MENU_PROMPTS_DESC] = "De qué control son los botones que muestran los avisos del juego. Nintendo: los del "
+                             "propio juego. Xbox: LB, RB, LT, RT, Menu, View y una cruz direccional, y A, B, X e Y según el "
+                             "rótulo del botón que oprime la distribución de arriba (con Nintendo (A a la derecha) el "
+                             "botón derecho está rotulado B, así que los avisos de A muestran B). PlayStation: las "
+                             "formas de un control PlayStation (○ × △ □, L1, R1, L2, R2, Options y Share), en el botón "
+                             "que oprime la distribución de arriba. PC: las teclas y botones del mouse de la "
+                             "distribución predeterminada del teclado (E, Mayús, Espacio, clic izquierdo...) y el "
+                             "mouse para la cámara. El juego lee sus avisos al iniciar, así que cambian tras "
+                             "reiniciar. Forman parte de los archivos del juego, así que un botón que reasignes en "
+                             "Controles mantiene su aviso anterior en pantalla.",
+    [UI_MENU_PROMPTS_NINTENDO] = "Nintendo",
+    [UI_MENU_PROMPTS_XBOX] = "Xbox",
+    [UI_MENU_PROMPTS_PLAYSTATION] = "PlayStation",
+    [UI_MENU_PROMPTS_PC] = "PC",
+    [UI_MENU_PROMPTS_MISSING] = "faltan archivos de iconos: vuelve a ejecutar el instalador",
+    [UI_MENU_PROMPTS_FAILED] = "archivos de iconos dañados: vuelve a ejecutar el instalador",
+    [UI_MENU_PROMPTS_RESTART] = "los iconos cambian tras reiniciar",
+    [UI_MENU_PROMPTS_OFF_SHAPE] = "desactivado con una resolución del juego que no es 16:9",
+    [UI_MENU_OUTPUT_RES_NO_LAYOUT] = "no hay distribución para esta forma: vuelve a ejecutar el instalador",
+    [UI_MENU_OUTPUT_RES_PREPARING] = "distribución creándose en segundo plano; se usará en el próximo inicio",
+    [UI_MENU_PROMPTS_PREPARING] = "archivos de iconos creándose en segundo plano; se usarán en el próximo inicio",
+    [UI_MENU_PREPARE_RETRY] = "Reintentar",
+    [UI_MENU_PREPARE_RETRY_DESC] = "Vuelve a iniciar las herramientas del instalador para crear en segundo plano la "
+                                   "distribución de la interfaz o los archivos de iconos de botones que faltan. El "
+                                   "juego sigue funcionando; los usará desde su próximo inicio.",
+    [UI_MENU_SHAPE_PREPARE_FAILED] = "las herramientas del instalador no se iniciaron: vuelve a ejecutar el instalador",
+    [UI_MENU_PROMPTS_OFF_MODS] = "desactivado: un mod RomFS sustituye sus archivos",
+    [UI_MENU_PROMPTS_OFF_PATCHES] = "desactivado mientras TOTK_ROMFS_PATCHES esté definido",
+    [UI_MENU_RESTART] = "Reiniciar ahora",
+    [UI_MENU_RESTART_DESC] = "Cierra el juego y lo vuelve a iniciar con los nuevos iconos. Se pierde el progreso "
+                             "desde tu último guardado.",
+    [UI_MENU_RESTART_CONFIRM] = "¿Reiniciar el juego ahora? Se pierde el progreso desde tu último guardado.",
+    [UI_MENU_RESTART_YES] = "Reiniciar",
+    [UI_MENU_RESTART_SAVING] = "El juego está guardando: podrás reiniciar en un momento.",
+    [UI_MENU_GROUP_STICKS] = "Sticks analógicos",
+    [UI_MENU_LSTICK_DEADZONE] = "Zona muerta del stick izquierdo",
+    [UI_MENU_RSTICK_DEADZONE] = "Zona muerta del stick derecho",
+    [UI_MENU_STICK_DEADZONE_DESC] = "Cuánto debe moverse un stick antes de que el juego lo note. Súbela si el "
+                                    "personaje o la cámara se mueven solos: suelta el stick, lee \"stick ahora\" y pon "
+                                    "la zona muerta unos puntos por encima.",
+    [UI_MENU_STICK_DEADZONE_NOW] = "stick ahora: %.0f %%",
+    [UI_MENU_MOUSE_MODE] = "Cámara con mouse",
+    [UI_MENU_MOUSE_MODE_DESC] = "Directo: la cámara gira según cuánto se mueve el mouse, como en un juego de PC, sin "
+                                  "zona muerta ni curva de stick. Emulación de stick: el mouse actúa como el stick derecho.",
+    [UI_MENU_MOUSE_STICK] = "Emulación de stick",
+    [UI_MENU_MOUSE_DIRECT] = "Directo",
+    [UI_MENU_MENU_CURSOR] = "Mouse en los menús del juego",
+    [UI_MENU_MENU_CURSOR_DESC] = "En los menús propios del juego (pantalla de título, inventario, tiendas, opciones "
+                                 "de diálogo) aparece el puntero: se selecciona el elemento bajo él, el clic "
+                                 "izquierdo confirma y el derecho vuelve atrás. Solo si lo último que se usó fue el "
+                                 "mouse o una tecla, así que con un control los menús no cambian (versión 1.4.3 del "
+                                 "juego).",
+    [UI_MENU_MAP_CLICK] = "Clic izquierdo en el mapa",
+    [UI_MENU_MAP_CLICK_DESC] = "En el mapa de la tableta Sheikah, el botón izquierdo del mouse oprime A en el cursor "
+                               "del mapa en lugar del botón al que está asignado (predeterminado: Y). Requiere \"Mouse "
+                               "en los menús del juego\" (versión 1.4.3 del juego).",
+    [UI_MENU_DIALOGUE_CLICK] = "Clics en diálogos",
+    [UI_MENU_DIALOGUE_CLICK_DESC] = "Mientras hay un cuadro de diálogo abierto, el clic izquierdo oprime B (continúa "
+                                    "el texto y salta su animación) y el clic derecho oprime A, en lugar de los "
+                                    "botones a los que están asignados (predeterminados: Y, que abre el registro de "
+                                    "diálogos, y ZL). Las opciones de diálogo mantienen el puntero: el clic izquierdo "
+                                    "elige (versión 1.4.3 del juego).",
+    [UI_MENU_POINTER_IMAGE] = "Puntero del juego",
+    [UI_MENU_POINTER_IMAGE_DESC] = "Mientras el cursor no está capturado (menús del juego, este menú, tras Esc), la "
+                                   "ventana muestra su propia punta de flecha dorada en lugar de la flecha del "
+                                   "sistema, con un tamaño según la escala de la pantalla.",
+    [UI_MENU_QUICKSAVE] = "Guardado y carga rápidos",
+    [UI_MENU_QUICKSAVE_DESC] = "Una tecla guarda la partida al momento y otra carga ese guardado (las dos filas de "
+                               "abajo: F6 y F7 de forma predeterminada, como en Half-Life), sin ningún menú en "
+                               "pantalla. Solo teclas del teclado y del mouse, solo la versión 1.4.3 del juego. El "
+                               "guardado rápido pide al juego uno de sus propios autoguardados, así que sustituye al "
+                               "autoguardado más antiguo (el guardado manual se conserva), guarda una copia como "
+                               "guardado rápido (la carpeta quicksave del perfil) y muestra \"Partida guardada\" en "
+                               "la parte superior de la imagen. La carga rápida mantiene la imagen en \"Cargando el "
+                               "guardado rápido\" mientras recorre fuera de la vista la lista de carga del juego, y "
+                               "el juego carga el guardado rápido (unos 5 s). Donde el juego no haría un autoguardado "
+                               "por sí mismo (una cinemática, un diálogo), no se guarda nada y la línea lo indica.",
+    [UI_MENU_QUICKSAVE_KEY] = "Tecla de guardado rápido",
+    [UI_MENU_QUICKLOAD_KEY] = "Tecla de carga rápida",
+    [UI_MENU_QUICKSAVE_KEY_DESC] = "La tecla que inicia el guardado rápido o la carga rápida; F6 y F7 de forma "
+                                   "predeterminada, como en Half-Life. Selecciona la celda y oprime cualquier tecla o "
+                                   "botón del mouse; Supr deja esa acción sin tecla. Mientras el guardado rápido está "
+                                   "activado, las dos teclas no hacen nada más (aparece una nota cuando una "
+                                   "asignación también usa la tecla). totk.ini acepta cualquier nombre de tecla de "
+                                   "las asignaciones (quicksave_key, quickload_key).",
+    [UI_QS_SAVED] = "Partida guardada",
+    [UI_QS_LOADING] = "Cargando el guardado rápido",
+    [UI_QS_NOT_NOW] = "El guardado rápido no es posible ahora",
+    [UI_QS_NONE] = "Aún no hay guardado rápido (la tecla de guardado rápido crea uno)",
+    [UI_QS_FAILED] = "El guardado rápido falló: consulta totk.log",
+    [UI_QS_LOAD_FAILED] = "La carga rápida falló: consulta totk.log",
+    [UI_MENU_MOUSE_SENS] = "Sensibilidad de cámara con mouse",
+    [UI_MENU_MOUSE_SENS_DESC] = "Lo rápido que el mouse gira la cámara.",
+    [UI_MENU_WALK_KEY] = "Tecla de caminar",
+    [UI_MENU_WALK_KEY_DESC] = "Mantenla oprimida para inclinar los sticks del teclado solo en parte, de modo que el "
+                              "teclado camine en lugar de correr. La escala de caminar fija cuánto. El control y el "
+                              "mouse no se ven afectados.",
+    [UI_MENU_WALK_KEY_TAKEN] = "también %s",
+    [UI_MENU_WALK_SCALE] = "Escala de caminar",
+    [UI_MENU_WALK_SCALE_DESC] = "La inclinación de los sticks del teclado mientras se mantiene la tecla de caminar. "
+                                "La mitad es caminar, la inclinación completa correr.",
+    [UI_MENU_FREECAM] = "Cámara libre",
+    [UI_MENU_FREECAM_DESC] = "Permite que una combinación o una tecla de abajo separe la vista de Link y la haga "
+                             "volar. Desactivada de forma predeterminada: así el código de cámara del juego funciona "
+                             "tal como se publicó. Se aplica tras reiniciar. Versión 1.4.3 del juego.",
+    [UI_MENU_FREECAM_OFF_NOTE] = "Activa \"Cámara libre\" arriba y reinicia",
+    [UI_MENU_FREECAM_PAD] = "Botones de cámara libre",
+    [UI_MENU_FREECAM_PAD_DESC] = "Botones del control oprimidos a la vez que pasan la vista por tres fases: se separa de "
+                                 "Link y vuela, se queda donde se dejó mientras sigues jugando con Link, y vuelve. "
+                                 "Mientras vuela, el juego no recibe entradas: el stick izquierdo vuela en la "
+                                 "dirección de la vista y de lado, los gatillos arriba y abajo, el stick derecho "
+                                 "gira, y cada presión de L o R divide a la mitad o duplica la velocidad. Con la "
+                                 "vista fija, Link camina hacia donde apunta el stick izquierdo en la pantalla. "
+                                 "Versión 1.4.3 del juego.",
+    [UI_MENU_FREECAM_PAD_V143] = "Solo la versión 1.4.3 del juego",
+    [UI_MENU_FREECAM_KEY] = "Tecla de cámara libre",
+    [UI_MENU_FREECAM_KEY_DESC] = "Una tecla que pasa la vista por las mismas fases: se separa de Link y vuela, se "
+                                 "queda quieta mientras sigues jugando con Link, y vuelve. Mientras vuela: W A S D "
+                                 "vuelan en la dirección de la vista y de lado, las teclas asignadas a ZR y ZL (X y Z "
+                                 "de forma predeterminada) arriba y abajo, el mouse y las flechas giran, y las teclas "
+                                 "asignadas a L y R (Q y R) dividen a la mitad o duplican la velocidad. Versión 1.4.3 "
+                                 "del juego.",
+    [UI_MENU_GROUP_GAMEPLAY_TWEAKS] = "Jugabilidad",
+    [UI_MENU_GAMEPLAY_TWEAKS_ENABLED] = "Ajustes de jugabilidad",
+    [UI_MENU_GAMEPLAY_TWEAKS_ENABLED_DESC] = "Controles con la rueda del mouse para el giro y la distancia de la "
+                                             "Ultramano, el cambio de objetos y armas, y un zoom suave del mapa.",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_ROTATE] = "Giro de Ultramano con rueda",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_ROTATE_DESC] = "Gira directamente con la rueda del mouse los objetos sujetos con la "
+                                               "Ultramano.",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_C_AXIS] = "Ultramano: eje de giro con C",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_C_AXIS_DESC] = "Mantén C mientras usas la rueda para girar los objetos sujetos "
+                                               "alrededor del eje alternativo.",
+    [UI_MENU_GAMEPLAY_ROTATION_SENSITIVITY] = "Sensibilidad de giro de Ultramano",
+    [UI_MENU_GAMEPLAY_ROTATION_SENSITIVITY_DESC] = "Lo rápido que la rueda del mouse gira los objetos sujetos.",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_DISTANCE] = "Distancia de Ultramano con rueda",
+    [UI_MENU_GAMEPLAY_ULTRAHAND_DISTANCE_DESC] = "Clic derecho + rueda del mouse acerca o aleja los objetos sujetos.",
+    [UI_MENU_GAMEPLAY_DISTANCE_SENSITIVITY] = "Sensibilidad de distancia de Ultramano",
+    [UI_MENU_GAMEPLAY_DISTANCE_SENSITIVITY_DESC] = "Lo rápido que la rueda del mouse cambia la distancia del objeto.",
+    [UI_MENU_GAMEPLAY_WEAPON_WHEEL] = "Elegir arma con la rueda",
+    [UI_MENU_GAMEPLAY_WEAPON_WHEEL_DESC] = "Usa la rueda del mouse mientras exploras libremente para cambiar de arma. "
+                                           "Confirma con E.",
+    [UI_MENU_GAMEPLAY_WEAPON_SENSITIVITY] = "Sensibilidad de rueda de armas",
+    [UI_MENU_GAMEPLAY_WEAPON_SENSITIVITY_DESC] = "Pasos de la rueda necesarios para pasar a la siguiente arma.",
+    [UI_MENU_GAMEPLAY_ITEM_WHEEL] = "Rueda en el menú rápido",
+    [UI_MENU_GAMEPLAY_ITEM_WHEEL_DESC] = "Usa la rueda del mouse para recorrer los objetos mientras un menú de "
+                                         "selección rápida está abierto.",
+    [UI_MENU_GAMEPLAY_ITEM_SENSITIVITY] = "Sensibilidad de rueda del menú rápido",
+    [UI_MENU_GAMEPLAY_ITEM_SENSITIVITY_DESC] = "Pasos de la rueda necesarios para avanzar entre los objetos de los "
+                                               "menús de selección rápida.",
+    [UI_MENU_GAMEPLAY_ITEM_AD] = "Navegación A / D en menú rápido",
+    [UI_MENU_GAMEPLAY_ITEM_AD_DESC] = "Oprime A / D para moverte a la izquierda y a la derecha en los menús de "
+                                      "selección rápida.",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM] = "Zoom suave del mapa",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM_DESC] = "Zoom suave con inercia en el mapa de la tableta Sheikah usando la rueda del "
+                                       "mouse.",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM_SENSITIVITY] = "Sensibilidad de zoom del mapa",
+    [UI_MENU_GAMEPLAY_MAP_ZOOM_SENSITIVITY_DESC] = "Lo rápido que la rueda del mouse amplía o reduce el mapa.",
+    [UI_MENU_STICK_SENS] = "Velocidad de cámara con stick",
+    [UI_MENU_STICK_SENS_DESC] = "Multiplica la velocidad de cámara del stick derecho del juego, velocidad máxima "
+                                "incluida, en cada una de las cinco sensibilidades de cámara del juego. El mouse "
+                                "conserva su propio ajuste.",
+    [UI_BINDS_HELP] = "Selecciona una celda y oprime A o Intro, y luego la tecla, el botón del mouse o el botón del "
+                      "control. Supr o X vacía una celda. Una tecla ya en uso se mueve aquí; un botón del control se "
+                      "intercambia con el que sustituye.",
+    [UI_BINDS_COL_KEY1] = "Tecla 1",
+    [UI_BINDS_COL_KEY2] = "Tecla 2",
+    [UI_BINDS_COL_PAD] = "Control",
+    [UI_BINDS_GROUP_BUTTONS] = "Botones",
+    [UI_BINDS_GROUP_MOVE] = "Movimiento",
+    [UI_BINDS_GROUP_CAMERA] = "Cámara",
+    [UI_BINDS_PRESS_KEY] = "Oprime una tecla o un botón del mouse para %s",
+    [UI_BINDS_PRESS_PAD] = "Oprime un botón del control para %s",
+    [UI_BINDS_CANCEL_HINT] = "Esc cancela, o espera %d s",
+    [UI_BINDS_TAKEN] = "%s se quitó de %s",
+    [UI_BINDS_SWAPPED] = "%s intercambiado con %s",
+    [UI_BINDS_RESET] = "Restablecer todos los botones",
+    [UI_BINDS_RESET_DESC] = "Vuelve a las teclas y botones del control predeterminados. La distribución de botones de "
+                            "arriba vuelve a aplicarse: los botones del control reasignados se quedan donde los pusiste "
+                            "hasta este restablecimiento.",
+    [UI_BIND_A] = "A",
+    [UI_BIND_B] = "B",
+    [UI_BIND_X] = "X",
+    [UI_BIND_Y] = "Y",
+    [UI_BIND_LCLICK] = "Oprimir stick izquierdo",
+    [UI_BIND_RCLICK] = "Oprimir stick derecho",
+    [UI_BIND_L] = "L",
+    [UI_BIND_R] = "R",
+    [UI_BIND_ZL] = "ZL",
+    [UI_BIND_ZR] = "ZR",
+    [UI_BIND_PLUS] = "Más",
+    [UI_BIND_MINUS] = "Menos",
+    [UI_BIND_LEFT] = "Cruz direccional izquierda",
+    [UI_BIND_UP] = "Cruz direccional arriba",
+    [UI_BIND_RIGHT] = "Cruz direccional derecha",
+    [UI_BIND_DOWN] = "Cruz direccional abajo",
+    [UI_BIND_LSTICK_LEFT] = "Moverse a la izquierda",
+    [UI_BIND_LSTICK_UP] = "Avanzar",
+    [UI_BIND_LSTICK_RIGHT] = "Moverse a la derecha",
+    [UI_BIND_LSTICK_DOWN] = "Retroceder",
+    [UI_BIND_RSTICK_LEFT] = "Cámara a la izquierda",
+    [UI_BIND_RSTICK_UP] = "Cámara arriba",
+    [UI_BIND_RSTICK_RIGHT] = "Cámara a la derecha",
+    [UI_BIND_RSTICK_DOWN] = "Cámara abajo",
+    [UI_BIND_DESC_A] = "Interactuar, recoger, hablar.",
+    [UI_BIND_DESC_B] = "Correr, cancelar, volver.",
+    [UI_BIND_DESC_X] = "Saltar.",
+    [UI_BIND_DESC_Y] = "Atacar.",
+    [UI_BIND_DESC_LCLICK] = "Agacharse.",
+    [UI_BIND_DESC_RCLICK] = "Vista en primera persona.",
+    [UI_BIND_DESC_L] = "Habilidades.",
+    [UI_BIND_DESC_R] = "Lanzar un arma.",
+    [UI_BIND_DESC_ZL] = "Escudo, fijar objetivo.",
+    [UI_BIND_DESC_ZR] = "Arco.",
+    [UI_BIND_DESC_PLUS] = "Menú, inventario.",
+    [UI_BIND_DESC_MINUS] = "Mapa.",
+    [UI_BIND_DESC_DPAD] = "Selección rápida.",
+    [UI_BIND_DESC_MOVE] = "Mueve a Link como el stick izquierdo. El stick izquierdo del control también funciona "
+                          "siempre.",
+    [UI_BIND_DESC_CAMERA] = "Gira la cámara como el stick derecho. El mouse y el stick derecho del control también "
+                            "funcionan siempre.",
+    [UI_BIND_SHAKE] = "Agitar el stick de cámara",
+    [UI_BIND_DESC_SHAKE] = "Mueve el stick derecho a izquierda y derecha para el juego: separa una pieza unida de lo "
+                           "que sujeta la Ultramano. Mantener oprimida la tecla sigue agitando.",
+    [UI_KEY_SPACE] = "Espacio",
+    [UI_KEY_TAB] = "Tab",
+    [UI_KEY_LSHIFT] = "Mayús izq.",
+    [UI_KEY_LCTRL] = "Ctrl izq.",
+    [UI_KEY_UP] = "Flecha arriba",
+    [UI_KEY_DOWN] = "Flecha abajo",
+    [UI_KEY_LEFT] = "Flecha izquierda",
+    [UI_KEY_RIGHT] = "Flecha derecha",
+    [UI_KEY_MOUSE_L] = "Botón izquierdo",
+    [UI_KEY_MOUSE_R] = "Botón derecho",
+    [UI_KEY_MOUSE_M] = "Botón central",
+    [UI_KEY_MOUSE_X1] = "Mouse 4",
+    [UI_KEY_MOUSE_X2] = "Mouse 5",
+    [UI_KEY_ENTER] = "Intro",
+    [UI_KEY_BACKSPACE] = "Retroceso",
+    [UI_KEY_RSHIFT] = "Mayús der.",
+    [UI_KEY_RCTRL] = "Ctrl der.",
+    [UI_KEY_LALT] = "Alt",
+    [UI_KEY_CAPSLOCK] = "Bloq Mayús",
+    [UI_KEY_INSERT] = "Insert",
+    [UI_KEY_DELETE] = "Supr",
+    [UI_KEY_HOME] = "Inicio",
+    [UI_KEY_END] = "Fin",
+    [UI_KEY_PAGEUP] = "Re Pág",
+    [UI_KEY_PAGEDOWN] = "Av Pág",
+    [UI_KEY_NUM_FMT] = "Num %s",
+    [UI_PAD_SOUTH] = "Botón inferior",
+    [UI_PAD_EAST] = "Botón derecho",
+    [UI_PAD_WEST] = "Botón izquierdo",
+    [UI_PAD_NORTH] = "Botón superior",
+    [UI_PAD_LSTICK] = "Stick izquierdo",
+    [UI_PAD_RSTICK] = "Stick derecho",
+    [UI_PAD_L] = "Botón superior izquierdo",
+    [UI_PAD_R] = "Botón superior derecho",
+    [UI_PAD_START] = "Start",
+    [UI_PAD_BACK] = "Atrás",
+    [UI_PAD_DPAD_LEFT] = "Cruz direccional izquierda",
+    [UI_PAD_DPAD_UP] = "Cruz direccional arriba",
+    [UI_PAD_DPAD_RIGHT] = "Cruz direccional derecha",
+    [UI_PAD_DPAD_DOWN] = "Cruz direccional abajo",
+    [UI_PAD_ZL] = "Gatillo izquierdo",
+    [UI_PAD_ZR] = "Gatillo derecho",
+    [UI_PAD_LPADDLE1] = "Botón trasero izquierdo",
+    [UI_PAD_RPADDLE1] = "Botón trasero derecho",
+    [UI_PAD_LPADDLE2] = "Botón trasero izquierdo 2",
+    [UI_PAD_RPADDLE2] = "Botón trasero derecho 2",
+    [UI_PAD_TOUCHPAD] = "Oprimir panel táctil",
+    [UI_PAD_CROSS] = "Cruz",
+    [UI_PAD_CIRCLE] = "Círculo",
+    [UI_PAD_SQUARE] = "Cuadrado",
+    [UI_PAD_TRIANGLE] = "Triángulo",
+    [UI_MENU_AMIIBO_DIR] = "Carpeta de amiibo",
+    [UI_MENU_AMIIBO_OPEN] = "Abrir",
+    [UI_MENU_AMIIBO_DEFAULT_DIR] = "Carpeta predeterminada",
+    [UI_MENU_AMIIBO_REFRESH] = "Actualizar",
+    [UI_MENU_AMIIBO_PICK] = "Volcados de amiibo (archivos .bin o .nfc de 540 bytes):",
+    [UI_MENU_AMIIBO_NO_DIR] = "No se puede abrir la carpeta %s",
+    [UI_MENU_AMIIBO_READER] = "Lector NFC",
+    [UI_MENU_AMIIBO_STATE] = "Lector:",
+    [UI_MENU_AMIIBO_STATE_IDLE] = "listo",
+    [UI_MENU_AMIIBO_STATE_SEARCHING] = "el juego espera un amiibo",
+    [UI_MENU_AMIIBO_STATE_FOUND] = "amiibo en el lector",
+    [UI_MENU_AMIIBO_STATE_MOUNTED] = "el juego está leyendo el amiibo",
+    [UI_MENU_AMIIBO_STATE_OFF] = "desactivado",
+    [UI_MENU_AMIIBO_FILE] = "Archivo elegido:",
+    [UI_MENU_AMIIBO_NO_FILE] = "(ningún archivo elegido)",
+    [UI_MENU_AMIIBO_TAP] = "Acercar el amiibo",
+    [UI_MENU_AMIIBO_REMOVE] = "Retirar el amiibo",
+    [UI_MENU_AMIIBO_AUTO_REMOVE] = "Retirar el amiibo solo tras acercarlo",
+    [UI_MENU_AMIIBO_HOLD] = "Tiempo en el lector",
+    [UI_MENU_AMIIBO_SECONDS] = "%.1f s",
+    [UI_MENU_AMIIBO_TAG] = "Amiibo en el lector:",
+    [UI_MENU_AMIIBO_NO_TAG] = "No hay ningún amiibo en el lector.",
+    [UI_MENU_AMIIBO_TAG_FILE] = "Archivo: %s",
+    [UI_MENU_AMIIBO_TAG_ID] = "Personaje %s, serie %02x, número %04x, tipo %02x",
+    [UI_MENU_AMIIBO_TAG_UID] = "UID: %s",
+    [UI_MENU_AMIIBO_READY] = "Listo",
+    [UI_MENU_AMIIBO_TAPPED] = "Acercado: %s",
+    [UI_MENU_AMIIBO_LOAD_FAILED] = "No es un volcado de amiibo (NTAG215 de 540 bytes): %s",
+    [UI_MENU_AMIIBO_REMOVED] = "Amiibo retirado",
+    [UI_MENU_AMIIBO_STATUS] = "Estado: %s",
+    [UI_MENU_MENU_LANG] = "Idioma del menú",
+    [UI_MENU_MENU_LANG_DESC] = "Idioma de este menú y del indicador de rendimiento.",
+    [UI_MENU_MENU_LANG_AUTO] = "Automático (según Windows)",
+    [UI_MENU_DISCORD_RPC] = "Discord Rich Presence",
+    [UI_MENU_DISCORD_RPC_DESC] = "Muestra \"Jugando a TotK Recomp\" con el tiempo de juego en tu estado de Discord "
+                                 "mientras el juego está abierto. discord_app_id y discord_image en totk.ini eligen "
+                                 "la aplicación.",
+    [UI_MENU_ADV_WARNING] = "Estos ajustes son para pruebas y resolución de problemas. Cámbialos solo si sabes por "
+                            "qué.",
+    [UI_MENU_GROUP_SCHED] = "Planificación",
+    [UI_MENU_GROUP_SHADERS] = "Shaders y pipelines",
+    [UI_MENU_GROUP_TEXMEM] = "Texturas y memoria",
+    [UI_MENU_GROUP_FIXES] = "Correcciones de renderizado",
+    [UI_MENU_GROUP_VULKAN] = "Vulkan",
+    [UI_MENU_GROUP_DIAG] = "Diagnóstico",
+    [UI_MENU_ASYNC_PREEMPT] = "Apropiación de núcleos virtuales",
+    [UI_MENU_ASYNC_PREEMPT_DESC] = "Permite que un hilo del juego interrumpa a otro en el mismo núcleo virtual.",
+    [UI_MENU_PREEMPT_OFF] = "No",
+    [UI_MENU_PREEMPT_ON] = "Sí",
+    [UI_MENU_PREEMPT_INHERIT] = "Solo herencia",
+    [UI_MENU_REPLAY_ASYNC] = "Preparación de fotogramas GPU en su propio hilo",
+    [UI_MENU_REPLAY_ASYNC_DESC] = "Prepara los fotogramas para la GPU en un hilo aparte en lugar del hilo del juego. "
+                                  "Añade hasta un fotograma de latencia.",
+    [UI_MENU_REPLAY_WORKERS] = "Hilos de preparación GPU",
+    [UI_MENU_REPLAY_WORKERS_DESC] = "Registra los fotogramas grandes para la GPU en varios hilos a la vez. Ayuda "
+                                    "cuando la CPU limita los fotogramas por segundo; requiere 8 procesadores lógicos "
+                                    "o más. No: registra en un solo hilo.",
+    [UI_MENU_REPLAY_WORKERS_NOW] = "ahora: %s",
+    [UI_MENU_TIMER_1MS] = "Temporizador de Windows de 1 ms",
+    [UI_MENU_TIMER_1MS_DESC] = "Sube la resolución del temporizador del sistema a 1 ms para un ritmo de fotogramas "
+                               "más estable.",
+    [UI_MENU_PIPE_WAIT] = "Gestión de draws en espera",
+    [UI_MENU_PIPE_WAIT_DESC] = "Predeterminado mantiene la planificación actual con un worker reservado para draws en "
+                               "espera; Antiguo (draw) usa la planificación anterior.",
+    [UI_MENU_PIPE_WAIT_DEFAULT] = "Predeterminado",
+    [UI_MENU_PIPE_WAIT_DRAW] = "Antiguo (draw)",
+    [UI_MENU_PIPE_SKIP] = "Draws omitidos mientras se crea un pipeline",
+    [UI_MENU_PIPE_SKIP_DESC] = "Qué draws se descartan en lugar de esperar a su pipeline.",
+    [UI_MENU_PIPE_SKIP_STRICT] = "Estricto",
+    [UI_MENU_PIPE_SKIP_ANY] = "Cualquiera",
+    [UI_MENU_PIPE_SKIP_FULLSCREEN] = "Pasadas a pantalla completa",
+    [UI_MENU_LIB_PREBUILD] = "Precompilación de bibliotecas de etapas",
+    [UI_MENU_LIB_PREBUILD_DESC] = "Compila de antemano en segundo plano las bibliotecas de etapas de shaders.",
+    [UI_MENU_LIB_PREBUILD_THREADS] = "Hilos de precompilación de bibliotecas",
+    [UI_MENU_LIB_PREBUILD_THREADS_DESC] = "Hilos usados para la precompilación; Automático elige un número según tu "
+                                          "CPU.",
+    [UI_MENU_PIPE_PREBUILD] = "Precompilación de pipelines",
+    [UI_MENU_PIPE_PREBUILD_DESC] = "Compila de antemano los pipelines conocidos.",
+    [UI_MENU_PREWARM_XLATE] = "Precalentamiento del traductor",
+    [UI_MENU_PREWARM_XLATE_DESC] = "Hilos que traducen los shaders conocidos al iniciar; Automático usa la mitad de "
+                                   "los hilos de la CPU, 16 como máximo.",
+    [UI_MENU_GPL] = "Biblioteca de pipelines gráficos",
+    [UI_MENU_GPL_DESC] = "Usa la extensión de bibliotecas de pipelines de Vulkan; desactívala si tu controlador falla "
+                         "con ella.",
+    [UI_MENU_ASTC] = "Descodificación de texturas ASTC",
+    [UI_MENU_ASTC_DESC] = "Dónde se descodifican las texturas comprimidas ASTC.",
+    [UI_MENU_ASTC_AUTO] = "Automático",
+    [UI_MENU_ASTC_GPU] = "Shader de GPU",
+    [UI_MENU_ASTC_NATIVE] = "Nativo",
+    [UI_MENU_ASTC_CPU] = "CPU",
+    [UI_MENU_MEMORY] = "Modo de memoria GPU",
+    [UI_MENU_MEMORY_DESC] = "Cómo se comparte la memoria del juego con la GPU.",
+    [UI_MENU_MEMORY_AUTO] = "Automático",
+    [UI_MENU_MEMORY_IMPORT] = "Importar",
+    [UI_MENU_MEMORY_MIRROR] = "Espejo",
+    [UI_MENU_MEMORY_VERIFY] = "Verificar",
+    [UI_MENU_TEX_ALIAS] = "Alias de texturas",
+    [UI_MENU_TEX_ALIAS_DESC] = "Una textura nueva creada sobre la memoria de una textura viva empieza con ese "
+                               "contenido en lugar de vacía.",
+    [UI_MENU_TEX_VRAM_PRESSURE] = "Límite de memoria de texturas",
+    [UI_MENU_TEX_VRAM_PRESSURE_DESC] = "Porcentaje de memoria de video por encima del cual se descartan las texturas "
+                                       "que el juego liberó (vuelven del almacenamiento cuando se usan de nuevo). 0 "
+                                       "las conserva.",
+    [UI_MENU_ASTC_BC] = "Comprimir ASTC a BC3",
+    [UI_MENU_ASTC_BC_DESC] = "Con el descodificador de GPU: recodifica las texturas ASTC descodificadas a BC3, una "
+                             "cuarta parte de la memoria de video. Para GPU de 4 GB o menos; las texturas se ven algo "
+                             "más pixeladas.",
+    [UI_MENU_LOD_GUARD] = "Protección de LOD",
+    [UI_MENU_LOD_GUARD_DESC] = "Evita que los objetos parpadeen en el lugar equivocado o que la lejanía se vea plana "
+                               "durante un fotograma, esperando a que el juego termine de reescribir los datos de "
+                               "nivel de detalle antes de que la GPU los lea.",
+    [UI_MENU_FIX_C0] = "Corrección del búfer de constantes",
+    [UI_MENU_FIX_C0_DESC] = "Rellena el banco de constantes c0 reservado al controlador (tamaños de almacenamiento, "
+                            "tamaño de dispatch, tamaño de punto, instancia base) en lugar de leer ceros.",
+    [UI_MENU_FIX_ZERO] = "Poner a cero la memoria GPU nueva",
+    [UI_MENU_FIX_ZERO_DESC] = "Los nuevos bloques de memoria GPU empiezan llenos de ceros, como la memoria de Switch.",
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "Partículas tras DLAA",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Con DLAA, el polvo y otras partículas se dibujan sobre la imagen "
+                                        "que DLSS ya suavizó, como las dibuja el juego sin DLSS: las partículas "
+                                          "pequeñas en la niebla (santuarios) ya no desaparecen ni dejan estelas. La niebla y las nubes "
+                                          "siguen pasando por DLSS, por lo que los contornos lejanos sobre el cielo se mantienen nítidos. No: "
+                                          "DLSS también procesa las partículas, como antes. Solo en el modo DLAA; los "
+                                        "modos DLSS con escalado siempre los procesan. Se aplica al momento.",
+    [UI_MENU_DLSS_FIXED_EXPOSURE] = "Exposición fija de DLSS",
+    [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS toma el brillo de la imagen del juego tal cual en lugar de estimar la "
+                                         "exposición en cada fotograma: en escenas oscuras (el Subsuelo) las grandes "
+                                         "zonas con niebla ya no se oscurecen ni se aclaran durante un fotograma "
+                                         "mientras se mueve la cámara. No: DLSS estima la exposición por sí mismo, "
+                                         "como antes. Se aplica al momento.",
+    [UI_MENU_BIND_SKIP] = "Omitir enlaces repetidos",
+    [UI_MENU_BIND_SKIP_DESC] = "Optimización: omite los enlaces que no cambiaron.",
+    [UI_MENU_SHADER_MEMO] = "Memoria de shaders",
+    [UI_MENU_SHADER_MEMO_DESC] = "Optimización: recuerda las búsquedas de shaders.",
+    [UI_MENU_PIPE_MEMO] = "Memoria de pipelines",
+    [UI_MENU_PIPE_MEMO_DESC] = "Optimización: reutiliza el pipeline del draw anterior cuando su estado se repite.",
+    [UI_MENU_TEX_MEMO] = "Memoria de enlaces de texturas",
+    [UI_MENU_TEX_MEMO_DESC] = "Optimización: recuerda los descriptores de texturas entre draws.",
+    [UI_MENU_DESC_TEMPLATE] = "Plantillas de descriptores",
+    [UI_MENU_DESC_TEMPLATE_DESC] = "Optimización: actualiza los descriptores en bloque.",
+    [UI_MENU_PUSH_SKIP] = "Omitir push constants repetidas",
+    [UI_MENU_PUSH_SKIP_DESC] = "Optimización: omite las push constants que no cambiaron.",
+    [UI_MENU_SPLIT_DRAWS] = "Envío anticipado a la GPU",
+    [UI_MENU_SPLIT_DRAWS_DESC] = "Envía el trabajo de GPU por partes cada N draws entre pasadas para que la GPU "
+                                 "empiece antes; 0 lo desactiva.",
+    [UI_MENU_VK_VALIDATION] = "Capa de validación",
+    [UI_MENU_VK_VALIDATION_DESC] = "Comprueba cada llamada a Vulkan y ralentiza mucho el juego.",
+    [UI_MENU_VK_VALIDATION_MISSING] = "La capa de validación no está instalada.",
+    [UI_MENU_VK_DYN_VERTEX] = "Estado de vértices dinámico",
+    [UI_MENU_VK_DYN_VERTEX_DESC] = "Fuerza la entrada de vértices dinámica activada o desactivada; el valor "
+                                   "predeterminado depende de la GPU.",
+    [UI_MENU_VK_DYN_A2C] = "Alpha to coverage dinámico",
+    [UI_MENU_VK_DYN_A2C_DESC] = "Fuerza el alpha to coverage dinámico activado o desactivado. Predeterminado: "
+                                "desactivado con el controlador de AMD para RDNA 2 y anteriores, que con él dibuja a "
+                                "los personajes en negro; activado en los demás.",
+    [UI_MENU_VK_SUBGROUP_PIN] = "Fijar tamaño de subgrupo",
+    [UI_MENU_VK_SUBGROUP_PIN_DESC] = "Fija el tamaño de subgrupo de los shaders.",
+    [UI_MENU_TRACE] = "Registro de rendimiento",
+    [UI_MENU_TRACE_DESC] = "Escribe los tiempos de fotograma en un archivo.",
+    [UI_MENU_FLIGHT] = "Caja negra",
+    [UI_MENU_FLIGHT_DESC] = "Guarda un historial corto y lo escribe cuando un fotograma se congela.",
+    [UI_MENU_FLIGHT_SPIKE_MS] = "Umbral de congelación (ms)",
+    [UI_MENU_FLIGHT_SPIKE_MS_DESC] = "Tiempo de fotograma que cuenta como congelación.",
+    [UI_MENU_PASS_CRUMBS] = "Marcas de pasadas GPU",
+    [UI_MENU_PASS_CRUMBS_DESC] = "Tras un fallo de la GPU, el registro indica la pasada de renderizado que se estaba "
+                                 "ejecutando. Automático: solo AMD. Sí: también NVIDIA, con un pequeño coste.",
+    [UI_MENU_INPUT_RECORD] = "Grabación de entradas",
+    [UI_MENU_INPUT_RECORD_DESC] = "Escribe tus entradas en un archivo para informes de errores.",
+    [UI_MENU_OPEN_LOG] = "Abrir carpeta de registros",
+    [UI_MENU_OPEN_LOG_DESC] = "Muestra la carpeta con los archivos de registro.",
+    [UI_MENU_COPY_INFO] = "Copiar información del sistema",
+    [UI_MENU_COPY_INFO_DESC] = "Copia la GPU, el controlador, la CPU, la RAM y los ajustes cambiados al portapapeles.",
+    [UI_MENU_COPY_INFO_DONE] = "Copiado",
+    [UI_MENU_ACTION_FAILED] = "no funcionó",
+    [UI_MENU_RESET] = "Restablecer todos los ajustes",
+    [UI_MENU_RESET_DESC] = "Se aplica a todas las pestañas.",
+    [UI_MENU_RESET_CONFIRM] = "¿Restablecer todos los ajustes a sus valores predeterminados?",
+    [UI_MENU_RESET_YES] = "Restablecer",
+    [UI_MENU_RESET_NO] = "Cancelar",
+    [UI_MENU_OV_FPS] = "%.0f FPS",
+    [UI_MENU_OV_FRAME_MS] = "%.1f ms",
+    [UI_MENU_OV_GAME_PCT] = "juego %.0f%%",
+    [UI_MENU_OV_MAX_MS] = "máx. %.1f ms",
+    [UI_MENU_OV_FPS_LABEL] = "FPS",
+    [UI_MENU_OV_FRAME_LABEL] = "Fotograma",
+    [UI_MENU_OV_FMT_FPS] = "%.0f",
+    [UI_MENU_OV_LOW1] = "1%% mín. %.0f",
+    [UI_MENU_OV_LOW01] = "0.1%% mín. %.0f",
+    [UI_MENU_OV_GPU] = "GPU",
+    [UI_MENU_OV_CPU] = "CPU",
+    [UI_MENU_OV_RAM] = "RAM",
+    [UI_MENU_OV_VRAM] = "VRAM",
+    [UI_MENU_OV_TEMP] = "Temperatura",
+    [UI_MENU_OV_POWER] = "Consumo",
+    [UI_MENU_OV_CLOCK] = "Frecuencia",
+    [UI_MENU_OV_NONE] = "-",
+    [UI_MENU_OV_REPLAY] = "Preparación de fotogramas GPU",
+    [UI_MENU_OV_GPU_TIME] = "GPU ocupada por fotograma",
+    [UI_MENU_OV_PIPE_WAIT] = "Esperas de pipelines",
+    [UI_MENU_OV_SHADER_WAIT] = "Esperas de shaders",
+    [UI_MENU_OV_TEX_UPLOADS] = "Subidas de texturas",
+    [UI_MENU_OV_FMT_PCT] = "%.0f%%",
+    [UI_MENU_OV_FMT_TEMP] = "%.0f °C",
+    [UI_MENU_OV_FMT_POWER] = "%.0f W",
+    [UI_MENU_OV_FMT_MHZ] = "%.0f MHz",
+    [UI_MENU_OV_FMT_GB] = "%.1f GB",
+    [UI_MENU_OV_FMT_GB_OF] = "/ %.1f GB",
+    [UI_MENU_OV_GAME_GB] = "juego %.1f GB",
+    [UI_MENU_OV_FMT_MS] = "%.2f ms",
+    [UI_MENU_OV_PER_FRAME] = "%.1f por fotograma",
+    [UI_MENU_OV_WINDOW] = "Ventana",
+    [UI_MENU_OV_OUTPUT] = "Imagen del juego",
+    [UI_MENU_OV_SCENE] = "Escena 3D",
+    [UI_MENU_OV_UPSCALER] = "Escalador 3D",
+    [UI_MENU_OV_SCALING] = "Escalado",
+    [UI_MENU_OV_LIMIT] = "Límite de fotogramas",
+    [UI_MENU_OV_PRESENT] = "Presentación",
+    [UI_MENU_OV_SHOWN] = "Mostrados",
+    [UI_MENU_OV_FMT_SIZE] = "%ux%u",
+    [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
+    [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, nitidez %d%%",
+    [UI_MENU_OV_SCALE_NONE] = "ninguno (1:1)",
+    [UI_MENU_OV_SCALE_BILINEAR] = "bilineal",
+    [UI_MENU_OV_SCALE_DOWN] = "bilineal (FSR solo amplía)",
+    [UI_MENU_TAB_CHEATS] = "Trucos",
+    [UI_MENU_CHEATS_NONE] = "No hay trucos para esta versión del juego. Los trucos de un mod son un archivo de trucos "
+                            "de Atmosphère en su carpeta cheats, con el nombre de la build del juego: "
+                            "mods\\<mod>\\cheats\\%s. Reinicia el juego para leerlos. Para los trucos que cambian el "
+                            "código del juego, el juego se reconstruye al iniciar (unos minutos).",
+    [UI_MENU_CHEATS_MOD] = "%s: %d trucos",
+    [UI_MENU_CHEAT_CODE_DESC] = "Cambia el código del juego. Se activa al momento.",
+    [UI_MENU_CHEAT_KEY_DESC] = "Cambia el código del juego mientras mantienes %s. Se activa al momento.",
+    [UI_MENU_CHEAT_DATA_DESC] = "Escribe en la memoria del juego en cada fotograma mientras está activado.",
+    [UI_MENU_CHEAT_MASTER] = "siempre activo",
+    [UI_MENU_CHEAT_MASTER_DESC] = "El código maestro del archivo: siempre está activo.",
+    [UI_MENU_CHEAT_RESTORE] = "no hace falta",
+    [UI_MENU_CHEAT_RESTORE_DESC] = "Solo vuelve a escribir el código original del juego. Desactivar un truco ya lo "
+                                   "hace.",
+    [UI_MENU_CHEAT_REBUILD] = "tras la reconstrucción",
+    [UI_MENU_CHEAT_REBUILD_DESC] = "Este truco cambia el código del juego y es nuevo o se editó desde que se "
+                                   "construyó el juego. El juego lo incorpora en el próximo inicio (unos minutos), o "
+                                   "usa Reconstruir el juego ahora.",
+    [UI_MENU_CHEAT_UNSUPPORTED] = "no compatible",
+    [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "Este truco no se puede usar con esta versión del juego:",
+    [UI_MENU_CHEATS_REBUILD] = "Reconstruir el juego ahora",
+    [UI_MENU_CHEATS_REBUILD_DESC] = "Algunos trucos cambian el código del juego y no están incorporados: son nuevos o "
+                                    "se editaron, o su última reconstrucción falló o se canceló. Cierra el juego; el "
+                                    "instalador los incorpora (unos minutos) y vuelve a iniciar el juego. Se pierde "
+                                    "el progreso desde tu último guardado.",
+    [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "Este mod parchea el código del juego (exefs) de una forma que el port no "
+                                       "puede aplicar, así que todo el mod queda desactivado. %s",
+    [UI_MENU_MODS_EXEFS_OTHER] = "Sus parches de código (exefs) son para otra versión del juego.",
+    [UI_MENU_MODS_EXEFS_ON] = "Parches de código en uso: %d archivos.",
+    [UI_MENU_MODS_REPLACES_BUILTIN] = "Parches de código en uso: %d archivos. Sustituyen al parche propio del port "
+                                      "%s, que queda desactivado mientras este mod esté activo.",
+    [UI_MENU_MODS_CODE_SKIPPED] = "Su propio código de juego (%s) no se carga: se usa el resto del mod. Desactiva el "
+                                  "mod si el juego se comporta mal con él.",
+    [UI_MENU_MODS_PLUGIN_ON] = "Su plugin funciona: %d enganches en el código del juego.",
+    [UI_MENU_MODS_PLUGIN_REFUSED] = "Su plugin %s no puede funcionar en el port: %s.",
+    [UI_MENU_MODS_PLUGIN_STAYS_OFF] = "Todo el mod queda desactivado. Su interruptor \"Usar ... sin su código\" de "
+                                      "abajo usa el resto.",
+    [UI_MENU_MODS_PLUGIN_OFF] = "Su plugin queda desactivado esta vez: se inició de forma distinta que en la "
+                                "reconstrucción (%s). El juego lo reconstruye en el próximo inicio.",
+    [UI_MENU_MODS_WITHOUT_CODE] = "Usar %s sin su código",
+    [UI_MENU_MODS_WITHOUT_CODE_DESC] = "El mod de arriba trae código que el port no puede ejecutar: su propio código "
+                                       "de juego (un plugin subsdk o un main sustituido) o parches de código (exefs) "
+                                       "que el port no puede aplicar. No: todo el mod queda desactivado. Sí: ese "
+                                       "código se omite y se usa el resto del mod: sus archivos RomFS, sus trucos y "
+                                       "los parches de código que funcionan. Sus archivos pueden contar con el código "
+                                       "que falta; vuelve a desactivarlo si el juego se comporta mal. Se aplica en el "
+                                       "próximo inicio.",
+    [UI_MENU_MODS_WITHOUT_CODE_ALL] = "Activado para todos los mods: mods_without_code = 1 en totk.ini.",
+    [UI_MENU_MODS_EXEFS_SKIPPED] = "%u de sus archivos de parches de código (exefs) no se pueden aplicar y se omiten: "
+                                   "se usa el resto del mod. %s",
+    [UI_MENU_MODS_OVERRIDES_FILES] = "%u de sus archivos sustituyen a los de %s, que está más abajo en la lista.",
+    [UI_MENU_MODS_DATA_OVERRIDDEN] = "%u bytes de sus cambios en los datos del juego vienen de %s, que está más "
+                                     "arriba en la lista.",
+    [UI_MENU_MODS_OVERRIDES_DATA] = "%u bytes de sus cambios en los datos del juego sustituyen a los de %s, que está "
+                                    "más abajo en la lista.",
+    [UI_MENU_MODS_CODE_OVERRIDDEN] = "%u de sus puntos de parche de código quedan anulados por %s, que está más "
+                                     "arriba en la lista.",
+    [UI_MENU_MODS_OVERRIDES_CODE] = "Anula %u puntos de parche de código de %s, que está más abajo en la lista.",
+};
+
 // Italian
 static const char *const text_it[UI_TEXT_COUNT] = {
     SWKBD("Inserimento testo", "Inserisci un nome", "Cavallo", "OK", "Annulla", "Controller: A = OK, B = Annulla"),
@@ -9622,17 +10563,43 @@ SWKBD_ONLY(text_zh_hant, "文字輸入", "請輸入名字", "馬兒", "確定", 
 
 static const Row rows[] = {
     {"en", text_en}, {"ja", text_ja}, {"fr", text_fr}, {"de", text_de}, {"it", text_it}, {"es", text_es},
+    {"es-419", text_es_419},
     {"nl", text_nl}, {"pt", text_pt}, {"ru", text_ru}, {"zh-Hans", text_zh_hans}, {"zh-Hant", text_zh_hant},
     {"ko", text_ko}, {"pt-BR", text_pt_br}, {"vi", text_vi},
 };
 
+// The region precedes extensions/private use; an optional script is not a region.
+static int locale_region(const char *tag, const char *language, char region[4]) {
+    size_t n = strcspn(tag, "-_.@");
+    if (n != 2 || tolower((unsigned char)tag[0]) != language[0] ||
+        tolower((unsigned char)tag[1]) != language[1]) return 0;
+    region[0] = 0;
+    for (const char *p = tag + n; *p && *p != '.' && *p != '@';) {
+        p += strspn(p, "-_");
+        size_t k = strcspn(p, "-_.@");
+        if (k == 1) break;
+        if ((k == 2 && isalpha((unsigned char)p[0]) && isalpha((unsigned char)p[1])) ||
+            (k == 3 && isdigit((unsigned char)p[0]) && isdigit((unsigned char)p[1]) &&
+             isdigit((unsigned char)p[2]))) {
+            for (size_t i = 0; i < k; i++) region[i] = (char)tolower((unsigned char)p[i]);
+            region[k] = 0;
+            break;
+        }
+        p += k;
+    }
+    return 1;
+}
+
 const char *ui_text_lang(const char *code) {
     static const struct { const char *code, *lang; } map[] = {
-        {"en-US", "en"}, {"en-GB", "en"}, {"fr-CA", "fr"}, {"es-419", "es"},
+        {"en-US", "en"}, {"en-GB", "en"}, {"fr-CA", "fr"}, {"es-ES", "es"},
         {"zh-CN", "zh-Hans"}, {"zh-TW", "zh-Hant"},
     };
     for (size_t i = 0; i < sizeof map / sizeof *map; i++)
         if (!strcmp(code, map[i].code)) return map[i].lang;
+    // No region, or Spain: es. Every other actual region: the Latin American row.
+    char region[4];
+    if (locale_region(code, "es", region)) return *region && strcmp(region, "es") ? "es-419" : "es";
     return code;
 }
 

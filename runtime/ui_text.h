@@ -344,6 +344,6 @@ typedef struct { const char *code; UiTextId name; } UiGameLang;
 int ui_text_game_langs(int game_version, UiGameLang *out, int max);
 
 // Menu text: ui_text_in(menu language, id). The menu language is TOTK_MENU_LANG ("en", "ru", "pt-BR", "zh-Hans", "de",
-// "fr", "es", "it", "nl", "ja", "ko"); unset, the system UI language when the catalog has menu text for it, Simplified
+// "fr", "es", "es-419", "it", "nl", "ja", "ko", "vi"); unset, the system UI language when the catalog has menu text for it, Simplified
 // Chinese for Traditional Chinese, else English. Follows a live change of the setting.
 const char *menu_text(UiTextId id);
