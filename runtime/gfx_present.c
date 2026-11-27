@@ -496,6 +496,12 @@ static VkPresentModeKHR pick_present_mode(VkPhysicalDevice pd) {
     vkGetPhysicalDeviceSurfacePresentModesKHR(pd, g_surface, &n, m);
     VkPresentModeKHR got = VK_PRESENT_MODE_FIFO_KHR;
     for (uint32_t i = 0; i < n; i++) if (m[i] == want) got = want;
+    return got;
+}
+
+// Publish only a mode whose swapchain was created: a failed replacement leaves no usable swapchain.
+static void present_mode_created(VkPresentModeKHR got) {
+    const char *e = cfg_value("TOTK_VK_PRESENT");
     const char *name = got == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : got == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate" : "fifo";
     __atomic_store_n(&g_present_got, name, __ATOMIC_RELEASE);
     static int logged = -1;   // the mode last logged: a change from the menu shows in the log
@@ -503,7 +509,6 @@ static VkPresentModeKHR pick_present_mode(VkPhysicalDevice pd) {
         logged = (int)got;
         rt_log("gfx: present mode %s (TOTK_VK_PRESENT=%s)", name, e);
     }
-    return got;
 }
 
 const char *gfx_window_present_mode(void) { return __atomic_load_n(&g_present_got, __ATOMIC_ACQUIRE); }
@@ -566,6 +571,22 @@ static void free_capture(void) {
     g_cap_valid = 0;
 }
 
+// The queue is idle and g_pl is held. A replacement create retires its oldSwapchain even on failure
+// (VkSwapchainCreateInfoKHR, oldSwapchain), so neither its images nor its handle can be acquired/reused afterwards.
+static void destroy_swapchain_locked(VkCtx *c) {
+    for (uint32_t i = 0; i < g_sc_n; i++) {
+        vkDestroySemaphore(c->device, g_render_done[i], NULL);
+        if (g_sc_view[i]) vkDestroyImageView(c->device, g_sc_view[i], NULL);
+        g_sc_view[i] = VK_NULL_HANDLE;
+        g_render_done[i] = VK_NULL_HANDLE;
+        g_sc_img[i] = VK_NULL_HANDLE;
+    }
+    g_sc_n = 0;
+    if (g_sc) vkDestroySwapchainKHR(c->device, g_sc, NULL);
+    g_sc = VK_NULL_HANDLE;
+    __atomic_store_n(&g_present_got, "", __ATOMIC_RELEASE);
+}
+
 static int build_swapchain(void) {
     flip_locked();   // the acquired image goes out before its swapchain is replaced
     VkCtx *c = vk_ctx();
@@ -591,7 +612,7 @@ static int build_swapchain(void) {
         if (fmts[i].format == VK_FORMAT_R8G8B8A8_UNORM && fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { sf = fmts[i]; found = 1; }
     // Frame generation's pair holds two images acquired at once (the generated picture's blit waits while the game's
     // frame is blitted): one image more, while frame_gen names a generator
-    int fg_images = g_fg_images = vk_fg_engine() != VK_FG_OFF;
+    int fg_images = vk_fg_engine() != VK_FG_OFF;
     uint32_t count = caps.minImageCount + 1 + (fg_images ? 1u : 0u);
     if (caps.maxImageCount && count > caps.maxImageCount) count = caps.maxImageCount;
     if (count > 8) count = 8;
@@ -613,19 +634,20 @@ static int build_swapchain(void) {
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = caps.currentTransform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, .presentMode = pick_present_mode(c->phys), .clipped = VK_TRUE,
         .oldSwapchain = old};
-    VkResult r = vkCreateSwapchainKHR(c->device, &ci, NULL, &g_sc);
+    VkSwapchainKHR replacement = VK_NULL_HANDLE;
+    VkResult r = vkCreateSwapchainKHR(c->device, &ci, NULL, &replacement);
     if (r != VK_SUCCESS) {
         rt_log("gfx: vkCreateSwapchainKHR failed (%d)", (int)r);
-        g_sc = old;
+        // old was retired by this call. Drop it and retry with oldSwapchain = NULL at the next present, rather
+        // than acquiring its released images or passing the retired handle into another create.
+        destroy_swapchain_locked(c);
         vk_queue_unlock();
         return 0;
     }
-    for (uint32_t i = 0; i < g_sc_n; i++) {
-        vkDestroySemaphore(c->device, g_render_done[i], NULL);
-        if (g_sc_view[i]) vkDestroyImageView(c->device, g_sc_view[i], NULL);
-        g_sc_view[i] = VK_NULL_HANDLE;
-    }
-    if (old) vkDestroySwapchainKHR(c->device, old, NULL);
+    destroy_swapchain_locked(c);
+    g_sc = replacement;
+    g_fg_images = fg_images;
+    present_mode_created(ci.presentMode);
     g_sc_fmt = sf.format;
     g_sc_hdr = hdr;
     vk_hdr_set_active(hdr);
