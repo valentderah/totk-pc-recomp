@@ -594,26 +594,36 @@ static int pad_layout_get(void) {
     return pad_layout;
 }
 
-// The TOTK_BIND_* values last applied, one per line; the tables are built again when one changes (the menu's remapping rows write
-// them while the game runs). Under lock.
+// The parser's bounded prefix of each TOTK_BIND_* value last applied; the tables are built again when one changes
+// (the menu's remapping rows write them while the game runs). Under lock.
 static unsigned binds_seen = ~0u;
-static char binds_applied[4096];
+static int binds_ready;
+static char binds_applied[ACTION_COUNT][INPUT_BINDING_TEXT_MAX];
 
-static void binds_refresh(void) {
-    unsigned v = cfg_version();
-    if (v == binds_seen) return;
-    binds_seen = v;
-    char now[sizeof binds_applied];
-    size_t len = 0;
+// Keep the text buffer off the unchanged configuration's polling stack.
+static __attribute__((noinline)) void binds_refresh_changed(void) {
+    char now[INPUT_BINDING_TEXT_MAX];
+    int changed = !binds_ready;
     for (int a = 0; a < ACTION_COUNT; a++) {
         char var[32];
         snprintf(var, sizeof var, "TOTK_BIND_%s", input_action_name(a));
         const char *s = cfg_get(var);
-        len += (size_t)snprintf(now + len, len < sizeof now ? sizeof now - len : 0, "%s\n", s ? s : "");
+        snprintf(now, sizeof now, "%s", s ? s : "");
+        if (strcmp(now, binds_applied[a])) {
+            memcpy(binds_applied[a], now, strlen(now) + 1);
+            changed = 1;
+        }
     }
-    if (!strcmp(now, binds_applied)) return;
-    memcpy(binds_applied, now, sizeof now);
+    if (!changed) return;
+    binds_ready = 1;
     input_map_configure();
+}
+
+static void binds_refresh(void) {
+    unsigned v = cfg_version();
+    if (binds_ready && v == binds_seen) return;
+    binds_seen = v;
+    binds_refresh_changed();
 }
 
 // TOTK_TEST_PAD=<lx>,<ly>,<rx>,<ry> (test runs): an SDL virtual gamepad whose sticks rest at these raw SDL axis values

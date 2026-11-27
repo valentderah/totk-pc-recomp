@@ -125,7 +125,7 @@ int input_map_bind(const char *button, const char *list) {
     if (action < 0) { rt_log("input: bind: unknown button '%s'", button); return 0; }
     uint8_t keys[INPUT_BINDING_MAX], pads[INPUT_PAD_BINDING_MAX];
     int nk = 0, np = 0, none = 0, key_def = 0, pad_def = 0, bad = 0;
-    char buf[256];
+    char buf[INPUT_BINDING_TEXT_MAX];
     snprintf(buf, sizeof buf, "%s", list);
     for (char *save = NULL, *tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
         tok = trim(tok);
@@ -166,7 +166,8 @@ int input_map_bind(const char *button, const char *list) {
 }
 
 void input_map_configure(void) {
-    input_map_reset();
+    // Explicit lines get the table's capacity before defaults of actions without a valid line.
+    input_map = (InputMap){0};
     uint8_t lined[ACTION_COUNT] = {0};
     for (int a = 0; a < ACTION_COUNT; a++) {
         char var[32];
@@ -184,10 +185,15 @@ void input_map_configure(void) {
     }
     for (int a = 0; a < ACTION_COUNT; a++) {
         if (lined[a]) continue;
-        int n = input_map_keys_of(&input_map, a, list, INPUT_BINDING_MAX), w = 0;
+        int n = input_map_keys_of(&defaults, a, list, INPUT_BINDING_MAX), w = 0;
         for (int i = 0; i < n; i++)
             if (!bound[list[i]]) list[w++] = list[i];
-        if (w < n) keys_put(&input_map, a, list, w);
+        keys_put(&input_map, a, list, w);
+        for (int l = 0; l < PAD_LAYOUT_COUNT; l++) {
+            uint8_t pads[INPUT_PAD_BINDING_MAX];
+            int np = input_map_pads_of(&defaults, a, l, pads, INPUT_PAD_BINDING_MAX);
+            pads_put(&input_map, l, a, pads, np);
+        }
     }
 }
 
@@ -273,6 +279,7 @@ static int same_set(const uint8_t *a, int na, const uint8_t *b, int nb) {
 }
 
 void input_map_line(const InputMap *m, int action, char *out, size_t n) {
+    if (!n) return;
     uint8_t k[INPUT_BINDING_MAX], dk[INPUT_BINDING_MAX];
     int nk = input_map_keys_of(m, action, k, INPUT_BINDING_MAX);
     int key_def = same_set(k, nk, dk, input_map_keys_of(&defaults, action, dk, INPUT_BINDING_MAX));
@@ -285,7 +292,11 @@ void input_map_line(const InputMap *m, int action, char *out, size_t n) {
     out[0] = 0;
     if (key_def && pad_def) return;
     size_t len = 0;
-#define PUT(...) (len += (size_t)snprintf(out + len, len < n ? n - len : 0, __VA_ARGS__))
+#define PUT(...) do { \
+    size_t left = n - len; \
+    int wrote = snprintf(out + len, left, __VA_ARGS__); \
+    if (wrote > 0) len += (size_t)wrote < left ? (size_t)wrote : left - 1; \
+} while (0)
     if (key_def) PUT("key:default");
     else
         for (int i = 0; i < nk; i++) PUT("%skey:%s", len ? ", " : "", key_names[k[i]]);

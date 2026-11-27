@@ -133,7 +133,7 @@ static int shown_layout(void) {
 // Writes the bind_ line of every action whose line for m differs from the one set; a line at the defaults goes away.
 static void write_lines(const InputMap *m) {
     for (int a = 0; a < ACTION_COUNT; a++) {
-        char var[40], line[256];
+        char var[40], line[INPUT_BINDING_TEXT_MAX];
         snprintf(var, sizeof var, "TOTK_BIND_%s", input_action_name(a));
         input_map_line(m, a, line, sizeof line);
         const char *now = cfg_get(var);
