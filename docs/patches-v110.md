@@ -12,17 +12,23 @@ The built-in table is [recomp/patches-v110.txt](../recomp/patches-v110.txt). The
 | fov | 2 | The two camera projections multiply their vertical angle by page +60. The field-of-view setting is live; 100 leaves the original path. |
 | pooloff | 2 | Widen texture-pool offsets unsigned, covering 2..4 GiB without changing offsets below 2 GiB. Enabled by default; `TOTK_POOL_OFFSET_PATCH=0` retains the original path. |
 | shadow | 1 | The sun shadow map takes its fixed size from page +92 before rounding. The shadow-resolution setting enables it; `shadow_res=game` leaves the game's sizing. |
+| cascade | 6 | Read the four sun shadow cascade defaults from page +64..76, and scale the shadow controller's per-frame d[1..n] stores by page +64 / 20. Shadow range 100 leaves both paths unchanged. |
 | cascade | 4 | Read the four sun shadow cascade defaults from page +64..76. Shadow range 100 leaves the original constructor. |
+| grass | 9 | Near grass map extent, step, texture sizes and half-extent read page +128..144. The blade cutoff, blade LOD and cross-grass fade read the reciprocal range scale at page +148. Grass range 100 leaves the original path. |
+| steady | 1 | Skip the load-dependent quality reduction list walk in the graphics settings setup (`main+0xcad2bc`, site `main+0xcad324`), controlled by `TOTK_LOD_STEADY`. |
 | climb | 1 | Climbing speed above 60 fps: the 1.2.1 climb factor in the 1.1.0 climb controller. Follows `TOTK_CLIMB_FIX` and needs the real-time step. |
 | gears | 2 | The gear rotation check scales its one-frame threshold by the update's frame delta, so shrine gears read as turning above 30 fps. Follows `TOTK_HIGHFPS_FIX`. |
+| ability | 2 | Check the Recall / Ultrahand target actor and drop stale or non-writable targets before the game dereferences them (`TOTK_ABILITY_GUARD`, `runtime/ov_ability.c`). |
+| audiodrain | 1 | Sends the audio thread back to its command ring after each list (main+0x7bf0d0 -> main+0x7bec38), so every queued list is drained per 5 ms audio frame (#337). Follows `TOTK_AUDIO_DRAIN_FIX`. |
+| mouse_direct | 82 | Direct raw-count mouse camera across camera input, activity, free orbit, Ultrahand and the 16 `ExecutePlayerCamera*` modes (`runtime/mouse_direct.c`, `layout_110`); follows `TOTK_MOUSE_DIRECT_PATCH` and `mouse_mode = direct`. |
+| optref | 1 | Treat a negative optional reference at object +0x6b0 (`main+0x163159c`) as absent instead of dereferencing it (#1005). Follows `TOTK_OPTREF_GUARD`. |
 
-The table has 16 sets and 54 instruction sites in total. Its 889 spin back-edges are unchanged. The sets use the existing runtime page and settings; no new setting, allocator or renderer path is introduced.
+The table has 21 sets and 152 instruction sites in total. Its 889 spin back-edges are unchanged. The sets use the existing runtime page and settings; no new allocator or renderer path is introduced.
 
-The camera sites were cross-checked by normalized instruction-window matching from the local 1.0.0 main. The viewport routine has two matching copies: both are patched. Other sites were checked through their data flow: the equipment timer and its gate, the map clock, the ability clock, the NVN texture storage/package calls, the shadow size publication and the cascade parameter constructor. FOV's s8 is overwritten by the next original instruction; x10 is saved. The cursor sites use the same scratch registers as their 1.2.1 counterparts.
+The camera sites were cross-checked by normalized instruction-window matching from the local 1.0.0 main. The viewport routine has two matching copies: both are patched. Other sites were checked through their data flow: the equipment timer and its gate, the map clock, the ability clock, the NVN texture storage/package calls, the shadow size publication, the cascade parameter constructor and the shadow controller's per-frame cascade boundary stores (main+0xd076f4 and main+0xd0774c, where x3, s16 and s17 are dead). FOV's s8 is overwritten by the next original instruction; x10 is saved. The cursor sites use the same scratch registers as their 1.2.1 counterparts.
 
 ## Deliberately separate
 
-- Direct mouse: 1.1.0 continues to use stick emulation. Porting the complete camera hook set also needs the runtime layout and load-site table; matching an individual store or one camera mode is not sufficient. No partial set is enabled here.
 - Fade: the four 1.4.3 sites are not presumed to exist in 1.1.0. An equivalent zero-increment path has not been established.
 - Native Zstandard: the existing host bridge calls back to hard-coded 1.4.3 decoder entry points on fallback. Adding only the BL patches to 1.1.0 would be incorrect.
 - Live DLSS scene sizing and game-menu mouse input retain their existing version restrictions. They are not patch-table parity work.

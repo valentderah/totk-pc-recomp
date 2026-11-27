@@ -320,7 +320,7 @@
 # grass_range = 100
 # Steady detail under load: 1 skips the game's setup for lowering model and texture detail when the frame rate drops,
 # as the emulator mod "Disable LOD Quality Reduction" does (set steady); 0 (the default) leaves it. Leave it off on weak
-# PCs, where that drop keeps the frame rate up. Game versions 1.2.1 and 1.4.3. Read at start.
+# PCs, where that drop keeps the frame rate up. Game versions 1.1.0, 1.2.1 and 1.4.3. Read at start.
 # lod_steady = 0
 # Screen-space contact shadows, strength in percent (0 = off): after the game lights its scene, each pixel traces a
 # short way toward the sun through the depth buffer and darkens where something close blocks it, adding the small
@@ -503,7 +503,7 @@
 # lstick_deadzone = 8
 # rstick_deadzone = 8
 # Mouse camera mode: direct (default) or stick. Direct turns the camera by the raw mouse motion, the same on both axes,
-# with no stick dead zone or response curve (games 1.4.3 and 1.2.1; 1.1.0 uses stick emulation). Stick makes the
+# with no stick dead zone or response curve. Stick makes the
 # mouse a right stick. Neither changes the gamepad. The Controls tab changes this while the game runs.
 # mouse_mode = direct
 # The mouse in the game's menus, 1.4.3 only (title, inventory, System tab, Options, shops, dialogue choices): while a
