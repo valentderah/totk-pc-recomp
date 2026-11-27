@@ -3,8 +3,8 @@
 // guest main thread, on the null back end whatever TOTK_GPU says. Checks, in order:
 //   - pool, buffer, texture, sampler, sync and event objects against MacNativeGames' semantics (hle_nvn.c), the
 //     texture storage sizes against the original-SDK goldens of MNG tests/texture_auto_layout/probe.c;
-//   - every op kind recorded through the CommandBuffer procs and parsed back with nvn_op_first/next/payload, and
-//     CallCommands inlining a recording;
+//   - every op kind recorded through the CommandBuffer procs and parsed back with nvn_op_first/next/payload,
+//     CallCommands inlining a small recording, and CallCommands of a large one (by reference with TOTK_NVN_CALL);
 //   - the null back end's CPU-visible side effects (event write and add, counter report, buffer copy, uniform update,
 //     in stream order across handles) landing in guest memory at submit, and not before;
 //   - the proc table: every name of nvn_procs.inc resolves to its own synthetic address, an unknown name to NULL;
@@ -873,6 +873,55 @@ static void probe_null_effects(void) {
     n_objects += 2;
 }
 
+// ---- CallCommands of a large recording (nvn_api_cmd.c inline_recording, TOTK_NVN_CALL)
+// A recording of more than 4 KiB (nvn_api_cmd.c CALL_MIN) that a second recording calls. With the switch on, the caller holds
+// one OP_CALL record that names the called recording; with it off, the called records are copied into the caller.
+// Either way the back end runs the called records once, at their place in the caller's stream, and with the switch on
+// the called recording stays readable after the game retired its handle, as long as the caller names it.
+static void probe_call_large(void) {
+    enum { FILL = 400 };   // barrier records: 16 bytes each, so the recording is past the 4 KiB default
+    uint8_t *ev_val = pmem;
+    *(uint32_t *)ev_val = 0;
+    begin(&cmd, ctlmem3, 0x36000);
+    CALL(nvnCommandBufferSignalEvent, U(&cmd), U(&ev), NVN_EVENT_SIGNAL_MODE_ADD, NVN_EVENT_SIGNAL_LOCATION_TOP, 0, 0x20);
+    for (int i = 0; i < FILL; i++) CALL(nvnCommandBufferBarrier, U(&cmd), 1);
+    CALL(nvnCommandBufferSignalEvent, U(&cmd), U(&ev), NVN_EVENT_SIGNAL_MODE_ADD, NVN_EVENT_SIGNAL_LOCATION_TOP, 0, 2);
+    uint64_t called = CALL(nvnCommandBufferEndRecording, U(&cmd));
+    CHECK(nvn_handle_bytes(called) > 4096, "the called recording holds %llu bytes", (unsigned long long)nvn_handle_bytes(called));
+
+    begin(&cmd2, ctlmem2, 0x38000);
+    CALL(nvnCommandBufferSignalEvent, U(&cmd2), U(&ev), NVN_EVENT_SIGNAL_MODE_WRITE, NVN_EVENT_SIGNAL_LOCATION_TOP, 0, 1);
+    CALL(nvnCommandBufferCallCommands, U(&cmd2), 1, U(&called));
+    CALL(nvnCommandBufferSignalEvent, U(&cmd2), U(&ev), NVN_EVENT_SIGNAL_MODE_ADD, NVN_EVENT_SIGNAL_LOCATION_TOP, 0, 0x100);
+    uint64_t caller = CALL(nvnCommandBufferEndRecording, U(&cmd2));
+    int n = 0, calls = 0, named = 0;
+    for (const op_hdr *o = nvn_op_first(caller); o->op != OP_END; o = nvn_op_next(o)) {
+        if (o->op != OP_BEGIN) n++;
+        if (o->op != OP_CALL) continue;
+        calls++;
+        named += ((const p_jump *)nvn_op_payload(o))->target == called;
+    }
+    CHECK((calls == 1 && named == 1 && n == 3) || (calls == 0 && n == FILL + 4),
+          "the caller holds one call by reference or the called records: %d records, %d calls, %d of them name the recording",
+          n, calls, named);
+
+    // the game may retire the called recording while the caller that names it is live
+    CALL(nvnCommandBufferAddControlMemory, U(&cmd), U(ctlmem3), 0x1000);
+    CHECK(!nvn_handle_live(called) && nvn_handle_live(caller), "the called recording's handle is retired, the caller's is live");
+    CHECK(*(uint32_t *)ev_val == 0, "recording a call has no side effects");
+    CALL(nvnQueueSubmitCommands, U(&queue), 1, U(&caller));
+    CALL(nvnQueueFenceSync, U(&queue), U(&syncs), NVN_SYNC_CONDITION_ALL_GPU_COMMANDS_COMPLETE, 0);
+    uint64_t wait = CALL(nvnSyncWait, U(&syncs), 1000000000ull);
+    CHECK(wait == NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED || wait == NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED,
+          "SyncWait after the submit of a caller: %llu", (unsigned long long)wait);
+    // WRITE 1, the called ADD 0x20 and ADD 2, ADD 0x100: 0x123 when the called records ran once, in their place
+    CHECK((uint32_t)CALL(nvnEventGetValue, U(&ev)) == 0x123, "event value %#x after a %s large recording, expected 0x123",
+          *(uint32_t *)ev_val, calls ? "called" : "copied");
+    CALL(nvnCommandBufferFinalize, U(&cmd2));
+    CALL(nvnCommandBufferFinalize, U(&cmd));
+    n_effects++;
+}
+
 static void probe_main(Cpu *unused) {
     (void)unused;
     probe_device_and_pools();
@@ -882,6 +931,7 @@ static void probe_main(Cpu *unused) {
     probe_sync_events();
     probe_commands();
     probe_null_effects();
+    probe_call_large();
     CALL(nvnQueueFinalize, U(&queue));
     CALL(nvnDeviceFinalize, U(&dev));
 }

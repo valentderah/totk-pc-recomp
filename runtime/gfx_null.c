@@ -64,11 +64,13 @@ static void null_report(uint64_t addr) {
     memcpy(d, rec, sizeof rec);
 }
 
-static void null_replay(uint64_t handle) {
+static void null_replay(uint64_t handle, int depth) {
+    if (depth > 8) rt_fatal("gfx: null back end: recordings call each other more than 8 deep");
     for (const op_hdr *h = nvn_op_first(handle);; h = nvn_op_next(h)) {
         const void *a = nvn_op_payload(h);
         switch (h->op) {
         case OP_END: return;
+        case OP_CALL: null_replay(((const p_jump *)a)->target, depth + 1); break;   // a call by reference (nvn_api_cmd.c)
         case OP_SIGNAL_EVENT: {
             const p_signal_event *e = a;
             if (e->mode == NVN_EVENT_SIGNAL_MODE_ADD) __atomic_fetch_add(e->val, e->value, __ATOMIC_RELEASE);
@@ -101,7 +103,7 @@ static void null_replay(uint64_t handle) {
 
 static uint64_t null_submit(const uint64_t *handles, int n) {
     nvn_pins_sweep(nvn_submit_count(), NULL, 0);   // no replay state outlives a submission here
-    for (int i = 0; i < n; i++) null_replay(handles[i]);
+    for (int i = 0; i < n; i++) null_replay(handles[i], 0);
     return __atomic_add_fetch(&fence, 1, __ATOMIC_ACQ_REL);
 }
 
