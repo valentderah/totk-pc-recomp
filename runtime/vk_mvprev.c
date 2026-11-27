@@ -58,6 +58,7 @@ static struct {
     int on;          // 1 knob on and DLAA on this frame
     int knob;        // -1 not read
     Seen *t[2];      // this frame's bound blocks, last frame's
+    int addr_slot;   // TOTK_MVOBJ_ADDR_SLOT, read when the tables are made
     uint8_t (*bytes[2])[CHECK];   // TOTK_MVPREV_CHECK: the first CHECK bytes of each entry of t[k], NULL without the check
     int timed;       // TOTK_MVOBJ_TIMES: the summary's times
     uint32_t frames;
@@ -67,7 +68,14 @@ static struct {
     uint64_t ns_draw, ns_frame;   // time in vk_mvprev_draw and vk_mvprev_frame since the last summary
 } P = {.knob = -1, .mask = 1u << BONES | 1u << PLACE | 1u << CLOCK};
 
+int vk_mv_addr_slot(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("MVOBJ_ADDR_SLOT", "1") != 0;
+    return on;
+}
+
 static uint32_t slot_of(uint64_t addr, int index) {
+    if (P.addr_slot) return vk_mv_slot(addr) & (TABLE - 1);   // index stays out: find compares it
     uint64_t h = (addr ^ (uint64_t)index * 0x9E3779B97F4A7C15ull) * 0xff51afd7ed558ccdull;
     return (uint32_t)(h >> 40) & (TABLE - 1);
 }
@@ -193,6 +201,7 @@ void vk_mvprev_frame(void) {
         P.knob = rt_knob("DLAA_OBJMV", "1");
         if (P.knob) {
             P.t[0] = calloc(TABLE, sizeof(Seen)), P.t[1] = calloc(TABLE, sizeof(Seen));
+            P.addr_slot = vk_mv_addr_slot();
             if (!P.t[0] || !P.t[1]) P.knob = 0;
             if (P.knob && rt_knob("MVPREV_CHECK", "0")) {
                 P.bytes[0] = calloc(TABLE, CHECK), P.bytes[1] = calloc(TABLE, CHECK);
