@@ -5661,6 +5661,38 @@ static const char *const text_es[UI_TEXT_COUNT] = {
 static const char *const text_es_419[UI_TEXT_COUNT] = {
     SWKBD("Introducir texto", "Introduce un nombre", "Caballo", "Aceptar", "Cancelar", "Control: A = Aceptar, B = Cancelar"),
 
+    [UI_MENU_VERT_PLUS] = "Mantener el ancho de 16:9",
+    [UI_MENU_VERT_PLUS_DESC] = "En pantallas más estrechas que 16:9 (Steam Deck, 16:10, 4:3), la cámara muestra el mismo ancho del mundo que en 16:9, y más por arriba y por abajo. Sin efecto en 16:9 o más ancho.",
+    [UI_MENU_SYNC_AHEAD] = "Un fotograma por delante de la GPU",
+    [UI_MENU_SYNC_AHEAD_DESC] = "El juego prepara el siguiente fotograma mientras la tarjeta de video aún dibuja el anterior. Más fotogramas por segundo, un fotograma más de retraso de entrada.",
+    [UI_MENU_HOST_CHECKPOINT] = "Cesión rápida del núcleo",
+    [UI_MENU_HOST_CHECKPOINT_DESC] = "Un hilo del juego cede su núcleo virtual a uno más importante en cuanto sale del código del port, no en su siguiente llamada al sistema.",
+    [UI_LW_STAGE_START] = "Preparando",
+    [UI_LW_STAGE_GPU] = "Iniciando los gráficos",
+    [UI_LW_STAGE_FILES] = "Preparando los archivos del juego",
+    [UI_LW_STAGE_SHADERS] = "Cargando shaders",
+    [UI_LW_STAGE_PIPELINES] = "Compilando pipelines",
+    [UI_LW_STAGE_GAME] = "Iniciando el juego",
+    [UI_LW_FAILED] = "El juego se detuvo",
+    [UI_LW_FAILED_HINT] = "El registro de abajo indica el motivo. Cópialo para reportar el error y luego cierra esta ventana.",
+    [UI_LW_VERSION] = "v%s · juego %s",
+    [UI_LW_COUNT] = "%s de %s",
+    [UI_LW_LEFT_ITEMS] = "Faltan %s",
+    [UI_LW_LEFT_SEC] = "faltan unos %d s",
+    [UI_LW_LEFT_MIN] = "faltan unos %d min",
+    [UI_LW_LEFT_FEW] = "faltan unos segundos",
+    [UI_LW_ALSO] = "También: %s",
+    [UI_LW_GAME_SEC] = "El juego inicia en unos %d s",
+    [UI_LW_GAME_MIN] = "El juego inicia en unos %d min",
+    [UI_LW_GAME_SOON] = "El juego está por iniciar",
+    [UI_LW_ELAPSED] = "Transcurrido %d:%02d",
+    [UI_LW_DETAILS] = "Detalles",
+    [UI_LW_HIDE] = "Ocultar detalles",
+    [UI_LW_COPY] = "Copiar registro",
+    [UI_LW_COPIED] = "Copiado",
+    [UI_LW_CLOSE] = "Cerrar y salir del juego",
+    [UI_LW_THOUSANDS] = ",",
+
     [UI_MENU_TITLE] = "Ajustes",
     [UI_MENU_TAB_SCREEN] = "Pantalla",
     [UI_MENU_TAB_GAME] = "Juego",
@@ -5757,7 +5789,7 @@ static const char *const text_es_419[UI_TEXT_COUNT] = {
     [UI_MENU_LOD_STEADY] = "Detalle estable con carga",
     [UI_MENU_LOD_STEADY_DESC] = "Omite el ajuste del juego que reduce el detalle de modelos y texturas cuando bajan "
                                 "los fotogramas por segundo, como hace el mod de emulador Disable LOD Quality "
-                                "Reduction. Versiones 1.2.1 y 1.4.3 del juego. Déjalo desactivado en PC poco "
+                                  "Reduction. Versiones 1.1.0, 1.2.1 y 1.4.3 del juego. Déjalo desactivado en PC poco "
                                 "potentes: ahí esa reducción mantiene los fotogramas por segundo.",
     [UI_MENU_SHARPNESS] = "Nitidez de FSR",
     [UI_MENU_SHARPNESS_DESC] = "Enfoque tras el escalado FSR; 0 lo desactiva.",
@@ -6051,8 +6083,7 @@ static const char *const text_es_419[UI_TEXT_COUNT] = {
     [UI_MENU_STICK_DEADZONE_NOW] = "stick ahora: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Cámara con mouse",
     [UI_MENU_MOUSE_MODE_DESC] = "Directo: la cámara gira según cuánto se mueve el mouse, como en un juego de PC, sin "
-                                "zona muerta ni curva de stick (versiones 1.4.3 y 1.2.1 del juego; 1.1.0 usa la "
-                                "emulación de stick). Emulación de stick: el mouse actúa como el stick derecho.",
+                                  "zona muerta ni curva de stick. Emulación de stick: el mouse actúa como el stick derecho.",
     [UI_MENU_MOUSE_STICK] = "Emulación de stick",
     [UI_MENU_MOUSE_DIRECT] = "Directo",
     [UI_MENU_MENU_CURSOR] = "Mouse en los menús del juego",
@@ -6399,11 +6430,12 @@ static const char *const text_es_419[UI_TEXT_COUNT] = {
                             "tamaño de dispatch, tamaño de punto, instancia base) en lugar de leer ceros.",
     [UI_MENU_FIX_ZERO] = "Poner a cero la memoria GPU nueva",
     [UI_MENU_FIX_ZERO_DESC] = "Los nuevos bloques de memoria GPU empiezan llenos de ceros, como la memoria de Switch.",
-    [UI_MENU_DLAA_EFFECTS_AFTER] = "Niebla y partículas tras DLAA",
-    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Con DLAA, la niebla, el polvo y otras partículas se dibujan sobre la imagen "
+    [UI_MENU_DLAA_EFFECTS_AFTER] = "Partículas tras DLAA",
+    [UI_MENU_DLAA_EFFECTS_AFTER_DESC] = "Con DLAA, el polvo y otras partículas se dibujan sobre la imagen "
                                         "que DLSS ya suavizó, como las dibuja el juego sin DLSS: las partículas "
-                                        "pequeñas en la niebla (santuarios) ya no desaparecen ni dejan estelas. No: "
-                                        "DLSS también procesa estos efectos, como antes. Solo en el modo DLAA; los "
+                                          "pequeñas en la niebla (santuarios) ya no desaparecen ni dejan estelas. La niebla y las nubes "
+                                          "siguen pasando por DLSS, por lo que los contornos lejanos sobre el cielo se mantienen nítidos. No: "
+                                          "DLSS también procesa las partículas, como antes. Solo en el modo DLAA; los "
                                         "modos DLSS con escalado siempre los procesan. Se aplica al momento.",
     [UI_MENU_DLSS_FIXED_EXPOSURE] = "Exposición fija de DLSS",
     [UI_MENU_DLSS_FIXED_EXPOSURE_DESC] = "DLSS toma el brillo de la imagen del juego tal cual en lugar de estimar la "

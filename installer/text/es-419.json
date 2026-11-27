@@ -1,4 +1,6 @@
 {
+ "check.libraries_missing": "El juego no puede iniciarse en este sistema: faltan las bibliotecas {libraries}. Instala los paquetes que las proporcionan con el gestor de paquetes del sistema{packages} y vuelve a ejecutar el instalador.",
+ "prepare.libraries_missing": "El juego se compiló, pero no puede iniciarse porque faltan las bibliotecas {libraries}. Instala los paquetes que las proporcionan con el gestor de paquetes del sistema{packages} y vuelve a ejecutar el instalador. Detalles: {log}",
  "step.check": "Comprobando el equipo y los archivos del juego",
  "step.kit": "Copiando el kit de compilación en la carpeta del juego",
  "step.fonts": "Extrayendo las fuentes del sistema",
