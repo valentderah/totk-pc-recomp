@@ -38,6 +38,24 @@ This repository is public. Game data lives outside it and every derived file sta
 
 Preparing a pull request: target `dev`; the checks by changed area, the proof and the performance runs it carries are in [CONTRIBUTING.md](CONTRIBUTING.md), "Pull requests". Reviewing one: [docs/pr-review-kit/](docs/pr-review-kit/).
 
+## Software factory (totk-factory)
+
+`/totk-factory <n>` in Claude Code takes issue `#n` of valentderah/totk-pc-recomp through intake, build, gate and review and ends with a pull request against `dev` that a person merges; nothing in it merges. One issue at a time. The skill and its parts are in [tools/factory/](tools/factory/) (MIT, [tools/factory/LICENSE](tools/factory/LICENSE)):
+
+- [SKILL.md](tools/factory/SKILL.md): the commands (`/totk-factory <n>`, `/totk-factory` for status, `/totk-factory <feedback>`, `/totk-factory drop`), the loop and resuming.
+- [README.md](tools/factory/README.md): the design, the file layout, the lock classes and the install.
+- [agents/](tools/factory/agents/): the intake, builder and reviewer instructions.
+- [gate.py](tools/factory/gate.py): the gate before review (clean tree, protected paths, `check_content.py`, the `run_all` quick set green, each red test checked against the branch's merge base to tell the branch's from `dev`'s).
+- [lock.py](tools/factory/lock.py): machine-wide locks so checks, builds, game runs and timed runs do not overlap. Any agent on the machine, in the factory or not, can start builds, game runs and timed runs through it.
+- [dashboard.py](tools/factory/dashboard.py): one page (or JSON) with every job, what waits for a person, the locks and the worktrees.
+
+Job state goes to `build/factory/<n>/` and worktrees to `.worktrees/<n>-<slug>` (both ignored). `.claude/` is local, so install the skill once per machine from the main checkout:
+
+```powershell
+New-Item -ItemType Directory -Force .claude\skills | Out-Null
+New-Item -ItemType Junction -Path .claude\skills\totk-factory -Target (Resolve-Path tools\factory)
+```
+
 ## Writing
 
 Code, comments, docs and commit messages are in English. Commit messages are plain sentences without type prefixes.
