@@ -573,7 +573,9 @@ class Check(Step):
         (runtime/vk_device.c create_instance), so going on would fail after lift and compile."""
         rep = ctx.reporter
         r = self.run_probe(exe)
-        host = parse_host(r.stdout)
+        # The JSON can be complete before vkDestroyInstance crashes. Only a successful exit proves this run passed,
+        # including the retries below that diagnose implicit layers.
+        host = parse_host(r.stdout) if r.returncode == 0 else None
         if host is not None:
             rep.log(f'host: {r.stdout.strip()}')
             return host
@@ -582,15 +584,18 @@ class Check(Step):
         if '"loader": true' not in r.stdout:
             raise InstallError('check.host_probe_failed', code=code)
         retry = self.run_probe(exe, dict(os.environ, VK_LOADER_LAYERS_DISABLE='~implicit~'))
-        if parse_host(retry.stdout) is None:
+        if retry.returncode != 0 or parse_host(retry.stdout) is None:
             rep.log(f'host: without implicit Vulkan layers too: exit code {exit_code(retry.returncode)}, '
                     f'{retry.stdout.strip()!r}')
             raise InstallError('check.vulkan_crash', code=code)
         layers = implicit_vulkan_layers()
         rep.log(f'host: passes with the implicit Vulkan layers off; installed: '
                 f'{", ".join(f"{n} ({p})" for n, p in layers) or "none listed"}')
-        culprits = [(name, path) for name, path in layers[:self.LAYER_TRIES]
-                    if parse_host(self.run_probe(exe, dict(os.environ, VK_LOADER_LAYERS_DISABLE=name)).stdout)]
+        culprits = []
+        for name, path in layers[:self.LAYER_TRIES]:
+            candidate = self.run_probe(exe, dict(os.environ, VK_LOADER_LAYERS_DISABLE=name))
+            if candidate.returncode == 0 and parse_host(candidate.stdout) is not None:
+                culprits.append((name, path))
         if culprits:
             rep.log(f'host: passes without {", ".join(n for n, _ in culprits)}')
             raise InstallError('check.vulkan_layer_crash', code=code,
