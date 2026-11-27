@@ -16,8 +16,9 @@ The built-in table is [recomp/patches-v110.txt](../recomp/patches-v110.txt). The
 | climb | 1 | Climbing speed above 60 fps: the 1.2.1 climb factor in the 1.1.0 climb controller. Follows `TOTK_CLIMB_FIX` and needs the real-time step. |
 | gears | 2 | The gear rotation check scales its one-frame threshold by the update's frame delta, so shrine gears read as turning above 30 fps. Follows `TOTK_HIGHFPS_FIX`. |
 | ability | 2 | Check the Recall / Ultrahand target actor and drop stale or non-writable targets before the game dereferences them (`TOTK_ABILITY_GUARD`, `runtime/ov_ability.c`). |
+| audiodrain | 1 | Sends the audio thread back to its command ring after each list (main+0x7bf0d0 -> main+0x7bec38), so every queued list is drained per 5 ms audio frame (#337). Follows `TOTK_AUDIO_DRAIN_FIX`. |
 
-The table has 17 sets and 56 instruction sites in total. Its 889 spin back-edges are unchanged. The sets use the existing runtime page and settings; no new allocator or renderer path is introduced.
+The table has 18 sets and 57 instruction sites in total. Its 889 spin back-edges are unchanged. The sets use the existing runtime page and settings; no new allocator or renderer path is introduced.
 
 The camera sites were cross-checked by normalized instruction-window matching from the local 1.0.0 main. The viewport routine has two matching copies: both are patched. Other sites were checked through their data flow: the equipment timer and its gate, the map clock, the ability clock, the NVN texture storage/package calls, the shadow size publication and the cascade parameter constructor. FOV's s8 is overwritten by the next original instruction; x10 is saved. The cursor sites use the same scratch registers as their 1.2.1 counterparts.
 
