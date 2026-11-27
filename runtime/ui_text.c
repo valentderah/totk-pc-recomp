@@ -356,7 +356,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_STICK_DEADZONE_DESC] = "How far a gamepad stick moves before the game sees it. Raise it if the character or the camera moves on its own: let go of the stick, read \"stick now\" and set the dead zone a few percent above it.",
     [UI_MENU_STICK_DEADZONE_NOW] = "stick now: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Mouse camera",
-    [UI_MENU_MOUSE_MODE_DESC] = "Direct: the camera turns by how far the mouse moves, as in a PC game, with no stick dead zone or curve (games 1.4.3 and 1.2.1; 1.1.0 uses stick emulation). Stick emulation: the mouse acts as the right stick.",
+    [UI_MENU_MOUSE_MODE_DESC] = "Direct: the camera turns by how far the mouse moves, as in a PC game, with no stick dead zone or curve. Stick emulation: the mouse acts as the right stick.",
     [UI_MENU_MOUSE_STICK] = "Stick emulation",
     [UI_MENU_MOUSE_DIRECT] = "Direct",
     [UI_MENU_MENU_CURSOR] = "Mouse in the game's menus",
@@ -1037,7 +1037,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_STICK_DEADZONE_DESC] = "Насколько нужно отклонить стик геймпада, чтобы игра это заметила. Увеличьте, если персонаж или камера двигаются сами: отпустите стик, посмотрите «стик сейчас» и поставьте мёртвую зону на несколько процентов выше.",
     [UI_MENU_STICK_DEADZONE_NOW] = "стик сейчас: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Управление мышью",
-    [UI_MENU_MOUSE_MODE_DESC] = "Прямое: камера поворачивается на столько, на сколько сдвинута мышь, как в играх для ПК, без мёртвой зоны и кривой стика (версии игры 1.4.3 и 1.2.1; на 1.1.0 эмуляция стика). Эмуляция стика: мышь работает как правый стик.",
+    [UI_MENU_MOUSE_MODE_DESC] = "Прямое: камера поворачивается на столько, на сколько сдвинута мышь, как в играх для ПК, без мёртвой зоны и кривой стика. Эмуляция стика: мышь работает как правый стик.",
     [UI_MENU_MOUSE_STICK] = "Эмуляция стика",
     [UI_MENU_MOUSE_DIRECT] = "Прямое",
     [UI_MENU_MENU_CURSOR] = "Мышь в меню игры",
@@ -1881,7 +1881,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_PLAYSTATION] = "PlayStation",
     [UI_MENU_PROMPTS_PC] = "PC",
     [UI_MENU_MOUSE_MODE] = "Câmera com o mouse",
-    [UI_MENU_MOUSE_MODE_DESC] = "Direta: a câmera gira o quanto o mouse se move, como num jogo de PC, sem zona morta nem curva do analógico (jogos 1.4.3 e 1.2.1; o 1.1.0 usa a emulação do analógico). Emulação do analógico: o mouse age como o analógico direito.",
+    [UI_MENU_MOUSE_MODE_DESC] = "Direta: a câmera gira o quanto o mouse se move, como num jogo de PC, sem zona morta nem curva do analógico. Emulação do analógico: o mouse age como o analógico direito.",
     [UI_MENU_MOUSE_STICK] = "Emulação do analógico",
     [UI_MENU_MOUSE_DIRECT] = "Direta",
     [UI_MENU_MENU_CURSOR] = "Mouse nos menus do jogo",
@@ -2702,7 +2702,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_PLAYSTATION] = "PlayStation",
     [UI_MENU_PROMPTS_PC] = "PC",
     [UI_MENU_MOUSE_MODE] = "鼠标视角",
-    [UI_MENU_MOUSE_MODE_DESC] = "直接：镜头按鼠标移动的距离转动，与电脑游戏相同，没有摇杆死区和响应曲线（游戏 1.4.3 和 1.2.1；1.1.0 使用摇杆模拟）。摇杆模拟：鼠标相当于右摇杆。",
+    [UI_MENU_MOUSE_MODE_DESC] = "直接：镜头按鼠标移动的距离转动，与电脑游戏相同，没有摇杆死区和响应曲线。摇杆模拟：鼠标相当于右摇杆。",
     [UI_MENU_MOUSE_STICK] = "摇杆模拟",
     [UI_MENU_MOUSE_DIRECT] = "直接",
     [UI_MENU_MENU_CURSOR] = "在游戏菜单中使用鼠标",
@@ -3298,8 +3298,7 @@ static const char *const text_de[UI_TEXT_COUNT] = {
     [UI_MENU_STICK_DEADZONE_NOW] = "Stick jetzt: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Mauskamera",
     [UI_MENU_MOUSE_MODE_DESC] = "Direkt: Die Kamera dreht sich so weit, wie sich die Maus bewegt, wie in einem "
-                                "PC-Spiel, ohne Totzone oder Kurve des Sticks (Spiel 1.4.3 und 1.2.1; 1.1.0 nutzt die "
-                                "Stick-Emulation). Stick-Emulation: Die Maus wirkt wie der rechte Stick.",
+                                "PC-Spiel, ohne Totzone oder Kurve des Sticks. Stick-Emulation: Die Maus wirkt wie der rechte Stick.",
     [UI_MENU_MOUSE_STICK] = "Stick-Emulation",
     [UI_MENU_MOUSE_DIRECT] = "Direkt",
     [UI_MENU_MENU_CURSOR] = "Maus in den Spielmenüs",
@@ -4216,8 +4215,7 @@ static const char *const text_fr[UI_TEXT_COUNT] = {
     [UI_MENU_STICK_DEADZONE_NOW] = "stick actuel : %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Caméra à la souris",
     [UI_MENU_MOUSE_MODE_DESC] = "Direct : la caméra tourne selon le déplacement de la souris, comme dans un jeu PC, "
-                                "sans zone morte ni courbe de stick (jeux 1.4.3 et 1.2.1 ; 1.1.0 utilise l'émulation "
-                                "du stick). Émulation du stick : la souris agit comme le stick droit.",
+                                "sans zone morte ni courbe de stick. Émulation du stick : la souris agit comme le stick droit.",
     [UI_MENU_MOUSE_STICK] = "Émulation du stick",
     [UI_MENU_MOUSE_DIRECT] = "Direct",
     [UI_MENU_MENU_CURSOR] = "Souris dans les menus du jeu",
@@ -5139,8 +5137,7 @@ static const char *const text_es[UI_TEXT_COUNT] = {
     [UI_MENU_STICK_DEADZONE_NOW] = "stick ahora: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Cámara con ratón",
     [UI_MENU_MOUSE_MODE_DESC] = "Directo: la cámara gira según cuánto se mueve el ratón, como en un juego de PC, sin "
-                                "zona muerta ni curva de stick (versiones 1.4.3 y 1.2.1 del juego; 1.1.0 usa la "
-                                "emulación de stick). Emulación de stick: el ratón actúa como el stick derecho.",
+                                "zona muerta ni curva de stick. Emulación de stick: el ratón actúa como el stick derecho.",
     [UI_MENU_MOUSE_STICK] = "Emulación de stick",
     [UI_MENU_MOUSE_DIRECT] = "Directo",
     [UI_MENU_MENU_CURSOR] = "Ratón en los menús del juego",
@@ -6056,8 +6053,7 @@ static const char *const text_it[UI_TEXT_COUNT] = {
     [UI_MENU_STICK_DEADZONE_NOW] = "levetta ora: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Telecamera con mouse",
     [UI_MENU_MOUSE_MODE_DESC] = "Diretta: la telecamera gira di quanto si sposta il mouse, come in un gioco per PC, "
-                                "senza zona morta né curva della levetta (gioco 1.4.3 e 1.2.1; 1.1.0 usa l'emulazione "
-                                "levetta). Emulazione levetta: il mouse fa da levetta destra.",
+                                "senza zona morta né curva della levetta. Emulazione levetta: il mouse fa da levetta destra.",
     [UI_MENU_MOUSE_STICK] = "Emulazione levetta",
     [UI_MENU_MOUSE_DIRECT] = "Diretta",
     [UI_MENU_MENU_CURSOR] = "Mouse nei menu del gioco",
@@ -6969,8 +6965,7 @@ static const char *const text_nl[UI_TEXT_COUNT] = {
     [UI_MENU_STICK_DEADZONE_NOW] = "stick nu: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Muiscamera",
     [UI_MENU_MOUSE_MODE_DESC] = "Direct: de camera draait zover als de muis beweegt, zoals in een pc-game, zonder "
-                                "dode zone of curve van de stick (spel 1.4.3 en 1.2.1; 1.1.0 gebruikt stickemulatie). "
-                                "Stickemulatie: de muis werkt als de rechterstick.",
+                                "dode zone of curve van de stick. Stickemulatie: de muis werkt als de rechterstick.",
     [UI_MENU_MOUSE_STICK] = "Stickemulatie",
     [UI_MENU_MOUSE_DIRECT] = "Direct",
     [UI_MENU_MENU_CURSOR] = "Muis in de spelmenu's",
@@ -7799,8 +7794,7 @@ static const char *const text_ja[UI_TEXT_COUNT] = {
                                     "手を離し、「現在のスティック」の値を読んで、それより数パーセント上に設定します。",
     [UI_MENU_STICK_DEADZONE_NOW] = "現在のスティック: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "マウスのカメラ操作",
-    [UI_MENU_MOUSE_MODE_DESC] = "ダイレクト: PC ゲームのように、マウスを動かした量だけカメラが回ります。スティックのデッドゾーンやカーブはありません (ゲーム 1.4.3 と "
-                                "1.2.1。1.1.0 ではスティックエミュレーション)。スティックエミュレーション: マウスが右スティックとして動作します。",
+    [UI_MENU_MOUSE_MODE_DESC] = "ダイレクト: PC ゲームのように、マウスを動かした量だけカメラが回ります。スティックのデッドゾーンやカーブはありません。スティックエミュレーション: マウスが右スティックとして動作します。",
     [UI_MENU_MOUSE_STICK] = "スティックエミュレーション",
     [UI_MENU_MOUSE_DIRECT] = "ダイレクト",
     [UI_MENU_MENU_CURSOR] = "ゲームのメニューでマウスを使う",
@@ -8557,8 +8551,7 @@ static const char *const text_ko[UI_TEXT_COUNT] = {
                                     "그보다 몇 퍼센트 높게 설정하세요.",
     [UI_MENU_STICK_DEADZONE_NOW] = "현재 스틱: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "마우스 카메라",
-    [UI_MENU_MOUSE_MODE_DESC] = "직접: PC 게임처럼 마우스를 움직인 만큼 카메라가 돌며, 스틱 데드존이나 곡선이 없습니다(게임 1.4.3과 1.2.1. 1.1.0은 스틱 에뮬레이션 "
-                                "사용). 스틱 에뮬레이션: 마우스가 오른쪽 스틱처럼 작동합니다.",
+    [UI_MENU_MOUSE_MODE_DESC] = "직접: PC 게임처럼 마우스를 움직인 만큼 카메라가 돌며, 스틱 데드존이나 곡선이 없습니다. 스틱 에뮬레이션: 마우스가 오른쪽 스틱처럼 작동합니다.",
     [UI_MENU_MOUSE_STICK] = "스틱 에뮬레이션",
     [UI_MENU_MOUSE_DIRECT] = "직접",
     [UI_MENU_MENU_CURSOR] = "게임 메뉴에서 마우스",
@@ -9296,7 +9289,7 @@ static const char *const text_vi[UI_TEXT_COUNT] = {
     [UI_MENU_STICK_DEADZONE_DESC] = "Cần của tay cầm phải nghiêng bao xa thì game mới nhận. Hãy tăng nếu nhân vật hoặc camera tự di chuyển: thả cần ra, đọc \"cần lúc này\" và đặt vùng chết cao hơn vài phần trăm.",
     [UI_MENU_STICK_DEADZONE_NOW] = "cần lúc này: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Camera chuột",
-    [UI_MENU_MOUSE_MODE_DESC] = "Trực tiếp: camera xoay theo quãng chuột di chuyển, như game PC, không có vùng chết hay đường cong của cần (game 1.4.3 và 1.2.1; 1.1.0 dùng giả lập cần). Giả lập cần: chuột đóng vai cần phải.",
+    [UI_MENU_MOUSE_MODE_DESC] = "Trực tiếp: camera xoay theo quãng chuột di chuyển, như game PC, không có vùng chết hay đường cong của cần. Giả lập cần: chuột đóng vai cần phải.",
     [UI_MENU_MOUSE_STICK] = "Giả lập cần",
     [UI_MENU_MOUSE_DIRECT] = "Trực tiếp",
     [UI_MENU_MENU_CURSOR] = "Chuột trong menu của game",

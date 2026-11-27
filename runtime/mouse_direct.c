@@ -1,8 +1,8 @@
-// Direct mouse input for TotK 1.4.3 and 1.2.1. The camera controller's input update (1.4.3 main+0x874c1c, 1.2.1
-// main+0xd18088) turns HID stick floats into a radial dead zone, clamps the radius to one and applies StickExponent.
+// Direct mouse input for TotK 1.4.3, 1.2.1 and 1.1.0. The camera controller's input update (1.4.3 main+0x874c1c, 1.2.1
+// main+0xd18088, 1.1.0 main+0xd2286c) turns HID stick floats into a radial dead zone, clamps the radius to one and applies StickExponent.
 // The mouse enters after all three, at the store of x (1.4.3 main+0x874cb4), before the game's X/Y inversion and
 // input-activity flags. It never becomes a HID stick value. Where each version keeps the values the hooks read is in
-// its MouseLayout (layout_143, layout_121), chosen by the running game version.
+// its MouseLayout (layout_143, layout_121, layout_110), chosen by the running game version.
 // Free orbit removes that sample again before the camera's additional vertical square/velocity filters and adds
 // raw-count angular deltas at its spherical-angle output instead. The aiming, scope, ability, horse and Purah Pad
 // cameras do the same at the angle each integrates from (camera_load). Ultrahand has a separate post-curve hook.
@@ -67,7 +67,7 @@ static int hand_active(uint64_t now) {
 
 // Cameras no direct hook reaches. The hooks below (the free orbit's orbit_begin, every camera_load site, Ultrahand's
 // hand_input) mark each camera step they run in (step_hooked). A camera that runs none of them, such as Autobuild's
-// placement camera on games 1.4.3 and 1.2.1, reads its turn from input the hooks never see. After UNHOOKED_STEPS such
+// placement camera, reads its turn from input the hooks never see. After UNHOOKED_STEPS such
 // steps in a row the mouse leaves the direct path and acts as the right stick (input.c mouse_camera), as with
 // mouse_mode = stick, until a step runs a hook again.
 #define UNHOOKED_STEPS 2
@@ -135,9 +135,9 @@ static _Thread_local uint64_t mouse_input_object;
 static volatile int32_t cam_blocked, cam_kind;
 static uint64_t cam_kind_at;
 
-// Where a game version keeps what the hooks read and write (recomp/patches-v143.txt, patches-v121.txt). The camera
-// input update keeps its flags in w21, its input object in x20 and y in s10 in both; the free orbit's object is x0 at
-// its begin and x20 at its angles; Ultrahand's object is x19 and its y s15.
+// Where a game version keeps what the hooks read and write (recomp/patches-v143.txt, patches-v121.txt,
+// patches-v110.txt). The camera input update keeps its flags in w21, its input object in x20 and y in s10 across
+// all three; the free orbit's object is x0 at its begin and x20 at its angles; Ultrahand's object is x19 and its y s15.
 struct LoadSite;
 typedef struct {
     uint8_t input_x;                // camera_input: the s register with x, which the displaced store puts at +0x420
@@ -218,8 +218,8 @@ static float wrap_degrees(float a) { return remainderf(a, 360.0f); }
 // (id +0x10, unit +8; the unit's id +0x48 and proc +0x40, the proc's state +0x24 not 7..11 while it is deleted), the
 // actor's component array +0x228 (1.0.0 +0x220), its AS component +0x158, whose 5 slots (+0x1f0) hold the verb at +0x28
 // (+0x4c when +0x28 is Invalid). Every pointer is checked before it is followed; any miss reads as "nothing".
-// 1.2.1's slot, component offset and verb numbers are not known (MouseLayout.player_root_slot 0): there the player
-// always reads as not found, so the ability camera's stick fallback keeps on-foot gains and mouse_aim_scale stays off.
+// 1.2.1's and 1.1.0's slot, component offset and verb numbers are not known (MouseLayout.player_root_slot 0): there the
+// player always reads as not found, so the ability camera's stick fallback keeps on-foot gains and mouse_aim_scale stays off.
 enum { VERB_USE_BOW = 59, VERB_USE_SPECIAL_POWER = 61, VERB_DRAWN_BOW = 205, VERB_INVALID = 284 };
 enum { PLAYER_FOUND = 1, PLAYER_ABILITY = 2, PLAYER_BOW = 4 };
 
@@ -647,8 +647,8 @@ static void hand_input(Cpu *c) {
 // Each of these camera modes (vtable slot 36 of its ExecutePlayerCamera* class, the per-step update) turns by the
 // processed stick at input +0x420 (x) / +0x424 (y) times its own speeds and the frame time, and adds that to a base
 // angle in degrees. Two loads per axis are replaced by a host call (the `mouse_direct` load sites of
-// recomp/patches-v143.txt and patches-v121.txt, all at page +0xf80; the return address tells them apart; the main
-// addresses below are 1.4.3's, load_sites_121 has 1.2.1's):
+// recomp/patches-v143.txt, patches-v121.txt and patches-v110.txt, all at page +0xf80; the return address tells them
+// apart; the main addresses below are 1.4.3's, load_sites_121 has 1.2.1's, load_sites_110 has 1.1.0's):
 //   stick: the load the turn is computed from gets the gamepad's part only (the sample's pad, post-inversion as the
 //          game stored it), so the mode's speeds, time step and slow motion never touch the mouse;
 //   base:  the load of the angle the turn is added to gets the mouse's degrees added, DEG_PER_COUNT a count as the
@@ -879,6 +879,81 @@ static const LoadSite load_sites_121[] = {
     {0x1d3e33c, 0xbd442329, MODE_TALK_MANUAL, 0, ROLE_STICK, 25, 0},     // ldr s9, [x25, #0x420]
     {0x1d3e364, 0xbd4002c1, MODE_TALK_MANUAL, 0, ROLE_BASE, 0, 0},       // ldr s1, [x22] (yaw +0x7c)
 };
+// The same camera modes in 1.1.0 (recomp/patches-v110.txt), matched by enclosing function to 1.2.1.
+static const LoadSite load_sites_110[] = {
+    {0x1d41658, 0xbd4426c1, MODE_AIM, 1, ROLE_STICK, 22, 0},             // ldr s1, [x22, #0x424]
+    {0x1d41694, 0xbd015660, MODE_AIM, 1, ROLE_BASE_STORE, 0, 0},         // str s0, [x19, #0x154] (+0x15c + turn)
+    {0x1d418a4, 0xbd4422c1, MODE_AIM, 0, ROLE_STICK, 22, 0},             // ldr s1, [x22, #0x420]
+    {0x1d418f0, 0xbc5b83a1, MODE_AIM, 0, ROLE_BASE, 0, 0},               // ldur s1, [x29, #-0x48]
+    {0x1d4318c, 0xbd4422e0, MODE_SCOPE, 0, ROLE_STICK, 23, 0},           // ldr s0, [x23, #0x420]
+    {0x1d43198, 0xbd4426e9, MODE_SCOPE, 1, ROLE_STICK, 23, LIMIT_160},   // ldr s9, [x23, #0x424]
+    {0x1d43438, 0xbd416260, MODE_SCOPE, 1, ROLE_BASE, 0, 0},             // ldr s0, [x19, #0x160]
+    {0x1d433dc, 0xbd405be1, MODE_SCOPE, 0, ROLE_BASE, 0, 0},             // ldr s1, [sp, #0x58]
+    {0x1d55638, 0xbd4422cf, MODE_ABILITY, 0, ROLE_STICK, 22, SKIP_OFFSET},               // ldr s15, [x22, #0x420]
+    {0x1d55640, 0xbd4426cc, MODE_ABILITY, 1, ROLE_STICK, 22, SKIP_OFFSET | LIMIT_160},   // ldr s12, [x22, #0x424]
+    {0x1d55d74, 0xbd416262, MODE_ABILITY, 1, ROLE_BASE, 0, 0},           // ldr s2, [x19, #0x160]
+    {0x1d55cf8, 0xbc5a83a1, MODE_ABILITY, 0, ROLE_BASE, 0, 0},           // ldur s1, [x29, #-0x58]
+    {0x1d4d8cc, 0xbd442288, MODE_HORSE, 0, ROLE_STICK, 20, 0},           // ldr s8, [x20, #0x420]
+    {0x1d4d900, 0xbd401be0, MODE_HORSE, 0, ROLE_BASE, 0, 0},             // ldr s0, [sp, #0x18] (the yaw turn)
+    {0x1d4dab8, 0xbd4426a8, MODE_HORSE, 1, ROLE_STICK, 21, 0},           // ldr s8, [x21, #0x424]
+    {0x1d4db6c, 0xbd406661, MODE_HORSE, 1, ROLE_BASE, 0, 0},             // ldr s1, [x19, #0x64]
+    {0x1d55e8c, 0xbd4422c9, MODE_ABILITY_OFFSET, 0, ROLE_STICK, 22, ONLY_OFFSET},   // ldr s9, [x22, #0x420]
+    {0x1d55eb0, 0xbd41da61, MODE_ABILITY_OFFSET, 0, ROLE_BASE, 0, 0},               // ldr s1, [x19, #0x1d8]
+    {0x1d55ebc, 0xbd4426c9, MODE_ABILITY_OFFSET, 1, ROLE_STICK, 22, ONLY_OFFSET},   // ldr s9, [x22, #0x424]
+    {0x1d55ed8, 0xbd41de61, MODE_ABILITY_OFFSET, 1, ROLE_BASE, 0, 0},               // ldr s1, [x19, #0x1dc]
+    {0x1d557b8, 0xbd400400, MODE_ABILITY_OFFSET, 1, ROLE_SCALE, 0, 0},              // ldr s0, [x0, #0x4] (P.y)
+    {0x1d44cfc, 0xbd4426ad, MODE_FINDER, 1, ROLE_STICK, 21, 0},          // ldr s13, [x21, #0x424]
+    {0x1d44d20, 0xbd405261, MODE_FINDER, 1, ROLE_BASE, 0, 0},            // ldr s1, [x19, #0x50]
+    {0x1d44d84, 0xbd4422ad, MODE_FINDER, 0, ROLE_STICK, 21, 0},          // ldr s13, [x21, #0x420]
+    {0x1d44dac, 0xbc5c03a1, MODE_FINDER, 0, ROLE_BASE, 0, 0},            // ldur s1, [x29, #-0x40]
+    {0x1d45fcc, 0xbd442301, MODE_CLIMB, 0, ROLE_STICK, 24, 0},           // ldr s1, [x24, #0x420]
+    {0x1d45fd4, 0xbd409261, MODE_CLIMB, 0, ROLE_BASE, 0, 0},             // ldr s1, [x19, #0x90] (yaw)
+    {0x1d45f70, 0xbd442701, MODE_CLIMB, 1, ROLE_STICK, 24, 0},           // ldr s1, [x24, #0x424]
+    {0x1d45f7c, 0xbd4002c1, MODE_CLIMB, 1, ROLE_BASE, 0, 0},             // ldr s1, [x22] (pitch +0x88, as 1.4.3)
+    {0x1d5d8f8, 0xbd4422c0, MODE_WAKEBOARD, 0, ROLE_STICK, 22, EPSILON | REPEAT},       // ldr s0, [x22, #0x420]
+    {0x1d5d900, 0xbd4426c1, MODE_WAKEBOARD, 1, ROLE_STICK, 22, KEEP_STICK | REPEAT},    // ldr s1, [x22, #0x424]
+    {0x1d5d928, 0xbd4426c0, MODE_WAKEBOARD, 1, ROLE_STICK, 22, KEEP_STICK}, // ldr s0, [x22, #0x424]
+    {0x1d5d92c, 0xbd4422c1, MODE_WAKEBOARD, 0, ROLE_STICK, 22, EPSILON},    // ldr s1, [x22, #0x420]
+    {0x1d5e01c, 0xbd40da60, MODE_WAKEBOARD, 1, ROLE_BASE, 0, 0},         // ldr s0, [x19, #0xd8] (pitch)
+    {0x1d5da7c, 0xbd401fa0, MODE_WAKEBOARD, 1, ROLE_SHARE, 0, 0},        // ldr s0, [x29, #0x1c] (pitch turn)
+    {0x1d5e0e0, 0xbd403bec, MODE_WAKEBOARD, 0, ROLE_BASE, 0, 0},         // ldr s12, [sp, #0x38] (yaw)
+    {0x1d532c8, 0xbd4422e0, MODE_SHIELD, 0, ROLE_STICK, 23, EPSILON | REPEAT},          // ldr s0, [x23, #0x420]
+    {0x1d532d0, 0xbd4426e1, MODE_SHIELD, 1, ROLE_STICK, 23, KEEP_STICK | REPEAT},       // ldr s1, [x23, #0x424]
+    {0x1d532f8, 0xbd4426e0, MODE_SHIELD, 1, ROLE_STICK, 23, KEEP_STICK}, // ldr s0, [x23, #0x424]
+    {0x1d532fc, 0xbd4422e1, MODE_SHIELD, 0, ROLE_STICK, 23, EPSILON},    // ldr s1, [x23, #0x420]
+    {0x1d53948, 0xbd40de60, MODE_SHIELD, 1, ROLE_BASE, 0, 0},            // ldr s0, [x19, #0xdc] (pitch)
+    {0x1d53ad0, 0xbd401fa0, MODE_SHIELD, 1, ROLE_SHARE, 0, 0},           // ldr s0, [x29, #0x1c] (pitch turn)
+    {0x1d53974, 0xbd403bec, MODE_SHIELD, 0, ROLE_BASE, 0, 0},            // ldr s12, [sp, #0x38] (yaw)
+    {0x1d5efd0, 0xbd4422cd, MODE_WATERFALL, 0, ROLE_STICK, 22, 0},       // ldr s13, [x22, #0x420]
+    {0x1d5f178, 0xb9403be8, MODE_WATERFALL, 0, ROLE_BASE, 0, 0},         // ldr w8, [sp, #0x38] (yaw, as bits)
+    {0x1d5f108, 0xbd4426c9, MODE_WATERFALL, 1, ROLE_WATCH, 22, 0},       // ldr s9, [x22, #0x424] (height, stick)
+    {0x1d572dc, 0xbd442280, MODE_TAIL, 0, ROLE_STICK, 20, REPEAT},       // ldr s0, [x20, #0x420]
+    {0x1d572e4, 0xbd442681, MODE_TAIL, 1, ROLE_STICK, 20, REPEAT},       // ldr s1, [x20, #0x424]
+    {0x1d5730c, 0xbd442680, MODE_TAIL, 1, ROLE_STICK, 20, 0},            // ldr s0, [x20, #0x424]
+    {0x1d57310, 0xbd442281, MODE_TAIL, 0, ROLE_STICK, 20, 0},            // ldr s1, [x20, #0x420]
+    {0x1d57660, 0xbd40c260, MODE_TAIL, 0, ROLE_BASE, 0, 0},              // ldr s0, [x19, #0xc0] (yaw)
+    {0x1d576d4, 0xbd40b661, MODE_TAIL, 1, ROLE_BASE, 0, 0},              // ldr s1, [x19, #0xb4] (pitch)
+    {0x1d59af0, 0xbd442320, MODE_LOCKON, 0, ROLE_WATCH, 25, 0},          // ldr s0, [x25, #0x420] (the input test)
+    {0x1d59b18, 0xbd442321, MODE_LOCKON, 0, ROLE_STICK, 25, 0},          // ldr s1, [x25, #0x420]
+    {0x1d59b3c, 0xbd402be0, MODE_LOCKON, 0, ROLE_BASE_KEEP, 0, 0},       // ldr s0, [sp, #0x28] (the yaw turn)
+    {0x1d59b4c, 0xbd402be9, MODE_LOCKON, 0, ROLE_BASE, 0, 0},            // ldr s9, [sp, #0x28]
+    {0x1d59f1c, 0xbd442721, MODE_LOCKON, 1, ROLE_STICK, 25, 0},          // ldr s1, [x25, #0x424]
+    {0x1d59f40, 0xbd402be0, MODE_LOCKON, 1, ROLE_BASE_KEEP, 0, 0},       // ldr s0, [sp, #0x28] (the pitch turn)
+    {0x1d59f50, 0xbd402beb, MODE_LOCKON, 1, ROLE_BASE, 0, 0},            // ldr s11, [sp, #0x28]
+    {0x1d515a8, 0xbd4426a9, MODE_LOCKON_AIM, 1, ROLE_STICK, 21, 0},      // ldr s9, [x21, #0x424]
+    {0x1d515f0, 0xbd419a61, MODE_LOCKON_AIM, 1, ROLE_BASE, 0, 0},        // ldr s1, [x19, #0x198] (pitch offset)
+    {0x1d51604, 0xbd4422a9, MODE_LOCKON_AIM, 0, ROLE_STICK, 21, 0},      // ldr s9, [x21, #0x420]
+    {0x1d51650, 0xbd419e61, MODE_LOCKON_AIM, 0, ROLE_BASE, 0, 0},        // ldr s1, [x19, #0x19c] (yaw offset)
+    {0x1d4ea9c, 0xbd44234b, MODE_HORSE_LOCKON, 0, ROLE_WATCH, 26, 0},    // ldr s11, [x26, #0x420]
+    {0x1d475bc, 0xbd44270b, MODE_TALK, 1, ROLE_STICK, 24, 0},            // ldr s11, [x24, #0x424]
+    {0x1d475e4, 0xbd4002e1, MODE_TALK, 1, ROLE_BASE, 0, 0},              // ldr s1, [x23] (pitch +0x5c)
+    {0x1d47648, 0xbd44230b, MODE_TALK, 0, ROLE_STICK, 24, EPSILON},      // ldr s11, [x24, #0x420] (also the test)
+    {0x1d476a8, 0xbd4002c1, MODE_TALK, 0, ROLE_BASE, 0, 0},              // ldr s1, [x22] (yaw +0x64)
+    {0x1d4b470, 0xbd442729, MODE_TALK_MANUAL, 1, ROLE_STICK, 25, 0},     // ldr s9, [x25, #0x424]
+    {0x1d4b498, 0xbd400301, MODE_TALK_MANUAL, 1, ROLE_BASE, 0, 0},       // ldr s1, [x24] (pitch +0x74)
+    {0x1d4b4fc, 0xbd442329, MODE_TALK_MANUAL, 0, ROLE_STICK, 25, 0},     // ldr s9, [x25, #0x420]
+    {0x1d4b524, 0xbd4002c1, MODE_TALK_MANUAL, 0, ROLE_BASE, 0, 0},       // ldr s1, [x22] (yaw +0x7c)
+};
 
 static const MouseLayout layout_143 = {
     .input_x = 9, .activity_sp = 8, .orbit_pitch = 0x44, .orbit_yaw = 0x48, .orbit_reg = 12,
@@ -890,8 +965,12 @@ static const MouseLayout layout_121 = {
     .hand_x_reg = 9, .hand_store_reg = 9, .hand_store_sp = 0x18,
     .player_root_slot = 0, .main_size = 0x472b000,
     .loads = load_sites_121, .load_count = sizeof load_sites_121 / sizeof load_sites_121[0]};
-// Only 1.4.3 and 1.2.1 have the mouse_direct set (1.1.0's table has none, so direct_mode() is off and no hook runs)
-static const MouseLayout *mouse_layout(void) { return RT_V143 ? &layout_143 : &layout_121; }
+static const MouseLayout layout_110 = {
+    .input_x = 11, .activity_sp = 0x10, .orbit_pitch = 0x3c, .orbit_yaw = 0x40, .orbit_reg = 13,
+    .hand_x_reg = 9, .hand_store_reg = 9, .hand_store_sp = 0x10,
+    .player_root_slot = 0, .main_size = 0x472d000,
+    .loads = load_sites_110, .load_count = sizeof load_sites_110 / sizeof load_sites_110[0]};
+static const MouseLayout *mouse_layout(void) { return RT_V143 ? &layout_143 : RT_V110 ? &layout_110 : &layout_121; }
 
 // The original single-register 32-bit loads: LDR S / W (unsigned offset), LDUR S and LDUR W (a float's bits in a
 // general register), and for ROLE_BASE_STORE the store STR S (unsigned offset). Never a load with write-back: the hook
