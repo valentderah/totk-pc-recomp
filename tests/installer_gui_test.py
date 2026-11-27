@@ -371,6 +371,16 @@ class CatalogTest(unittest.TestCase):
                           ('zh_CN.UTF-8', 'zh-Hans'), ('zh_TW.UTF-8', 'zh-Hans'), ('zh_HK', 'zh-Hans'),
                           ('de_AT.UTF-8', 'de'), ('fr_CA', 'fr-CA'), ('fr_BE.UTF-8', 'fr'), ('ja_JP.UTF-8', 'ja'),
                           ('ko_KR.UTF-8', 'ko'),
+                          ('fr_Latn_CA.UTF-8', 'fr-CA'),
+                          ('FR_latn_ca', 'fr-CA'),
+                          ('fr_CA_u_ca_gregory', 'fr-CA'),
+                          ('fr_Latn_FR', 'fr'),
+                          ('fr_Latn', 'fr'),
+                          ('fr_u_ca_gregory', 'fr'),
+                          ('fr_x_ca', 'fr'),
+                          ('fr_FR_u_ca_gregory', 'fr'),
+                          ('fr_FR_x_ca', 'fr'),
+                          ('fr.UTF-8@canadian', 'fr'),
                           ('nl', 'nl'), ('C.UTF-8', 'en'), ('', 'en'), ('sv_SE.UTF-8', 'en')):
             self.assertEqual(ui_language_for_locale(loc), lang, loc)
 
