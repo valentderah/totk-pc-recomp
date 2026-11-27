@@ -290,8 +290,23 @@ The keys are `quicksave_key` and `quickload_key` (`TOTK_QUICKSAVE_KEY`, `TOTK_QU
 
 With `gameplay_tweaks_enabled = 1` (`TOTK_GAMEPLAY_TWEAKS_ENABLED=1`, live; off by default in `totk.ini`), the mouse wheel and keyboard can drive common gameplay interactions directly:
 
-- **Ultrahand object rotation**: turning the mouse wheel while Ultrahand holds an object rotates it directly without holding R or pressing the D-pad (`gameplay_ultrahand_rotate = 1`, sensitivity `gameplay_rotation_sensitivity = 1`). Holding C while scrolling rotates around the alternate axis (`gameplay_ultrahand_c_axis = 1`).
-- **Ultrahand distance**: holding the right mouse button while scrolling pushes or pulls the held object closer or farther (`gameplay_ultrahand_distance = 1`, sensitivity `gameplay_distance_sensitivity = 1`).
+- **Ultrahand wheel controls**: select the default wheel action in F1 > Controls > Gameplay tweaks, or set `gameplay_ultrahand_default_action` to `rotate_x` (default), `rotate_y` or `distance`. Two configurable modifiers select the remaining actions.
+- **Ultrahand rotation**: enable rotation with `gameplay_ultrahand_rotate` and the alternate axis with `gameplay_ultrahand_c_axis`. Adjust speed using `gameplay_rotation_sensitivity`.
+- **Ultrahand distance**: enable pushing and pulling objects with `gameplay_ultrahand_distance`, and adjust speed using `gameplay_distance_sensitivity`.
+
+The first modifier (`gameplay_ultrahand_rotation_key`) defaults to C.
+The second modifier (`gameplay_ultrahand_distance_key`) defaults to the right mouse button.
+Both accept a keyboard key, mouse button or `none`.
+
+| Default wheel action | First modifier + wheel | Second modifier + wheel |
+| --- | --- | --- |
+| Rotate X | Rotate Y | Move forward/backward |
+| Rotate Y | Rotate X | Move forward/backward |
+| Move forward/backward | Rotate Y | Rotate X |
+
+The second modifier has priority when both assigned actions are enabled.
+The menu labels follow the selected actions. Changes take effect live.
+
 - **Free-roam weapon switching**: scrolling the mouse wheel in free roam steps through equipped weapons (`gameplay_weapon_wheel = 1`, sensitivity `gameplay_weapon_sensitivity = 1`). Press E to confirm the chosen weapon; right click or pressing B cancels.
 - **Quick-selection menus**: scrolling the mouse wheel browses items while a quick-selection menu (weapons, bows, shields, materials) is open (`gameplay_item_wheel = 1`, sensitivity `gameplay_item_sensitivity = 1`). A and D keys step left and right through the strip (`gameplay_item_ad = 1`).
 - **Smooth map zoom**: the mouse wheel performs continuous inertial zooming on the Purah Pad map (`gameplay_map_zoom = 1`, sensitivity `gameplay_map_zoom_sensitivity = 1`). It works with `menu_cursor = 0` too: the map is still found then, and the mouse moves the map's cursor there as with the menu cursor on, while the game's other menus stay without the pointer.

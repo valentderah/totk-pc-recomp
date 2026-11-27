@@ -639,6 +639,14 @@
 # gameplay_tweaks_enabled = 0
 # gameplay_ultrahand_rotate = 1
 # gameplay_ultrahand_c_axis = 1
+# Physical keyboard or mouse modifiers, using the names from the bindings.
+# none disables that modifier; an unknown name uses the default.
+# The second modifier takes priority when both are held.
+# Default wheel action: rotate_x, rotate_y, distance.
+# The two modifiers select the remaining actions.
+# gameplay_ultrahand_default_action = rotate_x
+# gameplay_ultrahand_rotation_key = c
+# gameplay_ultrahand_distance_key = mouse_r
 # gameplay_ultrahand_distance = 1
 # gameplay_weapon_wheel = 1
 # gameplay_weapon_sensitivity = 1

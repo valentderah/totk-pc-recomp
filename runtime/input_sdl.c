@@ -307,7 +307,7 @@ void input_sdl_event(const SDL_Event *e) {
         }
         if (input_gameplay_active()) {
             double delta = e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? e->wheel.y : -e->wheel.y;
-            gameplay_tweaks_wheel(delta, ikb_down(KEY_C), ikb_down(KEY_MOUSE_R));
+            gameplay_tweaks_wheel(delta);
         }
         break;
     case SDL_EVENT_WINDOW_FOCUS_GAINED:

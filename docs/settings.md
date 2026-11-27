@@ -20,6 +20,26 @@ Many rows below are developer tools that only act together with another setting 
 | --- | --- | --- | --- |
 | `hud_width` (default `full`) | `full` places the HUD at the screen's edges; `21:9` or `16:9` constrains it to that centered area on a wider game resolution. A cap that is not narrower than the screen, and 16:9 or taller output, keep the full layout. | Read at start. The Shapes installer step builds the selected cap only for needed screen shapes and button prompts. After a change in the Screen tab an install makes a missing layout in the background; it loads at the next start. If a capped folder is missing the full layout loads with a log message. Explicit overlay overrides and player UI mods keep their precedence. | Safe |
 
+## Ultrahand modifiers
+
+`gameplay_ultrahand_default_action` selects the action without a modifier.
+
+| Default action | First modifier | Second modifier |
+| --- | --- | --- |
+| Rotate X (`rotate_x`) | Rotate Y | Distance |
+| Rotate Y (`rotate_y`) | Rotate X | Distance |
+| Move forward/backward (`distance`) | Rotate Y | Rotate X |
+
+The existing rotation and distance key settings represent the first
+and second modifier slots respectively. The second slot has priority
+when both enabled actions are requested.
+
+| Setting | What it does | Effect of changing it | Safety |
+| --- | --- | --- | --- |
+| `gameplay_ultrahand_default_action` (default `rotate_x`) | Selects the unmodified wheel action. | Live; accepts `rotate_x`, `rotate_y` or `distance`. | Safe |
+| `gameplay_ultrahand_rotation_key` (default `c`) | Selects the first modifier action while scrolling. | Live; accepts a binding key name or `none`. Invalid names use the default. | Safe |
+| `gameplay_ultrahand_distance_key` (default `mouse_r`) | Selects the second modifier action while scrolling. | Live; accepts a binding key name or `none`. The second modifier takes priority when both are held. Invalid names use the default. | Safe |
+
 ## Diagnostics and logging
 
 | Setting | What it does | Effect of changing it | Safety |

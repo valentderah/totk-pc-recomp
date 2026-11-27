@@ -11,12 +11,14 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #define BIT(x) (1ull << (x))
 #define HOLD_FRAMES 3
 #define GAP_FRAMES 1
 #define MAX_QUEUED 16
 enum { NONE, ROTATE, DISTANCE, ITEMS, MAP_ZOOM, WEAPONS };
+enum { UH_ROTATE_X, UH_ROTATE_Y, UH_DISTANCE, UH_DISABLED };
 enum { W_IDLE = 0, W_PRIME, W_HOLD, W_GAP, W_WAIT };
 #define WEAPON_PRIME_MIN_NS  75000000ull
 #define WEAPON_PRIME_MAX_NS 135000000ull
@@ -27,6 +29,7 @@ static PlatMutex lock = PLAT_MUTEX_INIT;
 static unsigned seen = UINT_MAX;
 static struct {
     int available, rotate, c_axis, distance, wheel, keys, map_zoom, weapon_wheel;
+    int rotation_key, distance_key, default_action;
     double rotation_speed, distance_speed, item_speed, map_zoom_speed, weapon_speed;
 } options;
 static struct {
@@ -44,12 +47,21 @@ static struct {
 } weapon;
 static double map_zoom_velocity;
 static int held_a, held_d;
-static int consumed_c, consumed_right;
+static int consumed_rotation, consumed_distance;
 static int was_e_down, consumed_e;
 static uint64_t physical_buttons;
 
 static void clear_weapon_locked(void) { memset(&weapon, 0, sizeof weapon); }
 static void clear_locked(void) { memset(&pulse, 0, sizeof pulse); clear_weapon_locked(); map_zoom_velocity = 0; }
+
+// Resolve a configured physical key when settings change, not on every input poll.
+// An invalid name uses the original default; "none" disables the modifier.
+static int modifier_key(const char *setting, int fallback) {
+    const char *name = cfg_value(setting);
+    if (!strcasecmp(name, "none")) return KEY_NONE;
+    int key = input_key_id(name);
+    return key == KEY_NONE ? fallback : key;
+}
 
 static void refresh_locked(void) {
     unsigned version = cfg_version();
@@ -58,6 +70,17 @@ static void refresh_locked(void) {
     options.rotate = cfg_bool("TOTK_GAMEPLAY_ULTRAHAND_ROTATE");
     options.c_axis = cfg_bool("TOTK_GAMEPLAY_ULTRAHAND_C_AXIS");
     options.distance = cfg_bool("TOTK_GAMEPLAY_ULTRAHAND_DISTANCE");
+    int rotation_key = modifier_key("TOTK_GAMEPLAY_ULTRAHAND_ROTATION_KEY", KEY_C);
+    int distance_key = modifier_key("TOTK_GAMEPLAY_ULTRAHAND_DISTANCE_KEY", KEY_MOUSE_R);
+    if (rotation_key != options.rotation_key) consumed_rotation = 0;
+    if (distance_key != options.distance_key) consumed_distance = 0;
+    options.rotation_key = rotation_key;
+    options.distance_key = distance_key;
+
+    const char *action = cfg_value("TOTK_GAMEPLAY_ULTRAHAND_DEFAULT_ACTION");
+    options.default_action = !strcasecmp(action, "rotate_y") ? UH_ROTATE_Y :
+                             !strcasecmp(action, "distance") ? UH_DISTANCE :
+                             UH_ROTATE_X;
     options.wheel = cfg_bool("TOTK_GAMEPLAY_ITEM_WHEEL");
     options.keys = cfg_bool("TOTK_GAMEPLAY_ITEM_AD");
     options.map_zoom = cfg_bool("TOTK_GAMEPLAY_MAP_ZOOM");
@@ -74,6 +97,42 @@ static void refresh_locked(void) {
     if (!isfinite(options.weapon_speed) || options.weapon_speed < .25 || options.weapon_speed > 4) options.weapon_speed = 1;
     seen = version;
     clear_locked();
+}
+
+static int ultrahand_enabled(int action) {
+    if (action == UH_DISTANCE) return options.distance;
+    if (action == UH_ROTATE_Y) return options.rotate && options.c_axis;
+    return action == UH_ROTATE_X && options.rotate;
+}
+
+// Columns: no modifier, first modifier, second modifier.
+// The second modifier wins when both assigned actions are enabled.
+static int ultrahand_action(int first, int second, int *slot) {
+    static const int actions[3][3] = {
+        {UH_ROTATE_X, UH_ROTATE_Y, UH_DISTANCE},
+        {UH_ROTATE_Y, UH_ROTATE_X, UH_DISTANCE},
+        {UH_DISTANCE, UH_ROTATE_Y, UH_ROTATE_X},
+    };
+
+    const int *row = actions[options.default_action];
+    int chosen = 0;
+
+    if (second && ultrahand_enabled(row[2])) chosen = 2;
+    else if (first && ultrahand_enabled(row[1])) chosen = 1;
+
+    if (slot) *slot = chosen;
+    return ultrahand_enabled(row[chosen]) ? row[chosen] : UH_DISABLED;
+}
+
+static int ultrahand_key_down(int key) {
+    return key != KEY_NONE && ikb_down(key);
+}
+
+static int ultrahand_pulse_matches(int action) {
+    if (pulse.kind == DISTANCE) return action == UH_DISTANCE;
+    if (pulse.kind == ROTATE)
+        return action == (pulse.axis ? UH_ROTATE_Y : UH_ROTATE_X);
+    return 1;
 }
 
 static int item_menu(uint64_t buttons) {
@@ -177,7 +236,7 @@ void gameplay_tweaks_reset(void) {
     plat_mutex_unlock(&lock);
 }
 
-void gameplay_tweaks_wheel(double delta, int c_down, int right_down) {
+void gameplay_tweaks_wheel(double delta) {
     if (!isfinite(delta) || delta == 0) return;
     if (delta > MAX_QUEUED) delta = MAX_QUEUED;
     if (delta < -MAX_QUEUED) delta = -MAX_QUEUED;
@@ -191,12 +250,16 @@ void gameplay_tweaks_wheel(double delta, int c_down, int right_down) {
     int kind = NONE, axis = 0;
     double sensitivity = 1;
     if (object_context(physical_buttons)) {
-        if (right_down && options.distance) {
+        int action = ultrahand_action(
+            ultrahand_key_down(options.rotation_key),
+            ultrahand_key_down(options.distance_key), NULL);
+
+        if (action == UH_DISTANCE) {
             kind = DISTANCE;
             sensitivity = options.distance_speed;
-        } else if (options.rotate) {
+        } else if (action == UH_ROTATE_X || action == UH_ROTATE_Y) {
             kind = ROTATE;
-            axis = options.c_axis && c_down;
+            axis = action == UH_ROTATE_Y;
             sensitivity = options.rotation_speed;
         }
     } else if ((physical_buttons & (BIT(B_LEFT) | BIT(B_UP) | BIT(B_RIGHT) | BIT(B_DOWN))) &&
@@ -206,7 +269,7 @@ void gameplay_tweaks_wheel(double delta, int c_down, int right_down) {
     } else if (map_zoom_allowed(physical_buttons)) {
         kind = MAP_ZOOM;
         sensitivity = options.map_zoom_speed;
-    } else if (weapon_wheel_allowed(physical_buttons, right_down, weapon.active)) {
+    } else if (weapon_wheel_allowed(physical_buttons, ikb_down(KEY_MOUSE_R), weapon.active)) {
         kind = WEAPONS;
     }
     if (!kind) {
@@ -285,26 +348,39 @@ void gameplay_tweaks_prepare_keys(uint8_t *down, uint64_t pad_buttons) {
     plat_mutex_lock(&lock);
     refresh_locked();
     held_a = held_d = 0;
-    int c = down[KEY_C], right = down[KEY_MOUSE_R];
+    int rotation = options.rotation_key != KEY_NONE && down[options.rotation_key];
+    int distance = options.distance_key != KEY_NONE && down[options.distance_key];
     int e = down[KEY_E];
     int e_pressed = e && !was_e_down;
     was_e_down = e;
     if (!e) consumed_e = 0;
-    if (!c) consumed_c = 0;
-    if (!right) consumed_right = 0;
+    if (!rotation) consumed_rotation = 0;
+    if (!distance) consumed_distance = 0;
     if (options.available) {
         if (input_camera_context() == INPUT_CAM_ULTRAHAND_OBJECT) {
-            if (options.rotate && options.c_axis && !(options.distance && right) && c) consumed_c = 1;
-            if (options.distance && right) consumed_right = 1;
-            if (pulse.kind == ROTATE && pulse.axis != (options.c_axis && c)) clear_locked();
+            int slot;
+            int action = ultrahand_action(rotation, distance, &slot);
+
+            if (slot == 1) consumed_rotation = 1;
+            if (slot == 2) {
+                consumed_distance = 1;
+                // Suppress the lower-priority modifier's ordinary action
+                // when both enabled modifiers are held.
+                if (rotation && ultrahand_enabled(
+                        options.default_action == UH_ROTATE_Y ?
+                        UH_ROTATE_X : UH_ROTATE_Y))
+                    consumed_rotation = 1;
+            }
+
+            if (!ultrahand_pulse_matches(action)) clear_locked();
         }
         if (weapon.active && e_pressed) {
             consumed_e = 1;
             weapon.confirm_pending = 1;
         }
         if (consumed_e) down[KEY_E] = 0;
-        if (consumed_c) down[KEY_C] = 0;
-        if (consumed_right) down[KEY_MOUSE_R] = 0;
+        if (consumed_rotation) down[options.rotation_key] = 0;
+        if (consumed_distance) down[options.distance_key] = 0;
         uint64_t buttons = pad_buttons | input_map_buttons(down);
         if (options.keys && item_menu(buttons) && !weapon.active) {
             held_a = down[KEY_A];
@@ -312,7 +388,7 @@ void gameplay_tweaks_prepare_keys(uint8_t *down, uint64_t pad_buttons) {
             down[KEY_A] = down[KEY_D] = 0;
         }
     } else {
-        consumed_c = consumed_right = consumed_e = 0;
+        consumed_rotation = consumed_distance = consumed_e = 0;
     }
     plat_mutex_unlock(&lock);
 }
@@ -441,8 +517,10 @@ void gameplay_tweaks_apply(uint64_t frame, int active, uint64_t *buttons,
         *ry = 0;
     } else {
         int object = object_context(*buttons), items = item_menu(*buttons);
-        if ((pulse.kind == ROTATE && (!object || !options.rotate || (right && options.distance))) ||
-            (pulse.kind == DISTANCE && (!object || !right || !options.distance)) ||
+        if (((pulse.kind == ROTATE || pulse.kind == DISTANCE) &&
+             (!object || !ultrahand_pulse_matches(ultrahand_action(
+                 ultrahand_key_down(options.rotation_key),
+                 ultrahand_key_down(options.distance_key), NULL)))) ||
             (pulse.kind == ITEMS && (!items || !options.wheel))) {
             clear_locked();
         }
