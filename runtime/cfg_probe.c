@@ -558,6 +558,30 @@ int probe_cfg(void) {
     input_map_line(&input_map, B_A, small.text, sizeof small.text);
     CHECK(small.before == 0xa5 && small.after == 0x5a && small.text[sizeof small.text - 1] == 0 &&
               !strncmp(small.text, full_line, sizeof small.text - 1), "edit: small output is a terminated prefix");
+    cfg_load("cfg-probe-missing.ini");
+    for (int a = 0; a < ACTION_COUNT; a++) {
+        char var[40];
+        snprintf(var, sizeof var, "TOTK_BIND_%s", input_action_name(a));
+        plat_setenv(var, NULL);
+    }
+    size_t all_keys_len = 0;
+    for (int k = KEY_A; k < KEY_COUNT; k++)
+        all_keys_len += (size_t)snprintf(full_line + all_keys_len, sizeof full_line - all_keys_len,
+                                       "%skey:%s", all_keys_len ? "," : "", input_key_name(k));
+    snprintf(full_line + all_keys_len, sizeof full_line - all_keys_len, ",pad:default");
+    cfg_set("TOTK_BIND_A", full_line);
+    input_map_configure();
+    int all_keys_count = input_map_keys_of(&input_map, B_A, after_keys, INPUT_BINDING_MAX);
+    CHECK(KEY_COUNT - KEY_A == 95 && all_keys_count == 95, "bind: all 95 explicit keys fit before unlined defaults");
+    int all_keys_kept = all_keys_count == KEY_COUNT - KEY_A;
+    for (int i = 0; i < all_keys_count; i++) all_keys_kept &= after_keys[i] == KEY_A + i;
+    CHECK(all_keys_kept, "bind: default actions do not displace explicit keys");
+    for (int l = 0; l < PAD_LAYOUT_COUNT; l++) {
+        uint8_t pads[INPUT_PAD_BINDING_MAX];
+        int np = input_map_pads_of(&input_map, B_A, l, pads, INPUT_PAD_BINDING_MAX);
+        CHECK(np == before_npads[l] && !memcmp(pads, before_pads[l], (size_t)np),
+              "bind: full explicit key list retains each default gamepad layout");
+    }
     input_map_reset();
     // defaults live in the CfgMeta table: cfg_value and the typed accessors fall back to it
     cfg_load("cfg-probe-missing.ini");

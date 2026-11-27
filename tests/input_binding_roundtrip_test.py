@@ -123,6 +123,46 @@ int main(void) {
         for (size_t i = cap; i < sizeof small.text; i++)
             check((unsigned char)small.text[i] == 0xa5, "tiny output respects declared capacity");
     }
+    memset(values, 0, sizeof values);
+    memset(present, 0, sizeof present);
+    char all_keys[DRIVER_CAP];
+    size_t used = 0;
+    for (int key = KEY_A; key < KEY_COUNT; key++)
+        used += (size_t)snprintf(all_keys + used, sizeof all_keys - used, "%skey:%s",
+                                used ? "," : "", input_key_name(key));
+    snprintf(all_keys + used, sizeof all_keys - used, ",pad:default");
+    cfg_set("TOTK_BIND_A", all_keys);
+    input_map_configure();
+    nk = input_map_keys_of(&input_map, B_A, before_keys, INPUT_BINDING_MAX);
+    printf("All-key configuration retained: %d of %d\n", nk, KEY_COUNT - KEY_A);
+    check(nk == KEY_COUNT - KEY_A, "explicit keys receive capacity before defaults");
+    m = input_map;
+    write_lines(&m);
+    input_map_configure();
+    nk = input_map_keys_of(&input_map, B_A, after_keys, INPUT_BINDING_MAX);
+    check(nk == KEY_COUNT - KEY_A && !memcmp(before_keys, after_keys, (size_t)nk),
+          "all physical keys survive Controls save and reparse");
+    for (int layout = 0; layout < PAD_LAYOUT_COUNT; layout++) {
+        uint8_t pads[INPUT_PAD_BINDING_MAX];
+        int np = input_map_pads_of(&input_map, B_A, layout, pads, INPUT_PAD_BINDING_MAX);
+        check(np == before_npads[layout] && !memcmp(pads, before_pads[layout], (size_t)np),
+              "all-key roundtrip keeps default gamepad layouts");
+    }
+    cfg_set("TOTK_BIND_A", "none");
+    input_map_configure();
+    check(input_map_keys_of(&input_map, B_A, after_keys, INPUT_BINDING_MAX) == 0,
+          "explicit none stays empty");
+    cfg_set("TOTK_BIND_A", "invalid:binding");
+    input_map_configure();
+    memset(down, 0, sizeof down); down[KEY_E] = 1;
+    check(input_map_held(down, B_A), "invalid-only line regains default keys");
+    cfg_set("TOTK_BIND_A", "key:q,pad:default");
+    cfg_set("TOTK_BIND_B", "key:q,pad:default");
+    input_map_configure();
+    memset(down, 0, sizeof down); down[KEY_Q] = 1;
+    check(input_map_held(down, B_A) && input_map_held(down, B_B),
+          "duplicate explicit bindings retain both actions");
+    check(!input_map_held(down, B_L), "explicit keys displace unconfigured defaults");
     puts("Binding roundtrip checks passed");
     return 0;
 }

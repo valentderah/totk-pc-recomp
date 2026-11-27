@@ -166,7 +166,8 @@ int input_map_bind(const char *button, const char *list) {
 }
 
 void input_map_configure(void) {
-    input_map_reset();
+    // Explicit lines get the table's capacity before defaults of actions without a valid line.
+    input_map = (InputMap){0};
     uint8_t lined[ACTION_COUNT] = {0};
     for (int a = 0; a < ACTION_COUNT; a++) {
         char var[32];
@@ -184,10 +185,15 @@ void input_map_configure(void) {
     }
     for (int a = 0; a < ACTION_COUNT; a++) {
         if (lined[a]) continue;
-        int n = input_map_keys_of(&input_map, a, list, INPUT_BINDING_MAX), w = 0;
+        int n = input_map_keys_of(&defaults, a, list, INPUT_BINDING_MAX), w = 0;
         for (int i = 0; i < n; i++)
             if (!bound[list[i]]) list[w++] = list[i];
-        if (w < n) keys_put(&input_map, a, list, w);
+        keys_put(&input_map, a, list, w);
+        for (int l = 0; l < PAD_LAYOUT_COUNT; l++) {
+            uint8_t pads[INPUT_PAD_BINDING_MAX];
+            int np = input_map_pads_of(&defaults, a, l, pads, INPUT_PAD_BINDING_MAX);
+            pads_put(&input_map, l, a, pads, np);
+        }
     }
 }
 
