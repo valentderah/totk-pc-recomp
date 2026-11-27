@@ -654,6 +654,7 @@ static int ub_bind(VkExec *ex, uint64_t addr, uint64_t n, uint64_t align, VkDesc
 static void ub_written(VkExec *ex, uint64_t addr, uint64_t n);
 
 static void note_written(VkExec *ex, uint64_t addr, uint64_t size) {
+    if (!nvn_gpu_only(addr)) vk_mem_rb_note(addr, size);   // early reads (vk_memory.c)
     CbRes *r = cb_res(ex);
     for (int i = 0; i < r->nwritten; i++)
         if (r->written[i].addr == addr && r->written[i].size == size) return;
@@ -1694,7 +1695,20 @@ static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
 }
 
 // By-region barrier inside the pass: earlier attachment writes become visible to this draw's fragment shader reads.
-static void feedback_barrier(VkExec *ex) {
+// m: the attachments the draw samples that were written (bit i colour i, bit 8 depth), all in the feedback layout.
+//
+// TOTK_FB_IMGBAR (default: vk_ran_default): one image barrier per such attachment instead of a memory barrier. A
+// memory barrier names no image, so RADV must assume the worst (Mesa radv_cmd_buffer.c radv_src_access_flush and
+// radv_dst_access_flush with image NULL): it also syncs and invalidates the depth cache and invalidates the GPU's
+// whole L2 cache, 110-270 times a frame in TotK, and every texture of the draws that follow is fetched from memory
+// again. With the image named, an attachment that is coherent with the L2 (every pipe-aligned image from GFX10 on,
+// radv_image_is_l2_coherent) needs only the colour cache sync. Measured on a Steam Deck: 3-6% less GPU work a frame,
+// Korok Forest 14.85 -> 14.70 ms. Vulkan allows image barriers inside dynamic rendering with
+// dynamicRenderingLocalRead, which this mode has; its rule for an attachment names the GENERAL and
+// RENDERING_LOCAL_READ layouts and not the feedback layout (VUID-vkCmdPipelineBarrier2-image-09555), although the
+// feedback loop text itself points to a barrier inside the pass: so only where the driver's code was read.
+// The memory barrier: every attachment write becomes visible.
+static void feedback_barrier_mem(VkExec *ex) {
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                            .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
                                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
@@ -1707,6 +1721,72 @@ static void feedback_barrier(VkExec *ex) {
     ex->recorded++;
     ex->fb_dirty = 0;
     ex->fr.fb_barriers++;
+}
+
+static int fb_imgbar = -1;
+
+static void feedback_barrier(VkExec *ex, uint32_t m) {
+    if (fb_imgbar < 0) fb_imgbar = rt_knob("FB_IMGBAR", vk_ran_default());
+    if (RT_KNOB_ON(fb_imgbar)) {
+        VkImageMemoryBarrier2 ib[9];
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < 9; i++) {
+            const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
+            if (!(m >> i & 1) || !t->image) continue;
+            ib[n++] = (VkImageMemoryBarrier2){
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                .srcStageMask = i < 8 ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
+                                      : VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                .srcAccessMask = i < 8 ? VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT : VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT,
+                .newLayout = VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = t->image,
+                .subresourceRange = {i < 8 ? VK_IMAGE_ASPECT_COLOR_BIT : (t->img ? t->img->aspect : VK_IMAGE_ASPECT_DEPTH_BIT),
+                                     t->level, 1, 0, VK_REMAINING_ARRAY_LAYERS}};
+        }
+        VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+                               .imageMemoryBarrierCount = n, .pImageMemoryBarriers = ib};
+        vkCmdPipelineBarrier2(ex->cb, &di);
+        ex->recorded++;
+        ex->fb_dirty &= ~m;   // only these became visible
+        ex->fr.fb_barriers++;
+        return;
+    }
+    feedback_barrier_mem(ex);
+}
+
+// TOTK_FB_TERRAIN (default: vk_ran_default): no barrier before a draw of the terrain material of 1.4.3 (fragment
+// shader input id be814ee4c2767a65) whose only sampled and written attachment is colour target 7, when every draw since
+// the last feedback barrier used that same shader. 30-70 barriers a frame are such draws, each a wait for the
+// pipeline.
+// Why the picture is the same: the shader reads target 7 (the linear depth the pass writes) at its own pixel for one
+// compare, view depth <= stored depth, and the result only selects gl_FragDepth: the fragment's own depth when it
+// passes, 2.0 when it fails (the translated SPIR-V: the sample feeds one OpFOrdLessThanEqual and nothing else). The
+// draws have the depth test on with LEQUAL or LESS and depth writes on (checked here for every draw). Without the
+// barrier a draw reads target 7 as it was before the earlier draws of the chain wrote it. Where one of them, A, wrote
+// a pixel, it passed the depth test and wrote the hardware depth too; a later fragment B there that the fresh value
+// would have failed lies behind A, so with the stale value it passes the shader's compare, keeps its own depth and
+// then fails the hardware depth test against A: discarded either way. Where no draw of the chain wrote, the stale
+// value is the fresh one. (Two fragments at one depth within the stored value's precision can swap; they are the same
+// material at a patch seam.)
+static _Thread_local const GfxShader *tc_fs;   // the fragment shader of the draw the last feedback barrier was for
+static _Thread_local int tc_same;              // every draw since then used it (and no clear wrote an attachment:
+                                               // VkExec.fb_nondraw)
+
+static int terrain_chain(const VkExec *ex, const GfxShader *fs, const VkPipeState *sp, uint32_t d) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("FB_TERRAIN", vk_ran_default());
+    if (!tc_same || fs != tc_fs || d != 0x80 || ex->chunked || ex->fb_nondraw || !RT_KNOB_ON(on)) return 0;
+    if (!sp->ds.dt || !sp->ds.dw || (sp->ds.df != NVN_COMPARE_FUNC_LEQUAL && sp->ds.df != NVN_COMPARE_FUNC_LESS)) return 0;
+    static _Thread_local const GfxShader *known;
+    static _Thread_local int known_r;
+    if (fs != known) {
+        static const uint8_t id[8] = {0xbe, 0x81, 0x4e, 0xe4, 0xc2, 0x76, 0x7a, 0x65};
+        known = fs, known_r = !memcmp(gfx_shader_input_id(fs), id, 8);
+    }
+    return known_r;
 }
 
 // Marks the attachments the draw with state s writes: colour targets with a nonzero effective write mask, depth with
@@ -2487,7 +2567,7 @@ static int bind_sig(const VkExec *ex, const VkPipeInfo *info) {
     PUT((uint64_t)vk_sampler_gen() << 32 | (uint32_t)ex->nfbl);
     PUT(ex->chunked ? ex->pass_serial : 0);
     PUT(vk_mem_gen() + vk_usnap_gen() + ex->drop_n);   // all only grow in a submission; drop_n: copies a chunk passed
-    for (int i = 0; i < ex->nfbl && i < 9; i++) PUT((uintptr_t)ex->fbl_img[i]);
+    for (int i = 0; i < ex->nfbl && i < VK_FBL_MAX; i++) PUT((uintptr_t)ex->fbl_img[i]);
     if (l->sup) {
         float in[SUP_IN + 1] = {0};
         support_in(ex, in);
@@ -3584,9 +3664,12 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     if (bim) bi_gt(ex, bgt), bi_gb(ex, bgb);
     if (bim == 2) bi_census(ex, info, sp, bgt, bgb, bsg, sm_hit);   // on counts nothing: it is what gets timed
     bind_resources(ex, info, bim ? bgt : NULL, bgb);
-    if (fbl & ex->fb_dirty) feedback_barrier(ex);
-    else if (ex->in_pass && anv_vs_barrier() && gfx_shader_resources(vs, GFX_RES_SSBO, &(const GfxShaderRes *){0}))
-        { uint32_t keep = ex->fb_dirty; feedback_barrier(ex); ex->fb_dirty = keep; }   // keep fb_dirty: feedback_prepare learns from it
+    if (fbl & ex->fb_dirty) {
+        if (!terrain_chain(ex, fs, sp, fbl & ex->fb_dirty))
+            feedback_barrier(ex, fbl & ex->fb_dirty), tc_fs = fs, tc_same = 1, ex->fb_nondraw = 0;
+    } else if (ex->in_pass && anv_vs_barrier() && gfx_shader_resources(vs, GFX_RES_SSBO, &(const GfxShaderRes *){0}))
+        { uint32_t keep = ex->fb_dirty; feedback_barrier_mem(ex); ex->fb_dirty = keep; }   // keep fb_dirty: feedback_prepare learns from it
+    if (fs != tc_fs) tc_same = 0;
     feedback_written(ex, sp);
     bind_vertex_buffers(ex);
     if (vk_dump_armed) vk_dump_draw(ex, sp, p, info);
@@ -3594,7 +3677,11 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     vk_exec_oq_draw(ex);
     if (bim) bi_done(ex, info, sp, bgt, bgb, bsg);
     // barrier_merge: noted last, in the pass the draw is recorded in (bind_resources may restart the pass, ub_written)
-    if (ex->bmerge && !ex->pass_storage && (shader_may_write_storage(vs) || shader_may_write_storage(fs))) ex->pass_storage = 1;
+    // Noted with barrier_merge off too when the full barrier names its images (TOTK_BAR_IMG: vk_exec.c barrier_to
+    // reads it).
+    if ((ex->bmerge || vk_exec_bar_img()) && !ex->pass_storage &&
+        (shader_may_write_storage(vs) || shader_may_write_storage(fs)))
+        ex->pass_storage = 1;
     return 1;
 }
 
@@ -4603,6 +4690,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     VkPassMark *m = dispatch_mark(ex, cs, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
     vkCmdDispatch(ex->cb, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
     vk_pass_mark_end(ex->cb, m);
+    vk_mem_rb_flush(ex->cb, ex->fence);   // early reads (vk_memory.c): the flag after a writer of a readback pool
     ex->recorded++;
     if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, d);
 }
@@ -4642,6 +4730,7 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
     VkPassMark *m = dispatch_mark(ex, cs, 0, 0, 0);
     vkCmdDispatchIndirect(ex->cb, ip.buffer, ip.offset);
     vk_pass_mark_end(ex->cb, m);
+    vk_mem_rb_flush(ex->cb, ex->fence);   // early reads (vk_memory.c): the flag after a writer of a readback pool
     ex->recorded++;
     vk_mem_count(ip.cls, VK_MUSE_IND, sizeof(VkDispatchIndirectCommand));
     VK_MEM_BOUND(ip);

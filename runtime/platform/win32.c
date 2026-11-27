@@ -472,6 +472,7 @@ void plat_sleep_ms(uint32_t ms) { Sleep(ms); }
 void plat_mutex_init(PlatMutex *m) { InitializeSRWLock((PSRWLOCK)m); }
 void plat_mutex_lock(PlatMutex *m) { AcquireSRWLockExclusive((PSRWLOCK)m); }
 int plat_mutex_trylock(PlatMutex *m) { return TryAcquireSRWLockExclusive((PSRWLOCK)m) != 0; }
+void plat_lock_spins_thread(int n) { (void)n; }   // SRW locks spin by themselves
 void plat_mutex_unlock(PlatMutex *m) { ReleaseSRWLockExclusive((PSRWLOCK)m); }
 
 void plat_mutex_lock_shared(PlatMutex *m) { AcquireSRWLockShared((PSRWLOCK)m); }
@@ -705,6 +706,10 @@ int plat_mem_state(uint64_t addr, uint64_t limit, uint64_t *end) {
     DWORD p = mbi.Protect & 0xff;
     return p == PAGE_READWRITE ? PLAT_PROT_RW : p == PAGE_READONLY ? PLAT_PROT_READ : PLAT_PROT_NONE;
 }
+
+// MEM_WRITE_WATCH covers a whole reservation: no watch on parts of one.
+int plat_mem_watch_ranges(uint64_t addr, uint64_t n) { (void)addr, (void)n; return 0; }
+int plat_mem_watch(uint64_t addr, uint64_t n, int on) { (void)addr, (void)n, (void)on; return 0; }
 
 // Adapted from LAS Recomp runtime/platform/windows.c:40-63 @ da35b83 (MIT, Copyright (c) 2026 Peiikai): GetWriteWatch
 // with the reset flag.

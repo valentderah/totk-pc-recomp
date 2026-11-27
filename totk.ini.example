@@ -212,6 +212,52 @@
 # HD 520 or UHD 620) with Intel's older driver (101.21xx); it costs a few MB of video memory.
 # null_attach = 0
 
+# With sync_ahead = 1 and shadow storage: the game takes memory that the GPU writes when the pass that writes it is
+# done, 0 or 1. With 0 the game waits for the whole submission (Steam Deck: 6 to 9 ms, four to five times a second).
+# Default: on with the RADV driver in the Linux build and imported memory (memory = import, the mode of an
+# integrated GPU), off elsewhere (not run there). Read at start.
+# early_read = 1
+
+# The uniform snapshot does not mark memory pools for the shadow sync, 0 or 1. With 0 each submission queries and
+# copies the pools whose uniforms the draws take from the snapshot (Steam Deck: 0.5 ms a frame). Default: on with
+# the RADV driver in the Linux build and imported memory, off elsewhere (not run there). Read at start.
+# usnap_peek = 1
+
+# Barriers for the RADV driver, each 0 or 1. bar_img: the barrier between two passes names its images. fb_imgbar: the
+# barrier inside a pass, before a draw that samples an attachment of the pass, names that attachment. fb_keep: a
+# target stays in the feedback loop layout across barriers. fb_terrain (game 1.4.3): a chain of terrain draws with
+# one shader has no barrier between its draws. With 0 RADV syncs its caches for all images at each barrier and
+# decompresses the depth image again (Steam Deck: 3 to 6% more GPU work a frame). Default: on with the RADV driver in
+# the Linux build and imported memory, off elsewhere (not run there). Read at start.
+# bar_img = 1
+# fb_imgbar = 1
+# fb_keep = 1
+# fb_terrain = 1
+
+# A texture slot registration that finds the texture lock held goes into a queue, 0 or 1. With 0 the thread of the
+# game waits for the lock, which the replay thread holds during a texture upload (Steam Deck: 4 to 10 ms).
+# Default: on with the RADV driver in the Linux build and imported memory, off elsewhere (not run there). Read at
+# start.
+# tex_reg_defer = 1
+
+# With wb_eager: a rendered target that the game did not read lately also gets its write-back snapshot at the end of
+# the frame, 0 or 1. With 0 the first read of such a target waits for the GPU (Steam Deck: the main thread waited 5
+# to 14 ms). 1 makes more copies on the GPU. Default: on with the RADV driver in the Linux build and imported
+# memory, off elsewhere (not run there). Read at start.
+# wb_eager_all = 1
+
+# The write watch of shadow storage on Linux, each 0 or 1. ww_pools: the watch covers the pages of CPU-visible memory
+# pools only, not the whole heap of the game (import memory mode only). ww_idle: with usnap_peek, a pool that only
+# the uniform snapshot reads leaves the watch.
+# ww_prescan: a second thread makes the write-watch queries before the replay thread needs them. Default of the
+# three: on with the RADV driver in the Linux build and imported memory, off elsewhere (not run there). Windows
+# always watches the whole heap. replay_spins (default 4096): the pauses that the replay thread spins before it
+# sleeps on a Linux lock, 0 for the count of the other threads. Read at start.
+# ww_pools = 1
+# ww_idle = 1
+# ww_prescan = 1
+# replay_spins = 4096
+
 [display]
 # Device profile: auto (the Steam Deck when this is one), desktop or deck. On a Steam Deck the keys this file does not
 # set default to fullscreen = 1, window_size = 1280x800, output_res = 1280x800, render_scale = game, vk_present = fifo

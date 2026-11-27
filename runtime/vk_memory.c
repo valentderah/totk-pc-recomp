@@ -75,10 +75,21 @@ typedef struct PoolRec {
     uint64_t suse;                     // shadow_lock: the newest timeline value whose submission reads the shadow
     uint64_t sdefer;                   // shadow_lock: the newest value whose prologue carries a deferred copy into the
                                        // shadow (TOTK_SHADOW_DEFER); 0 never
+    // The write watch on pool pages only ("pool watch" below). shadow_lock.
+    uint8_t wstate;                    // WS_ON watched; WS_OFF not watched (idle); WS_FULL watched again, the shadow
+                                       // needs the whole pool once; WS_NONE the pool's pages cannot be watched
+    uint8_t wtex;                      // a mirrored texture has storage in it: never WS_OFF
+    uint8_t wshift;                    // the idle time doubles after each return to the watch
+    uint64_t wsince;                   // the timeline value at which the watch started
 } PoolRec;
+enum { WS_ON, WS_OFF, WS_FULL, WS_NONE };
 
 static void mirror_forget(PoolRec *r);   // pool_lock exclusive: off the mirrored list
 static int shadow_on;                    // shadow mode: imported pools get shadow storage instead (vk_mem_class_log)
+// The default of a switch whose new path ran in one configuration only: Mesa RADV in the Linux build with imported
+// memory (a Steam Deck). Elsewhere (Windows, another driver, the mirror mode of a discrete GPU) the switch is off
+// until its path runs there. Read after mirror_mode decided the memory mode (vk_mem_class_log).
+const char *vk_ran_default(void) { return vk_caps.radv && !vk_mirror_on ? "1" : "0"; }
 static int shadow_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size);
 static void shadow_touch(PoolRec *r);
 static void shadow_forget(PoolRec *r);
@@ -86,6 +97,24 @@ static void pool_retiring(PoolRec *r);  // vk_pool_fini: kept until pool_retire 
 static void pool_retire(void *arg);    // completion thread: destroys a finalized pool's record
 static uint64_t retire_value(void);    // the timeline value after which a finalized pool's record may go
 static void grow(void **arr, int *cap, size_t elem);
+
+// ---- pool watch
+// TOTK_WW_POOLS: the write watch covers the pages of import pools only, not the game's whole heap (memory.c
+// mem_watch_ranges has the measurement). A pool's pages are watched from vk_pool_init to vk_pool_fini.
+// TOTK_WW_IDLE: a pool that only the uniform snapshot reads (TOTK_USNAP_PEEK) leaves the watch too. Both are on by
+// default only where they ran (vk_ran_default), and never in the mirror mode. The snapshot (vk_usnap.c) copies
+// its ranges from guest memory at every submission and needs no written-page list, but the game writes those pools
+// every frame: about 270 written pages a frame at Lookout Landing, each a write fault and scan work for nothing. A
+// pool whose shadow no submission read for WW_IDLE timeline values (doubled after every return, up to 64 times), that
+// holds no mirrored texture, goes to WS_OFF when the snapshot resolves it. The next sync of it (a bind that reads
+// the pool's buffer) puts the watch back and copies the whole pool into the shadow once (WS_FULL), as a pool without
+// a write watch is copied at every sync.
+#define WW_IDLE 64
+static int ww_pools, ww_idle;
+static uint64_t ww_off_n, ww_back_n, ww_back_bytes;   // shadow_lock: pools that left the watch, came back, bytes copied for it
+
+static void pool_unwatch(struct PoolRec *r);
+static void pool_watch_end(struct PoolRec *r);   // vk_pool_fini: the pool's pages leave the watch
 
 static PlatMutex pool_lock = PLAT_MUTEX_INIT;
 // Bumped under pool_lock (exclusive) by every change to the index or a page table: vk_mem_resolve's per-thread hits
@@ -284,6 +313,11 @@ int vk_pool_init(pool_t *p) {
     } else {
         r->kind = POOL_IMPORT;
         mem_thaw((uintptr_t)p->mem, p->size);   // the import may need write access to the pages
+        if (ww_pools) {   // before the shadow's first copy: every write after this is reported
+            mem_watch_add(r->lo, r->size);
+            r->wstate = mem_watch_covered(r->lo, r->size) ? WS_ON : WS_NONE;
+            r->wsince = vk_sync_issued();
+        }
         ok = import_pool(c, r, (uintptr_t)p->mem, p->size);
         if (!ok) {
             // Not fatal for the game: the pool works for the CPU, and vk_mem_resolve reports its addresses as unbacked.
@@ -294,7 +328,12 @@ int vk_pool_init(pool_t *p) {
             ok = 1;
         }
     }
-    if (!ok) { free(r->pt); free(r); return 0; }
+    if (!ok) {
+        if (ww_pools && r->kind == POOL_IMPORT) mem_watch_remove(r->lo, r->size);
+        free(r->pt);
+        free(r);
+        return 0;
+    }
     plat_mutex_lock(&pool_lock);
     index_put(r);
     if (r->kind == POOL_PHYS) {
@@ -332,6 +371,7 @@ static void pool_fini(const pool_t *p, int queued) {
     plat_mutex_unlock(&pool_lock);
     if (!r) return;
     if (r->smap) shadow_forget(r);
+    if (ww_pools && r->kind == POOL_IMPORT) pool_watch_end(r);
     if (r->kind == POOL_IMPORT) mem_thaw(r->lo, r->size);   // the storage goes back to the guest writable
     // Images cut from this range go first; a used buffer or memory waits until the GPU is done with it, since the
     // guest gets the storage back when this returns.
@@ -442,6 +482,22 @@ static int resolve_check_on(void) {
 
 static int resolve_locked(uint64_t addr, uint64_t size, VkMemSpan *out);
 
+// vk_mem_resolve_peek resolves without marking the pool for the shadow sync (peek_only). The uniform
+// snapshot (vk_usnap.c) resolves every uniform region only to check its pool and then copies the bytes from guest
+// memory itself; the mark made the next prologue query and copy those pools too, although the draws take the
+// uniforms from the snapshot (820 pool syncs a frame at Lookout Landing, 2.7 MiB copied). A bind that does read the
+// pool's buffer resolves it then and marks it, before its part is submitted.
+static _Thread_local int peek_only;
+
+int vk_mem_resolve_peek(uint64_t addr, uint64_t size, VkMemSpan *out) {
+    static int on = -1;   // TOTK_USNAP_PEEK (vk_ran_default); 0: mark the pool
+    if (on < 0) on = rt_knob("USNAP_PEEK", vk_ran_default());
+    peek_only = RT_KNOB_ON(on);
+    int r = vk_mem_resolve(addr, size, out);
+    peek_only = 0;
+    return r;
+}
+
 int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *out) {
     memset(out, 0, sizeof *out);
     uint64_t g = __atomic_load_n(&pool_gen, __ATOMIC_ACQUIRE), end = addr + size;
@@ -454,7 +510,14 @@ int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *out) {
         out->cls = h->cls;
         out->pool = h->pool;
         if (h->alloc) out->alloc_offset = out->offset;
-        if (shadow_on && h->pool && !((PoolRec *)h->pool)->stouched) shadow_touch(h->pool);
+        if (shadow_on && h->pool && !((PoolRec *)h->pool)->stouched && !peek_only) shadow_touch(h->pool);
+        if (peek_only && ww_idle && h->pool) {   // (a hit names a live pool: the generation is current)
+            PoolRec *r = h->pool;
+            if (r->wstate == WS_ON && !r->wtex && r->smap) {
+                uint64_t used = r->suse > r->wsince ? r->suse : r->wsince;
+                if (vk_sync_issued() > used + ((uint64_t)WW_IDLE << r->wshift)) pool_unwatch(r);
+            }
+        }
         if (resolve_check_on()) {
             VkMemSpan s;
             if (!resolve_locked(addr, size, &s) || memcmp(&s, out, sizeof s))
@@ -493,7 +556,7 @@ static int resolve_locked(uint64_t addr, uint64_t size, VkMemSpan *out) {
         out->buffer = r->buf;
         out->offset = addr - r->import_lo;
         out->avail = r->import_hi - addr;
-        if (r->smap && !r->stouched) shadow_touch(r);
+        if (r->smap && !r->stouched && !peek_only) shadow_touch(r);
         ok = 1;
     } else if (r && r->kind == POOL_PHYS) {
         out->buffer = r->buf;
@@ -860,6 +923,37 @@ static void stamp_range(uint64_t lo, uint64_t hi, uint32_t g) {
     for (uint64_t a = lo; a < hi; a += 1ull << GEN_PAGE_SHIFT) stamp_page(a, g);
 }
 
+// ---- write-watch prescan (TOTK_WW_PRESCAN, vk_ran_default; with shadow storage and the region snapshots)
+// The replay thread made every write-watch query itself, at the first check of a region in a submission: about 30
+// queries a frame at Lookout Landing, 0.8 ms of the thread that limits the frame there, all of it in the system call
+// (page table walk, protecting the written pages again, a TLB flush on every CPU per dirty region). The regions asked
+// for hardly change from one submission to the next. So a second thread (prescan_main) makes the queries of the
+// regions the last submission asked for (snap_want, ps_want) when a submission's replay starts, and the replay finds
+// them snapped. The snapshot of a region may be taken at any moment of its epoch (see "Write-watch snapshots" below),
+// so what the consumers see does not change, only who waits for the kernel.
+// The prescan holds gen_lock only to choose a run of regions and to stamp what its query found; during the query it
+// holds ps_scan_lock and the run is named in ps_busy. The pages its query found are in no table until they are
+// stamped, so every consumer waits for a busy region before it queries or reads the table for it (ps_wait), and a
+// busy region is never frozen (freeze_pass).
+static PlatMutex ps_scan_lock = PLAT_MUTEX_INIT;   // held by the prescan through a query and its stamps; before gen_lock
+static uint64_t ps_busy_lo, ps_busy_hi;            // gen_lock: the regions [lo, hi) of the prescan's query in flight; 0, 0 none
+static int ps_on;                                  // decided with the memory mode (mirror_mode) and TOTK_WW_PRESCAN
+static int ps_knob;                                // TOTK_WW_PRESCAN (vk_ran_default): 0, 1, or 2 for "ab"
+
+// gen_lock held exclusively; may let it go and take it again. Returns once no prescan query is in flight over the
+// regions r0..r1; 1 when the lock was let go meanwhile (the caller's view of the tables is stale).
+static int ps_wait(uint64_t r0, uint64_t r1) {
+    int waited = 0;
+    while (ps_busy_hi && r0 < ps_busy_hi && r1 >= ps_busy_lo) {
+        plat_mutex_unlock(&gen_lock);
+        plat_mutex_lock(&ps_scan_lock);
+        plat_mutex_unlock(&ps_scan_lock);
+        plat_mutex_lock(&gen_lock);
+        waited = 1;
+    }
+    return waited;
+}
+
 void vk_guest_written(uint64_t addr, uint64_t size) {
     if (!size || nvn_gpu_only(addr)) return;
     uint64_t lo = addr & ~0xfffull, hi = (addr + size + 0xfff) & ~0xfffull;
@@ -872,6 +966,7 @@ int vk_mem_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now) 
     if (!size) { *now = since; return 0; }
     uint64_t lo = addr & ~0xfffull, hi = (addr + size + 0xfff) & ~0xfffull;
     plat_mutex_lock(&gen_lock);
+    ps_wait(lo >> REG_SHIFT, (hi - 1) >> REG_SHIFT);
     uint32_t g = ++gen_now;
     int tracked = 1, frozen = 1;
     for (uint64_t a = lo & ~((1ull << REG_SHIFT) - 1); a < hi && frozen; a += 1ull << REG_SHIFT) frozen = mem_frozen(a);
@@ -901,13 +996,40 @@ int vk_mem_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now) 
 static uint32_t snap_at[SNAP_REGIONS];      // epoch of the region's last snapshot; 0 never
 static uint8_t snap_untracked[SNAP_REGIONS];
 static uint64_t n_snap_checks, n_snap_calls, n_snap_untracked;
+// Prescan: the regions the consumers asked for in the epoch being replayed, each once (snap_want holds the epoch).
+// Written with atomics: the check with the shared lock marks too.
+#define PS_WANT 2048
+static uint32_t snap_want[SNAP_REGIONS];
+static uint32_t ps_want[PS_WANT];
+static uint32_t ps_nwant;
+
+static inline void ps_mark(uint64_t r, uint32_t epoch) {
+    if (__atomic_load_n(&snap_want[r], __ATOMIC_RELAXED) == epoch) return;
+    if (__atomic_exchange_n(&snap_want[r], epoch, __ATOMIC_RELAXED) == epoch) return;
+    uint32_t i = __atomic_fetch_add(&ps_nwant, 1, __ATOMIC_RELAXED);
+    if (i < PS_WANT) ps_want[i] = (uint32_t)r;
+}
+
+// gen_lock held exclusively: region j has its snapshot of epoch.
+static void snap_done(uint64_t j, uint32_t epoch, int tracked) {
+    snap_at[j] = epoch, snap_untracked[j] = (uint8_t)!tracked;
+    if (tracked && freeze_idle && ww_ep - reg_last[j] >= (uint32_t)freeze_idle &&
+        ww_ep - reg_tried[j] >= (uint32_t)freeze_idle) {
+        reg_tried[j] = ww_ep;
+        if (nfcand == cfcand) grow((void **)&fcand, &cfcand, sizeof *fcand);
+        fcand[nfcand++] = (uint32_t)j;
+    }
+}
 
 // gen_lock held exclusively. Queries the regions r0..r1 that were not snapped in epoch, one query per run of them;
 // returns the number of queries.
 static uint64_t snap_regions(uint64_t r0, uint64_t r1, uint32_t epoch) {
     uint32_t g = 0;
     uint64_t calls = 0;
+    if (ps_on)
+        for (uint64_t r = r0; r <= r1; r++) ps_mark(r, epoch);
     for (uint64_t r = r0; r <= r1;) {
+        if (ps_wait(r, r1)) g = 0;   // (the lock was let go: a new generation for what is stamped from here on)
         if (snap_at[r] == epoch) { r++; continue; }
         if (mem_frozen(r << SNAP_SHIFT)) {   // nothing in it changed since its freeze
             snap_at[r] = epoch, snap_untracked[r] = 0;
@@ -926,18 +1048,107 @@ static uint64_t snap_regions(uint64_t r0, uint64_t r1, uint32_t epoch) {
             if (n < sizeof gen_pages / sizeof *gen_pages) break;
         }
         calls++;
-        for (uint64_t j = r; j <= k; j++) {
-            snap_at[j] = epoch, snap_untracked[j] = (uint8_t)!tracked;
-            if (tracked && freeze_idle && ww_ep - reg_last[j] >= (uint32_t)freeze_idle &&
-                ww_ep - reg_tried[j] >= (uint32_t)freeze_idle) {
-                reg_tried[j] = ww_ep;
-                if (nfcand == cfcand) grow((void **)&fcand, &cfcand, sizeof *fcand);
-                fcand[nfcand++] = (uint32_t)j;
-            }
-        }
+        for (uint64_t j = r; j <= k; j++) snap_done(j, epoch, tracked);
         r = k + 1;
     }
     return calls;
+}
+
+// ---- the prescan thread (see "write-watch prescan" above)
+static PlatEvent ps_ev;
+static int ps_started;
+static uint32_t ps_list[PS_WANT];   // gen_lock: the regions to scan for ps_epoch, handed over by ps_begin
+static uint32_t ps_nlist, ps_epoch;
+static uint64_t ps_queries, ps_ticks, ps_pages, ps_late;   // gen_lock: since the last log; late: regions a consumer had snapped first
+
+static int ps_cmp(const void *a, const void *b) {
+    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+static void prescan_main(void *arg) {
+    (void)arg;
+    static uint32_t list[PS_WANT];
+    uint64_t cap = 4096, *pages = malloc(sizeof *pages * cap);
+    if (!pages) rt_fatal("vk: out of memory for the write-watch prescan");
+    for (;;) {
+        plat_event_wait(&ps_ev);
+        plat_mutex_lock(&gen_lock);
+        uint32_t n = ps_nlist, epoch = ps_epoch;
+        memcpy(list, ps_list, sizeof *list * n);
+        ps_nlist = 0;
+        plat_mutex_unlock(&gen_lock);
+        qsort(list, n, sizeof *list, ps_cmp);
+        for (uint32_t i = 0; i < n;) {
+            plat_mutex_lock(&ps_scan_lock);
+            plat_mutex_lock(&gen_lock);
+            uint64_t r = list[i];
+            // (read under gen_lock: a consumer of a later epoch that snapped a region did so before this point)
+            if (vk_texture_epoch() != epoch) {
+                plat_mutex_unlock(&gen_lock);
+                plat_mutex_unlock(&ps_scan_lock);
+                break;
+            }
+            if (snap_at[r] == epoch || mem_frozen(r << SNAP_SHIFT)) {
+                if (snap_at[r] == epoch) ps_late++;
+                plat_mutex_unlock(&gen_lock);
+                plat_mutex_unlock(&ps_scan_lock);
+                i++;
+                continue;
+            }
+            uint32_t k = i;   // a run of adjacent wanted regions: one query
+            while (k + 1 < n && list[k + 1] == list[k] + 1 && snap_at[list[k + 1]] != epoch &&
+                   !mem_frozen((uint64_t)list[k + 1] << SNAP_SHIFT))
+                k++;
+            uint64_t a = r << SNAP_SHIFT, b = ((uint64_t)list[k] + 1) << SNAP_SHIFT;
+            ps_busy_lo = r, ps_busy_hi = (uint64_t)list[k] + 1;
+            plat_mutex_unlock(&gen_lock);
+            uint64_t t0 = qpc(), got = 0;
+            int tracked = 1;
+            for (;;) {   // (a full answer may have left pages for the next call)
+                if (cap - got < 1024) {
+                    cap *= 2;
+                    if (!(pages = realloc(pages, sizeof *pages * cap))) rt_fatal("vk: out of memory for the write-watch prescan");
+                }
+                uint64_t m = mem_written_pages(a, b - a, pages + got, 1024);
+                if (m == UINT64_MAX) { tracked = 0; break; }
+                got += m;
+                if (m < 1024) break;
+            }
+            uint64_t dt = qpc() - t0;
+            plat_mutex_lock(&gen_lock);
+            if (got) {
+                uint32_t g = ++gen_now;
+                for (uint64_t j = 0; j < got; j++) stamp_page(pages[j], g);
+            }
+            for (uint64_t j = r; j <= list[k]; j++) snap_done(j, epoch, tracked);
+            ps_busy_lo = ps_busy_hi = 0;
+            ps_queries++, ps_ticks += dt, ps_pages += got;
+            ww_ticks += dt, ww_calls++, ww_bytes += b - a;
+            if (got) ww_dirty_calls++, ww_dirty_ticks += dt, ww_pages += got;
+            plat_mutex_unlock(&gen_lock);
+            plat_mutex_unlock(&ps_scan_lock);
+            i = k + 1;
+        }
+    }
+}
+
+// gen_lock held exclusively, at the start of a submission's replay: hands the regions the last submission asked for
+// to the prescan thread.
+static void ps_begin(void) {
+    int knob = ps_knob;
+    if (!ps_on) return;
+    uint32_t n = __atomic_exchange_n(&ps_nwant, 0, __ATOMIC_RELAXED);
+    if (n > PS_WANT) n = PS_WANT;
+    if (!RT_KNOB_ON(knob) || vk_mem_census_on || vk_ahead_on || !n) return;
+    memcpy(ps_list, ps_want, sizeof *ps_list * n);
+    ps_nlist = n, ps_epoch = vk_texture_epoch();
+    if (!ps_started) {
+        plat_event_init(&ps_ev, 0, 0);
+        if (!plat_thread_spawn(prescan_main, NULL, "vk prescan", 0)) rt_fatal("vk: cannot start the write-watch prescan thread");
+        ps_started = 1;
+    }
+    plat_event_set(&ps_ev);
 }
 
 int vk_mem_changed_snap(uint64_t addr, uint64_t size, uint32_t since, uint32_t epoch, uint32_t *now) {
@@ -949,6 +1160,8 @@ int vk_mem_changed_snap(uint64_t addr, uint64_t size, uint32_t since, uint32_t e
     plat_mutex_lock_shared(&gen_lock);
     for (uint64_t r = r0; r <= r1; r++)
         if (snap_at[r] != epoch) { excl = 1; break; }
+    if (!excl && ps_on)   // (the exclusive path marks in snap_regions)
+        for (uint64_t r = r0; r <= r1; r++) ps_mark(r, epoch);
     if (excl) {
         plat_mutex_unlock_shared(&gen_lock);
         plat_mutex_lock(&gen_lock);
@@ -1155,23 +1368,71 @@ static int shadow_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
     return 1;
 }
 
+// The touched list has a lock of its own (after shadow_lock, before gen_lock). The replay thread touches a
+// pool about 670 times a frame at Lookout Landing, and each touch took shadow_lock, which the completion thread holds
+// through every copy of GPU-written bytes back into guest memory: the replay thread slept on it about 60 times a
+// second (0.15 ms a frame). A sync holds both locks, so the list does not change under it.
+static PlatMutex touch_lock = PLAT_MUTEX_INIT;
+
 static void shadow_touch(PoolRec *r) {
-    plat_mutex_lock(&shadow_lock);
+    plat_mutex_lock(&touch_lock);
     if (!r->stouched) {
         if (nstouch == cstouch) grow((void **)&stouch, &cstouch, sizeof *stouch);
         stouch[nstouch++] = r;
         r->stouched = 1;
     }
-    plat_mutex_unlock(&shadow_lock);
+    plat_mutex_unlock(&touch_lock);
 }
 
 // vk_pool_fini, after the pool left the index: off the touched list before its record goes.
 static void shadow_forget(PoolRec *r) {
     plat_mutex_lock(&shadow_lock);
+    plat_mutex_lock(&touch_lock);
     for (int i = 0; i < nstouch; i++)
         if (stouch[i] == r) { stouch[i] = stouch[--nstouch]; break; }
+    plat_mutex_unlock(&touch_lock);
     s_live_n--, s_live_bytes -= (int64_t)(r->import_hi - r->import_lo);
     plat_mutex_unlock(&shadow_lock);
+}
+
+// Pool watch: the pool leaves the watch (see "pool watch" above). Replay thread (the uniform snapshot's resolve).
+static void pool_unwatch(PoolRec *r) {
+    plat_mutex_lock(&shadow_lock);
+    int go = r->wstate == WS_ON && !r->wtex && !r->stouched;   // not while a sync of it is pending
+    if (go) r->wstate = WS_OFF, ww_off_n++;
+    plat_mutex_unlock(&shadow_lock);
+    if (go) mem_watch_remove(r->lo, r->size);
+}
+
+static void pool_watch_end(PoolRec *r) {
+    plat_mutex_lock(&shadow_lock);
+    int held = r->wstate != WS_OFF;   // (WS_NONE: a pool partly inside a watched block holds counts too)
+    r->wstate = WS_NONE;
+    plat_mutex_unlock(&shadow_lock);
+    if (held) mem_watch_remove(r->lo, r->size);
+}
+
+// A mirrored texture has storage at [addr, addr+size) (vk_texture.c, before its first upload): its pool stays in the
+// watch from now on, since the texture's upload checks ask for written pages every time it is bound. 1 when the
+// storage is watched (always with the pool watch off); 0: no page list for it, the texture is uploaded at every check.
+int vk_mem_watch_texture(uint64_t addr, uint64_t size) {
+    if (!ww_pools) return 1;
+    plat_mutex_lock_shared(&pool_lock);
+    const pidx_ent *e = pidx_find(&pool_index, addr, size);
+    PoolRec *r = e ? e->buf : NULL;
+    if (r && r->kind == POOL_IMPORT) {
+        plat_mutex_lock(&shadow_lock);
+        r->wtex = 1;
+        if (r->wstate == WS_OFF) {
+            mem_watch_add(r->lo, r->size);
+            r->wstate = WS_FULL;
+            r->wsince = vk_sync_issued();
+            ww_back_n++;
+        }
+        plat_mutex_unlock(&shadow_lock);
+    }
+    plat_mutex_unlock_shared(&pool_lock);
+    return mem_watch_covered(addr, size);
 }
 
 // TOTK_WB_MERGE: the write-back merge of mirrors (wb_merge_record) and the word merge of the shadow's pending ranges.
@@ -1300,6 +1561,20 @@ static void shadow_sync_pool(PoolRec *r) {
                shadow_snap ? "per-submission region snapshots" : "a query per pool at every part",
                plat_is_wine() ? "; off by default under Wine" : "");
     }
+    if (r->wstate != WS_ON) {   // pool watch: no written-page list for this pool
+        if (r->wstate == WS_OFF) {   // back into the watch: its pages are protected before the copy below reads them
+            mem_watch_add(r->lo, r->size);
+            r->wstate = WS_FULL;
+            r->wsince = vk_sync_issued();
+            if (r->wshift < 6) r->wshift++;
+            ww_back_n++;
+        }
+        if (r->wstate == WS_FULL) r->wstate = WS_ON, ww_back_bytes += hi - lo;
+        else s_untracked++;   // WS_NONE
+        r->sgen = gen_now;
+        shadow_copy(r, lo, hi, 0);
+        return;
+    }
     uint32_t epoch = shadow_snap ? vk_texture_epoch() : 0;
     uint64_t r0 = lo >> SNAP_SHIFT, r1 = (hi - 1) >> SNAP_SHIFT;
     if (epoch && r1 < SNAP_REGIONS) {
@@ -1316,6 +1591,7 @@ static void shadow_sync_pool(PoolRec *r) {
         shadow_copy_newer(r, since);
         return;
     }
+    ps_wait(lo >> REG_SHIFT, (hi - 1) >> REG_SHIFT);
     uint32_t g = ++gen_now;
     int tracked = 1;
     for (uint64_t a = lo; a < hi;) {   // one query per run of regions that are not frozen
@@ -1369,9 +1645,11 @@ static void shadow_copy_newer(PoolRec *r, uint32_t since) {
 
 // shadow_lock held: whether a shadow this sync is about to update has a reader in flight.
 static int shadow_reader_busy(uint64_t done) {
-    for (int i = 0; i < nstouch; i++)
-        if (stouch[i]->suse > done) return 1;
-    return 0;
+    int busy = 0;
+    plat_mutex_lock(&touch_lock);
+    for (int i = 0; i < nstouch && !busy; i++) busy = stouch[i]->suse > done;
+    plat_mutex_unlock(&touch_lock);
+    return busy;
 }
 
 // shadow_lock held (released while waiting), no TOTK_SHADOW_DEFER: waits until the guard is done when a shadow to
@@ -1498,6 +1776,232 @@ static void ah_time(uint64_t *n, uint64_t *ns, uint64_t *mx, uint64_t dt) {
 // was not told is done is the game reading ahead of its own wait.
 static void ahead_read(uint64_t addr, uint64_t size);
 
+// ---- early reads (shadow storage with TOTK_SYNC_AHEAD)
+// TotK sends a frame as one submission. The pass that writes its pixel readbacks into a CPU-visible buffer runs in the
+// first millisecond of that submission, and the game reads the result after the frame wait, while the GPU is still in
+// the frame (measured in a scene where the player runs: 16 of the frame's 17 ms of GPU work follow the writer). Waiting
+// for the submission's fence stopped a job worker or the main thread for about 11 ms, five times a second. Instead:
+// - A pool the game waited to read from (vk_mem_shadow_read) becomes a readback pool.
+// - A pass or dispatch that writes into a readback pool is followed by a flag: a memory barrier (shader and transfer
+//   writes made available to the host), vkCmdFillBuffer of a new number into a host-visible word, a second barrier.
+// - The next wait for a range a flagged writer at or below the waited value wrote polls the flag. Once the GPU wrote
+//   it, the reader copies the range from the shadow into guest memory as the fence copy would (vk_gpu_written: the
+//   words that differ from the pending write's base, the bases updated), and the game reads on. The fence copy runs
+//   later as before and finds those words equal.
+// Self-check: the fence copy compares an early-copied range with the shadow and counts the ranges that differ
+// (logged with the shadow lines). A difference is a later GPU write into the range or an early copy that came too
+// early.
+// TOTK_EARLY_READ: 0 waits for the fence. On by default only where it ran (vk_ran_default): the flag is GPU work of a
+// new kind inside the frame, and no other driver was tested.
+#define RB_POOLS 16
+#define RBF_N 1024
+#define RB_CHK 32
+typedef struct { uint64_t lo, hi, fence; uint32_t gen; } RbRec;
+static int rb_on = -1;
+static PlatMutex rb_lock = PLAT_MUTEX_INIT;   // after shadow_lock
+static uint64_t rb_lo[RB_POOLS], rb_hi[RB_POOLS];
+static int rb_n;                               // published with release; entries never change once added
+static VkBuffer rbf_buf;
+static VmaAllocation rbf_alloc;
+static volatile uint32_t *rbf_map;
+static int rbf_state;                          // 0 not made, 1 ready, -1 failed
+static uint32_t rbf_gen;
+static RbRec rbr[RBF_N];                       // rb_lock: flagged writes, a ring
+static uint32_t rbr_next;
+static struct { uint64_t addr, size; uint8_t b[64]; } rb_chk[RB_CHK];   // shadow_lock: early copies to check
+static uint64_t rb_flags, rb_early, rb_early_fence, rb_poll_ns, rb_nowriter, rb_timeout, rb_mismatch, rb_checked;
+static _Thread_local struct { uint64_t lo, hi; } rb_pend[8];   // replay thread: writes of the open pass or dispatch
+static _Thread_local int rb_npend;
+
+static int rb_enabled(void) {
+    if (rb_on < 0) {
+        rb_on = rt_knob("EARLY_READ", vk_ran_default()) != 0;
+        if (rb_on) rt_log("mem: early reads of GPU-written ranges on (TOTK_EARLY_READ)");
+    }
+    return rb_on;
+}
+
+static int vk_mem_rb_pool(uint64_t addr) {
+    int n = __atomic_load_n(&rb_n, __ATOMIC_ACQUIRE);
+    for (int i = 0; i < n; i++)
+        if (addr >= rb_lo[i] && addr < rb_hi[i]) return 1;
+    return 0;
+}
+
+static void rb_pool_add(uint64_t addr, uint64_t size) {
+    if (vk_mem_rb_pool(addr)) return;
+    plat_mutex_lock_shared(&pool_lock);
+    const pidx_ent *e = pidx_find(&pool_index, addr, size);
+    PoolRec *r = e ? e->buf : NULL;
+    uint64_t lo = r ? r->import_lo : 0, hi = r ? r->import_hi : 0;
+    plat_mutex_unlock_shared(&pool_lock);
+    if (!r || hi <= lo) return;
+    plat_mutex_lock(&rb_lock);
+    if (rb_n < RB_POOLS && !vk_mem_rb_pool(addr)) {
+        rb_lo[rb_n] = lo, rb_hi[rb_n] = hi;
+        __atomic_store_n(&rb_n, rb_n + 1, __ATOMIC_RELEASE);
+        rt_log("mem: early reads: readback pool %#llx-%#llx", (unsigned long long)lo, (unsigned long long)hi);
+    }
+    plat_mutex_unlock(&rb_lock);
+}
+
+static int rbf_ready(void) {
+    if (rbf_state) return rbf_state > 0;
+    VkCtx *c = vk_ctx();
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = RBF_N * 4,
+                             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT, .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VmaAllocationCreateInfo ai = {.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                  .requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                  .preferredFlags = VK_MEMORY_PROPERTY_HOST_CACHED_BIT};
+    VmaAllocationInfo info;
+    if (vmaCreateBuffer(c->vma, &bi, &ai, &rbf_buf, &rbf_alloc, &info) != VK_SUCCESS || !info.pMappedData) {
+        rt_log("mem: early reads: no flag buffer: off");
+        rbf_state = -1;
+        return 0;
+    }
+    rbf_map = info.pMappedData;
+    memset((void *)rbf_map, 0, RBF_N * 4);
+    rbf_state = 1;
+    return 1;
+}
+
+// Replay thread: the open pass or dispatch writes [addr, addr+size) of CPU-visible memory.
+void vk_mem_rb_note(uint64_t addr, uint64_t size) {
+    if (rb_on <= 0 || !size || !vk_mem_rb_pool(addr)) return;   // (not read yet: no wait came, no pool is listed)
+    for (int i = 0; i < rb_npend; i++)
+        if (rb_pend[i].lo == addr && rb_pend[i].hi == addr + size) return;
+    if (rb_npend < 8) rb_pend[rb_npend].lo = addr, rb_pend[rb_npend++].hi = addr + size;
+}
+
+// Replay thread, outside a render pass: a flag after the pass or dispatch that wrote the noted ranges.
+void vk_mem_rb_flush(VkCommandBuffer cb, uint64_t fence) {
+    if (!rb_npend) return;
+    int n = rb_npend;
+    rb_npend = 0;
+    plat_mutex_lock(&rb_lock);
+    int ok = rbf_ready();
+    plat_mutex_unlock(&rb_lock);
+    if (!ok || !cb) return;
+    uint32_t g = __atomic_add_fetch(&rbf_gen, 1, __ATOMIC_RELAXED);
+    if (!g) g = __atomic_add_fetch(&rbf_gen, 1, __ATOMIC_RELAXED);
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                           .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                           .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                                            VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | VK_PIPELINE_STAGE_2_HOST_BIT,
+                           .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_HOST_READ_BIT};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    vkCmdPipelineBarrier2(cb, &di);
+    vkCmdFillBuffer(cb, rbf_buf, (VkDeviceSize)(g & (RBF_N - 1)) * 4, 4, g);
+    VkMemoryBarrier2 fb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                           .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                           .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+    di.pMemoryBarriers = &fb;
+    vkCmdPipelineBarrier2(cb, &di);
+    plat_mutex_lock(&rb_lock);
+    for (int i = 0; i < n; i++) rbr[rbr_next++ & (RBF_N - 1)] = (RbRec){rb_pend[i].lo, rb_pend[i].hi, fence, g};
+    rb_flags++;
+    plat_mutex_unlock(&rb_lock);
+}
+
+// shadow_lock held: the shadow's bytes of [addr, addr+size) into guest memory, as the fence copy makes them.
+static void rb_copy(PoolRec *r, uint64_t addr, uint64_t size) {
+    mem_thaw(addr, size);
+    const uint8_t *s = r->smap + (addr - r->import_lo);
+    int k = 0;
+    while (k < nspend && !(spend[k].base && spend[k].lo <= addr && spend[k].hi >= addr + size)) k++;
+    if (k < nspend) {
+        const uint8_t *base = spend[k].base + (addr - spend[k].lo);
+        uint64_t x = 0, y;
+        BaseSet bs;
+        bases_over(addr, addr + size, &bs);
+        while (diff_run(s, base, size, &x, &y)) {
+            memcpy((void *)(uintptr_t)(addr + x), s + x, y - x);
+            base_set(&bs, addr + x, addr + y, (const uint8_t *)(uintptr_t)(addr + x));
+            x = y;
+        }
+    } else {
+        memcpy((void *)(uintptr_t)addr, s, size);
+    }
+    if (size <= 64) {
+        int i = 0;
+        while (i < RB_CHK - 1 && rb_chk[i].size) i++;
+        rb_chk[i].addr = addr, rb_chk[i].size = size;
+        memcpy(rb_chk[i].b, s, size);
+    }
+}
+
+// shadow_lock held, from vk_gpu_written: early copies inside [addr, addr+size), checked against the shadow now.
+static void rb_check(const PoolRec *r, uint64_t addr, uint64_t size) {
+    for (int i = 0; i < RB_CHK; i++) {
+        if (!rb_chk[i].size || rb_chk[i].addr < addr || rb_chk[i].addr + rb_chk[i].size > addr + size) continue;
+        rb_checked++;
+        if (memcmp(rb_chk[i].b, r->smap + (rb_chk[i].addr - r->import_lo), rb_chk[i].size)) rb_mismatch++;
+        rb_chk[i].size = 0;
+    }
+}
+
+// The game waits to read [addr, addr+size) until value `wait` is done (core given up by the caller). With a flagged
+// writer of the range at or below `wait`: polls its flag and copies the range early. 1: the range is current (early,
+// or the fence was reached meanwhile), 0: wait for the fence.
+static int rb_try(uint64_t addr, uint64_t size, uint64_t wait) {
+    uint32_t g = 0;
+    plat_mutex_lock(&rb_lock);
+    for (uint32_t k = 1; k <= RBF_N && k <= rbr_next; k++) {
+        const RbRec *e = &rbr[(rbr_next - k) & (RBF_N - 1)];
+        if (e->fence <= wait && e->lo < addr + size && e->hi > addr) {
+            g = e->gen;
+            break;
+        }
+    }
+    if (!g) rb_nowriter++;
+    plat_mutex_unlock(&rb_lock);
+    if (!g) return 0;
+    uint64_t t0 = qpc();
+    for (unsigned i = 0;; i++) {
+        if ((int32_t)(__atomic_load_n(&rbf_map[g & (RBF_N - 1)], __ATOMIC_ACQUIRE) - g) >= 0) break;
+        if (vk_sync_fence_done() >= wait) {
+            plat_mutex_lock(&rb_lock);
+            rb_early_fence++, rb_poll_ns += qpc() - t0;
+            plat_mutex_unlock(&rb_lock);
+            return 1;
+        }
+        if (qpc() - t0 > 100000000ull) {   // 100 ms: give the fence wait the rest
+            plat_mutex_lock(&rb_lock);
+            rb_timeout++;
+            plat_mutex_unlock(&rb_lock);
+            return 0;
+        }
+        if (i < 64) plat_pause();
+        else plat_wait_ns(20000);
+    }
+    plat_mutex_lock_shared(&pool_lock);
+    const pidx_ent *pe = pidx_find(&pool_index, addr, size);
+    PoolRec *r = pe ? pe->buf : NULL;
+    plat_mutex_lock(&shadow_lock);
+    int ok = r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi;
+    if (ok) rb_copy(r, addr, size);
+    plat_mutex_unlock(&shadow_lock);
+    plat_mutex_unlock_shared(&pool_lock);
+    plat_mutex_lock(&rb_lock);
+    if (ok) rb_early++;
+    rb_poll_ns += qpc() - t0;
+    plat_mutex_unlock(&rb_lock);
+    return ok;
+}
+
+static void rb_log(void) {
+    if (rb_on <= 0) return;
+    plat_mutex_lock(&rb_lock);
+    rt_log("mem: early reads: %llu flags; %llu reads copied early, %llu found the fence reached, %.2f ms polling; "
+           "%llu waits without a flagged writer, %llu timeouts; checked %llu, %llu differed at the fence",
+           (unsigned long long)rb_flags, (unsigned long long)rb_early, (unsigned long long)rb_early_fence,
+           rb_poll_ns / 1e6, (unsigned long long)rb_nowriter, (unsigned long long)rb_timeout,
+           (unsigned long long)rb_checked, (unsigned long long)rb_mismatch);
+    rb_flags = rb_early = rb_early_fence = rb_poll_ns = rb_nowriter = rb_timeout = 0;
+    plat_mutex_unlock(&rb_lock);
+}
+
 void vk_mem_shadow_read(uint64_t addr, uint64_t size) {
     if (vk_ahead_g.reads && size) ahead_read(addr, size);
     if (vk_ahead_on) vk_ahead_invalidate(addr, size);
@@ -1517,10 +2021,11 @@ void vk_mem_shadow_read(uint64_t addr, uint64_t size) {
     if (known || !pending || wait) *e = (SRead){addr, size, now};
     plat_mutex_unlock(&shadow_lock);
     if (!wait) return;
+    if (rb_enabled()) rb_pool_add(addr, size);
     uint64_t t0 = qpc();
     {
         NVN_BLOCKING();
-        vk_sync_fence_wait(wait, UINT64_MAX);
+        if (!(rb_on > 0 && rb_try(addr, size, wait))) vk_sync_fence_wait(wait, UINT64_MAX);
     }
     uint64_t dt = qpc() - t0;
     plat_mutex_lock(&shadow_lock);
@@ -1626,6 +2131,7 @@ void vk_mem_shadow_sync(uint64_t fence) {
     uint64_t g = nvn_sync_ahead_guard(), done = g ? vk_sync_fence_done() : 0;
     if (!defer_on && nstouch) shadow_wait_guard(fence, &g, &done);
     uint64_t t0 = qpc();
+    plat_mutex_lock(&touch_lock);
     if (nstouch) {
         plat_mutex_lock(&gen_lock);
         for (int i = 0; i < nstouch; i++) {
@@ -1642,6 +2148,7 @@ void vk_mem_shadow_sync(uint64_t fence) {
         s_syncs += (uint64_t)nstouch;
         nstouch = 0;
     }
+    plat_mutex_unlock(&touch_lock);
     s_ticks += qpc() - t0;
     plat_mutex_unlock(&shadow_lock);
 }
@@ -1693,6 +2200,7 @@ void vk_gpu_written(uint64_t addr, uint64_t size) {
         int k = 0;
         while (k < nspend && (spend[k].lo != addr || spend[k].hi != addr + size)) k++;
         if (r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi) {
+            if (rb_on > 0) rb_check(r, addr, size);
             mem_thaw(addr, size);
             const uint8_t *s = r->smap + (addr - r->import_lo);
             if (k < nspend && spend[k].base) {
@@ -1719,12 +2227,26 @@ void vk_gpu_written(uint64_t addr, uint64_t size) {
 
 static void shadow_log(uint64_t frame) {
     if (!shadow_on) return;
+    rb_log();
     plat_mutex_lock(&shadow_lock);
     rt_log("mem: shadow at frame %llu: %lld pools %.1f MiB; since the last: %llu pool syncs, %llu queries, %.1f MiB "
            "copied in (%llu untracked), %.1f MiB written back, %.2f ms, %d GPU writes pending",
            (unsigned long long)frame, (long long)s_live_n, s_live_bytes / 1048576.0, (unsigned long long)s_syncs,
            (unsigned long long)s_queries, s_copied / 1048576.0, (unsigned long long)s_untracked, s_wb_bytes / 1048576.0,
            qpc_ms(s_ticks), nspend);
+    if (ps_on) {
+        plat_mutex_lock(&gen_lock);
+        uint64_t q = ps_queries, t = ps_ticks, pg = ps_pages, late = ps_late;
+        ps_queries = ps_ticks = ps_pages = ps_late = 0;
+        plat_mutex_unlock(&gen_lock);
+        if (q) rt_log("mem: write-watch prescan since the last: %llu queries, %.2f ms, %llu written pages; %llu regions were "
+                      "snapped by a consumer first", (unsigned long long)q, qpc_ms(t), (unsigned long long)pg,
+                      (unsigned long long)late);
+    }
+    if (ww_pools && (ww_off_n || ww_back_n))
+        rt_log("mem: pool watch since the last: %llu pools left the watch, %llu came back (%.2f MiB copied whole)",
+               (unsigned long long)ww_off_n, (unsigned long long)ww_back_n, ww_back_bytes / 1048576.0);
+    ww_off_n = ww_back_n = ww_back_bytes = 0;
     if (defer_on || s_waits)   // only with TOTK_SYNC_AHEAD: the shadow log of everyone else stays as it was
         rt_log("mem: shadow deferred (%s): %llu pools, %.1f MiB in %llu copies; replay waited for a reader %llu times, "
                "%.2f ms; the game waited for a GPU write it reads %llu times, %.2f ms", defer_on ? "on" : "off",
@@ -1968,6 +2490,25 @@ static void mirror_mode(int discrete, int host_import) {
     if (defer_on) rt_log("mem: TOTK_SHADOW_DEFER: shadow updates that wait for a reader are queued for the GPU instead");
     if (shadow_on) rt_log("mem: shadow storage: CPU-visible pools are host-visible copies of guest memory, not imports%s",
                           sh && *sh ? " (TOTK_SHADOW)" : "");
+    {
+        // On by default only where they ran (vk_ran_default), and never in the mirror mode: a mirror's sync copies the
+        // pages with a write stamp only, and a page out of the watch gets none.
+        const char *wp = cfg_get("TOTK_WW_POOLS"), *wi = cfg_get("TOTK_WW_IDLE");
+        if (!wp || !*wp) wp = vk_ran_default();
+        if (!wi || !*wi) wi = vk_ran_default();
+        if (shadow_on && *wp != '0' && !vk_mirror_on) {   // (a mirror's sync does not read the watch state)
+            plat_mutex_lock_shared(&pool_lock);
+            int have = pool_index.n;
+            plat_mutex_unlock_shared(&pool_lock);
+            if (have) rt_log("mem: pool watch: off, %d pools exist already", have);
+            else if (mem_watch_ranges()) ww_pools = 1, ww_idle = *wi != '0';
+        }
+        ps_knob = rt_knob("WW_PRESCAN", vk_ran_default());
+        ps_on = shadow_on && !vk_mirror_on && ps_knob;
+        if (ww_pools)
+            rt_log("mem: write watch on the pages of memory pools only (TOTK_WW_POOLS)%s",
+                   ww_idle ? "; pools that only the uniform snapshot reads leave it (TOTK_WW_IDLE)" : "; idle pools stay in it");
+    }
     rt_log("mem: mode %s (%s): %s", mode == 2 ? "verify" : mode ? "mirror" : "import", why,
            mode ? "pools used as buffers get a device-local mirror" : "every CPU-visible pool is imported host memory");
     vk_ahead_init();
@@ -2579,6 +3120,7 @@ static void freeze_pass(void) {
     for (int done = 0; nfcand && done < FREEZE_PER_SUB;) {
         uint64_t j = fcand[--nfcand], a = j << REG_SHIFT;
         if (ww_ep - reg_last[j] < (uint32_t)freeze_idle || mem_frozen(a)) continue;
+        if (ps_busy_hi && j >= ps_busy_lo && j < ps_busy_hi) continue;   // the prescan's query over it is in flight
         if (__atomic_load_n(&reg_gpu[j], __ATOMIC_RELAXED) > gpu_done) { plat_inc64(&n_frz_gpu); continue; }   // gpu_writes
         done++;
         if (!mem_freeze(a)) { n_frz_refused++; continue; }
@@ -2591,10 +3133,11 @@ void vk_mem_mirror_begin(void) {
         // TOTK_SYNC_AHEAD=check notes in-place bindings where the replay resolves them: a new generation per submission
         // makes it resolve them again in each, as mirror mode does.
         if (vk_ahead_on) __atomic_add_fetch(&mirror_gen, 1, __ATOMIC_RELEASE);
-        if (!freeze_idle) return;
+        if (!freeze_idle && !ps_on) return;
         plat_mutex_lock(&gen_lock);
         ww_ep++;
-        freeze_pass();
+        if (freeze_idle) freeze_pass();
+        ps_begin();
         plat_mutex_unlock(&gen_lock);
         return;
     }

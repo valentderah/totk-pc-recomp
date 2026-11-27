@@ -524,7 +524,19 @@ void plat_sleep_ms(uint32_t ms) {
 #define LK_W 0x80000000u
 #define LK_S 0x40000000u
 #define LK_R 0x3fffffffu
-#define LK_SPINS 64
+// 64 pauses (about 1-2 us on Zen 2) were shorter than most holds of the kernel lock G, so a thread woken
+// by a holder of G (kernel.c wake: the signal is sent with G held) slept again on G at once: two OS wake-ups per
+// guest wake. 512 pauses cover a typical hold; a longer hold still ends in the futex sleep.
+#define LK_SPINS 512
+// plat_lock_spins_thread(n): the calling thread pauses n times before it sleeps on any lock (0: the
+// default). For a thread that limits the frame (the replay): the holders of its locks hold them for less than a wake
+// from a futex sleep takes.
+static __thread int lk_spins_tl;
+void plat_lock_spins_thread(int n) { lk_spins_tl = n; }
+static inline int lk_spins(void) {
+    if (__builtin_expect(lk_spins_tl != 0, 0)) return lk_spins_tl;
+    return LK_SPINS;
+}
 
 static long futex(volatile uint32_t *w, int op, uint32_t val, const struct timespec *ts) {
     return syscall(SYS_futex, w, op | FUTEX_PRIVATE_FLAG, val, ts, NULL, 0);
@@ -561,7 +573,7 @@ void plat_mutex_lock(PlatMutex *m) {
             if (__atomic_compare_exchange_n(w, &s, s | LK_W, 1, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return;
             continue;
         }
-        if (spin < LK_SPINS) plat_pause();
+        if (spin < lk_spins()) plat_pause();
         else lk_sleep(w, s);
     }
 }
@@ -588,7 +600,7 @@ void plat_mutex_lock_shared(PlatMutex *m) {
             if (__atomic_compare_exchange_n(w, &s, s + 1, 1, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return;
             continue;
         }
-        if (spin < LK_SPINS) plat_pause();
+        if (spin < lk_spins()) plat_pause();
         else lk_sleep(w, s);
     }
 }
@@ -602,35 +614,45 @@ void plat_mutex_unlock_shared(PlatMutex *m) {
 // ---- condition variables: a sequence number in the first 32 bits. A waiter reads it before releasing the lock and
 // sleeps only while it is unchanged, so a signal between the release and the sleep is not lost.
 
+// The second 32 bits count the waiters between their sequence read and their return from the futex. A
+// signal or broadcast that finds none makes no futex call (the kernel's waits poll first, kspin, so most signals
+// found nobody asleep and still paid a system call with G held). Both sides use sequentially consistent operations
+// (Dekker): either the signaller sees the count, or the waiter reads the new sequence and does not sleep on the old.
+
 static inline volatile uint32_t *cv(PlatCond *c) { return (volatile uint32_t *)&c->p; }
+static inline volatile uint32_t *cv_n(PlatCond *c) { return (volatile uint32_t *)&c->p + 1; }
 
 void plat_cond_init(PlatCond *c) { c->p = 0; }
 
 void plat_cond_wait(PlatCond *c, PlatMutex *m) {
-    uint32_t seq = __atomic_load_n(cv(c), __ATOMIC_RELAXED);
+    __atomic_add_fetch(cv_n(c), 1, __ATOMIC_SEQ_CST);
+    uint32_t seq = __atomic_load_n(cv(c), __ATOMIC_SEQ_CST);
     plat_mutex_unlock(m);
     futex(cv(c), FUTEX_WAIT, seq, NULL);
+    __atomic_sub_fetch(cv_n(c), 1, __ATOMIC_RELAXED);
     plat_mutex_lock(m);
 }
 
 int plat_cond_wait_ns(PlatCond *c, PlatMutex *m, uint64_t ns) {
-    uint32_t seq = __atomic_load_n(cv(c), __ATOMIC_RELAXED);
+    __atomic_add_fetch(cv_n(c), 1, __ATOMIC_SEQ_CST);
+    uint32_t seq = __atomic_load_n(cv(c), __ATOMIC_SEQ_CST);
     struct timespec ts = {(time_t)(ns / 1000000000u), (long)(ns % 1000000000u)};
     plat_mutex_unlock(m);
     long r = futex(cv(c), FUTEX_WAIT, seq, &ts);
     int timed_out = r == -1 && errno == ETIMEDOUT;
+    __atomic_sub_fetch(cv_n(c), 1, __ATOMIC_RELAXED);
     plat_mutex_lock(m);
     return !timed_out;
 }
 
 void plat_cond_signal(PlatCond *c) {
-    __atomic_add_fetch(cv(c), 1, __ATOMIC_RELEASE);
-    futex(cv(c), FUTEX_WAKE, 1, NULL);
+    __atomic_add_fetch(cv(c), 1, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(cv_n(c), __ATOMIC_SEQ_CST)) futex(cv(c), FUTEX_WAKE, 1, NULL);
 }
 
 void plat_cond_broadcast(PlatCond *c) {
-    __atomic_add_fetch(cv(c), 1, __ATOMIC_RELEASE);
-    futex(cv(c), FUTEX_WAKE, INT_MAX, NULL);
+    __atomic_add_fetch(cv(c), 1, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(cv_n(c), __ATOMIC_SEQ_CST)) futex(cv(c), FUTEX_WAKE, INT_MAX, NULL);
 }
 
 // ---- files
@@ -858,9 +880,13 @@ int plat_mem_reserve(uint64_t addr, uint64_t n, int watch) {
     if (p != MAP_FAILED && !ok) munmap(p, n);   // a kernel without MAP_FIXED_NOREPLACE put it elsewhere
     if (ok) {
         ps_set(addr, n, PS_RESERVED);
-        // Transparent huge pages would populate (and count as written) 2 MiB at the first write of one page; writes are
-        // tracked per 4 KiB page, as on Windows.
-        if (watch) madvise(p, n, MADV_NOHUGEPAGE);
+        // Transparent huge pages over the watched blocks too (TOTK_HEAP_THP=0: off, 4 KiB pages as before). The game
+        // code's loads spread over the heap and missed the TLB (Steam Deck: about 6 M page walks a second); with huge
+        // pages the frame took 2.9% less (4 pairs of runs) for about 190 MiB more memory. Write tracking stays correct:
+        // the asynchronous write protection splits a huge page that is protected in part, and the written pages per
+        // query and the shadow uploads did not grow.
+        const char *thp = getenv("TOTK_HEAP_THP");
+        if (watch) madvise(p, n, thp && *thp == '0' ? MADV_NOHUGEPAGE : MADV_HUGEPAGE);
         struct uffdio_register reg = {.range = {addr, n}, .mode = UFFDIO_REGISTER_MODE_WP};
         if (watch && ww_fd >= 0 && ioctl(ww_fd, UFFDIO_REGISTER, &reg))
             fprintf(stderr, "platform: write watch over %#llx+%#llx failed (%s)\n", (unsigned long long)addr,
@@ -906,9 +932,40 @@ int plat_mem_state(uint64_t addr, uint64_t limit, uint64_t *end) {
     return v == PS_FREE ? PLAT_MEM_FREE : v == PS_RESERVED ? PLAT_MEM_RESERVED : v - PS_NONE;
 }
 
+// The write watch over given ranges only (memory.c mem_watch_*). plat_mem_watch_ranges(addr, n) takes the
+// watch off a whole reservation; plat_mem_watch(addr, n, 1) puts it on a page range again and protects its pages, so
+// every write after the call is reported; plat_mem_watch(addr, n, 0) takes it off, and the pages are then written
+// without a fault and no query reports them. A query over a range with unwatched parts skips those parts
+// (PAGEMAP_SCAN without PM_SCAN_CHECK_WPASYNC skips a mapping that is not registered). 0 when not possible.
+#ifndef UFFDIO_WRITEPROTECT_MODE_WP
+#define UFFDIO_WRITEPROTECT_MODE_WP ((__u64)1 << 0)
+#endif
+static int ww_ranges;   // ranges mode: queries do not ask for the registration check
+
+int plat_mem_watch_ranges(uint64_t addr, uint64_t n) {
+    if (ww_fd < 0) return 0;
+    struct uffdio_range r = {addr, n};
+    if (ioctl(ww_fd, UFFDIO_UNREGISTER, &r)) return 0;
+    __atomic_store_n(&ww_ranges, 1, __ATOMIC_RELEASE);
+    return 1;
+}
+
+int plat_mem_watch(uint64_t addr, uint64_t n, int on) {
+    if (ww_fd < 0) return 0;
+    if (!on) {
+        struct uffdio_range r = {addr, n};
+        return !ioctl(ww_fd, UFFDIO_UNREGISTER, &r);
+    }
+    struct uffdio_register reg = {.range = {addr, n}, .mode = UFFDIO_REGISTER_MODE_WP};
+    if (ioctl(ww_fd, UFFDIO_REGISTER, &reg)) return 0;
+    struct uffdio_writeprotect wp = {.range = {addr, n}, .mode = UFFDIO_WRITEPROTECT_MODE_WP};
+    return !ioctl(ww_fd, UFFDIO_WRITEPROTECT, &wp);
+}
+
 uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t max, int reset) {
     if (!max || !n) return 0;
     if (ww_fd < 0) return UINT64_MAX;
+    int check = __atomic_load_n(&ww_ranges, __ATOMIC_RELAXED) ? 0 : PM_SCAN_CHECK_WPASYNC;
     struct page_region r[256];
     uint64_t got = 0;
     for (uint64_t at = addr, end = addr + n; at < end && got < max;) {
@@ -916,7 +973,7 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
         // zero page. A page never touched since its commit has no protection marker either and counts as written to
         // the kernel; a read maps the zero page there. Neither is a write, as on Windows.
         struct pm_scan_arg arg = {.size = sizeof arg,
-                                  .flags = reset ? PM_SCAN_WP_MATCHING | PM_SCAN_CHECK_WPASYNC : 0,
+                                  .flags = reset ? PM_SCAN_WP_MATCHING | check : 0,
                                   .start = at, .end = end, .vec = (uint64_t)(uintptr_t)r, .vec_len = 256,
                                   .max_pages = max - got,
                                   .category_inverted = PAGE_IS_PFNZERO,

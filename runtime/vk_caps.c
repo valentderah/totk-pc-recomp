@@ -45,6 +45,9 @@ void vk_caps_driver(VkPhysicalDevice p) {
     vk_caps.amd_sc = drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY && strstr(drv.driverInfo, "shader compiler");
     vk_caps.mesa = drv.driverID == VK_DRIVER_ID_MESA_RADV || drv.driverID == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA ||
                    drv.driverID == VK_DRIVER_ID_MESA_NVK;
+#ifndef _WIN32   // the Windows build meets RADV too, under Proton: the paths of this gate did not run there
+    vk_caps.radv = drv.driverID == VK_DRIVER_ID_MESA_RADV;
+#endif
     vk_caps.intel_igpu_win = drv.driverID == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS &&
                              p2.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
 }

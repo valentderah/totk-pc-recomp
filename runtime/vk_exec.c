@@ -641,13 +641,28 @@ static VkImageMemoryBarrier2 layout_barrier(VkImage img, VkImageAspectFlags aspe
                                    .subresourceRange = {aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}};
 }
 
+static int bar_img_on(void) {
+    static int v = -1;
+    if (v < 0) v = rt_knob("BAR_IMG", vk_ran_default());   // RADV: read there, measured there
+    return v;
+}
+
+int vk_exec_bar_img(void) { return bar_img_on() != 0; }
+
+static int fb_keep_on(void) {
+    static int v = -1;
+    if (v < 0) v = rt_knob("FB_KEEP", vk_ran_default());
+    return v;
+}
+
 // Full barrier. The images in the feedback layout become want[] (pass begin) or none (every other barrier): the others
 // go back to GENERAL and the new ones leave it, in the same command.
 static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags *wasp, int nwant) {
     vk_exec_pass_end(ex);
+    int storage = ex->pass_storage;
     ex->pass_storage = ex->pass_merged = 0;   // barrier_merge: every pass begins behind this barrier
     vk_exec_ub_flush(ex);   // uniform updates overlaid in the pass reach their buffers before the barrier below
-    VkImageMemoryBarrier2 ib[18];
+    VkImageMemoryBarrier2 ib[2 * VK_FBL_MAX + 9];
     uint32_t n = 0;
     for (int i = 0; i < ex->nfbl; i++)
         if (!has_image(want, nwant, ex->fbl_img[i]))
@@ -661,18 +676,51 @@ static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags
     ex->nfbl = nwant;
     if (ex->barrier_at == ex->recorded && !n) return;
     ex->fr.fb_layouts += n;
+    uint32_t nlay = n;
+    // TOTK_BAR_IMG: when the commands since the last full barrier are one pass and its draws write no
+    // storage, the only GPU writes to make visible are that pass's attachments. Then the barrier names them instead of
+    // all memory: with no image named RADV takes the worst case (radv_src_access_flush: colour and depth cache sync and
+    // the whole L2 of the GPU invalidated), with an L2-coherent image named it syncs that image's cache only.
+    int light = RT_KNOB_ON(bar_img_on()) && ex->barrier_at >= 0 && !storage && ex->recorded - ex->barrier_at == ex->rec_light;
+    if (light)
+        for (int i = 0; i < ex->nwr; i++) {
+            int have = 0;
+            for (uint32_t k = 0; k < nlay; k++) have |= ib[k].image == ex->wr_img[i];
+            if (have) continue;
+            VkImageLayout l = has_image(ex->fbl_img, ex->nfbl, ex->wr_img[i]) ? VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT
+                                                                              : VK_IMAGE_LAYOUT_GENERAL;
+            int color = ex->wr_asp[i] == VK_IMAGE_ASPECT_COLOR_BIT;
+            ib[n] = layout_barrier(ex->wr_img[i], ex->wr_asp[i], l, l);
+            if (ex->wr_clear >> i & 1) { n++; continue; }   // a clear command wrote it: every stage, every write
+            ib[n].srcStageMask = color ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
+                                       : VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+            ib[n++].srcAccessMask = color ? VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT : VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        }
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                            .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                            .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
                            .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
-    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb,
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = light ? 0 : 1, .pMemoryBarriers = &mb,
                            .imageMemoryBarrierCount = n, .pImageMemoryBarriers = ib};
-    vkCmdPipelineBarrier2(ex->cb, &di);
+    if (!light || n) vkCmdPipelineBarrier2(ex->cb, &di);
     ex->barrier_at = ++ex->recorded;
+    ex->rec_light = 0, ex->nwr = 0, ex->wr_clear = 0;
 }
 
 void vk_exec_barrier(VkExec *ex) { barrier_to(ex, NULL, NULL, 0); }
+
+void vk_exec_barrier_keep(VkExec *ex, VkImage out) {
+    if (!RT_KNOB_ON(fb_keep_on())) { vk_exec_barrier(ex); return; }
+    VkImage want[VK_FBL_MAX];
+    VkImageAspectFlags wasp[VK_FBL_MAX];
+    int n = 0;
+    for (int i = 0; i < ex->nfbl; i++) {
+        if (ex->fbl_img[i] == out) continue;
+        want[n] = ex->fbl_img[i], wasp[n++] = ex->fbl_aspect[i];
+    }
+    barrier_to(ex, want, wasp, n);
+}
 
 // TOTK_NULL_ATTACH=1 (null_attach, default 0; vk_caps.null_attach): colour slots of a pass that hold no target get a
 // view of a dummy image instead of VK_NULL_HANDLE. Leaving a slot's imageView null is valid Vulkan, but Intel's legacy
@@ -759,8 +807,8 @@ void vk_exec_pass_begin(VkExec *ex) {
     vk_contact_pass_begin(ex);
     vk_dlaa_pass(ex);   // DLAA runs before the bloom chain's first pass (vk_dlaa.c)
     // Learned targets (VkTexImage.fb_learned) are attached in the feedback layout
-    VkImage want[9];
-    VkImageAspectFlags wasp[9];
+    VkImage want[VK_FBL_MAX];
+    VkImageAspectFlags wasp[VK_FBL_MAX];
     int nwant = 0;
     uint32_t fbl = 0;
     for (uint32_t i = 0; i < 9; i++) {
@@ -770,7 +818,21 @@ void vk_exec_pass_begin(VkExec *ex) {
         if (has_image(want, nwant, t->image)) continue;
         want[nwant] = t->image, wasp[nwant++] = i < 8 ? VK_IMAGE_ASPECT_COLOR_BIT : t->img->aspect;
     }
+    // TOTK_FB_KEEP: the images already in the feedback layout stay in it, attached here or not. A sampled
+    // image may be in that layout, and on RADV every change from GENERAL to it decompresses a depth image again
+    // (radv_handle_depth_image_transition: HTILE counts as compressed in GENERAL and as expanded in the feedback layout).
+    if (RT_KNOB_ON(fb_keep_on()))
+        for (int i = 0; i < ex->nfbl && nwant < VK_FBL_MAX; i++)
+            if (!has_image(want, nwant, ex->fbl_img[i])) want[nwant] = ex->fbl_img[i], wasp[nwant++] = ex->fbl_aspect[i];
     barrier_to(ex, want, wasp, nwant);   // passes, clears, copies and dispatches see each other's results
+    ex->rec_pass0 = ex->recorded;
+    ex->nwr = 0, ex->wr_clear = 0;
+    for (uint32_t i = 0; i < 9; i++) {
+        const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
+        if ((i < 8 && i >= ex->pass_ncolor) || !t->image || has_image(ex->wr_img, ex->nwr, t->image)) continue;
+        ex->wr_img[ex->nwr] = t->image;
+        ex->wr_asp[ex->nwr++] = i < 8 ? VK_IMAGE_ASPECT_COLOR_BIT : t->img ? t->img->aspect : t->aspect;
+    }
     ex->fbl_mask = fbl;
     ex->fb_dirty = 0;
     ex->pass_serial++;
@@ -835,7 +897,9 @@ void vk_exec_pass_end(VkExec *ex) {
     if (!ex->in_pass) return;
     vk_exec_oq_pass_end(ex);
     vkCmdEndRendering(ex->cb);
+    vk_mem_rb_flush(ex->cb, ex->fence);   // early reads (vk_memory.c): the flag after a writer of a readback pool
     ex->recorded++;
+    ex->rec_light += ex->recorded - ex->rec_pass0;
     ex->in_pass = 0;
     if (ex->mark) {
         // frame_add empties the context's counters at the end of a submission: then only the draws since it count
@@ -914,6 +978,15 @@ static int whole_target(const VkExec *ex, const VkExecTarget *t) {
     return s->x <= 0 && s->y <= 0 && (int64_t)s->x + s->w >= t->width && (int64_t)s->y + s->h >= t->height;
 }
 
+// A whole-image clear command was recorded (one command, behind a full barrier): the next full barrier may name the
+// image (barrier_to).
+static void wr_note_clear(VkExec *ex, VkImage img, VkImageAspectFlags asp) {
+    if (ex->nwr >= 9 || has_image(ex->wr_img, ex->nwr, img)) return;   // not counted: the next barrier is a full one
+    ex->wr_clear |= 1u << ex->nwr;
+    ex->wr_img[ex->nwr] = img, ex->wr_asp[ex->nwr++] = asp;
+    ex->rec_light++;
+}
+
 static void clear_attachment(VkExec *ex, const VkClearAttachment *a) {
     vk_exec_pass_begin(ex);
     VkClearRect cr = {vk_exec_scissor(ex), 0, ex->pass_layers};
@@ -921,6 +994,7 @@ static void clear_attachment(VkExec *ex, const VkClearAttachment *a) {
     vkCmdClearAttachments(ex->cb, 1, a, 1, &cr);
     ex->recorded++;
     ex->fb_dirty |= a->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT ? 1u << a->colorAttachment : 0x100u;
+    ex->fb_nondraw = 1;   // an attachment written by no draw (vk_exec_draw.c terrain_chain)
 }
 
 static void clear_color(VkExec *ex, const p_clear_color *c) {
@@ -942,10 +1016,11 @@ static void clear_color(VkExec *ex, const p_clear_color *c) {
     VkClearColorValue cv;
     memcpy(cv.float32, c->rgba, sizeof cv.float32);   // integer targets: the payload's bits as the front end stored them
     if (whole_target(ex, t)) {
-        vk_exec_barrier(ex);
+        vk_exec_barrier_keep(ex, t->image);
         VkImageSubresourceRange r = {VK_IMAGE_ASPECT_COLOR_BIT, t->level, 1, t->base_layer, t->layers};
         vkCmdClearColorImage(ex->cb, t->image, VK_IMAGE_LAYOUT_GENERAL, &cv, 1, &r);
         ex->recorded++;
+        wr_note_clear(ex, t->image, VK_IMAGE_ASPECT_COLOR_BIT);
         vk_texture_gpu_written(t->tex);
         return;
     }
@@ -970,10 +1045,11 @@ static void clear_ds(VkExec *ex, const p_clear_ds *c) {
     float d = c->depth < 0.0f ? 0.0f : c->depth > 1.0f ? 1.0f : c->depth;
     VkClearDepthStencilValue v = {d, (uint32_t)c->stencil & 0xff};
     if (whole_target(ex, t)) {
-        vk_exec_barrier(ex);
+        vk_exec_barrier_keep(ex, t->image);
         VkImageSubresourceRange r = {asp, t->level, 1, t->base_layer, t->layers};
         vkCmdClearDepthStencilImage(ex->cb, t->image, VK_IMAGE_LAYOUT_GENERAL, &v, 1, &r);
         ex->recorded++;
+        wr_note_clear(ex, t->image, t->img ? t->img->aspect : t->aspect);
         vk_texture_gpu_written(t->tex);
         return;
     }
@@ -1193,7 +1269,7 @@ static int walk(VkExec *ex, const op_hdr *h, int depth, const op_hdr *stop) {
             if (ex->in_pass) ex->fr.pass_end_barrier++;
             if (rt_trace & RT_TRACE_GFX)
                 for (int i = 0; i < 8; i++) ex->fr.barrier_bit[i] += (uint32_t)((const p_barrier *)a)->bits >> i & 1;
-            vk_exec_barrier(ex);
+            vk_exec_barrier_keep(ex, VK_NULL_HANDLE);
             break;
         case OP_DRAW: case OP_DRAW_IDX: case OP_DISPATCH: case OP_UPDATE_UB: case OP_DRAW_IDX_IND: case OP_DISPATCH_IND:
             if (h->op == OP_DRAW || h->op == OP_DRAW_IDX || h->op == OP_DRAW_IDX_IND) ex->fr.draws_seen++, ex->split_draws++;

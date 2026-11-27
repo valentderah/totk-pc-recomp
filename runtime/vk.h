@@ -67,9 +67,11 @@ typedef struct {
     int intel_igpu_win;                // Intel's Windows driver on an integrated GPU (UHD, Iris Xe, Core Ultra graphics)
     int demote;                        // shaderDemoteToHelperInvocation enabled: modules may use OpDemoteToHelperInvocation
     int null_attach;                   // TOTK_NULL_ATTACH=1: empty colour slots get a dummy attachment (vk_exec.c null_attach_view)
+    int radv;                          // Mesa RADV in the Linux build: the switches that ran only there are on by
+                                       // default (vk_caps.c)
 } VkCaps;
 extern VkCaps vk_caps;
-void vk_caps_driver(VkPhysicalDevice p);             // first, before vkCreateDevice: vk_caps.amd, amd_sc, mesa, intel_igpu_win
+void vk_caps_driver(VkPhysicalDevice p);             // first, before vk_mem_class_log: vk_caps.amd, amd_sc, mesa, radv, intel_igpu_win
 void vk_caps_features(VkPhysicalDeviceFeatures *f);   // before vkCreateDevice (TOTK_VK_NO_FLOAT64 clears shaderFloat64)
 // Before vkCreateDevice, with the driver's graphics pipeline library feature and properties: sets vk_caps.gpl,
 // 1 = enable the extensions (VK_KHR_pipeline_library, VK_EXT_graphics_pipeline_library) and the feature.
@@ -355,6 +357,11 @@ void vk_mem_shadow_prologue(VkCommandBuffer cb, uint64_t fence);
 void vk_mem_shadow_read_log(void);   // at exit, with TOTK_SYNC_AHEAD: the run total of vk_mem_shadow_read's waits
 void vk_mem_gpu_pending(uint64_t addr, uint64_t size);
 void vk_gpu_written(uint64_t addr, uint64_t size);
+// Early reads (vk_memory.c; TOTK_EARLY_READ=0 turns them off): the replay notes a write of the open pass or dispatch
+// into CPU-visible memory, and after the pass or dispatch (outside a render pass) records the flag for the noted
+// writes.
+void vk_mem_rb_note(uint64_t addr, uint64_t size);
+void vk_mem_rb_flush(VkCommandBuffer cb, uint64_t fence);
 int vk_mem_flush_add_probe(void);        // --probe-vkexec: the flush range list; 0 or the number of the failed check
 uint64_t vk_mem_mirror_uploaded(void);   // --probe-vkexec: bytes copied into mirrors since the last summary line
 int vk_mem_mirror_probe(uint64_t addr);   // --probe-vkexec: the pool at addr gets its mirror as on a first buffer use;
@@ -384,12 +391,17 @@ void vk_headroom_pool(VmaPool pool, uint32_t type, VkDeviceSize block);
 void vk_headroom_release(void);   // after a failed allocation: frees the spare blocks and keeps none for a while;
                                  // any thread that holds no VMA lock (takes only the headroom lock)
 int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *out);   // 1 when all of [addr, addr+size) is backed
+int vk_mem_resolve_peek(uint64_t addr, uint64_t size, VkMemSpan *out);   // the same, the pool not marked for a shadow sync
+// "1" in the one configuration the Steam Deck switches ran in (RADV in the Linux build, imported memory), else "0":
+// the default of those switches. Final after the device's memory mode is decided (vk_mem_class_log).
+const char *vk_ran_default(void);
 // Changes whenever vk_mem_resolve plus VK_MEM_USE may give another span for an address: a pool added, finalized or
 // mapped, a mirror created, refused or forgotten, a submission started.
 uint64_t vk_mem_gen(void);
 // Page write generations over guest memory (mem_written_pages plus vk_guest_written). Returns 1 when a page of the
 // range was written after generation `since`, 0 when not, -1 when the range is not write-watched (treat as written);
 // *now is the generation to pass next time.
+int vk_mem_watch_texture(uint64_t addr, uint64_t size);   // pool watch: a mirrored texture's storage; 0 not watched
 int vk_mem_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now);
 // The same answer from per-epoch write-watch snapshots of 2 MiB regions: no system call once the regions were queried in
 // this epoch (a guest submission). For checks that may see writes made during the epoch one epoch late.

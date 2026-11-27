@@ -166,6 +166,11 @@ uint64_t mem_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, uint64
                                                            // past max stays reported next time). The range must lie
                                                            // inside the stack/heap block or the alias region
                                                            // (write watch); otherwise returns UINT64_MAX
+int mem_watch_ranges(void);                                // from now on the write watch covers only the
+                                                           // ranges given to mem_watch_add (1; 0: not possible here)
+void mem_watch_add(uint64_t addr, uint64_t size);          // the pages of the range are watched (counted per page)
+void mem_watch_remove(uint64_t addr, uint64_t size);
+int mem_watch_covered(uint64_t addr, uint64_t size);       // every page of the range is watched (1 when the mode is off)
 uint64_t mem_written_peek(uint64_t addr, uint64_t size, uint64_t *pages, uint64_t max);
                                                            // the same without the reset: the bits stay for the next
                                                            // mem_written_pages (verify checks only)
