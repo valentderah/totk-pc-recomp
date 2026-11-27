@@ -96,7 +96,9 @@ void fs_save_flush(void);                                  // wait for a save Co
                                                            // every exit path calls it before the process ends
 uint32_t fs_save_commits(char *slot, size_t cap);          // commits that changed save files; slot: the save folder
                                                            // (slot_00 ...) the last one wrote first
-int fs_save_copy_slot(const char *slot, const char *dst);  // a folder of the newest save copied to dst (replaced)
+// Quick save owns dst and the dst.new/dst.old siblings. 0 on success; recover before checking dst for quick load.
+int fs_save_recover_slot(const char *dst);                 // restores the previous complete copy after interruption
+int fs_save_copy_slot(const char *slot, const char *dst);  // copies and publishes a folder of the newest save
 void fs_save_read_from(const char *dir);                   // quick load: reads of save:/slot_NN/<file> open dir/<file>
                                                            // while dir is set; NULL ends it
 int fs_save_read_from_hits(void);                          // opens redirected since the last fs_save_read_from(dir)

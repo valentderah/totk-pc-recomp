@@ -591,16 +591,70 @@ static int slot_name_ok(const char *slot) {
     return slot[0] && slot[0] != '.' && !strchr(slot, '/') && !strchr(slot, '\\') && !strchr(slot, ':');
 }
 
+// dst and its .new/.old siblings belong to the quicksave caller, outside the regular save transaction.
+static char *slot_copy_path(const char *dst, const char *suffix) {
+    size_t n = strlen(dst) + strlen(suffix) + 1;
+    char *p = malloc(n);
+    need(p != NULL, "quick save path");
+    snprintf(p, n, "%s%s", dst, suffix);
+    return p;
+}
+
+// A process interrupted between the publication renames leaves the previous complete copy in .old.
+// Never promote .new: it can be an unfinished copy. This relies on the host's durable directory operations,
+// not on a guarantee against power loss on file systems that cannot flush directory entries.
+static int slot_copy_recover_locked(const char *dst, const char *old) {
+    int kind = plat_fs_kind(dst), old_kind = plat_fs_kind(old);
+    if ((kind != PLAT_FS_DIR && kind != PLAT_FS_MISSING) ||
+        (old_kind != PLAT_FS_DIR && old_kind != PLAT_FS_MISSING)) return -1;
+    if (kind == PLAT_FS_MISSING && old_kind == PLAT_FS_DIR) {
+        if (move_dir(old, dst, MOVE_TRIES)) {
+            rt_log("quicksave: the previous copy waits for recovery in %s", old);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int fs_save_recover_slot(const char *dst) {
+    char *old = slot_copy_path(dst, ".old");
+    plat_mutex_lock(&tx_lock);
+    int bad = slot_copy_recover_locked(dst, old);
+    plat_mutex_unlock(&tx_lock);
+    free(old);
+    return bad;
+}
+
 int fs_save_copy_slot(const char *slot, const char *dst) {
     if (!*save_root || !slot_name_ok(slot)) return -1;
     save_wait_commit();
     plat_mutex_lock(&tx_lock);
     char *src = join(newest_save(), slot);
+    char *staging = slot_copy_path(dst, ".new"), *old = slot_copy_path(dst, ".old");
     int n = 0, linked = 0;
     uint64_t bytes = 0;
-    int bad = plat_fs_kind(src) != PLAT_FS_DIR || remove_tree(dst) || copy_tree(src, dst, NULL, 1, &n, &linked, &bytes);
+    // Cleanup stays on the copy worker; quick load only restores a missing canonical directory.
+    int bad = plat_fs_kind(src) != PLAT_FS_DIR || slot_copy_recover_locked(dst, old) ||
+              remove_tree(staging) || remove_tree(old) || copy_tree(src, staging, NULL, 1, &n, &linked, &bytes);
+    int moved = 0;
+    if (!bad && exists(dst)) {
+        bad = move_dir(dst, old, MOVE_TRIES);
+        moved = !bad;
+    }
+    if (!bad && move_dir(staging, dst, MOVE_TRIES)) {
+        bad = -1;
+        if (moved && move_dir(old, dst, MOVE_TRIES))
+            rt_log("quicksave: publication failed; the previous copy is preserved in %s", old);
+    }
+    if (bad) {
+        remove_tree(staging);
+    } else if (moved && remove_tree(old)) {
+        rt_log("quicksave: saved; the replaced copy could not be cleaned up: %s", old);
+    }
     plat_mutex_unlock(&tx_lock);
     free(src);
+    free(staging);
+    free(old);
     return bad ? -1 : 0;
 }
 
@@ -2536,6 +2590,50 @@ static void probe_mount_ops(const char *m) {
            "QueryRange, exact reads, timestamps, space, IsMounted (%d steps): %s\n", m, step, ok ? "ok" : "FAIL");
 }
 
+static int quick_copy_byte(const char *dir, const char *name) {
+    char *path = join(dir, name);
+    PlatFile *f = plat_file_open(path);
+    free(path);
+    if (!f) return -1;
+    int ok = independent_read(f, tx_buf, TX_SIZE, 0) == TX_SIZE;
+    plat_file_close(f);
+    return tx_byte(ok);
+}
+
+// Real copy_tree I/O in the probe's temporary profile, interrupted by the existing transaction crash hook.
+static void probe_quicksave_copy(void) {
+    char *dst = join(profile, "probe-quicksave"), *staging = slot_copy_path(dst, ".new");
+    char *old = slot_copy_path(dst, ".old"), *partial = join(staging, "a.sav");
+    CHECK(fs_save_recover_slot(dst) == 0 && !exists(dst), "quick save: no previous copy needs recovery");
+    CHECK(RES(S_CREATE_DIRECTORY, U("save:/probe_quick")) == 0 &&
+          tx_write("save:/probe_quick/a.sav", 81) && tx_write("save:/probe_quick/b.sav", 81) && tx_commit() == 0,
+          "quick save: commit a synthetic two-file slot");
+    CHECK(fs_save_copy_slot("probe_quick", dst) == 0 && quick_copy_byte(dst, "a.sav") == 81 &&
+          quick_copy_byte(dst, "b.sav") == 81, "quick save: copy both files");
+    CHECK(tx_write("save:/probe_quick/a.sav", 82) && tx_write("save:/probe_quick/b.sav", 82) && tx_commit() == 0,
+          "quick save: commit a changed synthetic slot");
+    tx_step = tx_dead = 0;
+    tx_crash_at = 1;
+    int copied = fs_save_copy_slot("probe_quick", dst), interrupted = tx_dead;
+    tx_crash_at = tx_step = tx_dead = 0;
+    CHECK(copied == -1 && interrupted, "quick save: actual copy fails after its first file");
+    CHECK(quick_copy_byte(dst, "a.sav") == 81 && quick_copy_byte(dst, "b.sav") == 81,
+          "quick save: interrupted copy preserves both previous files");
+    CHECK(move_dir(dst, old, MOVE_TRIES) == 0 && plat_fs_mkdir(staging) == 0 &&
+          plat_file_write(partial, "partial", 7), "quick save: interrupted publication with partial staging");
+    CHECK(fs_save_recover_slot(dst) == 0 && quick_copy_byte(dst, "a.sav") == 81 &&
+          quick_copy_byte(dst, "b.sav") == 81 && exists(staging) && !exists(old),
+          "quick save: load recovery restores old and leaves staging cleanup to the worker");
+    CHECK(fs_save_copy_slot("probe_quick", dst) == 0 && quick_copy_byte(dst, "a.sav") == 82 &&
+          quick_copy_byte(dst, "b.sav") == 82 && !exists(staging) && !exists(old),
+          "quick save: worker replaces both files and cleans transaction siblings");
+    CHECK(remove_tree(dst) == 0, "quick save: delete the probe's private destination");
+    free(partial);
+    free(old);
+    free(staging);
+    free(dst);
+}
+
 static void probe_storage(void) {
     char tmp[PLAT_PATH_MAX * 3], dir[PLAT_PATH_MAX * 3 + 64];
     need(plat_temp_dir(tmp, sizeof tmp), "temporary directory");
@@ -2654,6 +2752,7 @@ static void probe_storage(void) {
     CHECK(RES(S_COMMIT_SAVE, U("save")) == 0 && (fs_save_flush(), !fs_save_busy()) &&
           RES(S_COMMIT_SAVE, U("nomount")) == FS_R_PATH_NOT_FOUND, "CommitSaveData");
     probe_save_tx(uid);
+    probe_quicksave_copy();
 
     // temporary and cache storage
     CHECK(RES(S_MOUNT_TEMP, U("temp")) == 0 && RES(S_CREATE_FILE, U("temp:/t.bin"), 4) == 0 && !fs_save_busy(),
