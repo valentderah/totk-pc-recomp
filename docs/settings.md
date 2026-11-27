@@ -189,6 +189,7 @@ Many rows below are developer tools that only act together with another setting 
 
 | Setting | What it does | Effect of changing it | Safety |
 | --- | --- | --- | --- |
+| `live_upscaling` (default `1`) | Game 1.1.0 with a scene upscaler active. `1` applies upscaling mode changes during play and reserves texture heap space for the largest mode. | `0` applies mode changes after restart and sizes the heap for the startup scene. Read at start. | Safe |
 | `dlaa_cam_jitter` (default `1`) | Game 1.4.3: `1` puts the jitter fed to DLSS into the game's camera (the projection's centre terms and the view-projection, where the game copies them into its camera blocks); `0` moves the viewport of the scene's draws instead, as on the other game versions. Needs `ubo_snapshot`. | With `0`, water seen at a low angle flickers with DLAA: the game's full-screen passes rebuild positions with a camera the scene was not drawn with; a test setting. | Caution |
 | `dlaa_jitter` (default `1`) | `0` turns off the camera jitter fed to DLSS. | DLSS gets no jitter between frames; a test setting. | Caution |
 | `dlaa_maskdebug` (default `0`) | `1` shows the reactive mask in place of the picture. | The frame shows a debug image while it is set. | Caution |
