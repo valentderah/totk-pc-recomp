@@ -1151,6 +1151,22 @@ static int selected_shape(const char *base, const char *prefix, unsigned w, unsi
     return fallback && *suffix && shaped_name(base, prefix, w, h, "", name, cap);
 }
 
+static void layout_overlay(int port_has, unsigned w, unsigned h, int wide);
+
+// UI/LayoutArchive/Common.Product.<n>.Nin_NX_NVN.blarc.zs: the archive tools/make_romfs_patches.py edits.
+static int is_layout_archive(const char *name) {
+    static const char head[] = "UI/LayoutArchive/Common.Product.";
+    return !strncmp(name, head, sizeof head - 1) && ends_with(name, ".Nin_NX_NVN.blarc.zs");
+}
+
+// 1 when an overlay the port's patches loaded (not a mod's, not TOTK_ROMFS_MODS) replaces the UI layout archive
+// (layout_overlay). Called before overlay_contest, which drops the losers.
+static int port_layout_loaded(void) {
+    for (size_t k = 0; k < noverlay; k++)
+        if (!overlays[k].mod && !overlays[k].prio && is_layout_archive(overlays[k].name)) return 1;
+    return 0;
+}
+
 static void overlay_init(void) {
     // TOTK_ROMFS_PATCHES unset: romfs-patches next to romfs-index.bin if it has a manifest (tools/make_romfs_patches.py).
     // A game resolution that is not 16:9 takes romfs-patches-<w>x<h> instead when it is there (shaped_name: the exact
@@ -1279,8 +1295,10 @@ static void overlay_init(void) {
         else if (plain_ok) overlay_load(plain, 0, 0);
     }
     restbl_collect();
+    int port_layout = port_layout_loaded();
     overlay_contest();
     mods_overlay_log();
+    layout_overlay(port_layout, out[0], out[1], wide);
     restbl_overlay();
     lw_count_end(LW_FILES);
     heapdef_overlay();
@@ -1479,6 +1497,113 @@ int romfs_folders_prepare(unsigned w, unsigned h, const char *prompts_folder) {
            started + failed, started + failed == 1 ? "" : "s", w, h, style ? ", prompts " : "", style ? style : "",
            failed, script);
     return started && !failed;
+}
+
+// ---- a mod's UI layout archive with the port's edits (overlay_init, after overlay_contest)
+// The port's patches carry UI/LayoutArchive/Common.Product.<n>.Nin_NX_NVN.blarc.zs with the 60 fps quick-menu
+// background fix and, at a game resolution of another shape than 16:9, the UI laid out for that shape
+// (tools/make_romfs_patches.py, ultrawide_layout.py). A mod that ships its own copy of that archive (button prompt and
+// logo mods, many overhauls) wins the contest, so the UI went back to the 16:9 layout stretched over the screen. Here
+// the mod's copy gets the same edits: make_romfs_patches.py --archive edits the mod's file where it kept the game's
+// values and leaves the parts the mod changed. The result is kept per mod file and shape in
+// <profile>/layout/<shape>/<first 16 hex digits of the mod file's SHA-256>/ with the generator's manifest, whose
+// original SHA-256 is the mod file's: a changed mod file has another folder. A folder with a complete manifest serves
+// in place of the mod's file; without one, its generator starts in the background (as romfs_folders_prepare does) and
+// the next start uses it. mod_layout = 0 (TOTK_MOD_LAYOUT) serves the mod's file as before.
+#define LAYOUT_SUB "layout"
+
+// 1 when <dir>/manifest.tsv lists rel with original_sha (the mod file's) and the file it names has that size and
+// SHA-256. file gets the file's path.
+static int layout_cached(const char *dir, const char *rel, const char *original_sha, char *file, size_t cap) {
+    char path[2400], line[8192];
+    if (snprintf(path, sizeof path, "%s/manifest.tsv", dir) >= (int)sizeof path) return 0;
+    FILE *m = fopen(path, "rb");
+    if (!m) return 0;
+    int ok = 0;
+    while (!ok && fgets(line, sizeof line, m)) {
+        char name[4096], sha[65], orig[65], hex[65];
+        unsigned long long size = 0;
+        if (line[0] == '#' || sscanf(line, "%4095[^\t]\t%llu\t%64[0-9a-f]\t%64[0-9a-f]", name, &size, sha, orig) != 4 ||
+            strcmp(name, rel) || strcmp(orig, original_sha) || !romfs_path_valid_relative(name) ||
+            snprintf(file, cap, "%s/%s", dir, name) >= (int)cap)
+            continue;
+        PlatFile *f = open_read(file);
+        if (!f) break;
+        Identity id = identity_of(f);
+        if (id.size == size) sha_range(f, 0, size, hex, 0);
+        plat_file_close(f);
+        ok = id.size == size && !strcmp(hex, sha);
+    }
+    fclose(m);
+    return ok;
+}
+
+static void layout_overlay(int port_has, unsigned w, unsigned h, int wide) {
+    const char *flag = cfg_get("TOTK_MOD_LAYOUT");
+    if (!port_has || (flag && !strcmp(flag, "0"))) return;
+    Overlay *o = NULL;
+    for (size_t k = 0; k < noverlay; k++)
+        if (overlays[k].mod && is_layout_archive(overlays[k].name)) o = &overlays[k];
+    if (!o) return;
+    const char *mod = mods_at(o->mod - 1)->name;
+    char sha[65], shape[64], dir[2400], file[2600];
+    PlatFile *f = open_read(o->path);
+    if (!f) {
+        rt_log("RomFS overlay: %s: cannot read %s; the mod's UI layout stays as it ships", mod, o->path);
+        return;
+    }
+    sha_range(f, 0, o->size, sha, 0);
+    plat_file_close(f);
+    unsigned s[2] = {w, h};
+    const char *suffix = "";
+    if (wide) {
+        cfg_shape_size(w, h, s);
+        suffix = hud_suffix(w, h);
+        snprintf(shape, sizeof shape, "%ux%u%s", s[0], s[1], suffix);
+    } else {
+        snprintf(shape, sizeof shape, "16x9");
+    }
+    need(snprintf(dir, sizeof dir, "%s/" LAYOUT_SUB "/%s/%.16s", rt_config()->profile, shape, sha) < (int)sizeof dir,
+         "layout overlay path");
+    if (layout_cached(dir, o->name, sha, file, sizeof file)) {
+        PlatFile *r = open_read(file);
+        need(r != NULL, "layout overlay file");
+        Identity id = identity_of(r);
+        plat_file_close(r);
+        char *copy = strdup(file);
+        need(copy != NULL, "overlay path copy");
+        free(o->path);
+        o->path = copy;
+        o->size = id.size;
+        o->id = id;
+        rt_log("RomFS overlay: %s: its %s with the port's %s edits (%s)", mod, o->name,
+               wide ? "60 fps and UI layout" : "60 fps", file);
+        return;
+    }
+    // Not made yet: the generator writes dir for the next start. This start keeps the mod's file as it ships.
+    char python[1024], script[1100], idir[2100], romfs[2200], size[32], version[8], key[160];
+    if (!prepare_tools(python, sizeof python, script, sizeof script, idir, sizeof idir)) {
+        rt_log("RomFS overlay: %s replaces the UI layout archive; its UI keeps the mod's own layout (no setup tools "
+               "next to the game to add the port's edits: tools/make_romfs_patches.py --archive)", mod);
+        return;
+    }
+    snprintf(version, sizeof version, "v%d", rt_game_version);
+    snprintf(romfs, sizeof romfs, "%s/romfs", idir);
+    snprintf(size, sizeof size, "%ux%u", s[0], s[1]);
+    snprintf(key, sizeof key, LAYOUT_SUB "/%s/%.16s", shape, sha);
+    const char *hud = *suffix ? cfg_value("TOTK_HUD_WIDTH") : "full";
+    const char *argv[20] = {python, script, "--version", version, "--romfs", romfs, "--out", dir, "--background",
+                            "--archive", o->path};
+    int argc = 11;
+    if (wide) argv[argc++] = "--aspect", argv[argc++] = size, argv[argc++] = "--hud", argv[argc++] = hud;
+    argv[argc] = NULL;
+    char parent[2400];
+    snprintf(parent, sizeof parent, "%s/" LAYOUT_SUB "/%s", rt_config()->profile, shape);
+    plat_file_mkdir_p(parent);
+    int started = shape_spawn(argv, idir, key);
+    rt_log("RomFS overlay: %s replaces the UI layout archive; %s the port's %s edits on it in the background for the "
+           "next start (%s)", mod, started ? "making" : "could not start making", wide ? "60 fps and UI layout" : "60 fps",
+           dir);
 }
 
 static void load_index(void) {

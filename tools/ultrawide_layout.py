@@ -360,11 +360,14 @@ def find_pane(found, layout, name):
     if name not in found: raise SystemExit(f'{layout}: no pane {name}')
     return found[name]
 
-def apply(blarc, members, width, height, hud_aspect=None):
+def apply(blarc, members, width, height, hud_aspect=None, skipped=None):
     """Edits blarc (bytearray) in place for a width x height canvas of another shape than 16:9. Returns the members it
     changed. hud_aspect (wider canvases): the widest aspect the HUD spreads over, centred on the screen (21:9 =
     21 / 9, 16:9 = 16 / 9); None, or one not narrower than the screen, puts it in the screen's corners. A taller canvas
-    always has the HUD at the top and bottom edges."""
+    always has the HUD at the top and bottom edges.
+    skipped (a list, for a mod's archive: make_romfs_patches.py --archive): an edit whose layout, pane or shipped value
+    the archive does not have is left out and described in the list, instead of stopping the run. The mod changed that
+    part, so it keeps the mod's value; every other part gets its edit."""
     if not all(isinstance(v, (int, float)) and math.isfinite(v) and v > 0 for v in (width, height)):
         raise ValueError('canvas dimensions must be positive and finite')
     if hud_aspect is not None:
@@ -377,46 +380,88 @@ def apply(blarc, members, width, height, hud_aspect=None):
     assert k < 1, 'only for canvases of another shape than 16:9'
     root_scale = 'scale_x' if wide else 'scale_y'
     changed, layouts = set(), {}
+    def stop(message):
+        """A check that failed: stops the run for the game's archive, is listed and skipped for a mod's."""
+        if skipped is None: raise SystemExit(message)
+        skipped.append(message)
     unknown = sorted(n for n in KEEP_ROOT | MARKER_ROOT.keys() if f'blyt/{n}.bflyt' not in members)
-    if unknown: raise SystemExit(f'KEEP_ROOT or MARKER_ROOT names no layout: {unknown}')
+    if unknown and skipped is None: raise SystemExit(f'KEEP_ROOT or MARKER_ROOT names no layout: {unknown}')
     def pane_offset(layout, pane):
+        """The pane's section offset, or None (after stop) when the archive has no such layout or pane."""
         member = f'blyt/{layout}.bflyt'
-        if member not in members: raise SystemExit(f'{layout}: no layout {member} in the archive')
+        if member not in members: return stop(f'{layout}: no layout {member} in the archive')
         if member not in layouts: layouts[member] = panes(blarc, *members[member])
-        changed.add(member)
-        return find_pane(layouts[member], layout, pane)
+        if pane not in layouts[member]: return stop(f'{layout}: no pane {pane}')
+        return layouts[member][pane]
+    def mark(layout):
+        changed.add(f'blyt/{layout}.bflyt')
     for member in sorted(m for m in members if m.startswith('blyt/') and m.endswith('.bflyt')):
         if member[5:-6] in KEEP_ROOT: continue
         if member[5:-6] in MARKER_ROOT:   # the root stays at 1, its listed panes take the scale
             layout = member[5:-6]
+            found = []   # every pane is checked before any is written, so a mod's layout is edited whole or not at all
             for pane in ('RootPane',) + MARKER_ROOT[layout]:
-                at = pane_offset(layout, pane) + FIELD[root_scale]
+                at = pane_offset(layout, pane)
+                if at is None: break
+                at += FIELD[root_scale]
                 have = struct.unpack_from('<f', blarc, at)[0]
-                if abs(abs(have) - 1.0) > 1e-3: raise SystemExit(f'{layout} {pane} {root_scale}: {have}, expected ±1.0')
-                if pane != 'RootPane': struct.pack_into('<f', blarc, at, k * have)   # mirrored panes stay mirrored
+                if abs(abs(have) - 1.0) > 1e-3:
+                    stop(f'{layout} {pane} {root_scale}: {have}, expected ±1.0')
+                    break
+                found.append((pane, at, have))
+            else:
+                for pane, at, have in found:
+                    if pane != 'RootPane': struct.pack_into('<f', blarc, at, k * have)   # mirrored panes stay mirrored
+                mark(layout)
             continue
-        at = pane_offset(member[5:-6], 'RootPane') + FIELD[root_scale]
+        at = pane_offset(member[5:-6], 'RootPane')
+        if at is None: continue
+        at += FIELD[root_scale]
         have = struct.unpack_from('<f', blarc, at)[0]
-        if abs(have - 1.0) > 1e-3: raise SystemExit(f'{member[5:-6]} RootPane {root_scale}: {have}, expected 1.0')
+        if abs(have - 1.0) > 1e-3:
+            stop(f'{member[5:-6]} RootPane {root_scale}: {have}, expected 1.0')
+            continue
         struct.pack_into('<f', blarc, at, k)
+        mark(member[5:-6])
     # Every edit's value at k = 1 is the value the game ships (a scale of 1, the 16:9 position): checked before writing,
     # so a version with other numbers stops here instead of getting wrong positions. OFF moves a pane away: not checked.
     table = zip(edits(k, hud_aspect), edits(1.0, hud_aspect)) if wide else zip(tall_edits(k), tall_edits(1.0))
     for (layout, pane, field, value), (_, _, _, shipped) in table:
-        at = pane_offset(layout, pane) + FIELD[field]
+        at = pane_offset(layout, pane)
+        if at is None: continue
+        at += FIELD[field]
         have = struct.unpack_from('<f', blarc, at)[0]
-        if value != 10000.0 and abs(have - shipped) > 1e-3: raise SystemExit(f'{layout} {pane} {field}: {have}, expected {shipped}')
+        if value != 10000.0 and abs(have - shipped) > 1e-3:
+            stop(f'{layout} {pane} {field}: {have}, expected {shipped}')
+            continue
         struct.pack_into('<f', blarc, at, value)
+        mark(layout)
     if not wide:
-        tall_anim(blarc, members, k, changed)
+        if skipped is None:
+            tall_anim(blarc, members, k, changed)
+        else:   # all-or-nothing on a copy: a mod's animations that fail a check keep the mod's keys
+            trial, trial_changed = bytearray(blarc), set()
+            try:
+                tall_anim(trial, members, k, trial_changed)
+            except SystemExit as e:
+                skipped.append(f'animations for a taller screen: {e}')
+            else:
+                blarc[:] = trial
+                changed |= trial_changed
         return sorted(changed)
     for anim, offset, shipped, value in anim_edits(k, hud_aspect):
         member = f'anim/{anim}.bflan'
-        if member not in members: raise SystemExit(f'{anim}: no animation {member} in the archive')
+        if member not in members:
+            stop(f'{anim}: no animation {member} in the archive')
+            continue
         lo, hi = members[member]
-        if offset + 4 > hi - lo: raise SystemExit(f'{anim}: too short for +{offset}')
+        if offset + 4 > hi - lo:
+            stop(f'{anim}: too short for +{offset}')
+            continue
         have = struct.unpack_from('<f', blarc, lo + offset)[0]
-        if abs(have - shipped) >= 1e-4: raise SystemExit(f'{anim} +{offset}: {have}, expected {shipped}')
+        if abs(have - shipped) >= 1e-4:
+            stop(f'{anim} +{offset}: {have}, expected {shipped}')
+            continue
         struct.pack_into('<f', blarc, lo + offset, value); changed.add(member)
     wide_anim(blarc, members, k, changed)
     loading_anim(blarc, members, k, changed)

@@ -110,8 +110,14 @@ ap.add_argument('--reuse', type=Path,
                 help='an overlay folder made before: its files with the same contents are linked, not compressed again')
 ap.add_argument('--background', action='store_true',
                 help='started by the game: lower priority, and an <out> that has a manifest is kept, not replaced')
+ap.add_argument('--archive', type=Path,
+                help='a mod\'s UI/LayoutArchive/Common archive (.blarc.zs) to edit instead of the game\'s: an edit '
+                     'is made where the mod kept the game\'s value and skipped (listed in the summary) where it changed '
+                     'it. The manifest\'s original SHA-256 is the mod file\'s')
 args = ap.parse_args()
 args.romfs = args.romfs or root / 'build/extracted' / args.version / 'romfs'
+if args.archive and args.prompts: ap.error('--archive takes no --prompts: the prompts replace the archive as a whole')
+if args.archive and not args.archive.is_file(): ap.error(f'--archive {args.archive}: no such file')
 width = height = None
 if args.aspect:
     match = re.fullmatch(r'([1-9][0-9]*)x([1-9][0-9]*)', args.aspect.lower())
@@ -459,34 +465,47 @@ with (args.romfs / 'romfs.bin').open('rb') as image:
         dictionaries[d.dict_id] = d
     prompt_files = (FONTS + (MALS if letter_panes else []) + [RESTBL]) if args.prompts else []
     originals = {path: read(path) for path in [ARCHIVE] + prompt_files}
+if args.archive:   # a mod's copy (runtime/romfs.c layout_overlay); its frame may carry no dictionary or content size
+    originals[ARCHIVE] = args.archive.read_bytes()
 raw = originals[ARCHIVE]
 info = zstd.get_frame_info(raw)
-dictionary = dictionaries[info.dictionary_id]
-original = zstd.decompress(raw, zstd_dict=dictionary)
+dictionary = dictionaries.get(info.dictionary_id) if args.archive else dictionaries[info.dictionary_id]
+if args.archive and info.dictionary_id and dictionary is None:
+    raise SystemExit(f'--archive {args.archive}: compressed with dictionary {info.dictionary_id}, which '
+                     f'Pack/ZsDic.pack.zs lacks')
+original = zstd.decompress(raw, zstd_dict=dictionary) if dictionary else zstd.decompress(raw)
 blarc = bytearray(original)
-assert len(blarc) == info.decompressed_size
+assert args.archive or len(blarc) == info.decompressed_size
+assert blarc[:4] == b'SARC', f'{args.archive or ARCHIVE}: not a SARC archive'
 members = sarc_members(blarc)
-patched = {}
+patched, skipped = {}, []   # skipped: the edits a mod's archive (--archive) has other values for
 for member, panes in MEMBERS.items():
+    if member not in members:
+        if not args.archive: raise SystemExit(f'no {member} in {ARCHIVE}')
+        skipped.append(f'{member}: missing')
+        continue
     lo, hi = members[member]
     changed = []
     for name, ko, keys in flvi_keys(blarc, lo):
         if name not in panes:
             continue
-        assert [(f, v) for f, v in keys] == [(0.0, 0), (1.0, 1)], (member, name, keys)
+        if [(f, v) for f, v in keys] != [(0.0, 0), (1.0, 1)]:
+            if not args.archive: raise AssertionError((member, name, keys))
+            skipped.append(f'{member} {name}: keys {keys}')
+            continue
         struct.pack_into('<f', blarc, ko + 8, 0.0)
         changed.append(name)
-    assert sorted(changed) == sorted(panes), (member, changed)
+    assert args.archive or sorted(changed) == sorted(panes), (member, changed)
     patched[member] = changed
 layout = []
 if args.aspect:
     spec = importlib.util.spec_from_file_location('ultrawide_layout', Path(__file__).with_name('ultrawide_layout.py'))
     ultrawide = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ultrawide)
-    layout = ultrawide.apply(blarc, members, width, height, HUD_CAP)
+    layout = ultrawide.apply(blarc, members, width, height, HUD_CAP, skipped if args.archive else None)
 diff = [i for i in range(len(original)) if original[i] != blarc[i]]
-touched = [members[m] for m in (*MEMBERS, *layout)]
-assert diff and all(any(lo <= i < hi for lo, hi in touched) for i in diff), diff
+touched = [members[m] for m in (*MEMBERS, *layout) if m in members]
+assert (diff or args.archive) and all(any(lo <= i < hi for lo, hi in touched) for i in diff), diff
 outputs = {ARCHIVE: bytes(blarc)}   # RomFS path -> new contents (before compression)
 prompts = None
 if args.prompts:
@@ -642,4 +661,5 @@ except BaseException:
     raise
 print(json.dumps(dict(status='pass', path=ARCHIVE, members=patched, changed_bytes=len(diff),
                       ultrawide_layout=dict(aspect=args.aspect, hud=args.hud, members=len(layout)) if args.aspect else None,
-                      prompts=prompts, reused=reused, **({} if published else {'kept': str(args.out)}))))
+                      prompts=prompts, reused=reused, **({} if published else {'kept': str(args.out)}),
+                      **({'archive': str(args.archive), 'skipped': skipped} if args.archive else {}))))
