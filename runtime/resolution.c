@@ -68,8 +68,11 @@ static struct {
     double dlss_k;             // TOTK_DLSS quality/balanced/performance/ultra_performance: the scene's share of the output, else 0
     double base_k;             // the scene's share without a DLSS mode (render_scale, or the game's 5/6)
     unsigned hw, hh;           // the largest scene a DLSS mode change can ask for: the heap is sized for it
-    int live;                  // 1.4.3 with DLSS able to run: the DLSS mode can change while the game runs
+    int live;                  // the game can resize while the scene upscaler runs
 } R;
+
+// Replay requests a size; the game publishes the active width and height together after applying it.
+static uint64_t pending_scene, active_scene;
 
 // The scene size is decided before the device exists, so NGX cannot be asked yet. NGX loads DLSS from nvngx_dlss.dll
 // next to totk.exe on Windows, libnvidia-ngx-dlss.so.<version> next to totk on Linux (vk_dlaa.c vk_dlaa_init):
@@ -133,6 +136,16 @@ int res_ffx_dlls(void) {
 static int upscaler_ready(void) {
     int e = vk_upscaler_engine();
     return e == UPSCALER_DLSS ? res_dlss_dll() : e == UPSCALER_FSR4 ? res_ffx_dlls() : e == UPSCALER_FSR3;
+}
+
+static int live_modes_v110(void) {
+    const char *v = cfg_value("TOTK_LIVE_UPSCALING");
+    if (!strcmp(v, "1")) return 1;
+#ifdef _WIN32
+    if (!strcmp(v, "auto") && !cfg_bool("TOTK_HDR"))
+        return vk_upscaler_engine() == UPSCALER_DLSS || vk_upscaler_engine() == UPSCALER_FSR3;
+#endif
+    return 0;
 }
 
 static uint64_t shadow_kib(void);
@@ -237,13 +250,10 @@ static void decide(void) {
         if (n >= 256 && n <= 4096 && !(n & 7)) R.shadow = n;
         else rt_log("resolution: TOTK_SHADOW_RES=%s is not game or a size 256..4096 (a multiple of 8); game", sr);
     }
-    // A DLSS mode other than dlaa sets the scene size instead. On 1.4.3 with the scene upscaler able to run (DLSS with
-    // its DLL there, FSR 4 with AMD's libraries there, or FSR 3.1 in the build)
-    // the mode can change while the game runs (res_dlss_mode): the scene patch is then always on and the heap is sized
-    // for the largest scene the modes ask for. Everyone else keeps the game's own scene size and its dynamic resolution
-    // unless render_scale or a DLSS mode asks for another, and a heap sized for that scene alone.
+    // A DLSS mode other than dlaa sets the scene size instead. Live mode changes on 1.1.0 and 1.4.3 keep the
+    // scene patch on and size the heap for the largest mode. Without live changes, the heap fits the startup scene.
     R.base_k = k;
-    R.live = RT_V143 && vk_upscaler_on() && upscaler_ready();
+    R.live = (RT_V143 || (RT_V110 && live_modes_v110())) && vk_upscaler_on() && upscaler_ready();
     const char *m = cfg_value("TOTK_DLSS");
     R.dlss_k = dlss_share(m);
     if (R.dlss_k) rt_log("resolution: DLSS %s: the scene at %.0f %% of the output (render_scale ignored)", m, R.dlss_k * 100);
@@ -634,6 +644,7 @@ void res_init(void) {
     memcpy(page + 48, &out, 8);
     rt_patch_switch(output, output_on);
     rt_patch_switch(scene, scene_on);
+    __atomic_store_n(&active_scene, pack(R.sw, R.sh), __ATOMIC_RELEASE);
     R.on = 1;
     if (R.live) g_fnprof = 1;   // until the game sets its render size: res_fn_hit, or res_present gives up
     // Another shape than 16:9 (more than 1% off): the camera takes the output's ratio (recomp/patches-v121.txt and
@@ -768,59 +779,64 @@ void res_asked(unsigned out[2]) {
     out[0] = R.aw, out[1] = R.ah;
 }
 
-// A TOTK_DLSS change while the game runs (vk_dlaa.c, at a present): the new scene size goes to the patch page, where
-// the game reads it when it sets its render size (main+0x585e48). 1.4.3 does that once, at start: its renderer setup
-// (main+0x7000e67028) calls main+0x585bd0(renderer, force), which picks the console mode's sizes and flags the render
-// targets for re-creation. The setup call is caught through the function-entry hook (res_fn_hit, on only until then),
-// and the next nvnQueuePresentTexture on the game's thread calls it again with force set (res_present), between frames
-// as at start. The heap was sized for the largest scene a mode asks for. 1 when the size changed.
-#define SET_RENDER_SIZE 0x7000585bd0ull
-static uint64_t renderer;          // x0 of the game's own call of SET_RENDER_SIZE
-static volatile int size_pending;  // the page holds a size the game has not set yet
+// At nvnQueuePresentTexture the game's thread copies the requested size to the patch page and runs the render-size
+// setup between frames. That setup reads the page and flags the targets for recreation.
+// 1.4.3 takes a force flag. 1.1.0 takes the console mode selector, which its callers store at renderer+0xcd0.
+#define SET_RENDER_SIZE_V110 0x7000cea588ull
+#define SET_RENDER_SIZE_V143 0x7000585bd0ull
+#define RENDER_MODE_V110 0xcd0
+static uint64_t renderer;          // x0 of the game's own render-size setup call
 
 void res_fn_hit(uint64_t addr, uint64_t x0) {
-    if (addr != SET_RENDER_SIZE) return;
-    renderer = x0;
+    if (addr != (RT_V110 ? SET_RENDER_SIZE_V110 : SET_RENDER_SIZE_V143)) return;
+    __atomic_store_n(&renderer, x0, __ATOMIC_RELEASE);
     g_fnprof = 0;
     rt_log("resolution: renderer at %#llx; the scene size can change while the game runs", (unsigned long long)x0);
 }
 
 void res_present(Cpu *c) {
-    // Should the game set its render size before res_init or never, the hook (FN_ENTER of the hooked functions,
-    // recomp/patches-v143.txt `hook`) stops after 1800 presents (half a minute at 60 fps) and modes change at the
-    // next start.
+    // If the game sets its render size before res_init or never, stop looking after 1800 presents and apply mode
+    // changes at the next start.
     static unsigned waited;
-    if (g_fnprof && !renderer && ++waited == 1800) {
+    if (g_fnprof && !__atomic_load_n(&renderer, __ATOMIC_ACQUIRE) && ++waited == 1800) {
         g_fnprof = 0;
         rt_log("resolution: the game's render size setup was not seen; DLSS modes change at the next start");
     }
-    if (!size_pending || !renderer) return;
-    size_pending = 0;
+    if (!__atomic_load_n(&pending_scene, __ATOMIC_RELAXED)) return;
+    uint64_t target = __atomic_load_n(&renderer, __ATOMIC_ACQUIRE);
+    if (!target && g_fnprof) return;  // the renderer's first setup can still arrive
+    uint64_t size = __atomic_exchange_n(&pending_scene, 0, __ATOMIC_ACQ_REL);
+    if (!target || !size || size == __atomic_load_n(&active_scene, __ATOMIC_RELAXED)) return;
+    unsigned w = (unsigned)size, h = (unsigned)(size >> 32);
+    double s = scene_scale();
+    float sc[2] = {(float)(w / s), (float)(h / s)};
+    memcpy((uint8_t *)rt_patch_page() + 16, sc, sizeof sc);
     Cpu keep = *c;   // the guest's registers as at the present call: the setup runs as if it never happened
-    rt_call(c, SET_RENDER_SIZE, 2, (uint64_t)renderer, (uint64_t)1);
+    if (RT_V110) {
+        uint64_t mode = LD32(target + RENDER_MODE_V110);
+        rt_call(c, SET_RENDER_SIZE_V110, 2, target, mode);
+    } else {
+        rt_call(c, SET_RENDER_SIZE_V143, 2, target, (uint64_t)1);
+    }
     memcpy(c->x, keep.x, sizeof c->x);
     memcpy(c->v, keep.v, sizeof c->v);
     c->nzcv = keep.nzcv, c->fpsr = keep.fpsr;
-    rt_log("resolution: the game set the scene size %ux%u", R.sw, R.sh);
+    __atomic_store_n(&active_scene, size, __ATOMIC_RELEASE);
+    rt_log("resolution: the game set the scene size %ux%u", w, h);
 }
 
 int res_dlss_mode(const char *m) {
     decide();
     double k = dlss_share(m);
     if (k == R.dlss_k || !R.on) return 0;
-    if (!RT_V143 || !renderer) {
+    if (!R.live) {
         rt_log("resolution: DLSS %s takes effect at the next start (the game set its render size already)", m);
         return 0;
     }
     R.dlss_k = k;
     unsigned w, h;
     scene_for(k ? k : R.base_k, &w, &h);
-    if (w == R.sw && h == R.sh) return 0;
-    double s = scene_scale();
-    float sc[2] = {(float)(w / s), (float)(h / s)};
-    memcpy((uint8_t *)rt_patch_page() + 16, sc, sizeof sc);
-    R.sw = w, R.sh = h;
-    size_pending = 1;
+    __atomic_store_n(&pending_scene, pack(w, h), __ATOMIC_RELEASE);
     rt_log("resolution: DLSS %s: scene %ux%u", m, w, h);
     return 1;
 }
@@ -828,5 +844,6 @@ int res_dlss_mode(const char *m) {
 void res_sizes(unsigned out[2], unsigned scene[2]) {
     decide();
     out[0] = R.on ? R.ow : BASE_W, out[1] = R.on ? R.oh : BASE_H;
-    scene[0] = R.on ? R.sw : SCENE_W, scene[1] = R.on ? R.sh : SCENE_H;
+    uint64_t size = R.on ? __atomic_load_n(&active_scene, __ATOMIC_ACQUIRE) : pack(SCENE_W, SCENE_H);
+    scene[0] = (unsigned)size, scene[1] = (unsigned)(size >> 32);
 }

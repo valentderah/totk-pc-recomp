@@ -349,9 +349,13 @@
 # The upscaling mode of the scene upscaler, DLSS or FSR: dlaa (native: the 3D scene at full size, anti-aliased
 # only), quality, balanced, performance or ultra_performance (the scene at 67, 58, 50 or 33 % of the output, scaled up by
 # the upscaler; these replace render_scale and sharpen texture filtering to match). They apply only while a scene
-# upscaler runs; otherwise the scene follows render_scale. Changes while the game runs take effect at once (1.4.3; 1.2.1
-# at the next start).
+# upscaler runs; otherwise the scene follows render_scale. Mode changes take effect during play on 1.4.3 and,
+# with live_upscaling enabled, on 1.1.0. Other versions apply them at the next start.
 # dlss = dlaa
+# On game 1.1.0, auto enables live changes for DLSS and FSR 3.1 on Windows with HDR off. At 1 all scene upscalers
+# can resize if the device supports them. Both reserve texture heap space for the largest mode when enabled.
+# At 0, the heap fits the startup scene and mode changes take effect after restart. Read at start.
+# live_upscaling = auto
 # FSR's own sharpening of the 3D scene, from 0 (off) to 100. The game's sharpening is part of its FXAA, which FSR
 # replaces, so at 0 FSR's picture is softer than the game's own. Only with scene_upscaler = fsr3 or fsr4. Changes while
 # the game runs take effect at once.

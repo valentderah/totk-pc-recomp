@@ -1906,10 +1906,10 @@ void vk_dlaa_pass(VkExec *ex) {
 // texture bias that goes with it while the upscaler runs. DLSS takes NVIDIA's log2(scene / output); FSR 3.1 and FSR 4
 // take AMD's log2(scene / output) - 1 (FidelityFX FSR 3 upscaler docs, "Mipmap biasing"), so -1 also in place. The
 // bias follows the mode and the upscaler going on or off; the engine is fixed for the run.
-static void dlss_mode(void) {
+static void dlss_mode(int available) {
     static char mode[32];
     static float bias;   // what the material samplers have (vk_texture.c starts at 0)
-    const char *m = cfg_value("TOTK_DLSS");
+    const char *m = available ? cfg_value("TOTK_DLSS") : "dlaa";
     if (strcmp(m, mode)) {
         snprintf(mode, sizeof mode, "%s", m);
         res_dlss_mode(m);
@@ -1940,7 +1940,6 @@ static void preset_check(void) {
 
 void vk_dlaa_frame(void) {
     vk_dlaa_swap_img = NULL, vk_dlaa_swap_view = VK_NULL_HANDLE;
-    dlss_mode();
     preset_check();
     // the engine is fixed for the run: D.fsr never changes while on. FSR 4 runs once AMD's libraries offered it for
     // the device (vk_ffx_init said why not otherwise, and the upscaler stays off)
@@ -1948,6 +1947,7 @@ void vk_dlaa_frame(void) {
     int fsr = e == UPSCALER_FSR3 || e == UPSCALER_FSR4 ? e : 0;
     int ready = e == UPSCALER_FSR3 || (e == UPSCALER_FSR4 ? vk_ffx_available() : N.available);
     int on = ready && vk_upscaler_on();
+    dlss_mode(on && !D.failed);
     vk_fg_frame();
     // frame generation with an upscaler is not built yet: with FSR picked it stays off (said once)
     static int fg_said;

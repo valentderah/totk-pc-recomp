@@ -32,7 +32,7 @@ The camera sites were cross-checked by normalized instruction-window matching fr
 
 - Fade: the four 1.4.3 sites are not presumed to exist in 1.1.0. An equivalent zero-increment path has not been established.
 - Native Zstandard: the existing host bridge calls back to hard-coded 1.4.3 decoder entry points on fallback. Adding only the BL patches to 1.1.0 would be incorrect.
-- Live DLSS scene sizing and game-menu mouse input retain their existing version restrictions. They are not patch-table parity work.
+- Live upscaling mode changes rerun the 1.1.0 render-size setup at `main+0xcea588` using the game's current mode selector. Game-menu mouse input retains its version restriction.
 
 ## Validation
 
