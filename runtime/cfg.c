@@ -146,7 +146,7 @@ static const CfgMeta metas[] = {
     {"UPSCALER", "fsr", "fsr|bilinear", LIVE}, {"SHARPNESS", "80", "0..100", LIVE},
     {"SCENE_UPSCALER", "off", "off|dlss|fsr3|fsr4", RESTART}, {"DLAA", "0", "0|1", RESTART},
     {"DLSS", "dlaa", "dlaa|quality|balanced|performance|ultra_performance", LIVE},
-    {"LIVE_UPSCALING", "1", "0|1", RESTART},
+    {"LIVE_UPSCALING", "auto", "auto|0|1", RESTART},
     {"FSR_SHARPNESS", "80", "0..100", LIVE},   // vk_dlaa.c fsr_evaluate
     {"DLSS_PRESET", "default", "default|k|j", LIVE}, {"DLSS_FIXED_EXPOSURE", "0", "0|1", LIVE}, {"DLAA_EFFECTS_AFTER", "0", "0|1", LIVE},
     {"DLSS_CHAR_MASK", "65", "0|35|65|100", LIVE}, {"REFLEX", "off", "off|auto|on|boost", RESTART}, {"FXAA", "1", "0|1", LIVE},
