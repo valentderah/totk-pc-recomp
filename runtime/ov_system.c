@@ -7,7 +7,8 @@
 // Environment:
 //   TOTK_LANG=<Switch language code>   the game's language as given ("ja", "en-GB", "zh-Hant", ...)
 //   TOTK_LOCALE=<BCP 47 tag>           else the language for this locale ("pt-BR"), else the Windows user locale;
-//                                      a language the game does not ship becomes en-US
+//                                      a language the game does not ship becomes en-US; any Portuguese gets pt-BR,
+//                                      the only Portuguese text (USpt, from 1.4.3; en-US before)
 //   TOTK_OPERATION_MODE=docked|handheld   operation and performance mode reported to the game (default docked)
 //   TOTK_ASSUME_FOCUS=1|0              1 (default, the Game tab's row): GetCurrentFocusState always reports in focus,
 //                                      whatever the window says; 0: out of focus while the window is, as on a Switch
@@ -74,9 +75,12 @@ static const char *switch_language(const char *tag) {
         p += k;
     }
     if (!strcmp(lang, "ja") || !strcmp(lang, "de") || !strcmp(lang, "it") || !strcmp(lang, "nl") ||
-        !strcmp(lang, "ru") || !strcmp(lang, "ko") || !strcmp(lang, "pt"))
+        !strcmp(lang, "ru") || !strcmp(lang, "ko"))
         return !strcmp(lang, "ja") ? "ja" : !strcmp(lang, "de") ? "de" : !strcmp(lang, "it") ? "it"
-             : !strcmp(lang, "nl") ? "nl" : !strcmp(lang, "ru") ? "ru" : !strcmp(lang, "ko") ? "ko" : "pt";
+             : !strcmp(lang, "nl") ? "nl" : !strcmp(lang, "ru") ? "ru" : "ko";
+    // TotK ships one Portuguese text, Brazil's (Mals/USpt, from 1.4.3; RegionLangMask.txt has no EUpt): "pt" would
+    // name Portugal's, which no build has, so Portugal's Portuguese gets Brazil's too.
+    if (!strcmp(lang, "pt")) return RT_V143 ? "pt-BR" : "en-US";
     if (!strcmp(lang, "fr")) return !strcmp(region, "CA") ? "fr-CA" : "fr";
     if (!strcmp(lang, "es")) return *region && strcmp(region, "ES") ? "es-419" : "es";
     if (!strcmp(lang, "zh"))
@@ -90,7 +94,8 @@ static const char *switch_language(const char *tag) {
 
 // The game's language as a Switch language code (TOTK_LANG, else TOTK_LOCALE, else the Windows user locale). TotK
 // accepts "zh-Hans" and "zh-Hant" for Chinese and falls back to Japanese for "zh-CN" and "zh-TW", so those two
-// spellings, which older totk.ini files and menus wrote, are mapped to them.
+// spellings, which older totk.ini files and menus wrote, are mapped to them. "pt-BR" on a build before 1.4.3, which has
+// no Brazilian Portuguese text (the setup offers it before it knows the build), becomes en-US.
 const char *ov_language(void) {
     static const char *const codes[] = {"ja", "en-US", "fr", "de", "it", "es", "ko", "nl", "pt", "ru",
                                         "en-GB", "fr-CA", "es-419", "zh-Hans", "zh-Hant", "pt-BR"};
@@ -98,6 +103,7 @@ const char *ov_language(void) {
     if (code && *code) {
         if (!strcmp(code, "zh-CN")) return "zh-Hans";
         if (!strcmp(code, "zh-TW")) return "zh-Hant";
+        if (!strcmp(code, "pt-BR") && !RT_V143) return "en-US";
         for (size_t i = 0; i < sizeof codes / sizeof *codes; i++)
             if (!strcmp(code, codes[i])) return codes[i];
         rt_fatal("TOTK_LANG '%s' is not a Switch language code", code);

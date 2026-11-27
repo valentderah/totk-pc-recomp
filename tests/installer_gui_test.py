@@ -361,13 +361,24 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(default_game_language('zh-Hans'), 'en-US')
         self.assertEqual(default_game_language('ru'), 'ru')
         self.assertEqual(default_game_language('ja'), 'ja')
-        for ui in ('ko', 'pt-BR'):
-            self.assertEqual(default_game_language(ui), 'en-US')
+        self.assertEqual(default_game_language('pt-BR'), 'pt-BR')
+        self.assertEqual(default_game_language('ko'), 'en-US')
 
     def test_posix_locale_picks_the_window_language(self):
         for loc, lang in (('ru_RU.UTF-8', 'ru'), ('pt_BR.UTF-8', 'pt-BR'), ('pt_PT.UTF-8', 'en'),
                           ('zh_CN.UTF-8', 'zh-Hans'), ('zh_TW.UTF-8', 'zh-Hans'), ('zh_HK', 'zh-Hans'),
                           ('de_AT.UTF-8', 'de'), ('fr_CA', 'fr'), ('ja_JP.UTF-8', 'ja'), ('ko_KR.UTF-8', 'ko'),
+                          ('pt-Latn-BR', 'pt-BR'),
+                          ('PT_latn_br', 'pt-BR'),
+                          ('pt_BR.UTF-8', 'pt-BR'),
+                          ('pt-BR-u-ca-gregory', 'pt-BR'),
+                          ('pt-BR-x-pt', 'pt-BR'),
+                          ('pt-Latn', 'en'),
+                          ('pt-PT-u-rg-brzzzz', 'en'),
+                          ('pt-u-rg-BR', 'en'),
+                          ('pt-x-BR', 'en'),
+                          ('pt_BRazil', 'en'),
+                          ('pt_Latn_PT.UTF-8', 'en'),
                           ('nl', 'nl'), ('C.UTF-8', 'en'), ('', 'en'), ('sv_SE.UTF-8', 'en')):
             self.assertEqual(ui_language_for_locale(loc), lang, loc)
 

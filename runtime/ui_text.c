@@ -3,6 +3,7 @@
 // The software keyboard has every language; the menu has every game language except Portugal's Portuguese and
 // Traditional Chinese (English, Russian, Brazilian Portuguese, Simplified Chinese, German, French, Spanish, Italian,
 // Dutch, Japanese, Korean), and Vietnamese.
+#include <ctype.h>
 #include <stdatomic.h>
 #include <string.h>
 
@@ -9626,6 +9627,28 @@ static const Row rows[] = {
     {"ko", text_ko}, {"pt-BR", text_pt_br}, {"vi", text_vi},
 };
 
+// The region precedes extensions/private use; an optional script is not a region.
+static int locale_region(const char *tag, const char *language, char region[4]) {
+    size_t n = strcspn(tag, "-_.@");
+    if (n != 2 || tolower((unsigned char)tag[0]) != language[0] ||
+        tolower((unsigned char)tag[1]) != language[1]) return 0;
+    region[0] = 0;
+    for (const char *p = tag + n; *p && *p != '.' && *p != '@';) {
+        p += strspn(p, "-_");
+        size_t k = strcspn(p, "-_.@");
+        if (k == 1) break;
+        if ((k == 2 && isalpha((unsigned char)p[0]) && isalpha((unsigned char)p[1])) ||
+            (k == 3 && isdigit((unsigned char)p[0]) && isdigit((unsigned char)p[1]) &&
+             isdigit((unsigned char)p[2]))) {
+            for (size_t i = 0; i < k; i++) region[i] = (char)tolower((unsigned char)p[i]);
+            region[k] = 0;
+            break;
+        }
+        p += k;
+    }
+    return 1;
+}
+
 const char *ui_text_lang(const char *code) {
     static const struct { const char *code, *lang; } map[] = {
         {"en-US", "en"}, {"en-GB", "en"}, {"fr-CA", "fr"}, {"es-419", "es"},
@@ -9633,6 +9656,8 @@ const char *ui_text_lang(const char *code) {
     };
     for (size_t i = 0; i < sizeof map / sizeof *map; i++)
         if (!strcmp(code, map[i].code)) return map[i].lang;
+    char region[4];
+    if (locale_region(code, "pt", region)) return !strcmp(region, "br") ? "pt-BR" : "pt";
     return code;
 }
 

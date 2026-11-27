@@ -33,6 +33,7 @@ static Ov ovs[] = {
     // ov_system.c: nn::oe
     {"oe.Initialize", "_ZN2nn2oe10InitializeEv"},
     {"oe.GetDesiredLanguage", "_ZN2nn2oe18GetDesiredLanguageEv"},
+    {"settings.GetLanguageCode", "_ZN2nn8settings6detail15GetLanguageCodeEPNS0_12LanguageCodeE"},
     {"oe.SetPerformanceConfiguration", "_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi"},
     {"oe.SetCpuBoostMode", "_ZN2nn2oe15SetCpuBoostModeENS0_12CpuBoostModeE"},
     {"oe.GetOperationMode", "_ZN2nn2oe16GetOperationModeEv"},
@@ -254,33 +255,42 @@ static void set_live(const char *name, const char *value) {
 static void probe_oe(void) {
     char *keep_lang = cfg_get("TOTK_LANG") ? strdup(cfg_get("TOTK_LANG")) : NULL;
     char *keep_locale = cfg_get("TOTK_LOCALE") ? strdup(cfg_get("TOTK_LOCALE")) : NULL;
-    static const struct { const char *lang, *locale, *want; } cases[] = {
+    const char *br = RT_V143 ? "pt-BR" : "en-US";   // the only Portuguese text, Brazil's, is in 1.4.3 only
+    const struct { const char *lang, *locale, *want; } cases[] = {
         {NULL, "en-US", "en-US"}, {NULL, "be-BY", "en-US"}, {NULL, "xx", "en-US"},     {NULL, "ja-JP", "ja"},
         {NULL, "fr-CA", "fr-CA"}, {NULL, "es-MX", "es-419"}, {NULL, "es_ES", "es"},     {NULL, "zh-Hant-TW", "zh-Hant"},
         {NULL, "zh-CN", "zh-Hans"}, {NULL, "en-GB", "en-GB"}, {NULL, "ru", "ru"},       {"ja", "fr-FR", "ja"},
         {"en-US", NULL, "en-US"}, {"zh-CN", NULL, "zh-Hans"}, {"zh-TW", NULL, "zh-Hant"},
-        {"zh-Hans", NULL, "zh-Hans"}, {"zh-Hant", NULL, "zh-Hant"}};
+        {"zh-Hans", NULL, "zh-Hans"}, {"zh-Hant", NULL, "zh-Hant"}, {NULL, "pt-BR", br}, {NULL, "pt_BR.UTF-8", br},
+        {NULL, "pt-PT", br}, {NULL, "pt", br}, {"pt-BR", NULL, br}};
     int bad = 0;
+    char *settings_code = guest_alloc(8);
     printf("oe: configured language (TOTK_LANG=%s) is %s\n", keep_lang ? keep_lang : "", lang());
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
-        set_env("TOTK_LANG", cases[i].lang);
-        set_env("TOTK_LOCALE", cases[i].locale);
+        // The ini's language must not mask the locale case. Restore both effective settings after the probe.
+        set_live("TOTK_LANG", cases[i].lang);
+        set_live("TOTK_LOCALE", cases[i].locale);
         const char *got = lang();
         if (strcmp(got, cases[i].want)) {
             bad++;
             printf("  FAIL: language for TOTK_LANG=%s TOTK_LOCALE=%s is %s, not %s\n", cases[i].lang ? cases[i].lang : "",
                    cases[i].locale ? cases[i].locale : "", got, cases[i].want);
         }
+        memset(settings_code, 0xff, 8);
+        CHECK(CALL("settings.GetLanguageCode", U(settings_code)) == 0 &&
+                  !strncmp(settings_code, cases[i].want, 8),
+              "settings language for TOTK_LANG=%s TOTK_LOCALE=%s disagrees with %s",
+              cases[i].lang ? cases[i].lang : "", cases[i].locale ? cases[i].locale : "", cases[i].want);
     }
-    set_env("TOTK_LANG", NULL);
-    set_env("TOTK_LOCALE", NULL);
+    set_live("TOTK_LANG", NULL);
+    set_live("TOTK_LOCALE", NULL);
     char sys[16];
     snprintf(sys, sizeof sys, "%s", lang());
-    set_env("TOTK_LOCALE", "en-US");
+    set_live("TOTK_LOCALE", "en-US");
     char def[16];
     snprintf(def, sizeof def, "%s", lang());
-    set_env("TOTK_LANG", keep_lang);
-    set_env("TOTK_LOCALE", keep_locale);
+    set_live("TOTK_LANG", keep_lang);
+    set_live("TOTK_LOCALE", keep_locale);
     free(keep_lang);
     free(keep_locale);
     checks++;
@@ -1093,6 +1103,28 @@ static void probe_menu_text(void) {
     CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("ja", UI_MENU_TITLE), "menu_text ignores MENU_LANG=ja");
     cfg_set("TOTK_MENU_LANG", "de-DE");
     CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("de", UI_MENU_TITLE), "menu_text ignores MENU_LANG=de-DE");
+    static const struct { const char *locale, *want; } portuguese_locales[] = {
+        {"pt-BR", "pt-BR"},
+        {"pt-Latn-BR", "pt-BR"},
+        {"PT_latn_br", "pt-BR"},
+        {"pt_BR.UTF-8", "pt-BR"},
+        {"pt-BR-u-ca-gregory", "pt-BR"},
+        {"pt-BR-x-pt", "pt-BR"},
+        {"pt-Latn", "pt"},
+        {"pt-PT-u-rg-brzzzz", "pt"},
+        {"pt-u-rg-BR", "pt"},
+        {"pt-x-BR", "pt"},
+        {"pt_BRazil", "pt"},
+        {"pt_Latn_PT.UTF-8", "pt"},
+    };
+    for (size_t i = 0; i < sizeof portuguese_locales / sizeof *portuguese_locales; i++) {
+        const char *locale = portuguese_locales[i].locale, *want = portuguese_locales[i].want;
+        CHECK(!strcmp(ui_text_lang(locale), want), "catalog for %s is not %s", locale, want);
+        set_live("TOTK_MENU_LANG", locale);
+        CHECK(!strcmp(menu_text(UI_MENU_TITLE), ui_text_in(want, UI_MENU_TITLE)),
+              "menu text for MENU_LANG=%s is not %s", locale, want);
+    }
+    set_live("TOTK_MENU_LANG", "");
     // Traditional Chinese (zh-TW, zh-HK) reads the Simplified Chinese menu
     cfg_set("TOTK_MENU_LANG", "zh-TW");
     CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("zh-Hans", UI_MENU_TITLE), "zh-TW does not get the zh-Hans menu");
