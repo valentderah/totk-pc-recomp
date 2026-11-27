@@ -1601,11 +1601,13 @@ class Prepare(Step):
 def bind_lines(dest):
     """The bind_ lines of the install's totk.ini (the Controls tab writes them), '' without the file."""
     try:
-        text = (dest / 'totk.ini').read_text(encoding='utf-8', errors='replace')
+        text = (dest / 'totk.ini').read_text(encoding='utf-8-sig', errors='replace')
     except OSError:
         return ''
-    return '\n'.join(s for s in (line.split('#')[0].split(';')[0].strip() for line in text.splitlines())
-                     if s.lower().startswith('bind_'))
+    # cfg.c accepts the TOTK_ prefix and quoted values. Keep the complete binding lines in the fingerprint and pass
+    # the ini to the generator even when its only binding uses that prefix.
+    return '\n'.join(line.strip() for line in text.splitlines()
+                     if re.match(r'^\s*(?:totk_)?bind_\w+\s*=', line, re.IGNORECASE))
 
 
 def pc_binds(dest):
