@@ -268,6 +268,13 @@ site mouse_direct main 1d532fc bd4422e1 94a76b21   # ShieldSurfing: ldr s1, [x23
 site mouse_direct main 1d53948 bd40de60 94a7698e   # ShieldSurfing: ldr s0, [x19, #0xdc] (pitch)
 site mouse_direct main 1d53ad0 bd401fa0 94a7692c   # ShieldSurfing: ldr s0, [x29, #0x1c] (pitch turn, cut to the pad)
 site mouse_direct main 1d53974 bd403bec 94a76983   # ShieldSurfing: ldr s12, [sp, #0x38] (yaw)
+# Optional reference with an invalid value (#1005). The same guard as set optref in patches-v143.txt (main+0x1bd01c0)
+# and patches-v121.txt (main+0x1622bec), here for 1.1.0's main+0x163159c (function main+0x1631510):
+# ldr x8, [x19, #0x6b0]; cbz x8; ldr x21, [x8]. A negative value counts as absent. x8 and x9 are dead at the branch
+# target 0x16315cc, which loads x8 again and clobbers x9 on every path before any read; on the fall-through path x8 is
+# unchanged.
+set optref   TOTK_OPTREF_GUARD   1
+site optref main 163159c b4000188 937ffd09 8a290108 b4000188   # cbz x8 -> asr x9, x8, #63; bic x8, x8, x9; cbz x8
 
 # Spin waits, from tools/spin_waits.py --exefs build/extracted/v110/exefs --patches recomp/patches-v110.txt: loops that only
 # another thread can end; their back-edges pass rt_spin_gate (runtime/kernel.c), TOTK_SPIN=0 keeps the core.
