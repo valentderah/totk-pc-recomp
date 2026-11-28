@@ -13,6 +13,7 @@
 #include <SDL3/SDL.h>
 
 #include "cfg.h"
+#include "dsu.h"
 #include "host.h"
 #include "input.h"
 #include "input_map.h"
@@ -58,7 +59,9 @@ static int pad_hidden;               // the open gamepad is a controller Steam h
 static uint64_t next_motion_scan;
 static SDL_JoystickID sensor_pad;    // the gamepad whose sensors the motion thread set up, 0 none
 static int sensor_ok;                // ... and it has both sensors, enabled
-static int motion_thread;            // 0 not started, 1 running, -1 off (TOTK_MOTION=0, no SDL)
+static int dsu_ok = 0;
+static uint8_t dsu_mac[6];
+static int motion_thread;            // 0 not started, 1 running, -1 off
 static char calib_pad_name[128];     // the controller the bias belongs to; empty when there is none
 
 // SDL buttons of the gamepad inputs (input_map.h PAD_*), by position; PAD_ZL and PAD_ZR are the triggers (axes).
@@ -1387,6 +1390,27 @@ static void pad_bias_select(SDL_Gamepad *src) {
     }
 }
 
+// DSU controller identity ("DSU #<fnv1a of MAC>").
+static void dsu_identity(const uint8_t mac[6], char *dst, size_t cap) {
+    uint32_t h = 2166136261u;   // FNV-1a
+    for (int i = 0; i < 6; i++) h = (h ^ mac[i]) * 16777619u;
+    snprintf(dst, cap, "DSU #%08x", h);
+}
+
+// Reset bias when a DSU controller connects/changes and load its saved bias from totk.ini if present.
+static void dsu_bias_select(const uint8_t mac[6]) {
+    char id[128];
+    dsu_identity(mac, id, sizeof id);
+    motion_bias_reset(motion_global());
+    calib_pad_name[0] = 0;
+    const char *saved = cfg_get("TOTK_GYRO_BIAS_PAD");
+    if (saved && !strcmp(saved, id)) {
+        motion_bias_load(motion_global());
+        copy_name(calib_pad_name, sizeof calib_pad_name, "DSU");
+        rt_log("input: gyro bias loaded from totk.ini for %s", calib_pad_name);
+    }
+}
+
 // Under lock: the gamepad the sensors are read from, NULL without one. The open pad when it has a gyro and an
 // accelerometer, or when Steam hid nothing. Otherwise (Steam's virtual pad, which has neither) the first controller
 // Steam hid that has both, looked for once a RESCAN_MS; one without them is not opened again until it reconnects.
@@ -1453,23 +1477,36 @@ static int sensors_ready(SDL_Gamepad *src) {
     return sensor_ok;
 }
 
-int input_motion_enabled(void) {
-    static int on = -1;
+static const char* get_motion_mode() {
+    static const char* motion_mode = NULL;
     static unsigned seen;
     unsigned v = cfg_version();
-    if (on < 0 || v != seen) {
+    if (motion_mode == NULL || v != seen) {
         seen = v;
-        on = cfg_bool("TOTK_MOTION");
+        motion_mode = cfg_value("TOTK_MOTION");
+        rt_logf("input: motion_mode update to %s\n", motion_mode);
     }
-    return on;
+
+    return motion_mode;
 }
 
-// 250 Hz: the gamepads update (reports read, rumble expiry) and the newest gyro and accelerometer sample goes into the
-// fusion. Without a gamepad with sensors, or with motion off (TOTK_MOTION=0, live), nothing is fed and the six-axis
-// sensor reads at rest.
-static void motion_main(void *arg) {
-    (void)arg;
-    for (;;) {
+int input_motion_enabled() {
+    return strcmp(get_motion_mode(), "disabled") != 0;
+}
+
+// Do nothing and poll every 1 second until TOTK_MOTION changed.
+static void poll_motion_mode() {
+    // poll until the motion mode change from `disabled` to `native` or `dsu`.
+    while (strcmp(get_motion_mode(), "disabled") == 0) {
+        plat_wait_ns(1000000000);
+    }
+}
+
+// Read the six-axis data from motion_source() (a SDL gamepad) , and feed that into motion_global().
+// If motion_source() does not have its sensor ready, nothing is fed.
+static void native_motion_poll() {
+    // poll until the motion mode change from `native` to `disabled` or `dsu`.
+    while (strcmp(get_motion_mode(), "native") == 0) {
         plat_wait_ns(4000000);
         float a[3], g[3];
         int have = 0;
@@ -1481,10 +1518,110 @@ static void motion_main(void *arg) {
                    SDL_GetGamepadSensorData(src, SDL_SENSOR_GYRO, g, 3);
         }
         plat_mutex_unlock(&lock);
-        if (!have || !input_motion_enabled()) continue;
+        if (!have) {
+            continue;
+        }
+
         double acc[3], gyro[3];
         input_motion_axes(a, g, acc, gyro);
         motion_feed(motion_global(), acc, gyro, kern_now_ns());
+    }
+}
+
+// Start a Cemuhook/DSU client, read six-axis data from the server, and feed that into motion_global().
+// If there's no fresh data received, nothing is fed.
+//
+// Once received data, set dsu_ok to 1, and set dsu_mac.
+// Once timeout, set dsu_ok to 0, clear dsu_mac, and reset motion bias.
+static void dsu_motion_poll(void) {
+    socket_t sock;
+    struct sockaddr_in server_addr;
+    if (dsu_open(&sock, &server_addr) != 0) {
+        rt_log("input: failed to open dsu client.");
+        plat_wait_ns(1000000000);
+        return;
+    }
+    rt_log("input: dsu client opened");
+
+    DsuClientState state = { .slot = -1 };
+    uint64_t last_request_time = 0;
+    uint64_t last_fed_ts = 0;
+
+    while (strcmp(get_motion_mode(), "dsu") == 0) {
+        plat_wait_ns(4000000);
+
+        uint64_t now = kern_now_ns();
+        // Request UDP server to keep sending data every two seconds.
+        if (now - last_request_time >= 2000000000ULL) {
+            last_request_time = now;
+            dsu_send_request(sock, &server_addr);
+        }
+
+        dsu_process_incoming_packets(sock, &state);
+
+        // when the DSU timeout, state.slot is set to -1
+        if (state.slot != 0) {
+            plat_mutex_lock(&lock);
+            if (dsu_ok) {
+                dsu_ok = 0;
+                memset(dsu_mac, 0, sizeof dsu_mac);
+                motion_bias_reset(motion_global());
+                calib_pad_name[0] = 0;
+            }
+            plat_mutex_unlock(&lock);
+            continue;
+        }
+
+        plat_mutex_lock(&lock);
+        if (!dsu_ok) {
+            dsu_ok = 1;
+            rt_log("input: dsu (re)connected.");
+            memcpy(dsu_mac, state.mac, 6);
+            dsu_bias_select(dsu_mac);
+        }
+        plat_mutex_unlock(&lock);
+
+
+        // It's possible that state wasn't updated because we are faster than the DSU server.
+        // We don't want to feed duplicated data. We can check if the state is new with its timestamp.
+        if (state.last_timestamp != last_fed_ts) {
+            last_fed_ts = state.last_timestamp;
+            double acc[3], gyro[3];
+            dsu_axes(state.acc, state.gyro, acc, gyro);
+            motion_feed_ts(motion_global(), acc, gyro, kern_now_ns(), state.last_timestamp * 1000);
+        }
+    }
+
+    dsu_close(&sock);
+    plat_mutex_lock(&lock);
+    dsu_ok = 0;
+    memset(dsu_mac, 0, sizeof dsu_mac);
+    plat_mutex_unlock(&lock);
+}
+
+// Do the corresponding poll for the TOTK_MOTION mode. TOTK_MOTION is a live
+// option. When it's changed, reset motion calibration, and do the next poll
+// for the new mode right away.
+static void motion_main(void *arg) {
+    (void)arg;
+
+    for(;;) {
+        const char* mode = get_motion_mode();
+        if (strcmp(mode, "disabled") == 0) {
+            rt_log("input: starting to poll until the motion mode is changed");
+            poll_motion_mode();
+        } else if (strcmp(mode, "native") == 0) {
+            rt_log("input: starting to poll the native SDL motion until the motion mode is changed");
+            native_motion_poll();
+        } else if (strcmp(mode, "dsu") == 0) {
+            rt_log("input: starting to poll DSU motion until the motion mode is changed");
+            dsu_motion_poll();
+        } else {
+            rt_fatal("unexpected input motion mode \"%s\"", mode);
+        }
+
+        motion_bias_reset(motion_global());
+        calib_pad_name[0] = 0;
     }
 }
 
@@ -1492,12 +1629,8 @@ static void motion_main(void *arg) {
 static void motion_thread_start(void) {
     if (!state) start();
     if (motion_thread) return;
-    if (!input_motion_enabled()) rt_log("input: motion off (TOTK_MOTION=0); it can be turned on while the game runs");
-    if (state != 1) motion_thread = -1;
-    else {
-        if (!plat_thread_spawn(motion_main, NULL, "motion", 0)) rt_fatal("input: cannot start the motion thread");
-        motion_thread = 1;
-    }
+    if (!plat_thread_spawn(motion_main, NULL, "motion", 0)) rt_fatal("input: cannot start the motion thread");
+    motion_thread = 1;
 }
 
 void input_motion_start(void) {
@@ -1510,20 +1643,29 @@ void input_motion_calibrate(void) {
     plat_mutex_lock(&lock);
     // The menu can run before the game starts the six-axis sensor (the title screen): the thread starts here then.
     if (input_gyro_calibration_enabled() && input_motion_enabled()) motion_thread_start();
+    const char *mode = get_motion_mode();
     const char *why = NULL;
-    SDL_Gamepad *src = motion_thread == 1 ? motion_source() : NULL;
+    SDL_Gamepad *native_src = motion_thread == 1 ? motion_source() : NULL;
     if (!input_gyro_calibration_enabled()) why = "gyro_calibration is off";
-    else if (!input_motion_enabled()) why = "motion is off (TOTK_MOTION=0)";
-    else if (motion_thread != 1) why = "no SDL gamepad support";
-    else if (!src) why = "no gamepad";
-    // sensors_ready here, not at the sensor thread's next look at a new pad: that look selects the pad's bias and
-    // would cancel the attempt that starts below.
-    else if (!sensors_ready(src)) why = "the gamepad has no gyro and accelerometer";
+
+    else if (strcmp(mode, "disabled") == 0) why = "motion is off (TOTK_MOTION=disabled)";
+    else if (strcmp(mode, "dsu") == 0 && !dsu_ok) why = "no DSU controller";
+    else if (strcmp(mode, "native") == 0) {
+        if (!native_src) why = "no native gamepad";
+        // sensors_ready here, not at the sensor thread's next look at a new pad: that look selects the pad's bias and
+        // would cancel the attempt that starts below.
+        else if (!sensors_ready(native_src)) why = "the gamepad has no gyro and accelerometer";
+    }
     if (why) rt_log("input: calibrate gyro ignored: %s", why);
     else {
         char id[128];
-        pad_identity(src, id, sizeof id);
-        copy_name(calib_pad_name, sizeof calib_pad_name, SDL_GetGamepadName(src));
+        if (strcmp(mode, "dsu") == 0) {
+            dsu_identity(dsu_mac, id, sizeof id);
+            copy_name(calib_pad_name, sizeof calib_pad_name, "DSU");
+        } else {
+            pad_identity(native_src, id, sizeof id);
+            copy_name(calib_pad_name, sizeof calib_pad_name, SDL_GetGamepadName(pad));
+        }
         motion_calibrate_start(motion_global(), id, kern_now_ns());
         rt_log("input: gyro calibration started on %s", calib_pad_name);
     }

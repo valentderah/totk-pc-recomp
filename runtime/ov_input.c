@@ -5,7 +5,7 @@
 // TOTK_OPERATION_MODE=handheld it is the handheld controller (id 0x20, style bit 1) and player 1 is not connected,
 // which is the controller the game reads in that mode. Mouse and keyboard report no input. The controller has two
 // vibration devices (left, right) played on the gamepad's motors (TOTK_RUMBLE=0: none) and a six-axis sensor fed by
-// the gamepad's gyro and accelerometer (TOTK_MOTION=0, live: reads at rest). State layouts follow libnx HID.
+// the gamepad's gyro and accelerometer (TOTK_MOTION=disabled, live: reads at rest). State layouts follow libnx HID.
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -248,7 +248,7 @@ static void ov_vibration_handles(Cpu *c) {
 }
 
 // int GetSixAxisSensorHandles(SixAxisSensorHandle *out, int count, const NpadIdType &id, NpadStyleSet style):
-// utility::GetSixAxisSensorHandle's order (one sensor per style, two for the Joy-Con pair). Also with TOTK_MOTION=0: the
+// utility::GetSixAxisSensorHandle's order (one sensor per style, two for the Joy-Con pair). Also with TOTK_MOTION=disabled: the
 // sensor then reads at rest (six_fill), so the menu can turn motion on while the game runs.
 static void ov_six_axis_handles(Cpu *c) {
     uint32_t *out = arg_p(c, 0), style = (uint32_t)arg_x(c, 3);
@@ -446,7 +446,7 @@ static void ov_six_stop(Cpu *c) {
 }
 
 // All max entries, newest first: the game reads all 16 it asks for and ignores the count (main+0x2a268e0). A short
-// history repeats its oldest sample. No motion (sensor not started, no gamepad, one without a gyro, TOTK_MOTION=0):
+// history repeats its oldest sample. No motion (sensor not started, gamepad without a gyro, TOTK_MOTION=disabled):
 // a controller lying still, not marked connected.
 static int six_fill(MotionState *s, int max, const uint32_t *h, const char *fn) {
     if (max <= 0) return 0;

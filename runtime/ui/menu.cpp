@@ -1133,7 +1133,8 @@ static void tab_controls(float scale) {
     opt_choice("TOTK_PROMPTS", UI_MENU_PROMPTS, prompts, 4, UI_MENU_PROMPTS_DESC, note);
     folders_retry("##prompts_prepare", ROMFS_NEED_PROMPTS | ROMFS_NEED_SHAPED_PROMPTS);
     bool ask = restart && opt_button("##restart", UI_MENU_RESTART, UI_MENU_RESTART_DESC);
-    opt_toggle("TOTK_MOTION", UI_MENU_MOTION, UI_MENU_MOTION_DESC);
+    static const UiTextId motion_modes[] = {UI_MENU_MOTION_DISABLED, UI_MENU_MOTION_NATIVE, UI_MENU_MOTION_DSU};
+    opt_choice("TOTK_MOTION", UI_MENU_MOTION, motion_modes, 3, UI_MENU_MOTION_DESC);
     opt_toggle("TOTK_GYRO_CALIBRATION", UI_MENU_GYRO_CALIBRATION, UI_MENU_GYRO_CALIBRATION_DESC);
     if (input_gyro_calibration_enabled()) {
         // The row exists only while the switch is on: with the bias not applied there is nothing to calibrate and no

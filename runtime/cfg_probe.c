@@ -99,7 +99,7 @@ int probe_cfg(void) {
     CHECK(cfg_load(path) == 1, "load the save ini");
     unsigned v0 = cfg_version();
     cfg_set("TOTK_FPS60", "0");
-    cfg_set("TOTK_MOTION", "0");
+    cfg_set("TOTK_MOTION", "disabled");
     cfg_set("TOTK_RUMBLE_STRENGTH", "80");
     cfg_set("TOTK_VOLUME", "40");
     CHECK(cfg_version() == v0 + 4, "cfg_set bumps the version");
@@ -115,7 +115,7 @@ int probe_cfg(void) {
     got = plat_file_read(path, &got_n);
     CHECK(got && got_n == sizeof after - 1 && !memcmp(got, after, got_n), "a save with nothing changed keeps the file");
     free(got);
-    CHECK(cfg_load(path) == 1 && EQ(cfg_get("TOTK_FPS60"), "0") && EQ(cfg_get("TOTK_MOTION"), "0") &&
+    CHECK(cfg_load(path) == 1 && EQ(cfg_get("TOTK_FPS60"), "0") && EQ(cfg_get("TOTK_MOTION"), "disabled") &&
           EQ(cfg_get("TOTK_RUMBLE_STRENGTH"), "80") && EQ(cfg_get("TOTK_VOLUME"), "40") &&
           EQ(cfg_get("TOTK_ROMFS_MODS"), "C:\\mods"), "the saved file reads back");
     const char *held = cfg_get("TOTK_VOLUME");
