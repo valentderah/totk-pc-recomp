@@ -1079,6 +1079,7 @@ int plat_run_self(const char *env_name, const char *env_value, char *out, size_t
                        .hStdOutput = wr, .hStdError = wr};
     PROCESS_INFORMATION pi;
     wchar_t *cmdline = _wcsdup(GetCommandLineW());
+    uint64_t end = GetTickCount64() + timeout_ms;
     SetEnvironmentVariableA(env_name, env_value);
     BOOL ok = cmdline && CreateProcessW(NULL, cmdline, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi);
     SetEnvironmentVariableA(env_name, NULL);
@@ -1089,14 +1090,40 @@ int plat_run_self(const char *env_name, const char *env_value, char *out, size_t
         return -1;
     }
     size_t len = 0;
-    DWORD got;
     char sink[512];
-    while (len + 1 < cap && ReadFile(rd, out + len, (DWORD)(cap - 1 - len), &got, NULL) && got) len += got;
+    int exited = 0;
+    DWORD drain_left = 0;
+    for (;;) {
+        if (!exited && WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0) {
+            exited = 1;
+            // Only drain the bytes already buffered when this child exits. A descendant may still hold or write
+            // the inherited pipe; neither EOF nor an empty pipe is guaranteed to arrive from it.
+            if (!PeekNamedPipe(rd, NULL, 0, NULL, &drain_left, NULL)) drain_left = 0;
+        }
+        if (exited && !drain_left) break;
+        if (timeout_ms && GetTickCount64() >= end) {
+            if (!exited) TerminateProcess(pi.hProcess, 1), WaitForSingleObject(pi.hProcess, INFINITE);
+            break;
+        }
+        DWORD have = drain_left;
+        if (!exited && !PeekNamedPipe(rd, NULL, 0, NULL, &have, NULL)) have = 0;
+        if (have) {
+            size_t room = cap && len < cap - 1 ? cap - 1 - len : 0;
+            size_t chunk = room ? room : sizeof sink;
+            DWORD want = have < chunk ? have : (DWORD)chunk, got = 0;
+            // The parent is the only reader, so reading at most the available bytes cannot wait for the child.
+            if (ReadFile(rd, room ? out + len : sink, want, &got, NULL) && got) {
+                if (room) len += got;
+                if (exited) drain_left -= got;
+                continue;   // check the deadline even while the child continuously fills the pipe
+            }
+            if (exited) break;
+        }
+        // EOF is not process exit: a child can close its output and then hang too.
+        WaitForSingleObject(pi.hProcess, 5);
+    }
     if (cap) out[len] = 0;
-    while (ReadFile(rd, sink, sizeof sink, &got, NULL) && got) {}
     CloseHandle(rd);
-    if (WaitForSingleObject(pi.hProcess, timeout_ms ? timeout_ms : INFINITE) != WAIT_OBJECT_0)
-        TerminateProcess(pi.hProcess, 1), WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD code = 1;
     GetExitCodeProcess(pi.hProcess, &code);
     CloseHandle(pi.hProcess);
