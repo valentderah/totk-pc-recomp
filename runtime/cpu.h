@@ -99,8 +99,9 @@ typedef uint8_t __attribute__((may_alias)) u8a;
 // functions of the patch table's `hook` lines (recomp/patches.py), or in every function for a table without any and
 // with gen.py --fn-enter-all.
 extern volatile int g_fnprof;
+extern volatile int g_lastcall;   // TOTK_LASTCALLS=1: keep the last calls of each thread (lastcalls.c)
 void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0);
-#define FN_ENTER(a) do { if (__builtin_expect(g_fnprof, 0)) fnprof_hit(a, c->x[30], c->x[0]); } while (0)
+#define FN_ENTER(a) do { if (__builtin_expect(g_fnprof || g_lastcall, 0)) fnprof_hit(a, c->x[30], c->x[0]); } while (0)
 
 #define LD8(a)  (*(const u8a *)(uintptr_t)(a))
 #define LD16(a) (*(const u16u *)(uintptr_t)(a))
