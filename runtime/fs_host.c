@@ -306,7 +306,10 @@ static int copy_tree(const char *src, const char *dst, const char *base, int dur
                      uint64_t *bytes) {
     if (plat_fs_mkdir(dst)) return -1;
     Listing l;
-    if (list_dir(src, &l)) return -1;
+    if (list_dir(src, &l)) {
+        listing_free(l.e, l.n);
+        return -1;
+    }
     int bad = 0;
     for (int i = 0; i < l.n && !bad; i++) {
         if (l.e[i].kind == PLAT_FS_LINK) continue;

@@ -355,7 +355,8 @@ void plat_fs_sync_dir(const char *path);                  // a directory's entri
 // it, else the programs holding a file under it ("explorer.exe 1234, ..."), else an empty string. Windows refuses to
 // rename a directory with any file open under it; elsewhere out is always empty.
 void plat_fs_busy_reason(const char *dir, char *out, size_t cap);
-// cb(name, kind, size, ctx) for each entry of dir but "." and ".."; cb returns 0 to stop. The listing's error.
+// cb(name, kind, size, ctx) for each entry of dir but "." and ".."; cb returns 0 to stop successfully.
+// Returns the listing's error; entries already delivered before a failure are only a partial listing.
 int plat_fs_list(const char *dir, int (*cb)(const char *name, int kind, uint64_t size, void *ctx), void *ctx);
 // The free bytes this process may use and the total bytes of the volume holding path. 0 on failure.
 int plat_fs_space(const char *path, uint64_t *free_bytes, uint64_t *total_bytes);
