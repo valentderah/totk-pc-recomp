@@ -510,8 +510,67 @@ static void row_window_size(void) {
 // start (romfs_folders_prepare: child processes, the menu does not wait), once per request: a request stays the same
 // for SETTLE_NS first, so stepping through the sizes starts none for the ones passed. The notes under the resolution
 // and the prompts say so (row_output_res, prompts_note); when it could not start they say that and offer a retry. The
-// file checks run only when the request changes, after a settings change (cfg_version).
+// file checks run when the request changes; a worker watches a request being made once a second.
 enum { SETTLE_NS = 1500000000 };
+// One persistent worker sleeps when idle. It never holds its lock across file checks; menu frames only try the
+// cached result once a second. A new request cancels the old result even if its file check was already in flight.
+static struct {
+    PlatMutex lock;
+    PlatCond wake;
+    bool started, active;
+    unsigned serial, result_serial, w, h;
+    const char *want;
+    int missing;
+} g_folder_check = {PLAT_MUTEX_INIT, PLAT_COND_INIT, false, false, 0, 0, 0, 0, nullptr, 0};
+
+static void folders_check_worker(void *) {
+    plat_mutex_lock(&g_folder_check.lock);
+    for (;;) {
+        while (!g_folder_check.active) plat_cond_wait(&g_folder_check.wake, &g_folder_check.lock);
+        unsigned serial = g_folder_check.serial, w = g_folder_check.w, h = g_folder_check.h;
+        const char *want = g_folder_check.want;
+        plat_mutex_unlock(&g_folder_check.lock);
+        int missing = romfs_folders_missing(w, h, want);
+        plat_mutex_lock(&g_folder_check.lock);
+        if (serial != g_folder_check.serial) continue;
+        g_folder_check.missing = missing;
+        g_folder_check.result_serial = serial;
+        if (!missing) g_folder_check.active = false;
+        uint64_t next = plat_now_ns() + 1000000000ull;
+        while (g_folder_check.active && serial == g_folder_check.serial) {
+            uint64_t at = plat_now_ns();
+            if (at >= next) break;
+            plat_cond_wait_ns(&g_folder_check.wake, &g_folder_check.lock, next - at);
+        }
+    }
+}
+
+static void folders_check_cancel(void) {
+    plat_mutex_lock(&g_folder_check.lock);
+    g_folder_check.serial++;
+    g_folder_check.active = false;
+    plat_cond_signal(&g_folder_check.wake);
+    plat_mutex_unlock(&g_folder_check.lock);
+}
+
+static bool folders_check_begin(unsigned w, unsigned h, const char *want) {
+    plat_mutex_lock(&g_folder_check.lock);
+    if (!g_folder_check.started) {
+        if (!plat_thread_spawn(folders_check_worker, nullptr, "folder-check", 0)) {
+            plat_mutex_unlock(&g_folder_check.lock);
+            rt_log("menu: could not start the folder completion worker");
+            return false;
+        }
+        g_folder_check.started = true;
+    }
+    g_folder_check.serial++;
+    g_folder_check.w = w, g_folder_check.h = h, g_folder_check.want = want;
+    g_folder_check.active = true;
+    plat_cond_signal(&g_folder_check.wake);
+    plat_mutex_unlock(&g_folder_check.lock);
+    return true;
+}
+
 static struct {
     unsigned seen;            // cfg_version of the last look at the settings
     char request[160];        // output_res|hud_width|prompts folder in the settings
@@ -521,12 +580,16 @@ static struct {
     uint64_t at;              // plat_now_ns from which request starts; 0 none waiting
     char asked[160];          // the request started last
     int started;              // for asked: 1 running, -1 failed to start
-} g_folders = {~0u, "", 0, 0, nullptr, 0, 0, "", 0};
+    uint64_t check_at;        // next completion check while the menu is open
+} g_folders = {~0u, "", 0, 0, nullptr, 0, 0, "", 0, 0};
 
 static void folders_start(void) {
     g_folders.at = 0;
     snprintf(g_folders.asked, sizeof g_folders.asked, "%s", g_folders.request);
     g_folders.started = romfs_folders_prepare(g_folders.w, g_folders.h, g_folders.want) ? 1 : -1;
+    if (g_folders.started > 0 && !folders_check_begin(g_folders.w, g_folders.h, g_folders.want))
+        g_folders.started = -1;
+    g_folders.check_at = plat_now_ns() + 1000000000ull;
 }
 
 // On every frame the menu lays out (now: start a waiting request at once, as the menu closes). 1 while a request
@@ -544,12 +607,26 @@ static int folders_tick(bool now) {
         char request[sizeof g_folders.request];
         snprintf(request, sizeof request, "%ux%u|%s|%s", s[0], s[1], cfg_value("TOTK_HUD_WIDTH"), want ? want : "");
         if (strcmp(request, g_folders.request)) {
+            folders_check_cancel();
             snprintf(g_folders.request, sizeof g_folders.request, "%s", request);
             unsigned w = s[0], h = s[1];
             g_folders.w = w, g_folders.h = h, g_folders.want = want;
             g_folders.missing = w && h ? romfs_folders_missing(w, h, want) : 0;
             g_folders.at = g_folders.missing && strcmp(request, g_folders.asked) && romfs_folders_can_prepare()
                                ? plat_now_ns() + SETTLE_NS : 0;
+            // Returning to the last launched request resumes its watcher without starting its generator twice.
+            if (g_folders.missing && !strcmp(request, g_folders.asked) && g_folders.started > 0 &&
+                !folders_check_begin(w, h, want))
+                g_folders.started = -1;
+        }
+    }
+    // Closed-menu frames do no completion work. The worker keeps watching, so reopening can take its cached result.
+    if (!now && g_folders.missing && g_folders.started > 0 &&
+        !strcmp(g_folders.asked, g_folders.request) && plat_now_ns() >= g_folders.check_at) {
+        if (plat_mutex_trylock(&g_folder_check.lock)) {
+            if (g_folder_check.result_serial == g_folder_check.serial) g_folders.missing = g_folder_check.missing;
+            plat_mutex_unlock(&g_folder_check.lock);
+            g_folders.check_at = plat_now_ns() + 1000000000ull;
         }
     }
     if (!g_folders.at || (!now && plat_now_ns() < g_folders.at)) return g_folders.at != 0;
