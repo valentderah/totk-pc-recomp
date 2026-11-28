@@ -22,9 +22,11 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - Custom resolutions (1080p, 2k...), supersampling and AMD FSR 1 upscaling
 - NVIDIA DLSS / DLAA on RTX GPUs: the setup downloads `nvngx_dlss.dll` from NVIDIA's DLSS SDK repository
   (github.com/NVIDIA/DLSS, NVIDIA RTX SDK license) when it finds an RTX GPU; untick it in the setup to skip it
-- AMD FSR 3.1 on any GPU, and AMD FSR 4 on Windows on the Radeon GPUs AMD's FSR SDK libraries support, in the same
-  modes as DLSS: for FSR 4 the setup downloads AMD's signed FSR SDK libraries
-  (github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK, AMD FSR SDK license), ticked by default with an AMD GPU
+- AMD FSR 3.1 on any GPU, and AMD FSR 4 on the Radeon GPUs AMD's FSR SDK libraries support, in the same
+  modes as DLSS: for FSR 4 on Windows the setup downloads AMD's signed FSR SDK libraries
+  (github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK, AMD FSR SDK license), ticked by default with an AMD GPU. AMD
+  ships no Linux libraries: on Linux FSR 4 runs with a self-built fsr4-vk (github.com/Astyyyyy/fsr4-vk, GPL-3.0, not
+  from AMD) `amd_fidelityfx_upscaler_vk.so` placed next to `totk`, which the setup does not download
 - HDR10 output with peak, game and HUD brightness settings
 - Ultrawide monitors, 21:9 and 32:9 (2560x1080, 3440x1440, 3840x1600, 5120x2160, 3840x1080, 5120x1440, 7680x2160):
   the camera sees the whole width, the map and the loading screen fill it without bars or stretching, and the HUD sits

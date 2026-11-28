@@ -1,6 +1,6 @@
 // AMD FSR 4 (vk_ffx.c), the fourth engine of vk_dlaa.c's scene upscaler (scene_upscaler = fsr4): the frame DLSS and
 // FSR 3.1 get goes to FSR 4 through AMD's FSR SDK 2.4 signed libraries, amd_fidelityfx_loader_vk.dll and
-// amd_fidelityfx_upscaler_vk.dll next to the executable. Windows only; elsewhere every call does nothing.
+// amd_fidelityfx_upscaler_vk.dll next to the executable. On Linux fsr4-vk's amd_fidelityfx_upscaler_vk.so stands in.
 #pragma once
 #include "vk.h"
 
@@ -12,6 +12,10 @@ void vk_ffx_device_exts(const VkExtensionProperties *have, uint32_t nhave, const
 void vk_ffx_init(void);      // vk_dlaa.c vk_dlaa_init, after the device exists: loads the loader and pins FSR 4
 int vk_ffx_tried(void);      // vk_ffx_init ran (FSR 4 picked at start, on Windows)
 int vk_ffx_available(void);  // vk_ffx_init found FSR 4 for this device
+#ifndef _WIN32
+// The path of fsr4-vk's amd_fidelityfx_upscaler_vk.so: TOTK_FSR4_LIB, else next to the executable. 0 when no file is there
+int vk_ffx_so_path(char *out, size_t cap);
+#endif
 
 typedef struct {   // one image FSR reads or writes, in VK_IMAGE_LAYOUT_GENERAL, level 0 and layer 0
     VkImage image;

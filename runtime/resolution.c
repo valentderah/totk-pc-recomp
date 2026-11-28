@@ -43,6 +43,7 @@
 #include "mods.h"
 #include "ov.h"
 #include "platform/platform.h"
+#include "vk_ffx.h"
 
 static void vert_plus_init(double ratio_over_16x9);
 
@@ -118,7 +119,8 @@ static int ffx_dlls(void) {
     snprintf(path, sizeof path, "%.*s/amd_fidelityfx_upscaler_vk.dll", (int)(last - exe), exe);
     return plat_file_exists(path);
 #else
-    return 0;
+    char path[1024 + 48];
+    return vk_ffx_so_path(path, sizeof path);
 #endif
 }
 
@@ -176,8 +178,12 @@ static double dlss_share(const char *m) {
                     rt_log("resolution: DLSS %s needs nvngx_dlss.dll next to totk.exe, which is missing: the scene "
                            "follows render_scale", m);
 #else
-                rt_log("resolution: DLSS %s needs libnvidia-ngx-dlss.so.<version> next to totk, which is missing: the "
-                       "scene follows render_scale", m);
+                if (vk_upscaler_engine() == UPSCALER_FSR4)
+                    rt_log("resolution: FSR 4 %s needs amd_fidelityfx_upscaler_vk.so next to totk, which is missing: "
+                           "the scene follows render_scale", m);
+                else
+                    rt_log("resolution: DLSS %s needs libnvidia-ngx-dlss.so.<version> next to totk, which is missing: "
+                           "the scene follows render_scale", m);
 #endif
             }
             return ready ? dlss[i].k : 0;
