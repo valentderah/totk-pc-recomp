@@ -373,10 +373,14 @@ static int same_tree(const char *a, const char *b) {
 static int name_cmp(const void *a, const void *b) { return strcmp(a, b); }
 
 // The backups' folder names (digits first), sorted: oldest first, as rotate_backup names them in creation order.
+// An incomplete listing returns -1: rotation must neither choose a name nor prune from it.
 static int backup_names(char (*names)[48]) {
     int n = 0;
     Listing l;
-    list_dir(backup_root, &l);
+    if (list_dir(backup_root, &l)) {
+        listing_free(l.e, l.n);
+        return -1;
+    }
     for (int i = 0; i < l.n; i++)
         if (l.e[i].kind == PLAT_FS_DIR && l.e[i].name[0] >= '0' && l.e[i].name[0] <= '9' && strlen(l.e[i].name) < 48 &&
             n < 64)
@@ -393,6 +397,10 @@ static void rotate_backup(void) {
     if (!exists(old_root)) return;
     static char names[64][48];
     int n = backup_names(names);
+    if (n < 0) {
+        rt_log("fs: cannot list save-backup; the replaced save stays in save-tx/old for a later retry");
+        return;
+    }
     uint64_t ns = plat_unix_time_ns();
     struct tm t;
     plat_gmtime((int64_t)(ns / 1000000000u), &t);
@@ -414,6 +422,10 @@ static void rotate_backup(void) {
     }
     free(dst);
     n = backup_names(names);
+    if (n < 0) {
+        rt_log("fs: cannot list save-backup; no backups pruned");
+        return;
+    }
     for (int i = 0; i + SAVE_BACKUPS < n; i++) {
         char *p = join(backup_root, names[i]);
         remove_tree(p);
@@ -459,9 +471,13 @@ static unsigned ready_number(const char *name) {
 }
 
 // Startup: the newest finished commit into ready_root; the older ones, which it supersedes, are deleted.
+// Recovery must see every finished commit before selecting or deleting any of them.
 static void ready_scan(void) {
     Listing l;
-    list_dir(tx_root, &l);
+    if (list_dir(tx_root, &l)) {
+        listing_free(l.e, l.n);
+        rt_fatal("fs: cannot list save-tx; save recovery stopped without changing any commits");
+    }
     *ready_root = 0, ready_seq = 0;
     for (int i = 0; i < l.n; i++)
         if (l.e[i].kind == PLAT_FS_DIR && ready_number(l.e[i].name) > ready_seq) ready_seq = ready_number(l.e[i].name);

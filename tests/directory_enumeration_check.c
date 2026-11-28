@@ -74,13 +74,14 @@ static int fixture_fstatat(int fd, const char *name, struct stat *st, int flags)
 #endif
 #include DIRECTORY_FS_SOURCE
 
+static int expect_fatal;
 void rt_log(const char *fmt, ...) { (void)fmt; }
 void rt_fatal(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
     vfprintf(stderr, fmt, args);
     va_end(args);
-    abort();
+    exit(expect_fatal ? 76 : 77);
 }
 static int checks, failures;
 #define EXPECT(c, name) do { checks++; if (!(c)) { failures++; printf("FAIL %s\n", name); } } while (0)
@@ -132,7 +133,7 @@ static int has_text(const char *dir, const char *name, const char *text) {
     return ok;
 }
 int main(int argc, char **argv) {
-    assert(argc == 2);
+    assert(argc == 2 || argc == 3);
     snprintf(work_root, sizeof work_root, "%s/source", argv[1]);
     snprintf(save_root, sizeof save_root, "%s/committed", argv[1]);
     snprintf(tx_root, sizeof tx_root, "%s/tx", argv[1]);
@@ -142,6 +143,35 @@ int main(int argc, char **argv) {
     make_dirs(work_root); make_dirs(save_root); make_dirs(tx_root); make_dirs(backup_root);
     write_text(work_root, "a", "new-a"); write_text(work_root, "b", "new-b");
     write_text(save_root, "a", "old-a"); write_text(save_root, "b", "old-b");
+    if (argc == 3 && !strcmp(argv[2], "recovery")) {
+        char *one = join(tx_root, "ready-0000000001"), *two = join(tx_root, "ready-0000000002");
+        make_dirs(one); make_dirs(two);
+        write_text(one, "a", "ready-one"); write_text(two, "a", "ready-two");
+        free(one); free(two);
+        inject(tx_root, 1);
+        expect_fatal = 1;
+        save_recover();
+        printf("FAIL startup continued after an incomplete ready scan\n");
+        return 1;
+    }
+    if (argc == 3 && !strcmp(argv[2], "backups")) {
+        make_dirs(old_root);
+        write_text(old_root, "a", "old-backup");
+        for (int i = 0; i < 4; i++) {
+            char name[16]; snprintf(name, sizeof name, "%d", i + 1);
+            char *path = join(backup_root, name);
+            make_dirs(path); write_text(path, "a", name); free(path);
+        }
+        inject(backup_root, 1);
+        rotate_backup();
+        inject(backup_root, 0);
+        EXPECT(has_text(old_root, "a", "old-backup"), "backup scan failure retains the pending old save");
+        int count = 0;
+        EXPECT(plat_fs_list(backup_root, count_entry, &count) == PLAT_FS_OK && count == 4,
+               "backup scan failure does not add or prune backups");
+        printf("backup enumeration: %d checks, %d failures\n", checks, failures);
+        return failures != 0;
+    }
     int count = 0;
     EXPECT(plat_fs_list(work_root, count_entry, &count) == PLAT_FS_OK && count == 2, "normal listing ignores callback error state");
     count = 0;

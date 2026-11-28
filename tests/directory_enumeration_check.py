@@ -44,7 +44,23 @@ def main():
         subprocess.run(command, check=True)
         data = folder / 'data'
         data.mkdir()
-        subprocess.run([str(exe), str(data)], check=True, timeout=60)
+        failed = subprocess.run([str(exe), str(data)], timeout=60).returncode != 0
+        recovery = folder / 'recovery'
+        recovery.mkdir()
+        result = subprocess.run([str(exe), str(recovery), 'recovery'], timeout=60)
+        expected = {
+            'committed/a': b'old-a', 'committed/b': b'old-b',
+            'tx/ready-0000000001/a': b'ready-one', 'tx/ready-0000000002/a': b'ready-two',
+            'source/a': b'new-a', 'source/b': b'new-b',
+        }
+        actual = {p.relative_to(recovery).as_posix(): p.read_bytes() for p in recovery.rglob('*') if p.is_file()}
+        recovered_safely = result.returncode == 76 and actual == expected
+        print(f'incomplete recovery scan stops before changing files: {recovered_safely}', flush=True)
+        backups = folder / 'backups'
+        backups.mkdir()
+        failed |= subprocess.run([str(exe), str(backups), 'backups'], timeout=60).returncode != 0
+        if failed or not recovered_safely:
+            raise SystemExit(1)
 
 
 if __name__ == '__main__':
