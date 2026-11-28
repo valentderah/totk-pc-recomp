@@ -1,5 +1,6 @@
 """Command line: python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR [--firmware DIR]
-                                     [--root DIR] [--temp DIR] [--verify] [--dlss] [--fsr]
+                                     [--root DIR] [--temp DIR] [--verify] [--dlss] [--fsr] [--prepare]
+                                     (--game FILE_OR_FOLDER in place of --base and --update)
 
 A first install needs every option. --firmware names the Switch firmware folder (an unpacked firmware or an emulator's
 Contents/registered); the setup extracts the system shared fonts from it when the language is Chinese, Korean or
@@ -21,9 +22,9 @@ from pathlib import Path
 
 from . import layout as layouts
 from . import state as statefile
-from .events import Reporter
+from .events import ProgressLines, Reporter
 from .runner import Context, run_steps
-from .steps import adopt_old_temp, all_steps, migrate_state
+from .steps import UPDATE_TITLE_ID, adopt_old_temp, all_steps, migrate_state
 
 EXIT = {'ok': 0, 'failed': 1, 'cancelled': 3}
 
@@ -32,6 +33,32 @@ class Parser(argparse.ArgumentParser):
     def error(self, message):
         Reporter().error('cli.usage', {'detail': message})
         sys.exit(2)
+
+
+GAME_SUFFIXES = ('.xci', '.xcz', '.nsp', '.nsz')
+BASE_TITLE_ID = '0100F2C0115B6000'
+
+
+def split_game(path):
+    """The files --game names, as {'base': [files], 'update': [files]} with the kinds it found.
+
+    A file is the base game. A folder is searched without its subfolders: an XCI or XCZ is the base game (an update in
+    either is refused), an NSP or NSZ is told by the title id its name carries, as dumps are named
+    (`... [0100F2C0115B6800][v...].nsp`). A file whose name says neither is left out, and --base and --update still
+    take any file.
+    """
+    if path.is_file():
+        return {'base': [path]}
+    found = {}
+    for f in sorted(path.iterdir()) if path.is_dir() else []:
+        suffix, name = f.suffix.lower(), f.name.upper()
+        if not f.is_file() or suffix not in GAME_SUFFIXES:
+            continue
+        if UPDATE_TITLE_ID in name:
+            found.setdefault('update', []).append(f)
+        elif suffix in ('.xci', '.xcz') or BASE_TITLE_ID in name:
+            found.setdefault('base', []).append(f)
+    return found
 
 
 def cancel(signum, frame):
@@ -55,7 +82,21 @@ def main(argv=None):
                                                       'to the game, for dlaa and the DLSS modes')
     ap.add_argument('--fsr', action='store_true', help="download AMD's FSR loader and upscaler DLLs (AMD FSR SDK "
                                                      'license) next to the game, for scene_upscaler = fsr4')
+    ap.add_argument('--prepare', action='store_true', help='for a launcher: print `progress <0-1> <text>` lines instead of '
+                                                           'JSON events, and take en-US as the language of a first install')
+    ap.add_argument('--game', type=Path, help='the game files in one place: the base game file, or a folder holding the '
+                                              'base game and the update (instead of --base and --update)')
     args = ap.parse_args(argv)
+    if args.game:
+        if args.base or args.update:
+            ap.error('--game replaces --base and --update: give either')
+        for kind, files in split_game(args.game).items():
+            if len(files) > 1:
+                ap.error(f'--game: {len(files)} {kind} files in {args.game} ({", ".join(f.name for f in files)}): '
+                         f'name the one to use with --{kind}')
+            setattr(args, kind, files[0])
+        if not args.base and not args.update:
+            ap.error(f'--game: no game file found in {args.game}')
 
     # The window cancels with Ctrl+Break to the installer's process group (CREATE_NEW_PROCESS_GROUP), which also reaches
     # the tools it runs; Python's default for it ends the process without recording anything.
@@ -67,7 +108,9 @@ def main(argv=None):
     temp = layouts.temp_for(layout, dest, args.temp)
     adopted = adopt_old_temp(layout, dest, temp)
     log = temp / 'logs' / time.strftime('install-%Y%m%d-%H%M%S.log')
-    rep = Reporter(log_path=log)
+    if args.prepare:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    rep = Reporter(out=ProgressLines(sys.stdout) if args.prepare else None, log_path=log)
     if adopted:
         rep.log(adopted)
     t0 = time.monotonic()
@@ -77,12 +120,16 @@ def main(argv=None):
         rep.error(e.id, {'path': str(e.path)})
         rep.emit('end', result='failed', seconds=0)
         return 1
+    if args.prepare and not args.lang and not (state or {}).get('lang'):
+        args.lang = 'en-US'
     ctx = Context(layout, dest, temp, rep, args, state=state, verify=args.verify)
     migrate_state(ctx)
     steps = all_steps()
     rep.emit('start', release=layout.release, mode=ctx.mode, dev=layout.dev, dest=str(dest), log=str(log),
              steps=[s.id for s in steps])
     result = run_steps(steps, ctx)
+    if args.prepare and result == 'ok':
+        rep.out.finish(any(ctx.will_run(s.id) for s in steps if not s.always))
     rep.emit('end', result=result, seconds=round(time.monotonic() - t0, 1))
     rep.close()
     return EXIT[result]
