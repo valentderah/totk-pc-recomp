@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/random.h>
@@ -702,6 +703,26 @@ uint8_t *plat_file_read(const char *path, uint64_t *size) {
     }
     close(fd);
     return buf;
+}
+
+PlatProfileLock *plat_profile_lock(const char *dir, int *busy) {
+    *busy = 0;
+    if (!dir || !*dir) return NULL;
+    char path[PATH_MAX];
+    int n = snprintf(path, sizeof path, "%s/.totk.lock", dir);
+    if (n < 0 || n >= (int)sizeof path) return NULL;
+    plat_file_mkdir_p(dir);
+    int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0) return NULL;
+    int result;
+    do result = flock(fd, LOCK_EX | LOCK_NB);
+    while (result < 0 && errno == EINTR);
+    if (result < 0) {
+        *busy = errno == EWOULDBLOCK || errno == EAGAIN;
+        close(fd);
+        return NULL;
+    }
+    return (PlatProfileLock *)(intptr_t)(fd + 1);
 }
 
 int plat_file_write(const char *path, const void *data, size_t n) {
