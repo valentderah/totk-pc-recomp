@@ -2089,7 +2089,10 @@ static const float *pcss_params(void) {
         int pct = cfg_int("TOTK_PCSS");
         pct = pct < 0 ? 0 : pct > 200 ? 200 : pct;
         const char *k = cfg_get("TOTK_PCSS_K");
-        float k100 = k && *k ? (float)atof(k) : 0.5f;
+        // 0.025 at 100 percent: in play on 1.4.3 the penumbra reaches the widest radius (pcss.z) at a factor of about
+        // 0.05, so 200 percent is the softest the radius allows and the slider spreads below it. With 0.5 every setting
+        // from about 20 percent up hit that radius and looked the same.
+        float k100 = k && *k ? (float)atof(k) : 0.025f;
         p[0] = k100 * (float)pct / 100.0f;
         p[1] = 0.35f / 960.0f, p[2] = 5.0f / 960.0f, p[3] = 4.0f / 960.0f;
         if (pct) rt_log("vk: soft shadows (PCSS) at %d%% (depth factor %g)", pct, p[0]);
