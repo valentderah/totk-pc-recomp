@@ -2021,11 +2021,28 @@ int plat_restart(void) {
     return e == 0;
 }
 
-int plat_spawn(const char *const *argv, const char *cwd) {
+// Reserve a reaper before creating a detached child: a thread-creation failure then leaves no unowned child.
+// argv and cwd are borrowed only until done is signalled. The two references keep the condition's lock alive until
+// both threads have finished unlocking it, even if the caller returns while the worker enters waitpid.
+typedef struct {
+    PlatMutex lock;
+    PlatCond changed;
+    const char *const *argv;
+    const char *cwd;
+    unsigned refs;
+    int done, ok;
+} SpawnRequest;
+
+static void spawn_request_release(SpawnRequest *request) {
+    if (__atomic_fetch_sub(&request->refs, 1u, __ATOMIC_ACQ_REL) == 1) free(request);
+}
+
+static void *spawn_reap_main(void *arg) {
+    SpawnRequest *request = arg;
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
     spawn_close_from(&fa, 3);
-    posix_spawn_file_actions_addchdir_np(&fa, cwd);
+    posix_spawn_file_actions_addchdir_np(&fa, request->cwd);
     posix_spawnattr_t at;
     posix_spawnattr_init(&at);
     sigset_t none, all;
@@ -2035,10 +2052,49 @@ int plat_spawn(const char *const *argv, const char *cwd) {
     posix_spawnattr_setsigdefault(&at, &all);
     posix_spawnattr_setflags(&at, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSID);
     pid_t pid;
-    int e = posix_spawn(&pid, argv[0], &fa, &at, (char *const *)argv, environ);
+    int e = posix_spawn(&pid, request->argv[0], &fa, &at, (char *const *)request->argv, environ);
     posix_spawnattr_destroy(&at);
     posix_spawn_file_actions_destroy(&fa);
-    return e == 0;
+    plat_mutex_lock(&request->lock);
+    request->ok = e == 0;
+    request->done = 1;
+    plat_cond_signal(&request->changed);
+    plat_mutex_unlock(&request->lock);
+    spawn_request_release(request);   // argv, cwd and the request are never used after the launch is reported
+    if (!e) {
+        pid_t waited;
+        do waited = waitpid(pid, NULL, 0);
+        while (waited < 0 && errno == EINTR);
+    }
+    return NULL;
+}
+
+int plat_spawn(const char *const *argv, const char *cwd) {
+    SpawnRequest *request = calloc(1, sizeof *request);
+    if (!request) return 0;
+    request->argv = argv;
+    request->cwd = cwd;
+    request->refs = 2;
+    // This OS-only worker needs no crash signal stack or PlatThread handle, both kept by the general thread wrapper.
+    pthread_attr_t attributes;
+    int error = pthread_attr_init(&attributes);
+    if (error) { free(request); return 0; }
+    error = pthread_attr_setstacksize(&attributes, 64 << 10);
+    if (!error) error = pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
+    plat_mutex_lock(&request->lock);
+    pthread_t worker;
+    if (!error) error = pthread_create(&worker, &attributes, spawn_reap_main, request);
+    pthread_attr_destroy(&attributes);
+    if (error) {
+        plat_mutex_unlock(&request->lock);
+        free(request);   // no worker and no child were created
+        return 0;
+    }
+    while (!request->done) plat_cond_wait(&request->changed, &request->lock);
+    int ok = request->ok;
+    plat_mutex_unlock(&request->lock);
+    spawn_request_release(request);
+    return ok;   // the worker waits for the child independently of the caller
 }
 
 int plat_restart_wait(uint32_t timeout_ms) {
