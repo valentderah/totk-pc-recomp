@@ -12,7 +12,8 @@
 // install is updated or moved. It is plain text, "total_seconds <n>", written atomically (plat_file_write_atomic)
 // every SAVE_EVERY_MS while it grows and once more when the game exits (playtime_save from boot.c, svc.c and
 // gfx_present.c, next to prof_write); a crash loses at most SAVE_EVERY_MS. A file that does not read as that is kept
-// as playtime.txt.bad and the count starts again from zero. A scripted run (--seconds) reads the total and adds nothing.
+// as playtime.txt.bad and the count starts again from zero. If reading or keeping that copy fails, counting stays off
+// for this run so a later write cannot replace the unread total. A scripted run (--seconds) reads the total and adds nothing.
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -30,7 +31,7 @@
 
 static PlatMutex lock = PLAT_MUTEX_INIT;   // the totals and the file
 static uint64_t total_ms, session_ms, saved_ms;
-static int loaded;                         // 1 once the file was read (or found missing), -1 when there is no profile
+static int loaded;                         // 1 once read (or found missing), -1 when the counter is unavailable
 static char path[1100];
 
 // The seconds of a playtime.txt: "total_seconds <n>", a line end or nothing after it, a UTF-8 byte order mark before it
@@ -58,11 +59,31 @@ static void load(const char *dir) {
     }
     loaded = 1;
     uint64_t n = 0, s = 0;
-    uint8_t *b = plat_file_read(path, &n);
-    if (!b) {
-        rt_log("playtime: no %s yet; counting from zero", path);
+    int err;
+    PlatFile *f = plat_fs_open(path, 0, &err);
+    if (!f) {
+        if (err == PLAT_FS_NOT_FOUND) {
+            rt_log("playtime: no %s yet; counting from zero", path);
+            return;
+        }
+        loaded = -1;
+        rt_log("playtime: cannot read %s; play time is not counted", path);
         return;
     }
+    PlatFileId id;
+    uint8_t *b = NULL;
+    if (plat_file_id(f, &id) && id.size < (1ull << 30)) {
+        n = id.size;
+        b = malloc((size_t)n + 1);
+        if (b && n && plat_file_pread(f, b, (uint32_t)n, 0) != (int64_t)n) free(b), b = NULL;
+    }
+    plat_file_close(f);
+    if (!b) {
+        loaded = -1;
+        rt_log("playtime: cannot read %s; play time is not counted", path);
+        return;
+    }
+    b[n] = 0;
     if (parse(b, n, &s)) {
         free(b);
         total_ms = saved_ms = s * 1000;
@@ -74,8 +95,9 @@ static void load(const char *dir) {
     snprintf(bad, sizeof bad, "%s.bad", path);
     int kept = plat_file_write_atomic(bad, b, (size_t)n);   // the whole file, for the player to recover the number
     free(b);
-    rt_log("playtime: %s does not read as \"total_seconds <n>\"; %s, counting from zero", path,
-           kept ? "kept as playtime.txt.bad" : "could not keep a copy");
+    if (!kept) loaded = -1;
+    rt_log("playtime: %s does not read as \"total_seconds <n>\"; %s", path,
+           kept ? "kept as playtime.txt.bad, counting from zero" : "could not keep a copy; play time is not counted");
 }
 
 // Holding lock.
