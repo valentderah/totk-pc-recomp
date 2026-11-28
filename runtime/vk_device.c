@@ -293,6 +293,7 @@ typedef struct {
     VkPhysicalDeviceShaderFloat8FeaturesEXT f8;          // FSR 4 (vk_ffx.c)
 #endif
     VkPhysicalDeviceAntiLagFeaturesAMD al;
+    VkPhysicalDeviceDescriptorBufferFeaturesEXT db;      // FSR 4 on Linux (vk_ffx.c)
 } FeatureChain;
 
 static int create_device(void) {
@@ -360,6 +361,8 @@ static int create_device(void) {
         else if (!strcmp(ext[i], VK_EXT_SHADER_FLOAT8_EXTENSION_NAME))
             CHAIN(f8, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT);
 #endif
+        else if (!strcmp(ext[i], VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME))
+            CHAIN(db, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT);
     }
     if (has_ext(ep, ne, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) { g_vk.has_memory_budget = 1; ext[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME; }
     // GPU timestamps on the CPU clock (vk_sync.c): the perf line splits GPU idle time into waiting for a submission or not.
@@ -414,6 +417,7 @@ static int create_device(void) {
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &c->f2);
     vk_caps_driver(g_vk.phys);
     vk_caps_features(&c->f2.features);
+    c->db.descriptorBufferCaptureReplay = VK_FALSE;   // for capture tools only, and drivers document a cost for it
     if (gpl_link) {
         VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT gp = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_PROPERTIES_EXT};

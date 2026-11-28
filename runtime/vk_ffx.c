@@ -19,20 +19,11 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "platform/platform.h"
 
-#ifndef _WIN32
-int vk_ffx_wanted(void) { return 0; }
-void vk_ffx_device_exts(const VkExtensionProperties *have, uint32_t nhave, const char **ext, uint32_t *n, uint32_t max) {
-    (void)have, (void)nhave, (void)ext, (void)n, (void)max;
-}
-void vk_ffx_init(void) {}
-int vk_ffx_tried(void) { return 0; }
-int vk_ffx_available(void) { return 0; }
-int vk_ffx_dispatch(VkCommandBuffer cb, const VkFfxDispatch *d) { return (void)cb, (void)d, 0; }
-void vk_ffx_release(void) {}
-const char *vk_ffx_version(void) { return ""; }
-#else
+#ifdef _WIN32
 #include <windows.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,8 +37,18 @@ const char *vk_ffx_version(void) { return ""; }
 // vk_fsr3.cpp wait_ring reads it for SDK 1.1.4).
 #define FFX_QUEUED 4
 
+// Linux: AMD ships no library, so this loads fsr4-vk's amd_fidelityfx_upscaler_vk.so, which exports the ffx-api entry
+// points itself (no loader) and differs from AMD's DLLs in three ways handled below.
+// It reads the device from the SDK's older backend descriptor (create), it wants VK_EXT_descriptor_buffer on the
+// device (vk_ffx_device_exts), and it takes its inputs in SHADER_READ_ONLY_OPTIMAL as COMPUTE_READ (vk_ffx_dispatch)
+#define FFX_SO "amd_fidelityfx_upscaler_vk.so"
+
 static struct {
+#ifdef _WIN32
     HMODULE dll;
+#else
+    void *dll;
+#endif
     PfnFfxCreateContext create;
     PfnFfxDestroyContext destroy;
     PfnFfxQuery query;
@@ -63,6 +64,43 @@ static struct {
 
 int vk_ffx_wanted(void) { return vk_upscaler_engine() == UPSCALER_FSR4; }
 
+#ifndef _WIN32
+int vk_ffx_so_path(char *out, size_t cap) {
+    const char *env = getenv("TOTK_FSR4_LIB");
+    if (env && *env) return snprintf(out, cap, "%s", env) < (int)cap && plat_file_exists(out);
+    char exe[1024];
+    if (!plat_exe_path(exe, sizeof exe)) return 0;
+    char *last = plat_last_sep(exe);
+    if (!last) return 0;
+    return snprintf(out, cap, "%.*s/" FFX_SO, (int)(last - exe), exe) < (int)cap && plat_file_exists(out);
+}
+
+static int loader_load(void) {
+    if (F.tried) return F.loaded;
+    F.tried = 1;
+    char path[1024 + 48], why[256];
+    if (!vk_ffx_so_path(path, sizeof path)) {
+        rt_log("fsr4: no " FFX_SO " next to totk (or at TOTK_FSR4_LIB): the scene upscaler is off");
+        return 0;
+    }
+    F.dll = plat_lib_open(path);
+    if (!F.dll) {
+        plat_lib_error(why, sizeof why);
+        rt_log("fsr4: cannot load %s (%s): the scene upscaler is off", path, why);
+        return 0;
+    }
+    F.create = (PfnFfxCreateContext)plat_lib_sym(F.dll, "ffxCreateContext");
+    F.destroy = (PfnFfxDestroyContext)plat_lib_sym(F.dll, "ffxDestroyContext");
+    F.query = (PfnFfxQuery)plat_lib_sym(F.dll, "ffxQuery");
+    F.dispatch = (PfnFfxDispatch)plat_lib_sym(F.dll, "ffxDispatch");
+    if (!F.create || !F.destroy || !F.query || !F.dispatch) {
+        rt_log("fsr4: %s lacks the ffx-api entry points: the scene upscaler is off", path);
+        return 0;
+    }
+    rt_log("fsr4: loaded %s", path);
+    return F.loaded = 1;
+}
+#else
 static int loader_load(void) {
     if (F.tried) return F.loaded;
     F.tried = 1;
@@ -88,6 +126,7 @@ static int loader_load(void) {
     }
     return F.loaded = 1;
 }
+#endif
 
 static int has(const VkExtensionProperties *have, uint32_t nhave, const char *name) {
     for (uint32_t i = 0; i < nhave; i++)
@@ -110,6 +149,10 @@ void vk_ffx_device_exts(const VkExtensionProperties *have, uint32_t nhave, const
     add(have, nhave, ext, n, max, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
 #ifdef VK_EXT_SHADER_FLOAT8_EXTENSION_NAME
     add(have, nhave, ext, n, max, VK_EXT_SHADER_FLOAT8_EXTENSION_NAME);
+#endif
+#ifndef _WIN32
+    char path[1024 + 48];
+    if (vk_ffx_so_path(path, sizeof path)) add(have, nhave, ext, n, max, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
 #endif
 }
 
@@ -160,7 +203,14 @@ const char *vk_ffx_version(void) { return F.available ? F.version : ""; }
 // Messages from the upscaler (errors and warnings), in UTF-16; into the log as UTF-8.
 static void on_message(uint32_t type, const wchar_t *msg) {
     char s[512];
+#ifdef _WIN32
     if (!msg || !WideCharToMultiByte(CP_UTF8, 0, msg, -1, s, (int)sizeof s, NULL, NULL)) return;
+#else
+    if (!msg) return;
+    size_t i = 0;
+    for (; msg[i] && i < sizeof s - 1; i++) s[i] = msg[i] < 0x80 ? (char)msg[i] : '?';   // fsr4-vk widens ASCII text
+    s[i] = 0;
+#endif
     rt_log("fsr4: %s: %s", type == FFX_API_MESSAGE_TYPE_ERROR ? "error" : "warning", s);
 }
 
@@ -168,6 +218,11 @@ static void on_message(uint32_t type, const wchar_t *msg) {
 // change the scene without a new context), as vk_fsr3.cpp create makes FSR 3.1's.
 static int create(uint32_t ow, uint32_t oh) {
     struct ffxOverrideVersion ov = {.header = {FFX_API_DESC_TYPE_OVERRIDE_VERSION, NULL}, .versionId = F.version_id};
+#ifndef _WIN32
+    struct ffxCreateBackendVKDesc old_be = {
+        .header = {FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK_DEPRECATED, NULL}, .deviceContext = F.dev};
+    ov.header.pNext = &old_be.header;
+#endif
     struct ffxCreateContextDescUpscaleVersion ver = {
         .header = {FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION, &ov.header}, .version = FFX_UPSCALER_VERSION};
     struct ffxCreateBackendVKDesc be = {.header = {FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK, &ver.header},
@@ -224,6 +279,31 @@ static struct FfxApiResource resource(const VkFfxImage *im, uint32_t usage, uint
     return r;
 }
 
+#ifndef _WIN32
+#define FFX_READ_STATE FFX_API_RESOURCE_STATE_COMPUTE_READ
+
+static void input_layouts(VkCommandBuffer cb, const VkFfxDispatch *d, VkImageLayout from, VkImageLayout to) {
+    const VkFfxImage *in[3] = {&d->color, &d->depth, &d->mv};
+    VkImageMemoryBarrier2 b[3];
+    for (int i = 0; i < 3; i++)
+        b[i] = (VkImageMemoryBarrier2){
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+            .oldLayout = from, .newLayout = to,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = in[i]->image,
+            .subresourceRange = {i == 1 ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 3,
+                           .pImageMemoryBarriers = b};
+    vkCmdPipelineBarrier2(cb, &di);
+}
+#else
+#define FFX_READ_STATE FFX_API_RESOURCE_STATE_GENERIC_READ
+#endif
+
 // With the game's two or three frames in flight the dispatch FFX_QUEUED - 1 back is long done; should it not be, its
 // submission is waited for here (counted), as vk_fsr3.cpp wait_ring does for FSR 3.1.
 static void wait_ring(uint64_t fence) {
@@ -258,9 +338,9 @@ int vk_ffx_dispatch(VkCommandBuffer cb, const VkFfxDispatch *d) {
     memset(&u, 0, sizeof u);
     u.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;
     u.commandList = (void *)cb;
-    u.color = resource(&d->color, FFX_API_RESOURCE_USAGE_READ_ONLY, FFX_API_RESOURCE_STATE_GENERIC_READ);
-    u.depth = resource(&d->depth, FFX_API_RESOURCE_USAGE_DEPTHTARGET, FFX_API_RESOURCE_STATE_GENERIC_READ);
-    u.motionVectors = resource(&d->mv, FFX_API_RESOURCE_USAGE_READ_ONLY, FFX_API_RESOURCE_STATE_GENERIC_READ);
+    u.color = resource(&d->color, FFX_API_RESOURCE_USAGE_READ_ONLY, FFX_READ_STATE);
+    u.depth = resource(&d->depth, FFX_API_RESOURCE_USAGE_DEPTHTARGET, FFX_READ_STATE);
+    u.motionVectors = resource(&d->mv, FFX_API_RESOURCE_USAGE_READ_ONLY, FFX_READ_STATE);
     u.output = resource(&d->out, FFX_API_RESOURCE_USAGE_UAV, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
     // (no reactive or transparency mask: FSR 3.1 gets none either)
     u.jitterOffset = (struct FfxApiFloatCoords2D){d->jx, d->jy};
@@ -276,7 +356,13 @@ int vk_ffx_dispatch(VkCommandBuffer cb, const VkFfxDispatch *d) {
     u.cameraFar = d->cam_far;
     u.cameraFovAngleVertical = d->fov_y;
     u.viewSpaceToMetersFactor = 1.0f;   // TotK's world units are metres
+#ifndef _WIN32
+    input_layouts(cb, d, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+#endif
     ffxReturnCode_t r = F.dispatch(&F.ctx, &u.header);
+#ifndef _WIN32
+    input_layouts(cb, d, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+#endif
     F.n++;
     if (r != FFX_API_RETURN_OK) {
         rt_log("fsr4: dispatch failed (%u) at %ux%u -> %ux%u: FSR 4 off for this run", (unsigned)r, d->color.width,
@@ -293,4 +379,3 @@ void vk_ffx_release(void) {
     if (F.waits) rt_log("fsr4: %llu dispatches waited for an earlier one's submission", (unsigned long long)F.waits);
     destroy();
 }
-#endif

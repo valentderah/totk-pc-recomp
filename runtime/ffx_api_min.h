@@ -186,6 +186,8 @@ struct ffxCreateBackendVKDesc {
     ffxCreateContextDescHeader header;
     VkDeviceContext deviceContext;
 };
+// The SDK's older backend descriptor, with the same members (ffxCreateBackendVKDesc before FSR SDK 2.0)
+#define FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK_DEPRECATED 0x0000003u
 
 // ---- upscalers/include/ffx_upscale.h
 #define FFX_UPSCALER_MAKE_VERSION(major, minor, patch) (((major) << 22) | ((minor) << 12) | (patch))

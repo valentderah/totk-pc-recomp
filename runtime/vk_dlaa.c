@@ -111,20 +111,13 @@ static int p_getp(const NgxParam *p, const char *n, void **v) { return NGX_OK(((
 
 // The scene upscaler picked at start (scene_upscaler; without it dlaa = 1 is DLSS): a restart applies another. AMD FSR
 // 3.1 (vk_fsr3.cpp) and FSR 4 (vk_ffx.c) take the same inputs at the same point of the frame as DLSS; FSR 3.1 runs on
-// any GPU, FSR 4 on Windows where AMD's libraries offer it for the GPU (vk_ffx_init). AMD ships those libraries for
-// Windows only, so elsewhere fsr4 is off.
+// any GPU, FSR 4 where AMD's libraries (Windows) or fsr4-vk's (Linux) offer it for the GPU (vk_ffx_init).
 int vk_upscaler_engine(void) {
     static int e = -1;
     if (e < 0) {
         const char *v = cfg_scene_upscaler();
         e = !strcmp(v, "dlss") ? UPSCALER_DLSS : !strcmp(v, "fsr3") ? UPSCALER_FSR3
           : !strcmp(v, "fsr4") ? UPSCALER_FSR4 : UPSCALER_OFF;
-#ifndef _WIN32
-        if (e == UPSCALER_FSR4) {
-            rt_log("dlaa: scene_upscaler = fsr4 runs on Windows only (AMD's FSR SDK has no Linux libraries): off");
-            e = UPSCALER_OFF;
-        }
-#endif
     }
     return e;
 }
@@ -393,13 +386,9 @@ int vk_upscaler_running(void) {
 // FSR 4, so another Radeon shows only after that start). FSR 3.1 is built in.
 int vk_upscaler_missing(int engine) {
     if (engine == UPSCALER_FSR4) {
-#ifndef _WIN32
-        return UPSCALER_MISSING_OS;
-#else
         if (!res_ffx_dlls()) return UPSCALER_MISSING_DLL;
         if (vk_ffx_tried()) return vk_ffx_available() ? 0 : UPSCALER_MISSING_GPU;
         return vk_ctx()->props.vendorID == 0x1002 ? 0 : UPSCALER_MISSING_GPU;
-#endif
     }
     if (engine != UPSCALER_DLSS) return 0;
     if (!res_dlss_dll()) return UPSCALER_MISSING_DLL;

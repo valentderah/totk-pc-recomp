@@ -335,9 +335,10 @@
 # The temporal upscaler for the 3D scene: off (the game's own scaling and FXAA), dlss (NVIDIA DLSS, on NVIDIA RTX GPUs
 # with the DLSS model from NVIDIA's DLSS SDK next to the executable: Windows nvngx_dlss.dll next to totk.exe; Linux
 # libnvidia-ngx-dlss.so.<version> next to totk, with the NVIDIA driver's libnvidia-ngx.so.1 installed), fsr3 (AMD FSR
-# 3.1 from AMD's FidelityFX SDK, on any GPU) or fsr4 (AMD FSR 4, Windows only, on the Radeon GPUs AMD's FSR SDK
-# libraries offer it for, with amd_fidelityfx_loader_vk.dll and amd_fidelityfx_upscaler_vk.dll next to totk.exe, which
-# the setup downloads; without FSR 4 for the GPU the log says so and the scene upscaler is off). FSR below native (dlss =
+# 3.1 from AMD's FidelityFX SDK, on any GPU) or fsr4 (AMD FSR 4, on the Radeon GPUs AMD's FSR SDK libraries offer it
+# for, with amd_fidelityfx_loader_vk.dll and amd_fidelityfx_upscaler_vk.dll next to totk.exe, which the setup
+# downloads; on Linux with fsr4-vk's amd_fidelityfx_upscaler_vk.so next to totk or at TOTK_FSR4_LIB, which you build
+# yourself; without FSR 4 for the GPU the log says so and the scene upscaler is off). FSR below native (dlss =
 # quality and down) pays where the GPU limits the frame rate: integrated GPUs, weak cards, 4K output; where the CPU
 # limits it, its own GPU and CPU time make the game slower. An engine that cannot run here leaves the game's own scaling
 # in place. The HUD is drawn after it, at the output size, and is not touched. The present's upscaler and sharpness
