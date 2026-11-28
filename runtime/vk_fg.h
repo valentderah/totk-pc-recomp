@@ -1,10 +1,10 @@
 // AMD FSR 3 frame generation (vk_fg.cpp): the FidelityFX SDK 1.1.4's frame interpolation and optical flow
 // (third_party/FidelityFX, MIT) on its Vulkan backend. Plain C interface: the SDK is C++.
 //
-// The frame's inputs come from the replay (vk_dlaa.c follows the scene for it, with DLSS off): at the scene's end the
-// camera motion vectors and the SDK's prepare step (vk_fg_prepare), before the HUD's first draw the picture without
-// the HUD (vk_fg_hudless), at the end of the submission that copied the picture into the window texture the optical
-// flow and the interpolation (vk_fg_generate). All of it goes into the replay's command buffer. On an HDR10 swapchain
+// The frame's inputs come from the replay (vk_dlaa.c follows the scene for it): at the scene's end, or with a scene
+// upscaler where that runs, the motion vectors and the SDK's prepare step (vk_fg_prepare), before the HUD's first draw
+// the picture without the HUD (vk_fg_hudless), at the end of the submission that copied the picture into the window
+// texture the optical flow and the interpolation (vk_fg_generate). All of it goes into the replay's command buffer. On an HDR10 swapchain
 // the float picture the window texture is copied from stands in for the window texture (vk_fg.cpp's header).
 #pragma once
 
@@ -28,10 +28,10 @@ int vk_fg_active(void);
 // vk_device.c destroy_all, before the device goes away; harmless when nothing was made.
 void vk_fg_release(void);
 
-// vk_dlaa.c vk_dlaa_frame, once per present: 1 when frame generation follows the scene in the next frame. 0 while
-// DLSS runs (dlss), with replay workers (the inputs are per frame and recorded in replay order),
-// or while the game shows a menu without its world (vk_fg_menu); each reason is logged once.
-int vk_fg_wanted(int dlss);
+// vk_dlaa.c vk_dlaa_frame, once per present: 1 when frame generation follows the scene in the next frame. 0 with
+// replay workers (the inputs are per frame and recorded in replay order), or while the game shows a
+// menu without its world (vk_fg_menu); each reason is logged once.
+int vk_fg_wanted(void);
 // vk_dlaa.c, the game's thread at each present: 1 while the map or a loading or event fade is open (sampled there,
 // read by vk_fg_wanted).
 void vk_fg_menu(int open);
@@ -41,6 +41,8 @@ typedef struct {
     VkImage depth, mv;          // D32F scene depth (level 0, layer 0) and RG16F camera motion, w x h, GENERAL: last
                                 // frame's window position minus this frame's, scene pixels (vk_dlaa.c mv_pass)
     uint32_t w, h;              // the scene's size
+    float jx, jy;               // the jitter the scene was drawn with, as the scene upscaler gets it (0 without one):
+                                // the depth carries it, the motion does not
     uint32_t ow, oh;            // the output's (the window texture's)
     float near_m, far_m, fov_y; // the camera's planes (far 0: none) and vertical field of view (radians)
     int inverted, infinite;     // device depth 1 is the near plane; the far plane is at infinity

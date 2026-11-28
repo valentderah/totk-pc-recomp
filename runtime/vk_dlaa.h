@@ -32,7 +32,7 @@ void vk_dlaa_pass(VkExec *ex);
 int vk_dlaa_plan(const VkExec *ex, VkExecJob *j);
 void vk_dlaa_exec(VkExec *ex, const VkExecJob *j);
 void vk_dlaa_frame(void);
-// Frame generation without DLSS (vk_dlaa.c, "frame generation"), sequential replay: vk_dlaa_hud before each draw once
+// Frame generation (vk_dlaa.c, "frame generation"), sequential replay: vk_dlaa_hud before each draw once
 // its pass has begun (vk_exec_draw.c prepare_draw, while vk_dlaa_fg_on), vk_dlaa_sub_end at the end of each
 // submission's replay with no pass open (vk_exec.c vk_exec_record).
 extern int vk_dlaa_fg_on;

@@ -9,9 +9,11 @@
 // the parameters of fg_dispatch's three calls; its exec.c vk_fg_generate for the camera, the cut test and the HUD-less
 // copy's encoding.
 //
-// Per frame, all in the replay's command buffer (vk_dlaa.c finds the places, with DLSS off):
+// Per frame, all in the replay's command buffer (vk_dlaa.c finds the places):
 // 1. vk_fg_prepare at the scene's end: the SDK dilates the scene's depth and the camera motion vectors (made there by
-//    vk_dlaa.c mv_pass, at the scene's size), and reconstructs the previous frame's depth from them.
+//    vk_dlaa.c mv_pass, at the scene's size), and reconstructs the previous frame's depth from them. With a scene
+//    upscaler (FSR 3.1, FSR 4; not beside DLSS yet, vk_dlaa_frame) it runs where the upscaler does, on the upscaler's
+//    depth and motion vectors, and the pictures of steps 2 and 3 are the upscaled ones.
 // 2. vk_fg_hudless before the HUD's first draw: the game's float picture, blitted into an R8G8B8A8_SRGB image (the
 //    blit encodes as the game's last draw encodes the picture into its sRGB window texture) and copied byte for byte
 //    into an RGBA8 UNORM image, which the SDK reads. Its bytes then equal the window texture's wherever the HUD is not,
@@ -343,7 +345,7 @@ extern "C" int vk_fg_active(void) { return g.live && vk_fg_engine() != VK_FG_OFF
 
 extern "C" void vk_fg_menu(int open) { __atomic_store_n(&g.menu, open, __ATOMIC_RELAXED); }
 
-extern "C" int vk_fg_wanted(int dlss) {
+extern "C" int vk_fg_wanted(void) {
     if (vk_fg_engine() != VK_FG_FSR3) return 0;
     if (!started) start();   // turned on in the menu: the contexts now; the first prepare makes them for the scene
     if (!g.live || g.failed) return 0;
@@ -351,11 +353,11 @@ extern "C" int vk_fg_wanted(int dlss) {
     // sync_ahead only moves the game's frame wait; the replay and the presents keep their order, and the replay's
     // next submission waits until the present thread submitted the blit (vk_backend.c submit_sync, vk_present_drain),
     // so out[] and hl[] alternate safely with it on.
-    int why = dlss ? 1 : g.workers > 0 ? 2 : 0;
+    int why = g.workers > 0 ? 1 : 0;
     if (why) {
         if (!(g.said & 1u << why)) {
             g.said |= 1u << why;
-            static const char *const r[] = {"", "DLSS runs (dlaa = 1)", "the replay records in chunks (replay_workers > 0)"};
+            static const char *const r[] = {"", "the replay records in chunks (replay_workers > 0)"};
             rt_log("fg: frame generation off while %s", r[why]);
         }
         return 0;
@@ -636,8 +638,9 @@ extern "C" int vk_fg_prepare(VkCommandBuffer cb, const VkFgScene *s) {
     pd.commandList = ffxGetCommandListVK(cb);
     pd.renderSize = {s->w, s->h};
     // the vectors are last frame's window position minus this frame's in scene pixels, y down: the SDK's convention
-    // at a scale of one (its constant divides by the render size); no jitter without an upscaler
+    // at a scale of one (its constant divides by the render size)
     pd.motionVectorScale = {1.0f, 1.0f};
+    pd.jitterOffset = {s->jx, s->jy};
     pd.frameTimeDelta = g.dt_ms;
     pd.cameraNear = s->near_m;
     pd.cameraFar = s->far_m;
