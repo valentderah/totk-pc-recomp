@@ -293,6 +293,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_AUDIO_DEVICE_DEFAULT] = "System default",
 
     [UI_MENU_MOTION] = "Motion controls", [UI_MENU_MOTION_DESC] = "Aiming with the controller's gyroscope.",
+    [UI_MENU_MOTION_DISABLED] = "disabled",
+    [UI_MENU_MOTION_NATIVE] = "native",
+    [UI_MENU_MOTION_DSU] = "dsu",
     [UI_MENU_GYRO_CALIBRATION] = "Gyro bias calibration",
     [UI_MENU_GYRO_CALIBRATION_DESC] = "Subtracts the controller's resting drift, measured with the calibrate row "
                                       "below. The measured values stay saved when this is off.",

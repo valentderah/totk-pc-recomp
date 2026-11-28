@@ -63,7 +63,7 @@ enum { REST_WIN = 64 };
 struct MotionFusion {
     PlatMutex lock;
     MotionState ring[MOTION_RING];
-    uint64_t produced, last_ns;
+    uint64_t produced, last_kern_time, last_sensor_ts;
     uint64_t first;   // produced at the last restart: older samples are not read
     double R[3][3];   // controller -> reference; row i = reference axis i in controller coordinates
     double angle[3];
@@ -138,6 +138,7 @@ static void align_to(double R[3][3], const double acc[3]) {
     memcpy(R[0], x, sizeof x);
     orthonormalize(R);
 }
+
 // Body-frame rate: R = R * exp([w] dt), the rate plus the gravity pull.
 static void integrate(double R[3][3], const double gyro[3], const double acc[3], double dt) {
     double w[3] = {gyro[0], gyro[1], gyro[2]}, n = norm3(acc);
@@ -267,7 +268,7 @@ static void save_bias(const double bias[3], const char *pad, double spread) {
 // released. A bias that is already in effect stays in effect and the row keeps reporting it; a controller with no
 // bias shows the failure.
 static int calib_check_timeout(MotionFusion *m, uint64_t now) {
-    uint64_t since = m->last_ns > m->calib_start_ns ? m->last_ns : m->calib_start_ns;
+    uint64_t since = m->last_kern_time > m->calib_start_ns ? m->last_kern_time : m->calib_start_ns;
     if (!m->calibrating || now <= since || now - since <= CALIB_TIMEOUT_NS) return 0;
     m->calibrating = 0;
     m->calib_result = m->bias_valid ? MOTION_CALIB_DONE : MOTION_CALIB_FAILED;
@@ -320,7 +321,7 @@ static int calib_sample(MotionFusion *m, const double g[3], double *spread) {
     return 1;
 }
 
-void motion_feed(MotionFusion *m, const double acc[3], const double gyro_raw[3], uint64_t now) {
+void motion_feed_ts(MotionFusion *m, const double acc[3], const double gyro_raw[3], uint64_t now, uint64_t ts) {
     // Read before the lock: a settings change takes cfg.c's lock.
     const int calib_on = motion_calibration_enabled(), auto_on = motion_auto_bias_enabled();
     double saved[3] = {0, 0, 0}, spread = 0, drift[3] = {0, 0, 0};
@@ -328,7 +329,7 @@ void motion_feed(MotionFusion *m, const double acc[3], const double gyro_raw[3],
     int ended = 0, timed_out = 0, samples = 0, settled = 0;
     uint64_t started = 0;
     plat_mutex_lock(&m->lock);
-    double dt = m->last_ns && now > m->last_ns ? (double)(now - m->last_ns) / 1e9 : 0.004;
+    double dt = m->last_sensor_ts && now > m->last_kern_time ? (double)(ts - m->last_sensor_ts) / 1e9 : 0.004;
     if (dt > 0.05) {   // a gap (no controller, sensors were off): no integration and no rest across it
         dt = 0.004;
         m->rest_s = 0;
@@ -352,7 +353,9 @@ void motion_feed(MotionFusion *m, const double acc[3], const double gyro_raw[3],
             snprintf(saved_pad, sizeof saved_pad, "%s", m->calib_pad);
         }
     }
-    m->last_ns = now;   // after the timeout check, which measures the gap before this sample
+    // after the timeout check, which measures the gap before this sample
+    m->last_kern_time = now;
+    m->last_sensor_ts = ts;
     // The bias applies only while the switch is on; with no bias measured it is zero and the gyro passes unchanged.
     double gyro[3];
     for (int i = 0; i < 3; i++) gyro[i] = gyro_raw[i] - (calib_on ? m->gyro_bias[i] : 0);
@@ -400,11 +403,15 @@ unlock:
     }
 }
 
+void motion_feed(MotionFusion *m, const double acc[3], const double gyro_raw[3], uint64_t now) {
+    motion_feed_ts(m, acc, gyro_raw, now, now);
+}
+
 int motion_read(MotionFusion *m, MotionState *out, int max, uint64_t now) {
     if (max <= 0) return 0;
     int n = 0;
     plat_mutex_lock_shared(&m->lock);
-    if (m->produced > m->first && (now < m->last_ns || now - m->last_ns < STALE_NS)) {
+    if (m->produced > m->first && (now < m->last_kern_time || now - m->last_kern_time < STALE_NS)) {
         uint64_t have = m->produced - m->first < MOTION_RING ? m->produced - m->first : MOTION_RING;
         n = (int)(have < (uint64_t)max ? have : (uint64_t)max);
         for (int i = 0; i < n; i++) out[i] = m->ring[(m->produced - 1 - (uint64_t)i) % MOTION_RING];
@@ -417,7 +424,8 @@ void motion_restart(MotionFusion *m) {
     plat_mutex_lock(&m->lock);
     m->restart = 1;
     m->first = m->produced;
-    m->last_ns = 0;   // the first sample after the restart integrates nothing across the stop
+    m->last_kern_time = 0;   // the first sample after the restart integrates nothing across the stop
+    m->last_sensor_ts = 0;
     memset(m->angle, 0, sizeof m->angle);
     plat_mutex_unlock(&m->lock);
 }

@@ -447,8 +447,12 @@
 # audio_device = default
 
 [input]
-# Gamepad motion controls (0 = off) and vibration (0 = off).
-# motion = 1
+# Gamepad motion controls. Set to disabled if you don't need. Set to native if
+# your gamepad motion is supported by SDL. Set to dsu if you are using motion
+# control via Cemuhook/DSU protocal.
+# motion = native
+# The port the Cemuhook/DSU server runs on. You only look at it when motion = dsu.
+# dsu_port = 26760
 # Gyro bias calibration (1 = on): the Controls tab's "Calibrate gyro" row measures the controller's resting drift over
 # two seconds and subtracts it from the gyro readings, which removes the yaw drift; an attempt where the controller
 # moved is rejected and the row says so. Nothing changes until a controller is calibrated. Off, the fusion takes the raw

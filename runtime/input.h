@@ -146,10 +146,18 @@ uint16_t rumble_motor(float a, float curve, float strength);
 // TOTK_RUMBLE_TRIGGERS=1: input_rumble also drives the impulse triggers (Xbox) with the high motor's value.
 int input_rumble_triggers_enabled(void);
 
-// Motion (TOTK_MOTION=0 turns it off, live). input_motion_start starts the sensor thread once: every 4 ms it reads the
-// gamepad's gyro and accelerometer (when it has them) and feeds motion_global(). Callable from any thread.
+
+// Start the motion thread that feeds motion_global() with the six-axis sensor
+// data if any. Callable from any thread.
+//
+// TOTK_MOTION comes with three modes. We do a different poll for each mode.
+// TOTK_MOTION is a live option. Each poll ends when the option is changed.
+// Here are what we do in the poll loop for each TOTK_MOTION mode:
+// - TOTK_MOTION=disabled: Do nothing.
+// - TOTK_MOTION=native: Feed motion data from an availabel SDL gamepad.
+// - TOTK_MOTION=dsu: Feed motion data from the Cemuhook/DSU server.
 void input_motion_start(void);
-// TOTK_MOTION is not "0" (a live setting: read again when cfg_version changes). Off: the sensor reads at rest.
+// TOTK_MOTION is not "disabled" (a live setting: read again when cfg_version changes). Off: the sensor reads at rest.
 int input_motion_enabled(void);
 // The Controls tab's Calibrate gyro row: start a bias measurement on the open gamepad (starts the sensor thread when
 // the game has not yet). Callable from any thread.
@@ -182,7 +190,8 @@ _Static_assert(sizeof(MotionState) == 0x60, "SixAxisSensorState ABI");
 typedef struct MotionFusion MotionFusion;
 MotionFusion *motion_new(void);
 MotionFusion *motion_global(void);   // the gamepad's, fed by input_win.c
-void motion_feed(MotionFusion *m, const double acc_g[3], const double gyro_rad_s[3], uint64_t now_ns);
+void motion_feed_ts(MotionFusion *m, const double acc_g[3], const double gyro_rad_s[3], uint64_t kern_now, uint64_t ts);
+void motion_feed(MotionFusion *m, const double acc_g[3], const double gyro_rad_s[3], uint64_t kern_now);
 int motion_read(MotionFusion *m, MotionState *out, int max, uint64_t now_ns);   // newest first; 0 = none in 200 ms
 void motion_restart(MotionFusion *m);   // angle and direction start over at the next sample
 // Start a bias measurement at now_ns: samples while the controller rests, then the bias or a rejection (MOTION_CALIB_*).
