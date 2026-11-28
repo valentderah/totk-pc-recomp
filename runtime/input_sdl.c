@@ -31,6 +31,7 @@ static float rem_x, rem_y;                    // window thread: the fractions SD
 static volatile int32_t mouse_travel;         // raw counts moved in total, captured or not (ikb_mouse_travel)
 static float travel_rem;                      // window thread: the fraction of a count beyond mouse_travel
 static volatile int32_t captured;             // relative mouse mode is on
+static volatile uint32_t capture_generation;  // successful captures, including those between input polls
 // The pointer's place in the window, as fractions of its size packed 32.32 fixed point (x in the high word), written
 // by the window thread from the mouse events and read by the game thread (menu_cursor.c through ikb_pointer).
 // ptr_have is 0 whenever the pointer is not over the window, as the Win32 back end's client-rect test.
@@ -145,6 +146,7 @@ static void cursor_apply(void) {
     plat_xchg32(&mouse_dx, 0);
     plat_xchg32(&mouse_dy, 0);
     rem_x = rem_y = 0;
+    if (want) __atomic_add_fetch(&capture_generation, 1u, __ATOMIC_RELEASE);
     plat_xchg32(&captured, want);
     if (!want) gameplay_tweaks_reset();
 }
@@ -330,7 +332,8 @@ void input_sdl_event(const SDL_Event *e) {
 int ikb_foreground(void) { return focused != 0; }
 int ikb_down(int key) { return key > 0 && key < KEY_COUNT && key_held[key]; }
 int ikb_escape(void) { return esc_held != 0; }
-int ikb_captured(void) { return captured != 0; }
+int ikb_captured(void) { return __atomic_load_n(&captured, __ATOMIC_ACQUIRE) != 0; }
+unsigned ikb_capture_generation(void) { return __atomic_load_n(&capture_generation, __ATOMIC_ACQUIRE); }
 
 // The pointer's place in the window as fractions of its size (menu_cursor.c maps them onto the picture the present
 // drew). 0 whenever the pointer is not over this window or the window has not the focus, as the Win32 back end's

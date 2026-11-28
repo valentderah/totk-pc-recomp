@@ -998,21 +998,27 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             // (the click that refocused the window) is ignored until it is released. While a game menu has the pointer
             // (menu_cursor.c) and it is over the window, the left and right buttons are that menu's A and B, and the
             // middle and side buttons keep their bindings: bound to L and R they turn the menu's tabs.
-            static int was_captured;
+            // Focus can leave and return between polls, so the backend reports each capture rather than its state alone.
+            static unsigned capture_seen;
             static uint8_t mouse_ignore[KEY_COUNT];
             int cap = ikb_captured();
+            unsigned capture = ikb_capture_generation();
             float pointer_x, pointer_y;
             int menu_pointer = !cap && menu_cursor_pointer() && ikb_pointer(&pointer_x, &pointer_y);
             for (int k = 1; k < KEY_COUNT; k++) {
                 down[k] = ikb_down(k);
                 kbm_used |= down[k];
                 if (k < KEY_MOUSE_L || k > KEY_MOUSE_X2) continue;
-                if (cap && !was_captured) mouse_ignore[k] = down[k];
+                if (cap && capture != capture_seen) mouse_ignore[k] = down[k];
                 if (!down[k]) mouse_ignore[k] = 0;
                 int counts = cap || (menu_pointer && k != KEY_MOUSE_L && k != KEY_MOUSE_R);
                 if (!counts || mouse_ignore[k]) down[k] = 0;
             }
-            was_captured = cap;
+            // A complete focus transition can also race the button reads above. Do not use that mixed snapshot
+            // or consume its generation: the next stable captured poll will suppress any activation buttons.
+            if (cap != ikb_captured() || capture != ikb_capture_generation()) {
+                for (int k = KEY_MOUSE_L; k <= KEY_MOUSE_X2; k++) down[k] = 0;
+            } else if (cap) capture_seen = capture;
             // On the Purah Pad's map (menu_cursor.c finds it, TOTK_MAP_CLICK) the left mouse button presses A at the
             // map's cursor, which the mouse moves there, instead of its binding (Y by default). A press is one or the
             // other from the moment it goes down until it is released, so a button held as the map opens or closes
