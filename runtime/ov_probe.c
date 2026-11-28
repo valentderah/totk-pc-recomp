@@ -1012,31 +1012,45 @@ static void probe_fonts(void) {
            (unsigned long long)addr, (unsigned long long)size, path);
 }
 
-// The host catalog (ui_text.c): every menu id has its own English, Russian, Brazilian Portuguese and Simplified
-// Chinese text, the software keyboard keeps its game-language rows, and menu_text follows TOTK_MENU_LANG.
+// The host catalog (ui_text.c): every menu id has its own English, Russian, Brazilian Portuguese, Simplified Chinese
+// and Vietnamese text, every menu language's text fits the description pane and keeps the English conversions of the
+// overlay formats, the software keyboard keeps its game-language rows, and menu_text follows TOTK_MENU_LANG.
 static void probe_menu_text(void) {
     static const char *const langs[] = {"en", "ja", "fr", "de", "it", "es", "nl", "pt", "ru", "zh-Hans", "zh-Hant", "ko",
-                                        "pt-BR"};
+                                        "pt-BR", "vi"};
+    static const char *const menu_langs[] = {"de", "fr", "es", "it", "nl", "ja", "ko", "vi"};
     for (int id = UI_MENU_FIRST; id <= UI_MENU_LAST_ID; id++) {
         CHECK(ui_text_defined("en", (UiTextId)id) && ui_text_defined("ru", (UiTextId)id) &&
-              ui_text_defined("pt-BR", (UiTextId)id), "menu text id %d lacks en, ru or pt-BR", id);
+              ui_text_defined("pt-BR", (UiTextId)id) && ui_text_defined("vi", (UiTextId)id),
+              "menu text id %d lacks en, ru, pt-BR or vi", id);
         CHECK(*ui_text_in("en", (UiTextId)id) && *ui_text_in("ru", (UiTextId)id) && *ui_text_in("pt-BR", (UiTextId)id),
               "menu text id %d is empty", id);
         // the description pane keeps the whole text and a note after it (option_rows.cpp desc_set)
         CHECK(strlen(ui_text_in("en", (UiTextId)id)) + 256 < UI_DESC_BYTES &&
               strlen(ui_text_in("ru", (UiTextId)id)) + 256 < UI_DESC_BYTES &&
               strlen(ui_text_in("pt-BR", (UiTextId)id)) + 256 < UI_DESC_BYTES &&
-              strlen(ui_text_in("zh-Hans", (UiTextId)id)) + 256 < UI_DESC_BYTES,
+              strlen(ui_text_in("zh-Hans", (UiTextId)id)) + 256 < UI_DESC_BYTES &&
+              strlen(ui_text_in("vi", (UiTextId)id)) + 256 < UI_DESC_BYTES,
               "menu text id %d is too long for the description pane", id);
+        for (size_t i = 0; i < sizeof menu_langs / sizeof *menu_langs; i++)
+            CHECK(strlen(ui_text_in(menu_langs[i], (UiTextId)id)) + 256 < UI_DESC_BYTES,
+                  "menu text id %d is too long for the description pane in %s", id, menu_langs[i]);
         CHECK(ui_text_defined("zh-Hans", (UiTextId)id), "menu text id %d lacks Simplified Chinese", id);
     }
     CHECK(!ui_text_defined("en", UI_TEXT_COUNT) && !*ui_text_in("ru", UI_TEXT_COUNT), "an id past the catalog gives text");
-    // other languages fall back to English for the menu, and keep their own keyboard texts
-    CHECK(!strcmp(ui_text_in("ja", UI_MENU_CONTINUE), ui_text_in("en", UI_MENU_CONTINUE)), "ja menu text is not English");
+    // the other game languages have their own menu text; Traditional Chinese falls back to English in the catalog
+    for (size_t i = 0; i < sizeof menu_langs / sizeof *menu_langs; i++) {
+        CHECK(ui_text_defined(menu_langs[i], UI_MENU_TITLE) && ui_text_defined(menu_langs[i], UI_MENU_CONTINUE),
+              "%s has no menu text", menu_langs[i]);
+        CHECK(strstr(ui_text_in(menu_langs[i], UI_MENU_OV_GAME_PCT), "%.0f%%"), "%s overlay format lost its conversion",
+              menu_langs[i]);
+    }
+    CHECK(!strcmp(ui_text_in("zh-Hant", UI_MENU_CONTINUE), ui_text_in("en", UI_MENU_CONTINUE)),
+          "zh-Hant menu text is not English");
     CHECK(!strcmp(ui_text_in("ru", UI_SWKBD_OK), "ОК") && !strcmp(ui_text_in("de", UI_SWKBD_CANCEL), "Abbrechen") &&
           !strcmp(ui_text_in("en", UI_SWKBD_OK), "OK"), "keyboard texts changed");
     // language names: the same string in every row
-    for (int id = UI_MENU_LANGNAME_EN; id <= UI_MENU_LANGNAME_ES_419; id++)
+    for (int id = UI_MENU_LANGNAME_EN; id <= UI_MENU_LANGNAME_VI; id++)
         for (size_t i = 1; i < sizeof langs / sizeof *langs; i++)
             CHECK(!strcmp(ui_text_in(langs[i], (UiTextId)id), ui_text_in("en", (UiTextId)id)), "language name %d differs in %s", id, langs[i]);
     CHECK(!strcmp(ui_text_in("en", UI_MENU_LANGNAME_RU), "Русский"), "Russian is not shown as Russian");
@@ -1075,15 +1089,24 @@ static void probe_menu_text(void) {
     CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("en", UI_MENU_CONTINUE), "menu_text did not follow MENU_LANG=en");
     cfg_set("TOTK_MENU_LANG", "zh-Hans");
     CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("zh-Hans", UI_MENU_TITLE), "menu_text ignores MENU_LANG=zh-Hans");
+    cfg_set("TOTK_MENU_LANG", "ja");
+    CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("ja", UI_MENU_TITLE), "menu_text ignores MENU_LANG=ja");
+    cfg_set("TOTK_MENU_LANG", "de-DE");
+    CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("de", UI_MENU_TITLE), "menu_text ignores MENU_LANG=de-DE");
+    // Traditional Chinese (zh-TW, zh-HK) reads the Simplified Chinese menu
+    cfg_set("TOTK_MENU_LANG", "zh-TW");
+    CHECK(menu_text(UI_MENU_TITLE) == ui_text_in("zh-Hans", UI_MENU_TITLE), "zh-TW does not get the zh-Hans menu");
     cfg_set("TOTK_MENU_LANG", "");
-    // the system language as ui_text.c resolve_menu_lang takes it: the tag, else its base language (ru-RU: ru), else en
+    // the system language as ui_text.c resolve_menu_lang takes it: the tag, else its base language (ru-RU: ru), else
+    // Simplified Chinese for any Chinese, else en
     const char *sys_lang = ui_text_lang(plat_ui_language());
     char sys_base[16] = "";
     size_t base_n = strcspn(sys_lang, "-");
     if (sys_lang[base_n] && base_n < sizeof sys_base) memcpy(sys_base, sys_lang, base_n);
-    const char *auto_lang = ui_text_defined(sys_lang, UI_MENU_TITLE) ? sys_lang
+    const char *auto_lang = ui_text_defined(sys_lang, UI_MENU_TITLE)                    ? sys_lang
                             : *sys_base && ui_text_defined(sys_base, UI_MENU_TITLE) ? sys_base
-                                                                                      : "en";
+                            : !strncmp(sys_lang, "zh", 2)                           ? "zh-Hans"
+                                                                                    : "en";
     CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in(auto_lang, UI_MENU_CONTINUE), "menu_text auto ignores the system language");
 }
 

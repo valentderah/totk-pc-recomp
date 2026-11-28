@@ -1,6 +1,7 @@
 # Building from source
 
-Windows 10 or later, an x86-64 CPU with SSE4.2, and a GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`. The
+Windows 10 or later, an x86-64 CPU with SSE4.2, and a GPU with Vulkan 1.3; `VK_EXT_external_memory_host` is recommended (without it CPU-visible pools get shadow storage,
+slower and larger, see `vk_no_host_import` in [settings.md](settings.md)). The
 default build targets x86-64-v3 (AVX2/FMA); a CPU without them builds with `--cpu v2` instead and runs slower (see
 "Build"). Allow about 60 GB for the work folder. Extraction wants about 55 GB free while it runs and keeps about 35 GB
 afterwards.
@@ -77,6 +78,9 @@ of them.
    ```powershell
    .venv-py314\Scripts\python tools\extract.py
    ```
+
+   `--skip-base-romfs` leaves out the base game's 17 GB RomFS image (`extracted0omfs`): no build step reads it, and
+   the update merge verifies what it takes from the base game file. Only a build of 1.0.0 itself needs it.
 
 4. Shader translator (no game files; again after a change to its sources, and `tools\make_release.py` stops on an older
    one). This publishes `build\xlate\totk_xlate.exe`:
@@ -193,7 +197,7 @@ Vega 7 of a Ryzen 5 4600G at about 34 fps). Long play sessions and the Steam Dec
 Requirements:
 
 - Linux 6.7 or later: the write watch uses userfaultfd write protection with `PAGEMAP_SCAN`. SteamOS 3.8 qualifies.
-- A Vulkan 1.3 driver with `VK_EXT_external_memory_host` (RADV, NVIDIA).
+- A Vulkan 1.3 driver (RADV, NVIDIA). Linux uses shadow storage by default, so `VK_EXT_external_memory_host` is not needed.
 - Packages on Arch:
 
   ```sh
@@ -244,6 +248,10 @@ pre-port layout generator; all game-derived temporary data stays under `build/`.
 to check canonical aliases, capped/full fallback, prompt arguments, the missing 16:9 prompts and generation
 deduplication without game files. `tests/romfs_prompts_test.py` checks that two `--background` runs for one folder
 publish it once and that a folder with a manifest is kept.
+A change to the loading window (`runtime/loadwin.c`, `runtime/loadwin_win.c`) passes
+`python tests\loadwin_pace.py`, which runs its estimate and its hearts through every pair of emulated starts (warm, cold
+file cache, pipelines compiled anew, a slow guest start, a slow machine) and fails when the hearts go back, stand still
+or fill before the game window (Windows only).
 A change to the mods' ExeFS patches
 (`tools/exefs_patches.py`, `runtime/mods.c`, the `folded.txt` of `recomp/gen.py`) passes
 `.venv\Scripts\python tests\exefs_patches_test.py`, which makes its own modules and runs `gen.py` on one with a jump

@@ -49,6 +49,7 @@ typedef struct {
     uint64_t kinds[K_COUNT], sym_import, sym_own;
     uint32_t imports, import_to[RT_MAX_MODULES], weak_unresolved, strong_unresolved;
     uint32_t init_off;
+    char label[96];                     // what logs and crash reports call it (plugin_label)
 } Mod;
 
 static Mod mods[RT_MAX_MODULES];
@@ -338,6 +339,21 @@ static uint64_t decode_ctor_flag(const Mod *m) {
     return 0;
 }
 
+// The name logs and crash reports give a module: a game module's own name, a mod plugin's name with the mod folder it
+// came from, "plugin4 (Zonai Fieldworks)". The layout names a plugin's file as <mods>/<mod>/exefs/<file>
+// (recomp/layout.py), so the mod is the folder two levels above the file. A player reads the mod's name; plugin<N>
+// alone says nothing, and the numbers change with the set of mods.
+static void plugin_label(Mod *m, const RtLayoutEntry *lay) {
+    snprintf(m->label, sizeof m->label, "%s", lay->name);
+    if (!lay->file) return;
+    const char *sep[3];   // the last three separators: before the file, before exefs, before the mod folder
+    int n = 0;
+    for (const char *p = lay->file + strlen(lay->file); p > lay->file && n < 3; p--)
+        if (p[-1] == '/' || p[-1] == '\\') sep[n++] = p - 1;
+    if (n < 3 || sep[1] - sep[2] < 2) return;
+    snprintf(m->label, sizeof m->label, "%s (%.*s)", lay->name, (int)(sep[1] - sep[2] - 1), sep[2] + 1);
+}
+
 // A plugin (lay->file set) comes from its mod folder, checked against the hash the build took when it lifted it.
 static void load_module(Mod *m, const char *dir, const RtLayoutEntry *lay) {
     size_t len;
@@ -360,6 +376,7 @@ static void load_module(Mod *m, const char *dir, const RtLayoutEntry *lay) {
     free(raw);
     m->pub.name = lay->name;
     m->pub.plugin = lay->file != NULL;
+    plugin_label(m, lay);
     m->pub.base = lay->base;
     m->pub.size = size;
     m->pub.text_end = seg[0].mem_off + seg[0].size;
@@ -397,7 +414,13 @@ static Res resolve(Mod *m, uint32_t si, int jump) {
     uint64_t guest = sym_defined(m, si) ? m->pub.base + m->syms[si].value : find_symbol(name, NULL);
     GuestFn f;
     Res r;
-    if (jump && m->pub.plugin && ldr_plugin_import) {   // the plugin service run counts the plugin's calls by name
+    // A plugin's calls out of its own code are counted by name (plugin_init.c plugin_import), so the plugin check can
+    // judge what its init reached. A JUMP_SLOT whose symbol the plugin defines itself is no call out: a plugin built
+    // with default visibility calls its own exported functions through its PLT, such as the std::vector<const char*>
+    // constructor of Challenge Mode's Enemy Health Regeneration (exefs subsdk8), and it binds to that definition as
+    // any other own symbol. A host override of the name still wins and stays counted.
+    int own_code = sym_defined(m, si) && !hostfn_override(name);
+    if (jump && m->pub.plugin && ldr_plugin_import && !own_code) {
         uint64_t to = (f = hostfn_override(name)) ? hostfn_register(name, f) : guest;
         if (!to) to = hostfn_register(name, unresolved_stub);
         r = (Res){hostfn_register_observer(name, ldr_plugin_import, to), RES_OBSERVER};
@@ -539,7 +562,7 @@ void ldr_load(const char *exefs_dir) {
     for (int i = 0; i < nmods; i++) seal(&mods[i]);
     for (int i = 0; i < nmods; i++) {
         const Mod *m = &mods[i];
-        rt_log("loaded %-8s at %#llx size %#llx: %llu relocations, %u imports", m->pub.name,
+        rt_log("loaded %-8s at %#llx size %#llx: %llu relocations, %u imports", m->label,
                (unsigned long long)m->pub.base, (unsigned long long)m->pub.size,
                (unsigned long long)(m->nrela + m->njmprel + m->relr_count), m->imports);
     }
@@ -571,13 +594,25 @@ const char *ldr_describe(uint64_t a, char *buf, int n) {
     if (lo) {
         const Elf64Sym *s = &m->syms[m->funcs[lo - 1]];
         if (off - s->value < (s->size ? s->size : 0x100000)) {
-            snprintf(buf, n, "%s+%#llx (%s+%#llx)", m->pub.name, (unsigned long long)off, m->strtab + s->name,
+            snprintf(buf, n, "%s+%#llx (%s+%#llx)", m->label, (unsigned long long)off, m->strtab + s->name,
                      (unsigned long long)(off - s->value));
             return buf;
         }
     }
-    snprintf(buf, n, "%s+%#llx", m->pub.name, (unsigned long long)off);
+    snprintf(buf, n, "%s+%#llx", m->label, (unsigned long long)off);
     return buf;
+}
+
+int ldr_plugin_count(void) {
+    int n = 0;
+    for (int i = 0; i < nmods; i++) n += mods[i].pub.plugin;
+    return n;
+}
+
+const char *ldr_label(uint64_t a, int *plugin) {
+    int i = module_of(a);
+    if (plugin) *plugin = i >= 0 && mods[i].pub.plugin;
+    return i >= 0 ? mods[i].label : NULL;
 }
 
 static int by_slot(const void *a, const void *b) {

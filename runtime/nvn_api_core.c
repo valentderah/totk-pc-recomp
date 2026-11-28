@@ -463,7 +463,8 @@ NVN_API(nvnBufferFlushMappedRange) {
 }
 
 // ---------- Sync and events
-// A sync is a fence value: fenced = 1 after QueueFenceSync (the newest submit), 3 after WindowAcquireTexture (fence 0).
+// A sync is a fence value: fenced = 1 after QueueFenceSync (the newest submit) or the submit of a CommandBufferFenceSync
+// record (that submit), 3 after WindowAcquireTexture (fence 0).
 // NVNboolean nvnSyncInitialize(NVNsync *s, NVNdevice *d)
 NVN_API(nvnSyncInitialize) {
     *(sync_t *)arg_p(c, 0) = (sync_t){SYNC_MAGIC, 0, 0};
@@ -477,6 +478,13 @@ NVN_API(nvnQueueFenceSync) {
     sync_t *s = arg_p(c, 1);
     s->fenced = 1;
     s->fence = nvn_fence_last();
+}
+// CommandBufferFenceSync at its submit (nvn_api_cmd.c nvn_submit_fence_syncs): the value first, then fenced, so a
+// thread that sees fenced waits for this value or a newer one. A sync finalized since the record is left alone.
+void nvn_sync_fence(sync_t *s, uint64_t fence) {
+    if (!s || s->magic != SYNC_MAGIC) return;
+    __atomic_store_n(&s->fence, fence, __ATOMIC_RELAXED);
+    __atomic_store_n(&s->fenced, 1, __ATOMIC_RELEASE);
 }
 // TOTK_SYNC_AHEAD=1: one more frame in flight. Each frame the game waits (one nvnSyncWait, frame_wait_lr) for
 // the frame it presented last; on the Switch that work is long done by then, here it is still in the replay and on the
@@ -581,6 +589,7 @@ NVN_API(nvnSyncWait) {
         if (det) vk_ahead_frame_lag(s->fence, lag, behind);
         b->cpu_synced(want == s->fence ? s->fence : b->fence_done());
         if (det) vk_ahead_frame_done(1);
+        if (mode == 1) vk_counter_frame();
         ret_x(c, NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED);
         return;
     }
@@ -592,6 +601,7 @@ NVN_API(nvnSyncWait) {
     if (det) vk_ahead_frame_lag(s->fence, lag, behind);
     if (ok) b->cpu_synced(want == s->fence ? s->fence : b->fence_done());
     if (det) vk_ahead_frame_done(ok);
+    if (mode == 1) vk_counter_frame();
     ret_x(c, ok ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED);
 }
 // void nvnEventBuilderSetDefaults(NVNeventBuilder *b)
@@ -718,6 +728,7 @@ NVN_API(nvnQueueSubmitCommands) {
         nvn_submit_prepare(h, n);
         f = gfx_backend()->submit(h, n);
     }
+    nvn_submit_fence_syncs(h, n, f);   // the syncs this submit's CommandBufferFenceSync records name wait for f
     uint64_t prev = __atomic_load_n(&last_fence, __ATOMIC_RELAXED);
     while (f > prev && !__atomic_compare_exchange_n(&last_fence, &prev, f, 1, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {}
     __atomic_store_n(&lod_fence[no % LOD_RING], f, __ATOMIC_RELAXED);

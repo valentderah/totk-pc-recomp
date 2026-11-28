@@ -220,6 +220,9 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
 // A write that faulted on a read-only page at addr goes to fn first; fn returns 1 when it made the page writable and
 // the write should run again, 0 to let the fault go on (to the crash handler). One hook per process.
 void plat_mem_fault_hook(int (*fn)(uint64_t addr));
+// Read faults go to the hook too (memory.c heap_fault, TOTK_HEAP_LAZY): Windows only, before the game starts; a no-op
+// on Linux, which commits on first use by itself.
+void plat_mem_fault_reads(int on);
 // Starts this program again with the same arguments and ends this process with the new one's exit code (Windows), or
 // replaces this process with it (Linux). Environment changes made before the call are passed on.
 _Noreturn void plat_reexec(void);
@@ -354,6 +357,10 @@ void plat_fs_sync_dir(const char *path);                  // a directory's entri
 void plat_fs_busy_reason(const char *dir, char *out, size_t cap);
 // cb(name, kind, size, ctx) for each entry of dir but "." and ".."; cb returns 0 to stop. The listing's error.
 int plat_fs_list(const char *dir, int (*cb)(const char *name, int kind, uint64_t size, void *ctx), void *ctx);
+// The free bytes this process may use and the total bytes of the volume holding path. 0 on failure.
+int plat_fs_space(const char *path, uint64_t *free_bytes, uint64_t *total_bytes);
+// The last write time of the file or directory at path in seconds since 1970-01-01 UTC. 0 on failure.
+int plat_fs_mtime(const char *path, int64_t *posix_seconds);
 // An existing file for reading and, with write, writing; *err (may be NULL) gets the reason on failure.
 PlatFile *plat_fs_open(const char *path, int write, int *err);
 PlatFile *plat_fs_create(const char *path, int *err);     // a new file for writing; PLAT_FS_EXISTS when there

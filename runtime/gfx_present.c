@@ -83,6 +83,7 @@ void gfx_window_focus_changed(int in) {
 void gfx_window_closed(void) {
     int restart = plat_cas32(&g_restart, 0, 0) != 0;
     rt_log("gfx: window closed; %s", restart ? "restarting" : "exiting");
+    fs_failed_summary();
     fs_save_flush();
     vk_pipeline_save();
     playtime_save();
@@ -390,8 +391,9 @@ static void latency_note(VkCtx *c, uint64_t pid) {
                      "end %.2f ms", full, gi.timingCount, full ? sum / full / 1000.0 : 0.0);
         }
     }
-    rt_log("reflex: frame start to present %.2f ms over %llu frames (reflex %s)%s", g_lat.n ? g_lat.ns / 1e6 / g_lat.n : 0.0,
-           (unsigned long long)g_lat.n, g_reflex_mode == 2 ? "boost" : g_reflex_mode == 1 ? "on" : "off", drv);
+    rt_log("reflex: frame start to present %.2f ms over %llu frames (reflex %s%s)%s", g_lat.n ? g_lat.ns / 1e6 / g_lat.n : 0.0,
+           (unsigned long long)g_lat.n, g_reflex_mode == 2 ? "boost" : g_reflex_mode == 1 ? "on" : "off",
+           c->has_amd_antilag ? ", anti-lag on" : "", drv);
     g_lat.n = g_lat.ns = 0;
 }
 
@@ -405,7 +407,8 @@ uint64_t vk_reflex_submit_id(void) { return t_reflex_submit ? t_reflex_submit : 
 void vk_reflex_present_frame(uint64_t id) {
     // g_blit_pid feeds flip_locked's VkPresentIdKHR (Reflex) and latency_note (TOTK_TRACE=perf); with neither, the
     // present skips the lock
-    if (!vk_has_reflex() && !(rt_trace & RT_TRACE_PERF)) return;
+    VkCtx *c = vk_ctx();
+    if (!vk_has_reflex() && !(c && c->has_amd_antilag) && !(rt_trace & RT_TRACE_PERF)) return;
     plat_rmutex_lock(&g_pl);
     g_blit_pid = id;
     plat_rmutex_unlock(&g_pl);
@@ -451,6 +454,33 @@ void vk_reflex_sleep(void) {
         vkWaitSemaphores(c->device, &wi, 100000000ULL);
     }
 }
+
+// ---- AMD Anti-Lag 2 (VK_AMD_anti_lag)
+static PFN_vkAntiLagUpdateAMD g_antilag_update;
+
+// The INPUT call runs on the game thread (nvnWindowAcquireTexture), the PRESENT call on the present thread (flip_one,
+// g_pl held): both carry the frame's ID, as the spec asks of a frame's two calls. The first call of either thread loads
+// the entry point; the atomics keep that load race-free.
+static void antilag_update(VkAntiLagStageAMD stage, uint64_t frame) {
+    VkCtx *c = vk_ctx();
+    if (!c || !c->has_amd_antilag || !frame) return;
+    PFN_vkAntiLagUpdateAMD fn = __atomic_load_n(&g_antilag_update, __ATOMIC_ACQUIRE);
+    if (!fn) {
+        fn = (PFN_vkAntiLagUpdateAMD)vkGetDeviceProcAddr(c->device, "vkAntiLagUpdateAMD");
+        if (!fn) return;
+        __atomic_store_n(&g_antilag_update, fn, __ATOMIC_RELEASE);
+    }
+    // the driver holds frames to the pacer's frame limit, as Reflex's minimum interval does (0: no limit known)
+    double hz = frame_step_limit_hz();
+    VkAntiLagPresentationInfoAMD pi = {
+        .sType = VK_STRUCTURE_TYPE_ANTI_LAG_PRESENTATION_INFO_AMD, .stage = stage, .frameIndex = frame};
+    VkAntiLagDataAMD d = {.sType = VK_STRUCTURE_TYPE_ANTI_LAG_DATA_AMD, .mode = VK_ANTI_LAG_MODE_ON_AMD,
+                          .maxFPS = hz > 0 ? (uint32_t)(hz + 0.5) : 0, .pPresentationInfo = &pi};
+    fn(c->device, &d);
+}
+
+void vk_antilag_input(uint64_t frame) { antilag_update(VK_ANTI_LAG_STAGE_INPUT_AMD, frame); }
+void vk_antilag_present(uint64_t frame) { antilag_update(VK_ANTI_LAG_STAGE_PRESENT_AMD, frame); }
 
 // ---- swapchain
 static const char *g_present_got = "";   // the TOTK_VK_PRESENT value of the mode the swapchain got; "" before one
@@ -503,6 +533,7 @@ static void flip_one(void) {
         pid_info.pPresentIds = &pid;
         vk_reflex_marker(4, pid);   // VK_LATENCY_MARKER_PRESENT_START_NV
     }
+    if (!generated) vk_antilag_present(frame_pid);
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
                            .pNext = with_id ? &pid_info : NULL,
                            .waitSemaphoreCount = 1,

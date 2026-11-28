@@ -17,6 +17,7 @@ import datetime
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -34,7 +35,7 @@ def llvm_profdata(toolchain):
         tool = toolchain / 'bin' / f'llvm-profdata{EXE}'
     else:
         found = sorted((ROOT / 'toolchain').glob(f'llvm-mingw-*/llvm-mingw-*/bin/llvm-profdata{EXE}'))
-        tool = found[-1] if found else Path(f'llvm-profdata{EXE}')
+        tool = found[-1] if found else Path(shutil.which(f'llvm-profdata{EXE}') or f'llvm-profdata{EXE}')
     if not tool.is_file():
         sys.exit(f'{tool} not found: pass --toolchain')
     return tool
@@ -126,7 +127,7 @@ def main():
     m.add_argument('build', type=Path, help='the instrumented build directory')
     m.add_argument('--version', required=True, help='game version the build was made for (v121, v143)')
     m.add_argument('--out', type=Path, help=f'default {DEFAULT_DIR.relative_to(ROOT).as_posix()}/pgo-<version>.profdata')
-    m.add_argument('--toolchain', type=Path, help='llvm-mingw directory (default: the newest under toolchain/)')
+    m.add_argument('--toolchain', type=Path, help='llvm-mingw directory (default: newest under toolchain/, then PATH)')
     a = ap.parse_args()
     out = (a.out or DEFAULT_DIR / f'pgo-{a.version}.profdata').resolve()
     merge(a.build.resolve(), out, a.version, a.toolchain)

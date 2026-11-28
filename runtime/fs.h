@@ -19,21 +19,41 @@
 #define FS_R_INVALID_PATH 0x2ee602u
 #define FS_R_OPEN_MODE 0x307402u
 #define FS_R_APPEND_REQUIRED 0x2f5e02u
+// Codes the sdk itself returns (sdk nn::fs::detail::FileAccessor::Read and Write, DirectoryAccessor::Read,
+// FileSystemAccessor::OpenDirectory, nn::fs::GetFreeSpaceSize, RomFsFileSystem and RomFsFile, fsa::IFileSystem's
+// DoGetFileTimeStampRaw).
+#define FS_R_NOT_IMPLEMENTED 0x177202u     // GetFileTimeStampRaw on a file system without timestamps (RomFS)
+#define FS_R_OUT_OF_RANGE 0x177a02u        // offset past the end; an exact ReadFile that read less
+#define FS_R_INVALID_OFFSET 0x2f5a02u
+#define FS_R_INVALID_SIZE 0x2f5c02u
+#define FS_R_NULLPTR 0x2f5e02u
+#define FS_R_INVALID_MOUNT_NAME 0x2f6202u  // GetFreeSpaceSize with a path below a mount root
+#define FS_R_DIR_OPEN_MODE 0x2f7402u       // OpenDirectory without a directory or file bit, or with an unknown bit
+#define FS_R_ROMFS_WRITE 0x31b802u         // any change to the RomFS: create, delete, rename
+#define FS_R_ROMFS_TOTAL_SPACE 0x31bc02u   // GetTotalSpaceSize on the RomFS
 
 enum { FS_OPEN_READ = 1, FS_OPEN_WRITE = 2, FS_OPEN_APPEND = 4 };   // nn::fs::OpenMode
 enum { FS_ENTRY_DIRECTORY = 0, FS_ENTRY_FILE = 1 };                 // nn::fs::DirectoryEntryType
+enum { FS_DIR_DIRECTORIES = 1, FS_DIR_FILES = 2, FS_DIR_NO_FILE_SIZE = (int)0x80000000u };   // nn::fs::OpenDirectoryMode
 
 // ---- romfs.c
 // Handles 0x1_0000_0000 + j; host storage uses 0x2_0000_0000 + j (files) and 0x3_0000_0000 + j (directories).
 #define ROMFS_HANDLE_BASE 0x100000000ull
+#define ROMFS_MOUNTS 8                                     // RomFS mount names at once (nn::fs::MountRom)
 int romfs_owns(const char *path);                          // path is on the mounted RomFS ("<mount>:...")
 int romfs_handle(uint64_t h);                              // h is a RomFS file handle
-uint32_t romfs_mount(const char *name);                    // nn::fs::MountRom; a second name is fatal
+// nn::fs::MountRom: name joins the RomFS mount names (ROMFS_MOUNTS of them); the same name again returns 0.
+uint32_t romfs_mount(const char *name);
+int romfs_unmount(const char *name);                       // 1 when name is a RomFS mount (the first stays mounted)
 uint32_t romfs_open(uint64_t *out, const char *path, int mode);
 uint32_t romfs_read(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uint64_t size);
 uint32_t romfs_size(int64_t *out, uint64_t h);
 void romfs_close(uint64_t h);
 uint32_t romfs_entry_type(int *out, const char *path);
+// The entries right under a RomFS folder ("<mount>:/" is the root), the overlays' files with them: cb(name, PLAT_FS_DIR
+// or PLAT_FS_FILE, size, ctx) for the folders first, then the files, each in name order. FS_R_PATH_NOT_FOUND for a
+// missing folder or a file.
+uint32_t romfs_list(const char *path, int (*cb)(const char *name, int kind, uint64_t size, void *ctx), void *ctx);
 uint64_t romfs_file_count(void);                           // files in the index (fs_init first)
 const char *romfs_entry(uint64_t i, uint64_t *offset, uint64_t *size);   // path, image offset and size of index row i
 const char *romfs_image_path(void);                        // the romfs.bin path fs_init opened
@@ -63,8 +83,11 @@ int romfs_folders_prepare(unsigned w, unsigned h, const char *prompts_folder);
 int romfs_prompts_off(const char *folder);
 const char *romfs_overlay(size_t k, const char **file, uint64_t *size, int *is_added);   // RomFS path of overlay k
 void fs_trace(const char *what, const char *path);         // TOTK_TRACE=fs: one line per open
+const char *romfs_handle_name(uint64_t h);                 // RomFS path of an open RomFS handle, NULL for any other
+void romfs_crash_report(void);                             // the last RomFS opens and who served each (crash report)
 
 // ---- fs_host.c
+int fs_host_mounted(const char *name);                     // name is a save, temporary, cache or SD card mount
 void fs_host_set_profile(const char *dir);                 // profile directory; before the first storage mount only
                                                            // (default rt_config()->profile)
 int fs_save_busy(void);                                    // a save is being written: a save file open for writing,
@@ -77,3 +100,12 @@ int fs_save_copy_slot(const char *slot, const char *dst);  // a folder of the ne
 void fs_save_read_from(const char *dir);                   // quick load: reads of save:/slot_NN/<file> open dir/<file>
                                                            // while dir is set; NULL ends it
 int fs_save_read_from_hits(void);                          // opens redirected since the last fs_save_read_from(dir)
+// Failed nn::fs calls (fs_host.c, section "failed calls"): an override that returns a failure notes the call name, the
+// path (or the handle) and the module that asked (c: the guest's registers, NULL for a host caller). open: OpenFile,
+// OpenDirectory or ReadFileAtOnce, whose first distinct paths are logged.
+struct Cpu;
+void fs_failed(const struct Cpu *c, const char *call, const char *path, uint32_t result, int open);
+void fs_failed_handle(const struct Cpu *c, const char *call, uint64_t handle, uint32_t result);
+void fs_failed_summary(void);                              // one log line with this run's counts; the exit paths
+void fs_crash_report(void);                                // the crash report's lines: the last failed calls, the
+                                                           // last RomFS opens

@@ -35,6 +35,10 @@ class DamagedFile(ValueError):
         super().__init__(f'{self.path} is damaged or incomplete ({detail})')
 
 
+class BlockSizeError(ValueError):
+    """An NCZBLOCK block whose data decompresses to more or fewer bytes than its header declares."""
+
+
 def compressed(path):
     """('nsz' or 'xcz', entries) for a game file holding NCZ files, else None. Raises ValueError for a file that is
     neither an NSP nor an XCI."""
@@ -126,9 +130,18 @@ def blocks(f, pos, end, total):
     for i, length in enumerate(stored):
         plain = min(1 << exponent, size - (i << exponent))
         require(pos + length <= end, 'Truncated NCZ block')
-        data = read_at(f, pos, length)
+        # nsz's BlockDecompressorReader.py __decompressBlock skips padding in a raw block: only plain bytes belong
+        # to the NCA, while the full stored length locates the next block.
+        data = read_at(f, pos, min(length, plain))
         pos += length
-        yield zstd.decompress(data) if length < plain else data
+        if length < plain:
+            # Read at most one byte beyond the declared size: a damaged frame must not allocate its whole output.
+            # ZstdFile also preserves support for concatenated frames within a block.
+            with zstd.ZstdFile(io.BytesIO(data)) as z:
+                data = z.read(plain + 1)
+            if len(data) != plain:
+                raise BlockSizeError(f'NCZ block decompressed size does not match its header (block {i})')
+        yield data
 
 
 def stream(f, pos, end, total):
@@ -176,7 +189,9 @@ def unpack_ncz(f, start, end, out, name, source, progress):
                 progress(n)
             if at == total:
                 break
-    except (zstd.ZstdError, EOFError) as e:   # EOFError: the stream ends before its end-of-frame marker
+    # EOFError: the stream ends before its end-of-frame marker. BlockSizeError: a block's data is damaged; like the
+    # other two it is a damaged file, so the installer asks for a fresh copy (installer/steps.py, Check.unpack).
+    except (zstd.ZstdError, EOFError, BlockSizeError) as e:
         raise DamagedFile(source, f'{name}: {e}') from None
     if at != total or pending:
         raise DamagedFile(source, f'{name}: {at - HEADER:,} of {total - HEADER:,} bytes')

@@ -101,6 +101,53 @@ class HudLayoutTest(unittest.TestCase):
                 self.assertNotIn('Traceback', result.stderr)
                 self.assertFalse(out.exists())
 
+    def test_mod_archive_keeps_changed_parts(self):
+        # A mod moved the heart gauge and scaled one marker pane: with a skip list those keep the mod's values and
+        # are listed; every other edit is made as for the game's archive. Without one the same input stops the run.
+        full, members = archive()
+        ui.apply(full, members, 3440, 1440)
+        data, members = archive()
+        lo, hi = members['blyt/PlayerStatus_00.bflyt']
+        heart = ui.panes(data, lo, hi)['N_HeartPos_00'] + ui.FIELD['x']
+        struct.pack_into('<f', data, heart, 123.0)
+        lo, hi = members['blyt/AttentionLockOn_00.bflyt']
+        marker = ui.panes(data, lo, hi)['N_Offset_00'] + ui.FIELD['scale_x']
+        struct.pack_into('<f', data, marker, 2.0)
+        strict = bytearray(data)
+        with self.assertRaises(SystemExit): ui.apply(strict, members, 3440, 1440)
+        skipped = []
+        changed = ui.apply(data, members, 3440, 1440, None, skipped)
+        self.assertEqual(len(skipped), 2, skipped)
+        self.assertTrue(any('PlayerStatus_00 N_HeartPos_00 x' in s for s in skipped), skipped)
+        self.assertTrue(any('AttentionLockOn_00 N_Offset_00' in s for s in skipped), skipped)
+        self.assertEqual(struct.unpack_from('<f', data, heart)[0], 123.0)
+        self.assertEqual(struct.unpack_from('<f', data, marker)[0], 2.0)   # its layout is left whole
+        self.assertNotIn('blyt/AttentionLockOn_00.bflyt', changed)
+        for name, pane, field in (('EnvironmentInfo_00', 'RootPane', 'x'), ('SaveLoadIcon_00', 'RootPane', 'x'),
+                                  ('GameOver_00', 'P_BG_00', 'scale_x'), ('PlayerStatus_00', 'RootPane', 'scale_x')):
+            self.assertEqual(value(data, members, name, pane, field), value(full, members, name, pane, field))
+
+    def test_mod_archive_matching_game_equals_game(self):
+        # A mod whose layouts are the game's (it changed only textures) gets exactly the game's edits.
+        full, members = archive()
+        ui.apply(full, members, 3440, 1440)
+        data, members = archive()
+        skipped = []
+        ui.apply(data, members, 3440, 1440, None, skipped)
+        self.assertEqual(skipped, [])
+        self.assertEqual(data, full)
+
+    def test_cli_archive_rejects_prompts_and_missing_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            out, mod = Path(folder) / 'output', Path(folder) / 'mod.blarc.zs'
+            mod.write_bytes(b'')
+            for arguments in (['--archive', str(mod), '--prompts', 'xbox'], ['--archive', str(Path(folder) / 'none')]):
+                result = subprocess.run([sys.executable, str(TOOL), '--out', str(out), *arguments], capture_output=True,
+                                        text=True)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn('--archive', result.stderr)
+                self.assertFalse(out.exists())
+
     def test_default_names_and_explicit_output(self):
         # Execute only argument handling; input loading and archive generation remain untouched.
         source = TOOL.read_text().split("index = json.loads", 1)[0]
@@ -156,6 +203,15 @@ class RealArchiveTest(unittest.TestCase):
             ui.apply(full, members, width, height)
             expected = bytearray(original)
             baseline['apply'](expected, members, width, height)
+            # The map (its layout and the minimap animation's width keys), the Purah Pad's frame and the loading screen
+            # changed on purpose after it (the maps fill the screen, the frame keeps its width, the camera's album window
+            # has the screen's shape, the inn's clock follows the choices to the bottom edge); the rest is byte for byte.
+            for member in ('blyt/AppMap_00.bflyt', 'blyt/AppMenuOverlay_00.bflyt', 'blyt/LoadingFade_00.bflyt',
+                           'blyt/CameraSystemWindow_00.bflyt', 'blyt/Time_00.bflyt',
+                           'anim/AppMap_00_MiniMap.bflan', 'anim/LoadingFade_00_BarIn.bflan',
+                           'anim/LoadingFade_00_BarOut.bflan'):
+                lo, hi = members[member]
+                expected[lo:hi] = full[lo:hi]
             self.assertEqual(full, expected)
         for cap, extension in ((16 / 9, 0), (21 / 9, 300)):
             data = bytearray(original)

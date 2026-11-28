@@ -42,6 +42,7 @@
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
+#include "loadwin.h"
 #include "platform/platform.h"
 
 #define CONTROL_SIZE 0x880
@@ -1646,6 +1647,8 @@ static void warm_worker(void *arg) {
     }
 }
 
+static uint64_t warm_done(void *ctx) { return (uint64_t)__atomic_load_n(&((Warm *)ctx)->done, __ATOMIC_RELAXED); }
+
 static int iid_cmp(const void *x, const void *y) { return memcmp(x, y, 32); }
 
 typedef struct {
@@ -1703,6 +1706,8 @@ void gfx_shader_prewarm(const uint8_t (*iids)[32], size_t n, const GfxShader **o
     threads = threads < 1 ? 1 : threads > 64 ? 64 : threads;
     if ((size_t)threads > total) threads = (int)(total ? total : 1);
     svc_set_limit(procs);
+    lw_begin(LW_SHADERS);
+    lw_count(LW_SHADERS, total, warm_done, &w);
     PlatThread *t[64];
     int k = 0;
     for (int i = 0; i < threads; i++)
@@ -1712,6 +1717,8 @@ void gfx_shader_prewarm(const uint8_t (*iids)[32], size_t n, const GfxShader **o
         while (!plat_thread_join_ns(t[m], 2000000000u))
             rt_log("gfx_shader: prewarm: %lld of %zu shaders, %llu translated, %.0f ms", (long long)w.done, total,
                    (unsigned long long)((uint64_t)n_xlated - xl0), (double)plat_now_ms() - t0);
+    lw_count_end(LW_SHADERS);
+    lw_end(LW_SHADERS);
     svc_set_limit(svc_runtime_limit());
     rt_log("gfx_shader: prewarm: %zu shaders named by pipeline keys (%ld not available), %zu other stored inputs (%ld "
            "cached); %llu translated, %llu failed, with up to %d translators and %d threads, in %.0f ms", w.n_named,

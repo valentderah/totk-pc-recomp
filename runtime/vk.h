@@ -11,7 +11,7 @@
 #include "vk_ahead.h"  // TOTK_SYNC_AHEAD=check hooks (vk_ahead_on)
 
 // Required (device choice fails without them): Vulkan 1.3; VK_KHR_swapchain, VK_KHR_push_descriptor,
-// VK_EXT_depth_clip_control, VK_EXT_external_memory_host; features timelineSemaphore, dynamicRendering,
+// VK_EXT_depth_clip_control; features timelineSemaphore, dynamicRendering,
 // synchronization2, shaderStorageImageWriteWithoutFormat, depthClipControl, shaderInt64, samplerAnisotropy,
 // independentBlend, geometryShader, textureCompressionBC.
 // Optional (flag set in VkCtx when enabled): the has_* members.
@@ -38,13 +38,16 @@ typedef struct VkCtx {
         has_astc_ldr,                       // textureCompressionASTC_LDR (enabled when reported)
         has_calibrated,                     // VK_KHR/EXT_calibrated_timestamps (GPU idle split in the perf line)
         has_hdr_metadata,                   // VK_EXT_hdr_metadata (vk_hdr.c vk_hdr_metadata)
-        has_nv_reflex;                      // VK_NV_low_latency2 (NVIDIA Reflex Low Latency)
+        has_nv_reflex,                      // VK_NV_low_latency2 (NVIDIA Reflex Low Latency)
+        has_amd_antilag;                    // VK_AMD_anti_lag (AMD Anti-Lag 2)
     // Feedback loops (maxwell.md 1.9, vk_exec_draw.c feedback_prepare): a draw samples a target of its open pass that
     // an earlier draw of the pass wrote. TOTK_FEEDBACK=0: VK_FEEDBACK_OFF (sampled in GENERAL without a barrier, the
     // old behaviour); VK_FEEDBACK_LAYOUT with VK_EXT_attachment_feedback_loop_layout and dynamicRenderingLocalRead
     // (attachable images get feedback usage, a by-region barrier inside the pass); else (or TOTK_FEEDBACK=restart)
     // VK_FEEDBACK_RESTART (the pass ends and restarts behind the full barrier).
     int feedback;                           // VK_FEEDBACK_*
+    int has_external_memory_host;           // VK_EXT_external_memory_host; without it CPU-visible pools get shadow
+                                            // storage (vk_memory.c mirror_mode), as under Wine
     uint32_t min_imported_host_alignment;   // VK_EXT_external_memory_host
     VkDeviceSize vma_block;                 // VMA's block size for heaps over 1 GiB (TOTK_VMA_BLOCK_MIB, vk_device.c)
     int device_index;                       // index in vkEnumeratePhysicalDevices
@@ -63,6 +66,7 @@ typedef struct {
     int mesa;                          // a Mesa driver the game runs on: RADV, ANV or NVK
     int intel_igpu_win;                // Intel's Windows driver on an integrated GPU (UHD, Iris Xe, Core Ultra graphics)
     int demote;                        // shaderDemoteToHelperInvocation enabled: modules may use OpDemoteToHelperInvocation
+    int null_attach;                   // TOTK_NULL_ATTACH=1: empty colour slots get a dummy attachment (vk_exec.c null_attach_view)
 } VkCaps;
 extern VkCaps vk_caps;
 void vk_caps_driver(VkPhysicalDevice p);             // first, before vkCreateDevice: vk_caps.amd, amd_sc, mesa, intel_igpu_win
@@ -209,14 +213,26 @@ long vk_validation_errors_total(void);             // validation errors since th
 // Guest or host threads; every call needs vk_init(). The first nine have the GfxBackend signatures of gfx.h; vk_backend.c builds
 // gfx_vulkan_backend from them.
 int  vk_pool_init(pool_t *p);              // CPU-visible: guest storage imported (VK_EXT_external_memory_host) as one
-                                           // VkBuffer; physical: device-local memory; virtual: a 64 KiB page table
+                                           // VkBuffer, or its shadow copy (vk_memory.c mirror_mode); physical:
+                                           // device-local memory; virtual: a 64 KiB page table
 void vk_pool_fini(pool_t *p);              // drops images cut from the pool; waits for the GPU if it used the pool
+// TOTK_REPLAY_ASYNC teardown (vk_backend.c vk_be_pool_fini): the game thread marks the record dying (0: no record), the
+// replay thread finishes it in queue order without waiting for the GPU; lookups that found a dying record, run total.
+int  vk_pool_fini_begin(const pool_t *p, uint64_t *lo, uint64_t *size, int *phys);
+void vk_pool_fini_queued(const pool_t *key);
+uint64_t vk_mem_dying_resolves(void);
 int  vk_pool_map_virtual(pool_t *v, int n, const void *requests);   // nvn_mapping_t[n], checked by the front end
 void vk_texture_register(int id, const tex_t *t, const view_t *v);  // texture descriptor slot (copied)
 void vk_sampler_register(int id, const samp_par *s);                // sampler descriptor slot (copied)
 void vk_texture_release(const tex_t *t);   // TextureFinalize: the image stays for slots that still name its storage
 void vk_read_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, uint8_t *dst, uint64_t row, uint64_t img);
 void vk_write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *src, uint64_t row, uint64_t img);
+// TOTK_REPLAY_ASYNC WriteTexels (vk_backend.c vk_be_write_texels): the game thread writes guest memory and stages the
+// image write (NULL: none; *bytes: the staging it holds), the replay thread records it in queue order and frees it.
+typedef struct VkTexWrite VkTexWrite;
+VkTexWrite *vk_write_texels_begin(const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *src,
+                                  uint64_t row, uint64_t img, uint64_t *bytes);
+void vk_write_texels_queued(VkTexWrite *w);
 void vk_guest_written(uint64_t addr, uint64_t size);   // a host write write-watch may miss: textures there re-upload
 
 // GPU address -> backing (section 3.1). avail: bytes from offset that stay contiguous in buffer. alloc/alloc_offset:
@@ -343,7 +359,8 @@ int vk_mem_flush_add_probe(void);        // --probe-vkexec: the flush range list
 uint64_t vk_mem_mirror_uploaded(void);   // --probe-vkexec: bytes copied into mirrors since the last summary line
 int vk_mem_mirror_probe(uint64_t addr);   // --probe-vkexec: the pool at addr gets its mirror as on a first buffer use;
                                           // 1 when it has one
-void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m);   // once
+void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m,
+                      int host_import);   // once; host_import: VK_EXT_external_memory_host is enabled
 int vk_mem_class_of(uint64_t addr);               // VK_MCLS_* of the pool at addr (NONE when unbacked)
 void vk_mem_census(uint64_t frame);               // at each present: pool census and traffic, logged at frame 1800 and,
                                                   // with TOTK_TRACE=perf, every 1800 frames
@@ -502,6 +519,10 @@ typedef struct {
 // into it, when the last draw into it was that copy and the swapchain is HDR10.
 void vk_hdr_present_source(const VkTexImage *win, VkImage *image, VkFormat *format);
 void vk_hdr_image_gone(VkImage image);
+// vk_caps.null_attach: empty colour slots of a pass get a dummy VK_EXEC_NULL_ATTACH_FMT attachment, and the pipelines
+// name that format for them with writes masked off (vk_exec.c null_attach_view, vk_pipeline.c gkey_fill).
+#define VK_EXEC_NULL_ATTACH_FMT VK_FORMAT_R8_UNORM
+void vk_exec_null_attach_release(void);   // vk_device.c, before the device goes: frees the dummy attachments
 const VkTexImage *vk_texture_get(const tex_t *t);   // created and made current; NULL for BUFFER or unmapped formats
 const VkTexImage *vk_texture_revive(const tex_t *t, uint32_t pos);  // the entry vk_texture_get would return if it exists, made live at op pos
 // A texture slot; a slot whose texture was finalized follows the live texture at the same storage (hle_nvn.c).

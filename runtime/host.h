@@ -148,6 +148,8 @@ void mem_init(void);                                       // reserve every regi
 const RtGuestLayout *mem_layout(void);
 uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr);                      // 0x01
 uint32_t mem_set_permission(uint64_t a, uint64_t n, uint32_t perm);             // 0x02
+extern int mem_plugin_writes;   // plugin_init.c plugins_start: a mod plugin is on; read-only module data stays writable
+                                // on the host (mem_set_permission)
 uint32_t mem_set_attribute(uint64_t a, uint64_t n, uint32_t mask, uint32_t at); // 0x03
 uint32_t mem_map(uint64_t dst, uint64_t src, uint64_t n);                       // 0x04
 uint32_t mem_unmap(uint64_t dst, uint64_t src, uint64_t n);                     // 0x05
@@ -177,6 +179,14 @@ void mem_thaw(uint64_t a, uint64_t n);                     // makes the frozen r
 void mem_freeze_stats(uint64_t *frozen, uint64_t *freezes, uint64_t *fault_thaws, uint64_t *other_thaws);
                                                            // regions frozen now; freezes and thaws since the last call
 void mem_kernel_free(void *p, uint64_t size);              // TLR/TLS reuse after thread exit
+int mem_heap_lazy(void);                                   // TOTK_HEAP_LAZY is on (Windows): heap pages commit on first use
+void mem_heap_commit(uint64_t a, uint64_t n);              // commits the not yet committed heap chunks of [a, a+n) before
+                                                           // the kernel reads them; nothing when mem_heap_lazy is 0
+void mem_heap_lazy_stats(uint64_t *faults, uint64_t *ns, uint64_t *committed, uint64_t *size);
+                                                           // TOTK_HEAP_LAZY: first-use faults and their time since
+                                                           // the start, committed heap bytes, heap size
+uint64_t mem_heap_uncommitted(void);                       // heap bytes set by SetHeapSize but not committed yet
+                                                           // (TOTK_HEAP_LAZY): commit the game can still claim
 int mem_guest_readable(uint64_t a, uint64_t n);            // [a, a+n) can be read without a fault: inside a loaded
                                                            // module or the committed heap answered from the layout,
                                                            // anything else by plat_mem_readable (an OS query)
@@ -215,7 +225,11 @@ int ldr_plugins_gone(uint32_t *key);                       // layout plugins who
 const RtLoaded *ldr_module(int i);                         // order: main, subsdk0, sdk
 uint64_t ldr_symbol(const char *name);                     // exported definition, 0 if none
 uint64_t ldr_plt_stub(const char *module, const char *name); // PLT stub whose GOT slot holds name, 0 if none
-const char *ldr_describe(uint64_t a, char *buf, int n);    // "main+0x1234 (symbol+0x10)", "host <name>", or the address
+const char *ldr_describe(uint64_t a, char *buf, int n);    // "main+0x1234 (symbol+0x10)", "host <name>", or the address;
+                                                           // a mod plugin with its mod: "plugin0 (Zonai Fieldworks)+0x10"
+const char *ldr_label(uint64_t a, int *plugin);            // the name of the module holding a ("main", "plugin0 (<mod>)"),
+                                                           // NULL outside every module; plugin: it is a mod's plugin
+int ldr_plugin_count(void);                                // mod plugins loaded
 uint64_t ldr_nso_size(const char *dir, const char *file);   // image size of an ExeFS NSO (SHA-256 checked)
 void ldr_map_image(const char *dir, const char *file, uint64_t base, uint64_t *text_end, uint64_t *data_off);
                                                            // its segments at base (reserved by the caller), not
@@ -313,6 +327,7 @@ void res_init(void);                                       // after rt_patches_i
 float res_dlss_lod_bias(void);                             // TOTK_DLSS upscaling: texture LOD bias (<= 0)
 int res_dlss_mode(const char *mode);                       // TOTK_DLSS changed while running: new scene size
 int res_dlss_dll(void);                                    // the DLSS library is next to the executable
+int res_ffx_dlls(void);                                    // AMD's two FSR 4 libraries are (Windows; 0 elsewhere)
 void res_fn_hit(uint64_t addr, uint64_t x0);               // main.c fnprof_hit: catches the renderer at start
 void res_present(Cpu *c);                                  // nvnQueuePresentTexture: applies a pending scene size
 void res_sizes(unsigned out[2], unsigned scene[2]);      // the output and scene sizes in effect (the game's own
@@ -392,6 +407,8 @@ void plugin_init_setup(void);                              // plugin_init.c: bef
 void plugin_init_run(Cpu *c, const RtLoaded *sdk);         // plugin_init.c: from the module-init callback; exits
 void plugins_setup(void);                                  // plugin_init.c: rt_boot, before ldr_load; nothing
                                                            // without a plugin in the build
+uint64_t plugins_import_caller(void);                      // plugin_init.c: the plugin's return address of the
+                                                           // import call running on this thread, 0 outside one
 int plugins_start(Cpu *c, const RtLoaded *sdk);            // plugin_init.c: from the module-init callback, before
                                                            // the game's constructors; 1 when it ran sdk's DT_INIT
                                                            // (a plugin's init ran after it)

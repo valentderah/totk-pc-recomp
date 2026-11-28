@@ -12,6 +12,7 @@
 // is also fixed at init; they are looked up only after the flat table misses.
 #include "dispatch.h"
 #include "host.h"
+#include "loadwin.h"
 #include "platform/platform.h"
 
 #include <stdarg.h>
@@ -43,6 +44,11 @@ static uint64_t g_nhost;
 void rt_fatal(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
+    char why[512];   // the message for the loading window (loadwin.h lw_fatal)
+    va_list aq;
+    va_copy(aq, ap);
+    vsnprintf(why, sizeof why, fmt, aq);
+    va_end(aq);
     rt_log_raw("FATAL: ", 7);
     rt_vlogf(fmt, ap);
     rt_log_raw("\n", 1);
@@ -55,6 +61,7 @@ void rt_fatal(const char *fmt, ...) {
     kern_free_cores_note();
     fflush(stdout);
     fflush(stderr);
+    lw_fatal(why);   // before the game window: the loading window shows the report until the player closes it
     _Exit(70);
 }
 

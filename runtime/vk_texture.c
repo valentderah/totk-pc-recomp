@@ -2018,11 +2018,104 @@ static void texels_read_take(const Tex *e, const Region *g, const TexRead *t, ui
     vmaDestroyBuffer(vk_ctx()->vma, t->sb, t->sa);
 }
 
+// A WriteTexels image write: the caller rows in a staging buffer laid out as the image holds them, and what the copy
+// into the image needs. texels_write_plan (texture lock) sizes it from the entry, texels_write_fill fills the staging
+// (no lock: memcpy, ASTC decode, RGB expansion), texels_write_record records the copy into the open upload batch.
+struct VkTexWrite {
+    tex_t t;                      // vk_write_texels_begin: a copy, the game may reuse the object before the replay
+    Region g;
+    NVNcopyRegion r;
+    TexVkFormat f;                // the entry's format; an entry of the same key has the same one
+    VkImageAspectFlags aspect;
+    uint32_t w, h;
+    size_t slice;                 // bytes per depth slice in the staging buffer
+    int agpu, bc_cut;             // agpu: raw ASTC blocks decoded by vk_astc_record; bc_cut: a BC3 region it cannot take
+    VkBuffer sb;
+    VmaAllocation sa;
+};
+
+static int texels_write_plan(Tex *e, const Region *g, const NVNcopyRegion *r, VkTexWrite *w) {
+    static volatile int32_t n_ds;
+    if (!read_aspect(e, &w->aspect)) {
+        log_limited(&n_ds, "texels of packed depth-stencil format %#x are not copied", e->t.d.format);
+        return 0;
+    }
+    if (g->level >= e->pub.levels) return 0;
+    w->g = *g, w->r = *r, w->f = e->f;
+    w->w = (uint32_t)r->width, w->h = (uint32_t)r->height;
+    int rgb = e->f.expand_rgb, astc = e->f.astc_bw != 0;
+    w->agpu = astc && vk_astc_gpu();
+    size_t ib = w->agpu ? 0 : astc ? 4 : rgb ? (size_t)g->bpb / 3 * 4 : 0;
+    w->slice = ib ? (size_t)w->w * w->h * ib : g->wb * g->hb;   // agpu: the raw blocks, decoded by vk_astc_record
+    // A BC3 image takes whole 4x4 blocks, or a part that ends on the mip's edge; a region of a 5x5 or 6x6 footprint
+    // may end inside a block (vk_astc_record checks the start corner).
+    uint32_t mw = e->t.d.width >> g->level, mh = e->t.d.height >> g->level;
+    w->bc_cut = e->f.astc_bc && (((w->w & 3) && (uint32_t)r->xoffset + w->w != (mw ? mw : 1)) ||
+                                 ((w->h & 3) && (uint32_t)r->yoffset + w->h != (mh ? mh : 1)));
+    return 1;
+}
+
+static void texels_write_fill(VkTexWrite *w, const uint8_t *mem) {
+    const Region *g = &w->g;
+    int rgb = w->f.expand_rgb, astc = w->f.astc_bw != 0;
+    size_t ib = w->agpu ? 0 : astc ? 4 : rgb ? (size_t)g->bpb / 3 * 4 : 0;
+    uint8_t *stg = vk_staging(w->slice * (size_t)g->nz, &w->sb, &w->sa);
+    for (int z = 0; z < g->nz; z++) {
+        uint8_t *s = stg + w->slice * (size_t)z;
+        const uint8_t *m = mem + (size_t)z * g->img;
+        if (w->agpu) {
+            for (size_t y = 0; y < g->hb; y++) memcpy(s + y * g->wb, m + y * g->row, g->wb);
+        } else if (astc) {
+            uint8_t *tight = malloc(g->wb * g->hb);
+            for (size_t y = 0; y < g->hb; y++) memcpy(tight + y * g->wb, m + y * g->row, g->wb);
+            uint64_t a0 = perf_begin();
+            astc_decode_ldr_mt(tight, w->w, w->h, w->f.astc_bw, w->f.astc_bh, w->f.astc_srgb, s);
+            perf_end(PERF_ASTC, a0);
+            free(tight);
+        } else if (rgb) {
+            for (size_t y = 0; y < g->hb; y++) expand_rgb(w->t.d.format, m + y * g->row, s + y * w->w * ib, w->w);
+        } else {
+            for (size_t y = 0; y < g->hb; y++) memcpy(s + y * g->wb, m + y * g->row, g->wb);
+        }
+    }
+    vmaFlushAllocation(vk_ctx()->vma, w->sa, 0, VK_WHOLE_SIZE);
+}
+
+static void texels_write_record(Tex *e, const VkTexWrite *w) {
+    static volatile int32_t n_astc;
+    const Region *g = &w->g;
+    const NVNcopyRegion *r = &w->r;
+    VkBufferImageCopy *rg = calloc((size_t)g->nz, sizeof *rg);
+    if (!rg) rt_fatal("vk: out of memory for a texture write");
+    for (int z = 0; z < g->nz; z++)
+        rg[z] = (VkBufferImageCopy){.bufferOffset = w->slice * (size_t)z,
+                                    .imageSubresource = {w->aspect, g->level, g->is3d ? 0 : g->layer0 + (uint32_t)r->zoffset + (uint32_t)z, 1},
+                                    .imageOffset = {r->xoffset, r->yoffset, g->is3d ? r->zoffset + z : 0},
+                                    .imageExtent = {w->w, w->h, 1}};
+    VkCommandBuffer cb = vk_upload_begin();
+    barrier(cb, ALL_RW, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    int done = 0;
+    if (w->agpu && !w->bc_cut) {   // bc_cut: nothing recorded, logged below as not decoded
+        VkAstcRegion *ar = calloc((size_t)g->nz, sizeof *ar);
+        for (int z = 0; z < g->nz; z++)
+            ar[z] = (VkAstcRegion){.src = w->slice * (size_t)z, .w = w->w, .h = w->h, .slices = 1, .level = rg[z].imageSubresource.mipLevel,
+                                   .layer = rg[z].imageSubresource.baseArrayLayer, .offset = rg[z].imageOffset};
+        uint64_t a0 = perf_begin();
+        done = vk_astc_record(cb, w->sb, w->slice * (size_t)g->nz, ar, g->nz, w->f.astc_bw, w->f.astc_bh, w->f.astc_srgb,
+                              w->f.astc_bc, e->pub.image, w->aspect, VK_NULL_HANDLE);
+        perf_end(PERF_ASTC, a0);
+        free(ar);
+    }
+    if (!w->agpu) vkCmdCopyBufferToImage(cb, w->sb, e->pub.image, VK_IMAGE_LAYOUT_GENERAL, (uint32_t)g->nz, rg);
+    else if (!done) log_limited(&n_astc, "WriteTexels of ASTC texture %#llx not decoded on the GPU: left as it was",
+                                (unsigned long long)e->pub.addr);
+    barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL_RW);
+    vk_upload_end();
+    free(rg);
+}
+
 // Image <-> caller rows through a staging buffer; the GPU copy is waited for.
 static int image_texels(Tex *e, const Region *g, const NVNcopyRegion *r, uint8_t *mem, int write) {
-    static volatile int32_t n_astc, n_ds;
-    VkCtx *c = vk_ctx();
-    VkImageAspectFlags aspect;
     if (!write) {
         TexRead t;
         if (!texels_read_record(e, g, r, &t)) return 0;
@@ -2030,69 +2123,13 @@ static int image_texels(Tex *e, const Region *g, const NVNcopyRegion *r, uint8_t
         texels_read_take(e, g, &t, mem);
         return 1;
     }
-    if (!read_aspect(e, &aspect)) {
-        log_limited(&n_ds, "texels of packed depth-stencil format %#x are not copied", e->t.d.format);
-        return 0;
-    }
-    if (g->level >= e->pub.levels) return 0;
-    uint32_t w = (uint32_t)r->width, h = (uint32_t)r->height;
-    int rgb = e->f.expand_rgb, astc = e->f.astc_bw != 0, agpu = astc && vk_astc_gpu();
-    size_t texels = (size_t)w * h, ib = agpu ? 0 : astc ? 4 : rgb ? (size_t)g->bpb / 3 * 4 : 0;
-    size_t slice = ib ? texels * ib : g->wb * g->hb;   // agpu: the raw blocks, decoded by vk_astc_record
-    VkBuffer sb;
-    VmaAllocation sa;
-    uint8_t *stg = vk_staging(slice * (size_t)g->nz, &sb, &sa);
-    VkBufferImageCopy *rg = calloc((size_t)g->nz, sizeof *rg);
-    for (int z = 0; z < g->nz; z++) {
-        uint8_t *s = stg + slice * (size_t)z;
-        const uint8_t *m = mem + (size_t)z * g->img;
-        if (agpu) {
-            for (size_t y = 0; y < g->hb; y++) memcpy(s + y * g->wb, m + y * g->row, g->wb);
-        } else if (astc) {
-            uint8_t *tight = malloc(g->wb * g->hb);
-            for (size_t y = 0; y < g->hb; y++) memcpy(tight + y * g->wb, m + y * g->row, g->wb);
-            uint64_t a0 = perf_begin();
-            astc_decode_ldr_mt(tight, w, h, e->f.astc_bw, e->f.astc_bh, e->f.astc_srgb, s);
-            perf_end(PERF_ASTC, a0);
-            free(tight);
-        } else if (rgb) {
-            for (size_t y = 0; y < g->hb; y++) expand_rgb(e->t.d.format, m + y * g->row, s + y * w * ib, w);
-        } else {
-            for (size_t y = 0; y < g->hb; y++) memcpy(s + y * g->wb, m + y * g->row, g->wb);
-        }
-        rg[z] = (VkBufferImageCopy){.bufferOffset = slice * (size_t)z,
-                                    .imageSubresource = {aspect, g->level, g->is3d ? 0 : g->layer0 + (uint32_t)r->zoffset + (uint32_t)z, 1},
-                                    .imageOffset = {r->xoffset, r->yoffset, g->is3d ? r->zoffset + z : 0},
-                                    .imageExtent = {w, h, 1}};
-    }
-    VkCommandBuffer cb = vk_upload_begin();
-    vmaFlushAllocation(c->vma, sa, 0, VK_WHOLE_SIZE);
-    barrier(cb, ALL_RW, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    int done = 0;
-    // A BC3 image takes whole 4x4 blocks, or a part that ends on the mip's edge; a region of a 5x5 or 6x6 footprint
-    // may end inside a block (vk_astc_record checks the start corner).
-    uint32_t mw = e->t.d.width >> g->level, mh = e->t.d.height >> g->level;
-    int bc_cut = e->f.astc_bc && (((w & 3) && (uint32_t)r->xoffset + w != (mw ? mw : 1)) ||
-                                  ((h & 3) && (uint32_t)r->yoffset + h != (mh ? mh : 1)));
-    if (agpu && !bc_cut) {   // bc_cut: nothing recorded, logged below as not decoded
-        VkAstcRegion *ar = calloc((size_t)g->nz, sizeof *ar);
-        for (int z = 0; z < g->nz; z++)
-            ar[z] = (VkAstcRegion){.src = slice * (size_t)z, .w = w, .h = h, .slices = 1, .level = rg[z].imageSubresource.mipLevel,
-                                   .layer = rg[z].imageSubresource.baseArrayLayer, .offset = rg[z].imageOffset};
-        uint64_t a0 = perf_begin();
-        done = vk_astc_record(cb, sb, slice * (size_t)g->nz, ar, g->nz, e->f.astc_bw, e->f.astc_bh, e->f.astc_srgb, e->f.astc_bc,
-                              e->pub.image, aspect, VK_NULL_HANDLE);
-        perf_end(PERF_ASTC, a0);
-        free(ar);
-    }
-    if (!agpu) vkCmdCopyBufferToImage(cb, sb, e->pub.image, VK_IMAGE_LAYOUT_GENERAL, (uint32_t)g->nz, rg);
-    else if (!done) log_limited(&n_astc, "WriteTexels of ASTC texture %#llx not decoded on the GPU: left as it was",
-                                (unsigned long long)e->pub.addr);
-    barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL_RW);
-    vk_upload_end();
+    VkTexWrite w;
+    if (!texels_write_plan(e, g, r, &w)) return 0;
+    w.t = e->t;
+    texels_write_fill(&w, mem);
+    texels_write_record(e, &w);
     vk_upload_flush(1);
-    free(rg);
-    vmaDestroyBuffer(c->vma, sb, sa);
+    vmaDestroyBuffer(vk_ctx()->vma, w.sb, w.sa);
     return 1;
 }
 
@@ -2160,6 +2197,57 @@ void vk_write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, co
         image_texels(e, &g, r, (uint8_t *)src, 1);
     }
     unlock();
+}
+
+// TOTK_REPLAY_ASYNC with TOTK_REPLAY_QUEUE_WRITE_TEXELS (vk_backend.c vk_be_write_texels), game thread: what
+// vk_write_texels does to guest memory happens now (a mirrored texture's storage and its write stamp), and the image
+// write is staged here and recorded by the replay thread in queue order (vk_write_texels_queued), after the queued
+// submissions before it, as the drain of the whole queue used to order it. A mirrored texture is staged even while the
+// CPU owns it: a queued render may make the GPU own it before the write's turn, and the image then needs the texels.
+// NULL when the image takes nothing; else *bytes is the staging held until the replay records it.
+VkTexWrite *vk_write_texels_begin(const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *src,
+                                  uint64_t row, uint64_t img, uint64_t *bytes) {
+    static volatile int32_t n_bad;
+    Region g;
+    if (!region_of(t, v, r, row, img, &g) || (v && v->set_format && v->format != t->d.format)) {
+        log_limited(&n_bad, "WriteTexels: invalid region %d,%d,%d %dx%dx%d or view format (format %#x)", r->xoffset,
+                    r->yoffset, r->zoffset, r->width, r->height, r->depth, t->d.format);
+        return NULL;
+    }
+    VkTexWrite *w = calloc(1, sizeof *w);
+    if (!w) rt_fatal("vk: out of memory (replay queue)");
+    lock();
+    Tex *e = entry_of(t);
+    if (e && e->pub.mirrored) {
+        if (!storage_texels(t, &g, r, (uint8_t *)src, 1))
+            log_limited(&n_bad, "WriteTexels: region outside level %u of texture %#llx", g.level, (unsigned long long)e->pub.addr);
+        vk_guest_written((uintptr_t)t->mem, t->L.size);
+    }
+    int ok = e && texels_write_plan(e, &g, r, w);
+    unlock();
+    if (!ok) { free(w); return NULL; }
+    w->t = *t;
+    texels_write_fill(w, src);
+    *bytes = w->slice * (size_t)g.nz;
+    return w;
+}
+
+// Replay thread, in queue order: the entry the texture has now gets the staged texels, unless it is mirrored and the
+// CPU owns it (its storage got them at vk_write_texels_begin). The staging goes once the upload batch is done.
+void vk_write_texels_queued(VkTexWrite *w) {
+    lock();
+    Tex *e = entry_of(&w->t);
+    int used = 0;
+    if (e && e->pub.mirrored && !e->pub.gpu_owned) {
+        if (e->uploaded) e->wt_n++;
+    } else if (e && w->g.level < e->pub.levels) {
+        texels_write_record(e, w);
+        vk_defer_buffer(w->sb, w->sa);   // stamped with the open batch, which holds the copy (lock order: tex, cmd)
+        used = 1;
+    }
+    unlock();
+    if (!used) vmaDestroyBuffer(vk_ctx()->vma, w->sb, w->sa);
+    free(w);
 }
 
 // ---------------------------------------------------------------- CPU reads of GPU-written storage

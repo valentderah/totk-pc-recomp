@@ -3429,6 +3429,23 @@ static int merge_guard(VkExec *ex, const GfxShader *vs, const GfxShader *fs) {
     return m != 0;
 }
 
+// barrier_merge: the attachments of fbl (sampled in the feedback layout) that a draw with state s reads after other
+// draws of the pass wrote them, without writing them itself. A read of a target the draw also writes (G-buffer bits
+// ORed in, blending in the shader) is a read of its own pixel, which the by-region barrier orders. A read of a target
+// the draw leaves alone is a read of what earlier draws left there, often at neighbouring pixels (blur, ambient
+// occlusion, light composites over the G-buffer, depth-based effects), which only the game's Barrier, a full one,
+// orders on every driver; the caller ends the pass for it. The rule is Savage Wind's (runtime/nvn/vulkan/exec.c, the
+// sampled-texture loop of the draw: a colour target the draw does not write ends the pass when it was written in the
+// pass, a read-only depth target when depth was), which that port runs on every GPU. A colour target counts as
+// written when the pipeline's write mask for it is not zero, depth as feedback_written counts it.
+static uint32_t merge_unwritten_reads(const VkExec *ex, const VkPipeState *s, uint32_t fbl) {
+    uint32_t r = fbl & ex->fb_dirty;
+    for (uint32_t i = 0; r & 0xff && i < ex->pass_ncolor && i < 8; i++)
+        if ((r >> i & 1) && vk_pipeline_target_wmask(s, (int)i)) r &= ~(1u << i);
+    if ((r & 0x100) && ((s->ds.dt && s->ds.dw) || s->ds.st)) r &= ~0x100u;
+    return r;
+}
+
 // ---- incremental draw preparation (TOTK_BIND_INC)
 // A draw is prepared from what changed since the context's last prepared draw in the same command buffer: the bind
 // ops mark the slots whose bytes they changed (VkExec.dirt, vk_exec_bind), every write that changes the pipeline state
@@ -3630,6 +3647,22 @@ static void bi_done(VkExec *ex, const VkPipeInfo *info, const VkPipeState *s, co
     D->B.bi_valid = 1;
 }
 
+// Mesa ANV (Intel iGPU, Linux): a draw whose vertex shader reads a storage buffer reads stale data inside a pass unless
+// the sampler cache is invalidated first: the half-resolution particle pass drew campfire smoke and clouds as white or
+// dark blobs and turned the sky white for single frames (#927). A by-region barrier before such a draw removes it
+// (0 of 1460 frames broken against 57 of 779, about 2 fps of 40 on an Iris Xe); a stall alone or the attachment flush
+// alone does not. The barrier costs about 5% of the frame rate on an Iris Xe and was only tested there, so it is off
+// on every GPU by default; TOTK_ANV_VS_BARRIER=1 (ini: anv_vs_barrier = 1) turns it on, 0 keeps it off.
+static int anv_vs_barrier(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = cfg_get("TOTK_ANV_VS_BARRIER");
+        on = e && *e && strcmp(e, "0") != 0;
+        rt_log("vk_exec: barrier before vertex-stage storage reads in a pass %s", on ? "on" : "off");
+    }
+    return on;
+}
+
 // Pass, shaders, pipeline, fixed state and resources for a draw. 0: the draw is skipped.
 static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     VkExecDraw *D = ex->draw;
@@ -3734,6 +3767,18 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         if (pg_hit) {   // check
             D->BC.checked++;
             if (memcmp(&s, &D->PM.s, sizeof s)) bi_mismatch(ex, BIM_PIPE, "pipeline memo: state differs from the memo its generation matched");
+        }
+    }
+    // barrier_merge: a read of a target this draw does not write, made after a merged Barrier, ends the pass; nothing of
+    // the draw is recorded yet, and the new pass keeps the targets and their feedback layout, so fbl and the state hold.
+    if (ex->pass_merged && fbl & ex->fb_dirty) {
+        uint32_t r = merge_unwritten_reads(ex, sp, fbl);
+        if (r) {
+            vk_exec_pass_end(ex);
+            vk_exec_pass_begin(ex);
+            ex->fr.barrier_undone++;
+            if (r & 0xff) ex->fr.undone_color++;
+            else ex->fr.undone_depth++;
         }
     }
     const VkPipeInfo *info = NULL;
@@ -3842,6 +3887,8 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     if (bim == 2) bi_census(ex, info, sp, bgt, bgb, bsg, sm_hit);   // on counts nothing: it is what gets timed
     bind_resources(ex, info, bim ? bgt : NULL, bgb);
     if (fbl & ex->fb_dirty) feedback_barrier(ex);
+    else if (ex->in_pass && anv_vs_barrier() && gfx_shader_resources(vs, GFX_RES_SSBO, &(const GfxShaderRes *){0}))
+        { uint32_t keep = ex->fb_dirty; feedback_barrier(ex); ex->fb_dirty = keep; }   // keep fb_dirty: feedback_prepare learns from it
     feedback_written(ex, sp);
     bind_vertex_buffers(ex);
     if (vk_dump_armed) vk_dump_draw(ex, sp, p, info);
@@ -4768,6 +4815,74 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
 
 // ---- dispatch and uniform buffer updates
 
+// skip_cs (TOTK_SKIP_CS): compute shaders whose dispatches are left out, named by the id the pass marks print for a
+// dispatch ("cs 75be3722f62cb67e": the first 8 bytes of the shader's input id, vk_crumbs.c shader_id). Up to
+// SKIP_CS_MAX ids of 1 to 16 hex digits, separated by commas or spaces; an id shorter than 16 digits matches every
+// shader whose id starts with it. When the pass marks put a GPU hang in one dispatch, as on Intel GPUs on game 1.2.1
+// after the startup logo (#1402), this takes that dispatch out: the device survives if the shader was the cause, at the
+// cost of whatever the shader would have written. A bisecting tool and a stopgap, not a fix.
+#define SKIP_CS_MAX 16
+static struct { unsigned long long id, mask; } skip_cs[SKIP_CS_MAX];
+static int n_skip_cs;
+static PlatOnce skip_cs_once = PLAT_ONCE_INIT;
+
+static void skip_cs_read(void *arg) {
+    (void)arg;
+    const char *v = cfg_get("TOTK_SKIP_CS");
+    if (!v) return;
+    for (const char *p = v; *p;) {
+        while (*p == ',' || *p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        unsigned long long id = 0;
+        int digits = 0;
+        const char *entry = p;
+        for (; *p && *p != ',' && *p != ' ' && *p != '\t'; p++) {
+            int c = (unsigned char)*p, h = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                                                                              : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+            if (h < 0 || digits == 16) {   // not an id: skip the rest of this entry
+                digits = -1;
+                while (*p && *p != ',' && *p != ' ' && *p != '\t') p++;
+                break;
+            }
+            id = id << 4 | (unsigned)h, digits++;
+        }
+        if (digits <= 0) {
+            int len = 0;
+            while (entry[len] && entry[len] != ',' && entry[len] != ' ' && entry[len] != '\t') len++;
+            rt_log("vk: skip_cs: \"%.*s\" is not 1 to 16 hex digits; ignored", len, entry);
+            continue;
+        }
+        if (n_skip_cs == SKIP_CS_MAX) {
+            rt_log("vk: skip_cs: more than %d ids; the rest are ignored", SKIP_CS_MAX);
+            break;
+        }
+        int shift = 4 * (16 - digits);   // 0..60: digits is 1..16
+        skip_cs[n_skip_cs].id = id << shift;
+        skip_cs[n_skip_cs].mask = ~0ull << shift;
+        n_skip_cs++;
+    }
+    for (int i = 0; i < n_skip_cs; i++)
+        rt_log("vk: skip_cs: dispatches of compute shaders whose id starts with %0*llx are skipped (TOTK_SKIP_CS)",
+               16 - __builtin_ctzll(skip_cs[i].mask) / 4, skip_cs[i].id >> __builtin_ctzll(skip_cs[i].mask));
+}
+
+// 1 when skip_cs names cs; logs the first skipped dispatch of each listed id.
+static int cs_skipped(const GfxShader *cs) {
+    plat_once(&skip_cs_once, skip_cs_read, NULL);
+    if (!n_skip_cs) return 0;
+    const uint8_t *iid = gfx_shader_input_id(cs);
+    unsigned long long v = 0;
+    for (int i = 0; i < 8; i++) v = v << 8 | iid[i];
+    static uint32_t logged;   // bit i: entry i was logged
+    for (int i = 0; i < n_skip_cs; i++) {
+        if ((v & skip_cs[i].mask) != skip_cs[i].id) continue;
+        if (!(__atomic_fetch_or(&logged, 1u << i, __ATOMIC_RELAXED) & 1u << i))
+            rt_log("vk: skip_cs: skipped a dispatch of cs %016llx (TOTK_SKIP_CS); later ones are not logged", v);
+        return 1;
+    }
+    return 0;
+}
+
 static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     VkExecDraw *D = ex->draw;
     if (d->x <= 0 || d->y <= 0 || d->z <= 0) return;
@@ -4777,7 +4892,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     dummies_init();
     int present;
     const GfxShader *cs = shader_for(ex, NVN_STAGE_CS, &present, NULL, 0);   // synchronous: a skipped dispatch changes results
-    if (!cs) return;
+    if (!cs || cs_skipped(cs)) return;
     const VkPipeInfo *info = NULL;
     VkPipeline p = vk_pipeline_compute(cs, &info);
     if (!p || !info) return warn_once(W_PIPELINE, "a compute pipeline could not be created: dispatches with it are skipped");
@@ -4806,7 +4921,7 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
     dummies_init();
     int present;
     const GfxShader *cs = shader_for(ex, NVN_STAGE_CS, &present, NULL, 0);
-    if (!cs) return;
+    if (!cs || cs_skipped(cs)) return;
     const VkPipeInfo *info = NULL;
     VkPipeline p = vk_pipeline_compute(cs, &info);
     if (!p || !info) return warn_once(W_PIPELINE, "a compute pipeline could not be created: dispatches with it are skipped");

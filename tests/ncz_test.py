@@ -66,6 +66,35 @@ def ncz_file(nca, body, blocks=False):
     return out + b''.join(stored)
 
 
+class BlocksTest(unittest.TestCase):
+    def read(self, data, plain=1 << 14):
+        header = b'NCZBLOCK' + bytes([2, 1, 0, 14]) + struct.pack('<IQI', 1, plain, len(data))
+        return ncz.blocks(io.BytesIO(header + data), 0, len(header) + len(data), plain)
+
+    def test_oversized_compressed_block_is_rejected_before_yielding(self):
+        data = zstd.compress(bytes(1 << 20))   # a small fixture, 64 times the declared output
+        with self.assertRaisesRegex(ValueError, 'NCZ block decompressed size'):
+            next(self.read(data))
+
+    def test_short_compressed_block_is_rejected_before_yielding(self):
+        with self.assertRaisesRegex(ValueError, 'NCZ block decompressed size'):
+            next(self.read(zstd.compress(bytes(100))))
+
+    def test_compressed_block_can_contain_multiple_frames(self):
+        plain = bytes(1 << 14)
+        data = zstd.compress(plain[:100]) + zstd.compress(plain[100:])
+        self.assertEqual(b''.join(self.read(data)), plain)
+
+    def test_compressed_final_block_uses_its_actual_plain_size(self):
+        plain = bytes(123)
+        self.assertEqual(b''.join(self.read(zstd.compress(plain), len(plain))), plain)
+
+    def test_compressed_block_must_reach_its_end_marker(self):
+        data = zstd.compress(bytes(1 << 14), options={zstd.CompressionParameter.checksum_flag: True})
+        with self.assertRaises((zstd.ZstdError, EOFError)):
+            next(self.read(data[:-1]))
+
+
 class UnpackTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -88,6 +117,25 @@ class UnpackTest(unittest.TestCase):
     def expected(self):
         return pfs0([(self.name + '.nca', self.nca), ('a.tik', self.tik)])
 
+    def padded_nsz(self, indices, truncate=False):
+        """Store selected blocks raw, followed by padding included in the stored length, not the NCA body."""
+        def pad(data):
+            head = ncz.HEADER + 16 + 0x40 * len(SECTIONS)
+            exponent = data[head + 11]
+            count = struct.unpack_from('<I', data, head + 12)[0]
+            for index in indices:
+                index %= count
+                lengths = struct.unpack_from(f'<{count}I', data, head + 24)
+                start = head + 24 + 4 * count + sum(lengths[:index])
+                plain = self.body[index << exponent:(index + 1) << exponent]
+                padding = bytes(max(16, (1 << exponent) - len(plain)))
+                stored = plain + padding
+                data[start:start + lengths[index]] = stored
+                struct.pack_into('<I', data, head + 24 + 4 * index, len(stored))
+            return data[:-1] if truncate else data
+
+        return self.nsz(blocks=True, damage=pad)
+
     def test_stream_comes_back_byte_for_byte(self):
         src = self.nsz()
         self.assertEqual(ncz.compressed(src)[0], 'nsz')
@@ -101,6 +149,36 @@ class UnpackTest(unittest.TestCase):
     def test_blocks_come_back_byte_for_byte(self):
         ncz.unpack(self.nsz(blocks=True), self.dir / 'out.nsp')
         self.assertEqual((self.dir / 'out.nsp').read_bytes(), self.expected())
+
+    def test_raw_block_padding_is_not_written_into_the_nca(self):
+        for indices in ((0,), (-1,), (0, -1)):
+            with self.subTest(indices=indices):
+                seen = []
+                ncz.unpack(self.padded_nsz(indices), self.dir / 'out.nsp', lambda d, t: seen.append((d, t)))
+                self.assertEqual((self.dir / 'out.nsp').read_bytes(), self.expected())
+                self.assertEqual(seen[-1], (len(self.expected()), len(self.expected())))
+
+    def test_a_raw_block_cannot_claim_padding_outside_its_entry(self):
+        with self.assertRaisesRegex(ValueError, 'Truncated NCZ block'):
+            ncz.unpack(self.padded_nsz((-1,), truncate=True), self.dir / 'out.nsp')
+        self.assertFalse((self.dir / 'out.nsp').exists())
+
+    def test_block_of_the_wrong_size_is_a_damaged_file(self):
+        """The installer turns DamagedFile into check.input_damaged, which asks for a fresh copy of the file."""
+        def short(data):
+            head = ncz.HEADER + 16 + 0x40 * len(SECTIONS)
+            count = struct.unpack_from('<I', data, head + 12)[0]
+            lengths = struct.unpack_from(f'<{count}I', data, head + 24)
+            start = head + 24 + 4 * count + lengths[0]
+            frame = zstd.compress(self.body[1 << 14:(2 << 14) - 100])   # block 1 is zeros, stored compressed
+            data[start:start + lengths[1]] = frame
+            struct.pack_into('<I', data, head + 24 + 4, len(frame))
+            return data
+
+        with self.assertRaises(ncz.DamagedFile) as e:
+            ncz.unpack(self.nsz(blocks=True, damage=short), self.dir / 'out.nsp')
+        self.assertIn('decompressed size', e.exception.detail)
+        self.assertFalse((self.dir / 'out.nsp').exists())
 
     def test_plain_nsp_is_not_compressed(self):
         path = self.dir / 'plain.nsp'

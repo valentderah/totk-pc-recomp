@@ -108,10 +108,13 @@ static void thaw_range_locked(uint64_t a, uint64_t n, int why) {
     for (uint64_t r = r0; r <= r1; r++) thaw_locked(r, why);
 }
 
+static void heap_commit_range(uint64_t a, uint64_t n);
+
 void mem_thaw(uint64_t a, uint64_t n) {
     plat_mutex_lock(&frz_lock);   // also when nothing is frozen: the hold keeps a read's buffer writable
     thaw_range_locked(a, n, 2);
     plat_mutex_unlock(&frz_lock);
+    heap_commit_range(a, n);
 }
 
 // frz_lock held exclusively. Makes the committed pages of region r read-only when every one of them is read-write;
@@ -200,6 +203,105 @@ static void commit(uint64_t a, uint64_t n, const char *what) {
         rt_fatal("memory: commit %s %#llx+%#llx failed", what, (unsigned long long)a, (unsigned long long)n);
 }
 
+// ---- heap pages committed on first use (Windows)
+// SetHeapSize asks for the game's whole heap at once (1.4.3: about 2.1 GiB at boot), and Windows charges every
+// committed page against the system's commit limit, backed by RAM or the page file, whether the game touches it or not.
+// In a sky-island scene it had touched about two thirds. With TOTK_HEAP_LAZY=1 (Windows, off by default) the part
+// SetHeapSize adds stays reserved: the first read or write of a reserved page faults, and heap_fault commits its
+// LAZY_CHUNK and retries. Freshly committed pages read as zero, as the Switch's heap does. Access by the kernel or the GPU
+// driver does not fault: a file read into the heap, a save written from it and a Vulkan import of it would fail on a
+// reserved page. File reads and Vulkan imports call mem_thaw first, so mem_thaw commits the reserved chunks of its
+// range too (heap_commit_range); save writes only need the pages to exist and call mem_heap_commit. Linux backs mprotect'ed pages on first use by itself and keeps committing eagerly.
+//
+// lazy_map holds one byte per chunk, set once the chunk is committed, so neither path asks the OS for the page state:
+// a VirtualQuery costs tens of microseconds here, and the write faults of frozen pool regions (thaw_fault) come through
+// heap_fault first. Only whole chunks are committed and only when their byte is clear: VirtualAlloc(MEM_COMMIT) over
+// committed pages would set them read-write again and undo a freeze.
+#ifndef LAZY_CHUNK
+#define LAZY_CHUNK 0x100000ull   // divides the 2 MiB granularity of SetHeapSize
+#endif
+static int heap_lazy;
+static uint8_t *lazy_map;                          // per chunk of L.heap: 1 committed; written under lazy_lock
+static PlatMutex lazy_lock = PLAT_MUTEX_INIT;      // commits and the heap's shrink; never held across a guest access
+static volatile uint64_t heap_committed;           // bytes of committed chunks (lazy mode), exact
+static volatile int64_t lazy_faults, lazy_ns;
+
+// Commits the clear chunks among [i0, i1) of the heap's first `size` bytes, runs of them in one call.
+static void heap_commit_chunks(uint64_t i0, uint64_t i1, uint64_t size, const char *what) {
+    uint64_t base = L.heap.base, top = base + size;
+    plat_mutex_lock(&lazy_lock);
+    for (uint64_t i = i0; i < i1;) {
+        if (lazy_map[i]) { i++; continue; }
+        uint64_t j = i;
+        while (j < i1 && !lazy_map[j]) j++;
+        uint64_t lo = base + i * LAZY_CHUNK, hi = base + j * LAZY_CHUNK;
+        if (hi > top) hi = top;
+        commit(lo, hi - lo, what);
+        __atomic_add_fetch(&heap_committed, hi - lo, __ATOMIC_RELAXED);
+        for (uint64_t k = i; k < j; k++) __atomic_store_n(&lazy_map[k], 1, __ATOMIC_RELEASE);
+        i = j;
+    }
+    plat_mutex_unlock(&lazy_lock);
+}
+
+static void heap_commit_range(uint64_t a, uint64_t n) {
+    if (!heap_lazy || !n) return;
+    uint64_t base = L.heap.base, size = __atomic_load_n(&heap_size, __ATOMIC_ACQUIRE), top = base + size;
+    uint64_t lo = a > base ? a : base, hi = a + n < a || a + n > top ? top : a + n;
+    if (lo >= hi) return;
+    uint64_t i0 = (lo - base) / LAZY_CHUNK, i1 = (hi - base + LAZY_CHUNK - 1) / LAZY_CHUNK, i = i0;
+    while (i < i1 && __atomic_load_n(&lazy_map[i], __ATOMIC_ACQUIRE)) i++;   // the usual case: all committed, no lock
+    if (i < i1) heap_commit_chunks(i, i1, size, "heap pages for a file, save or import");
+}
+
+// The platform's fault hook, ahead of thaw_fault: 1 retries the access. A committed chunk's fault is not this one's
+// (a frozen page, or a guest error); heap_fault_raced catches a chunk committed by another thread in between.
+static int heap_fault(uint64_t a) {
+    if (!heap_lazy) return 0;
+    uint64_t base = L.heap.base, size = __atomic_load_n(&heap_size, __ATOMIC_ACQUIRE);
+    if (a < base || a - base >= size) return 0;
+    uint64_t i = (a - base) / LAZY_CHUNK;
+    if (__atomic_load_n(&lazy_map[i], __ATOMIC_ACQUIRE)) return 0;
+    uint64_t t0 = plat_now_ns();
+    heap_commit_chunks(i, i + 1, size, "heap on first use");
+    int64_t ns = (int64_t)__atomic_add_fetch(&lazy_ns, (int64_t)(plat_now_ns() - t0), __ATOMIC_RELAXED);
+    int64_t n = (int64_t)plat_inc64(&lazy_faults);
+    if (!(n % (int64_t)((512ull << 20) / LAZY_CHUNK)))   // every 512 MiB of chunks: how often and at what cost
+        rt_log("memory: heap committed on first use: %lld faults, %.1f ms in all (%.1f us each); heap %llu of %llu MiB "
+               "committed", (long long)n, (double)ns / 1e6, (double)ns / 1e3 / (double)n,
+               (unsigned long long)(__atomic_load_n(&heap_committed, __ATOMIC_RELAXED) >> 20),
+               (unsigned long long)(size >> 20));
+    return 1;
+}
+
+// Last, after thaw_fault declined: a chunk another thread committed between this thread's fault and heap_fault's read
+// of lazy_map. Asks the OS, which only the faults no hook takes (a crash on its way) pay for.
+static int heap_fault_raced(uint64_t a) {
+    uint64_t base = L.heap.base, size = __atomic_load_n(&heap_size, __ATOMIC_ACQUIRE), end;
+    if (!heap_lazy || a < base || a - base >= size) return 0;
+    return plat_mem_state(a & ~(PAGE - 1), (a & ~(PAGE - 1)) + PAGE, &end) == PLAT_PROT_RW;
+}
+
+int mem_heap_lazy(void) { return heap_lazy; }
+
+void mem_heap_commit(uint64_t a, uint64_t n) { heap_commit_range(a, n); }
+
+void mem_heap_lazy_stats(uint64_t *faults, uint64_t *ns, uint64_t *committed, uint64_t *size) {
+    *faults = (uint64_t)__atomic_load_n(&lazy_faults, __ATOMIC_RELAXED);
+    *ns = (uint64_t)__atomic_load_n(&lazy_ns, __ATOMIC_RELAXED);
+    *committed = __atomic_load_n(&heap_committed, __ATOMIC_RELAXED);
+    *size = __atomic_load_n(&heap_size, __ATOMIC_ACQUIRE);
+}
+
+uint64_t mem_heap_uncommitted(void) {
+    if (!heap_lazy) return 0;
+    uint64_t size = __atomic_load_n(&heap_size, __ATOMIC_ACQUIRE), done = __atomic_load_n(&heap_committed, __ATOMIC_RELAXED);
+    return size > done ? size - done : 0;
+}
+
+static int thaw_fault(uint64_t a);
+static int mem_fault(uint64_t a) { return heap_fault(a) || thaw_fault(a) || heap_fault_raced(a); }
+
 static void decommit(uint64_t a, uint64_t n, const char *what) {
     plat_mutex_lock(&frz_lock);
     thaw_range_locked(a, n, 3);
@@ -253,12 +355,17 @@ void mem_init(void) {
         if (reserve_at(at, ALIAS_SIZE, 1)) alias = at;
     if (!alias) reexec_or_fail("a 64 GiB alias region below 2^39");
 
-    plat_mem_fault_hook(thaw_fault);   // before the crash handler
+    plat_mem_fault_hook(mem_fault);   // before the crash handler
     alias_pages = calloc(ALIAS_PAGES, 1);
     if (!alias_pages) rt_fatal("memory: cannot allocate the alias page map");
     // totk.ini is read here, once the address space is claimed and before the first setting: the pool size below
     // depends on TOTK_APP_POOL and on the resolution settings (resolution.c decides them once, on this first call).
     cfg_init();
+#ifdef _WIN32
+    const char *lazy = cfg_get("TOTK_HEAP_LAZY");
+    heap_lazy = lazy && atoi(lazy) != 0;   // opt-in: an untouched heap page then faults on its first read too
+    plat_mem_fault_reads(heap_lazy);
+#endif
     const char *pool = cfg_get("TOTK_APP_POOL");
     L = (RtGuestLayout){
         .aslr = {low, RT_ADDRESS_LIMIT - low},
@@ -271,6 +378,8 @@ void mem_init(void) {
                      : DEFAULT_POOL + res_heap_extra_bytes() + res_tex_heap_extra_bytes() + res_grass_heap_extra_bytes(),
     };
     if (!L.pool) rt_fatal("memory: TOTK_APP_POOL is 0");
+    if (heap_lazy && !(lazy_map = calloc(L.heap.size / LAZY_CHUNK + 1, 1)))
+        rt_fatal("memory: cannot allocate the heap chunk map");
 }
 
 const RtGuestLayout *mem_layout(void) { return &L; }
@@ -306,8 +415,21 @@ uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr) {
         plat_mutex_unlock(&lock);
         return R_INVALID_STATE;
     }
-    if (size > heap_size) commit(L.heap.base + heap_size, size - heap_size, "heap");
-    if (size < heap_size) decommit(L.heap.base + size, heap_size - size, "heap");
+    if (size > heap_size && !heap_lazy) commit(L.heap.base + heap_size, size - heap_size, "heap");   // else heap_fault
+    if (size < heap_size && heap_lazy) {   // the chunks above the new size go back to reserved
+        plat_mutex_lock(&lazy_lock);
+        for (uint64_t i = size / LAZY_CHUNK, end = (heap_size + LAZY_CHUNK - 1) / LAZY_CHUNK; i < end; i++)
+            if (lazy_map[i]) {
+                uint64_t lo = L.heap.base + i * LAZY_CHUNK, hi = lo + LAZY_CHUNK;
+                if (hi > L.heap.base + heap_size) hi = L.heap.base + heap_size;
+                decommit(lo, hi - lo, "heap");
+                __atomic_sub_fetch(&heap_committed, hi - lo, __ATOMIC_RELAXED);
+                __atomic_store_n(&lazy_map[i], 0, __ATOMIC_RELEASE);
+            }
+        plat_mutex_unlock(&lazy_lock);
+    } else if (size < heap_size) {
+        decommit(L.heap.base + size, heap_size - size, "heap");
+    }
     heap_size = size;
     plat_mutex_unlock(&lock);
     if (addr) *addr = L.heap.base;
@@ -378,6 +500,8 @@ static int module_data(uint64_t a, uint64_t n) {
     return off >= m->data_off && n <= m->size - off ? i : -1;
 }
 
+int mem_plugin_writes;
+
 uint32_t mem_set_permission(uint64_t a, uint64_t n, uint32_t perm) {
     if (a & (PAGE - 1)) return R_INVALID_ADDRESS;
     if (!n || (n & (PAGE - 1))) return R_INVALID_SIZE;
@@ -393,10 +517,16 @@ uint32_t mem_set_permission(uint64_t a, uint64_t n, uint32_t perm) {
             return R_INVALID_STATE;
         }
     memset(t, (int)perm, n / PAGE);
-    protect(a, n, perm == PERM_RW ? PLAT_PROT_RW : perm == PERM_R ? PLAT_PROT_READ : PLAT_PROT_NONE, "module data");
+    // With a mod plugin on, a read-only run (the RELRO the SDK seals in each module's DT_INIT, after the plugins'
+    // inits) stays writable on the host while QueryMemory reports what the game asked. Zonai Fieldworks swaps entries
+    // of main's RELRO tables from its own code when a member is switched on in play (#1451), writing main's address
+    // directly; on the platforms the mod is made for that write goes through, here it faulted.
+    int keep_rw = perm == PERM_R && mem_plugin_writes;
+    protect(a, n, perm == PERM_RW || keep_rw ? PLAT_PROT_RW : perm == PERM_R ? PLAT_PROT_READ : PLAT_PROT_NONE,
+            "module data");
     plat_mutex_unlock(&lock);
-    rt_log("%s data permission +%#llx size %#llx perm %u", m->name, (unsigned long long)(a - m->base),
-           (unsigned long long)n, perm);
+    rt_log("%s data permission +%#llx size %#llx perm %u%s", m->name, (unsigned long long)(a - m->base),
+           (unsigned long long)n, perm, keep_rw ? " (kept writable on the host: a mod plugin is on)" : "");
     return R_OK;
 }
 

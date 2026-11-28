@@ -1,4 +1,4 @@
-"""The last install folder and source paths, in a per-user file, so an update, a reinstall or a switch to another game
+r"""The last install folder and source paths, in a per-user file, so an update, a reinstall or a switch to another game
 version starts with the form filled in.
 
     {"format": 1, "dest": ..., "base": ..., "update": ..., "keys": ..., "firmware": ...}

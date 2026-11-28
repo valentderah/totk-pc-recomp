@@ -28,7 +28,7 @@ int vk_fg_active(void);
 void vk_fg_release(void);
 
 // vk_dlaa.c vk_dlaa_frame, once per present: 1 when frame generation follows the scene in the next frame. 0 while
-// DLSS runs (dlss), with replay workers or sync_ahead = 1 (the inputs are per frame and recorded in replay order),
+// DLSS runs (dlss), with replay workers (the inputs are per frame and recorded in replay order),
 // with HDR output, or while the game shows a menu without its world (vk_fg_menu); each reason is logged once.
 int vk_fg_wanted(int dlss);
 // vk_dlaa.c, the game's thread at each present: 1 while the map or a loading or event fade is open (sampled there,

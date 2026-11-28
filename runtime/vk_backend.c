@@ -29,6 +29,12 @@
 // by the submission it was handed out for. The game runs at most one frame ahead: queueing present N waits until the
 // replay thread handled present N-1. Calls that read or free GPU state that queued work may use drain the queue first
 // (replay_drain), each cause counted.
+//
+// Two of those calls are queued instead (section "Queued pool teardown and texel writes"): nvnMemoryPoolFinalize
+// (TOTK_REPLAY_QUEUE_POOL_FINI, default 1) and the image half of nvnTextureWriteTexels (TOTK_REPLAY_QUEUE_WRITE_TEXELS,
+// default 1); 0 drains as before. Their guest-memory work happens at once, the rest in queue order, and the game-thread
+// calls that could see the difference (a pool over a range being torn down, texel reads, CPU write-backs) drain only
+// when their range overlaps a queued one.
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -278,19 +284,25 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
 }
 
 // ---- Asynchronous replay
-enum { RI_SUBMIT, RI_PRESENT, RI_RELEASE };
+enum { RI_SUBMIT, RI_PRESENT, RI_RELEASE, RI_POOL_FINI, RI_WRITE_TEXELS };
 typedef struct {
     int kind, n, has_crop, crop[4];
     uint64_t value, submit_no, at, queued, pid;   // pid: the game's frame when it queued the item (present ID)
     uint64_t *h;
     const tex_t *tex;   // RI_RELEASE: a copy the item owns (the game may reuse the object's memory)
+    const pool_t *pool; // RI_POOL_FINI: the pool object's address, the record's key; never dereferenced
+    VkTexWrite *wt;     // RI_WRITE_TEXELS: the staged image write (vk_write_texels_begin)
+    uint64_t pend;      // RI_POOL_FINI, RI_WRITE_TEXELS: its entry in the pending list
 } ReplayItem;
 #define RQ_CAP 1024   // a frame queues 1 submit and 1 present, and up to a few hundred releases
 enum { DR_POOL_FINI, DR_MAP_VIRTUAL, DR_TEX_RELEASE, DR_PROG_RELEASE, DR_FINISH, DR_READ_TEXELS, DR_WRITE_TEXELS,
-       DR_GUEST_READ, DR_FRAME, DR_FULL, DR_CHECK, DR_N };
+       DR_GUEST_READ, DR_FRAME, DR_FULL, DR_CHECK, DR_FINI_INIT, DR_FINI_TEXELS, DR_FINI_WB, DR_WT_READ, DR_WT_WB,
+       DR_WT_CAP, DR_N };
 static const char *const dr_name[DR_N] = {
     "pool_fini", "map_virtual", "texture_release (queued)", "program_release", "finish", "read_texels (writer fence)",
-    "write_texels", "guest_read (writer fence)", "frame bound", "queue full", "check drain"};
+    "write_texels", "guest_read (writer fence)", "frame bound", "queue full", "check drain",
+    "pool_init over a queued pool_fini", "texels over a queued pool_fini", "write-back over a queued pool_fini",
+    "read_texels over a queued write_texels", "write-back over a queued write_texels", "write_texels staging cap"};
 
 static PlatMutex rl = PLAT_MUTEX_INIT;
 static PlatCond rcv = PLAT_COND_INIT;   // item queued, item taken, item done
@@ -304,22 +316,94 @@ static uint64_t dr_calls[DR_N], dr_waits[DR_N], dr_ns[DR_N], dr_tcalls[DR_N], dr
 // although no submission recorded a write to the texture in between, differing with the queue idle at the first read.
 static uint64_t ck_reads, ck_diff, ck_diff_unexplained, ck_diff_idle;
 
+static int q_fini, q_wt;   // TOTK_REPLAY_QUEUE_POOL_FINI, TOTK_REPLAY_QUEUE_WRITE_TEXELS with the replay asynchronous
+
 int vk_replay_async(void) {
     static int on = -1;
-    if (on < 0) {
+    if (__atomic_load_n(&on, __ATOMIC_ACQUIRE) < 0) {
         // Off by default. Where the game waits for the GPU it overlaps the replay with the game threads (a GTX 1650 in
         // the Depths went from 450-686 frames over 50 ms a minute to 10-13, issue #88), the only place a gain was
         // measured. While it was the default, a GTX 1660 Ti at the 60 fps cap with the GPU at 26 % reported uneven
         // motion that 0.3.4 did not have (#659). It adds up to a frame of latency.
-        on = cfg_bool("TOTK_REPLAY_ASYNC");
-        rt_log("vk: replay %s (TOTK_REPLAY_ASYNC=%d)",
-               on ? "on its own thread, at most one frame behind the game" : "on the submitting thread", on);
+        int v = cfg_bool("TOTK_REPLAY_ASYNC");
+        q_fini = v && cfg_bool("TOTK_REPLAY_QUEUE_POOL_FINI");
+        q_wt = v && cfg_bool("TOTK_REPLAY_QUEUE_WRITE_TEXELS");
+        rt_log("vk: replay %s (TOTK_REPLAY_ASYNC=%d, TOTK_REPLAY_QUEUE_POOL_FINI=%d, TOTK_REPLAY_QUEUE_WRITE_TEXELS=%d)",
+               v ? "on its own thread, at most one frame behind the game" : "on the submitting thread", v, q_fini, q_wt);
+        __atomic_store_n(&on, v, __ATOMIC_RELEASE);
     }
     return on;
 }
 
 // The front end's view (nvn_api_core.c, nvn_api_cmd.c): replay is asynchronous only on this back end.
 int gfx_replay_async(void) { return gfx_backend() == &gfx_vulkan_backend && vk_replay_async(); }
+
+// ---- Queued pool teardown and texel writes
+// A queued pool teardown or image write is in the pending list from the game thread's call until the replay thread
+// finished it, so each entry has a queue item (or is the one being replayed): the list is bounded by the queue. The
+// game-thread calls that could run into one drain the queue when their range overlaps it (pending_over), and only then.
+enum { PD_FINI, PD_WRITE };
+typedef struct { uint64_t id, lo, hi, bytes; const pool_t *key; int kind, phys; } Pending;
+static Pending *pend;                   // under rl
+static int npend, cpend, pend_n[2], pend_peak[2];   // under rl: entries, per kind now and the most since the last line
+static uint64_t pend_next, pend_bytes, pend_bytes_peak;   // under rl: staging bytes the queued writes hold
+static int32_t pend_any;                // npend, read without rl: an empty list costs one load
+#define PEND_BYTES_CAP (256ull << 20)   // queued writes hold at most this much staging (DR_WT_CAP beyond it)
+
+static uint64_t pending_add(int kind, uint64_t lo, uint64_t hi, const pool_t *key, int phys, uint64_t bytes) {
+    plat_mutex_lock(&rl);
+    if (npend == cpend) {
+        cpend = cpend ? cpend * 2 : 64;
+        pend = realloc(pend, sizeof *pend * (size_t)cpend);
+        if (!pend) rt_fatal("vk: out of memory (replay queue)");
+    }
+    uint64_t id = ++pend_next;
+    pend[npend++] = (Pending){id, lo, hi, bytes, key, kind, phys};
+    if (++pend_n[kind] > pend_peak[kind]) pend_peak[kind] = pend_n[kind];
+    pend_bytes += bytes;
+    if (pend_bytes > pend_bytes_peak) pend_bytes_peak = pend_bytes;
+    __atomic_store_n(&pend_any, npend, __ATOMIC_RELEASE);
+    plat_mutex_unlock(&rl);
+    return id;
+}
+
+static void pending_remove_locked(uint64_t id) {   // rl held
+    for (int i = 0; i < npend; i++)
+        if (pend[i].id == id) {
+            pend_n[pend[i].kind]--;
+            pend_bytes -= pend[i].bytes;
+            pend[i] = pend[--npend];
+            __atomic_store_n(&pend_any, npend, __ATOMIC_RELEASE);
+            return;
+        }
+}
+
+// 1 when an entry of kind overlaps [lo, hi): for a teardown also one of the same pool object (vk_memory.c index_put
+// would drop its record unfreed) or, when virt (a texture in a virtual pool), any physical pool, whose memory such
+// textures may sit on (vk_texture_range_gone's alloc test).
+static int pending_over(int kind, uint64_t lo, uint64_t hi, const pool_t *key, int virt) {
+    if (!__atomic_load_n(&pend_any, __ATOMIC_ACQUIRE)) return 0;
+    int hit = 0;
+    plat_mutex_lock(&rl);
+    for (int i = 0; i < npend && !hit; i++) {
+        const Pending *e = &pend[i];
+        hit = e->kind == kind && ((e->lo < hi && lo < e->hi) || (key && e->key == key) || (virt && e->phys));
+    }
+    plat_mutex_unlock(&rl);
+    return hit;
+}
+
+// 1 when a GPU-written mirrored texture over an entry of kind has stale storage: a write-back of all of them
+// (vk_texture_write_back_small) would write it.
+static int pending_stale(int kind) {
+    if (!__atomic_load_n(&pend_any, __ATOMIC_ACQUIRE)) return 0;
+    int hit = 0;
+    plat_mutex_lock(&rl);   // before owned_lock (vk_texture_cpu_stale); texture code never takes rl
+    for (int i = 0; i < npend && !hit; i++)
+        hit = pend[i].kind == kind && vk_texture_cpu_stale(pend[i].lo, pend[i].hi - pend[i].lo);
+    plat_mutex_unlock(&rl);
+    return hit;
+}
 
 // The newest submit number (nvn_submit_count) whose replay is done: recording copies it used may be freed.
 uint64_t gfx_replayed_submits(void) {
@@ -370,14 +454,21 @@ static void replay_main(void *arg) {
             vk_present_drain();
             vk_texture_release(it.tex);
             free((void *)it.tex);
+        } else if (it.kind == RI_POOL_FINI) {
+            vk_present_drain();   // the blit may read an image cut from the pool
+            vk_pool_fini_queued(it.pool);
+        } else if (it.kind == RI_WRITE_TEXELS) {
+            vk_present_drain();   // the blit may read the image the copy writes
+            vk_write_texels_queued(it.wt);
         } else {
             uint64_t frame = __atomic_add_fetch(&gfx_counters.frames, 1, __ATOMIC_RELAXED);
             present_image(it.tex, it.has_crop ? it.crop : NULL, it.at, it.queued, frame, it.value, it.pid);
         }
         plat_mutex_lock(&rl);
-        if (it.kind != RI_RELEASE) r_value_done = it.value;
+        if (it.kind == RI_SUBMIT || it.kind == RI_PRESENT) r_value_done = it.value;
         if (it.kind == RI_SUBMIT) r_submit_done = it.submit_no;
-        else r_presents_done++;
+        else if (it.kind == RI_PRESENT || it.kind == RI_RELEASE) r_presents_done++;
+        else pending_remove_locked(it.pend);
         r_busy = 0;
         plat_cond_broadcast(&rcv);
     }
@@ -423,7 +514,7 @@ static uint64_t replay_enqueue(ReplayItem *it) {
         wait_counted(DR_FULL, p0);
         core_back_unlocked(&away);
     }
-    it->value = it->kind == RI_RELEASE ? 0 : vk_sync_reserve();   // a release signals nothing
+    it->value = it->kind == RI_SUBMIT || it->kind == RI_PRESENT ? vk_sync_reserve() : 0;   // the others signal nothing
     rq[(rq_head + rq_n) % RQ_CAP] = *it;
     rq_n++;
     plat_cond_broadcast(&rcv);
@@ -448,7 +539,7 @@ static void replay_drain(int why) {
 
 // What made the game wait for the replay: since the last line (every 1800 game frames), or over the run (at exit).
 static void replay_log(uint64_t frame, int total) {
-    char buf[1024];
+    char buf[2048];
     int k = 0;
     plat_mutex_lock(&rl);
     const uint64_t *c = total ? dr_tcalls : dr_calls, *w = total ? dr_twaits : dr_waits, *t = total ? dr_tns : dr_ns;
@@ -456,6 +547,12 @@ static void replay_log(uint64_t frame, int total) {
         if (c[i] || w[i])
             k += snprintf(buf + k, sizeof buf - (size_t)k, "%s %s %llu calls, %llu waited %.1f ms", k ? ";" : "", dr_name[i],
                           (unsigned long long)c[i], (unsigned long long)w[i], t[i] / 1e6);
+    if ((q_fini || q_wt) && k < (int)sizeof buf - 200)
+        k += snprintf(buf + k, sizeof buf - (size_t)k,
+                      "%s queued now/most: pool_fini %d/%d, write_texels %d/%d (%.1f/%.1f MiB staging); dying-pool lookups "
+                      "(run) %llu", k ? ";" : "", pend_n[PD_FINI], pend_peak[PD_FINI], pend_n[PD_WRITE], pend_peak[PD_WRITE],
+                      pend_bytes / 1048576.0, pend_bytes_peak / 1048576.0, (unsigned long long)vk_mem_dying_resolves());
+    if (!total) pend_peak[PD_FINI] = pend_n[PD_FINI], pend_peak[PD_WRITE] = pend_n[PD_WRITE], pend_bytes_peak = pend_bytes;
     if (ck_reads && k < (int)sizeof buf - 128)
         k += snprintf(buf + k, sizeof buf - (size_t)k, "; check (run): %llu reads, %llu differ, %llu without a recorded write, %llu with the queue idle",
                       (unsigned long long)ck_reads, (unsigned long long)ck_diff, (unsigned long long)ck_diff_unexplained,
@@ -480,6 +577,7 @@ void gfx_exit_log(void) {
     vk_mem_shadow_read_log();
     vk_ahead_log_final();
     vk_ahead_log_guards();
+    vk_counter_log();
     if (gfx_replay_async() && r_started && !plat_xchg32(&done, 1)) replay_log(game_frames, 1);
 }
 
@@ -518,8 +616,36 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
 // vk_pipeline.c drops a released program's pipelines here.
 WEAK void vk_program_release(const prog_t *p) { (void)p; }
 
-static int vk_be_pool_init(pool_t *p) { vk_sync_start(); return vk_pool_init(p); }
-static void vk_be_pool_fini(pool_t *p) { vk_sync_start(); replay_drain(DR_POOL_FINI); vk_present_drain(); vk_pool_fini(p); }
+// A pool over a range whose teardown is queued, or the same object again, waits for that teardown: its record would
+// share the index with the dying one, and vk_memory.c index_put drops a record of the same object unfreed. Pools that
+// get no record (vk_memory.c vk_pool_init: GPU-inaccessible and not physical, or empty) need no wait.
+static int vk_be_pool_init(pool_t *p) {
+    vk_sync_start();
+    int rec = p->size && (!(p->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS) || (p->flags & NVN_MEMORY_POOL_FLAGS_PHYSICAL));
+    if (rec && pending_over(PD_FINI, (uintptr_t)p->mem, (uintptr_t)p->mem + p->size, p, 0)) replay_drain(DR_FINI_INIT);
+    return vk_pool_init(p);
+}
+// Queued (TOTK_REPLAY_QUEUE_POOL_FINI): the record is marked dying and stays for the items queued before, the replay
+// thread tears it down in queue order without waiting for the GPU (vk_memory.c vk_pool_fini_begin, vk_pool_fini_queued).
+// The game gets the storage back now, as from the synchronous teardown: the game-thread calls that could touch it
+// through the dying record's images drain on overlap (pending_over, pending_stale).
+static void vk_be_pool_fini(pool_t *p) {
+    vk_sync_start();
+    if (!gfx_replay_async() || !q_fini) {
+        replay_drain(DR_POOL_FINI);
+        vk_present_drain();
+        vk_pool_fini(p);
+        return;
+    }
+    plat_mutex_lock(&rl);
+    dr_calls[DR_POOL_FINI]++, dr_tcalls[DR_POOL_FINI]++;
+    plat_mutex_unlock(&rl);
+    uint64_t lo, size;
+    int phys;
+    if (!vk_pool_fini_begin(p, &lo, &size, &phys)) return;   // no record: vk_pool_fini would do nothing
+    ReplayItem it = {.kind = RI_POOL_FINI, .pool = p, .pend = pending_add(PD_FINI, lo, lo + size, p, phys, 0)};
+    replay_enqueue(&it);
+}
 static int vk_be_pool_map_virtual(pool_t *v, int n, const void *requests) {
     vk_sync_start();
     replay_drain(DR_MAP_VIRTUAL);
@@ -585,6 +711,10 @@ static void vk_be_read_texels(const tex_t *t, const view_t *v, const NVNcopyRegi
         vk_read_texels(t, v, r, dst, row, img);
         return;
     }
+    uint64_t lo = (uintptr_t)t->mem, hi = lo + (t->L.size ? t->L.size : 1);
+    int virt = (t->pool_flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) != 0;
+    if (pending_over(PD_FINI, lo, hi, NULL, virt)) replay_drain(DR_FINI_TEXELS);   // the entry may be the dying pool's
+    if (pending_over(PD_WRITE, lo, hi, NULL, 0)) replay_drain(DR_WT_READ);        // the image lacks the queued write
     uint64_t f = vk_texture_last_write(t);
     plat_mutex_lock(&rl);
     dr_calls[DR_READ_TEXELS]++, dr_tcalls[DR_READ_TEXELS]++;
@@ -629,12 +759,33 @@ static void vk_be_read_texels(const tex_t *t, const view_t *v, const NVNcopyRegi
     plat_mutex_unlock(&rl);
     free(again);
 }
+// Queued (TOTK_REPLAY_QUEUE_WRITE_TEXELS): guest memory is written now and the image write staged, and the replay
+// thread records the copy in queue order (vk_texture.c vk_write_texels_begin, vk_write_texels_queued): the upload batch
+// it goes into is submitted before the next replayed submission (vk_sync.c), after the ones before it, the order the
+// drain gave. A texture over a queued teardown waits for it, as its entry may be the dying pool's; queued writes hold at
+// most PEND_BYTES_CAP of staging.
 static void vk_be_write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *src, uint64_t row,
                                uint64_t img) {
     vk_sync_start();
-    replay_drain(DR_WRITE_TEXELS);
-    vk_present_drain();
-    vk_write_texels(t, v, r, src, row, img);
+    if (!gfx_replay_async() || !q_wt) {
+        replay_drain(DR_WRITE_TEXELS);
+        vk_present_drain();
+        vk_write_texels(t, v, r, src, row, img);
+        return;
+    }
+    uint64_t lo = (uintptr_t)t->mem, hi = lo + (t->L.size ? t->L.size : 1);
+    plat_mutex_lock(&rl);
+    dr_calls[DR_WRITE_TEXELS]++, dr_tcalls[DR_WRITE_TEXELS]++;
+    int full = pend_bytes > PEND_BYTES_CAP;
+    plat_mutex_unlock(&rl);
+    if (full) replay_drain(DR_WT_CAP);
+    if (pending_over(PD_FINI, lo, hi, NULL, (t->pool_flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) != 0))
+        replay_drain(DR_FINI_TEXELS);
+    uint64_t bytes = 0;
+    VkTexWrite *w = vk_write_texels_begin(t, v, r, src, row, img, &bytes);
+    if (!w) return;
+    ReplayItem it = {.kind = RI_WRITE_TEXELS, .wt = w, .pend = pending_add(PD_WRITE, lo, hi, NULL, 0, bytes)};
+    replay_enqueue(&it);
 }
 static void vk_be_guest_written(uint64_t addr, uint64_t size) { vk_sync_start(); vk_guest_written(addr, size); }
 // A CPU read of GPU-written mirrored storage (memcpy, pool invalidate). With the replay queued it waits for the newest
@@ -645,6 +796,10 @@ static void vk_be_guest_read(uint64_t addr, uint64_t size) {
     if (!vk_texture_cpu_stale(addr, size)) return;
     vk_sync_start();
     if (gfx_replay_async()) {
+        // A write-back of an image a queued teardown drops, or one that lacks a queued write, would put stale texels
+        // into storage the game reads: the queue goes first.
+        if (pending_over(PD_FINI, addr, addr + size, NULL, 0)) replay_drain(DR_FINI_WB);
+        if (pending_over(PD_WRITE, addr, addr + size, NULL, 0)) replay_drain(DR_WT_WB);
         uint64_t f = vk_texture_dirty_fence(addr, size);
         plat_mutex_lock(&rl);
         dr_calls[DR_GUEST_READ]++, dr_tcalls[DR_GUEST_READ]++;
@@ -668,6 +823,8 @@ static void vk_be_guest_read(uint64_t addr, uint64_t size) {
 static void vk_be_cpu_synced(uint64_t fence) {
     if (!vk_texture_small_dirty()) return;
     vk_sync_start();
+    if (pending_stale(PD_FINI)) replay_drain(DR_FINI_WB);   // as in vk_be_guest_read, for every target written back
+    if (pending_stale(PD_WRITE)) replay_drain(DR_WT_WB);
     vk_present_drain();
     vk_texture_write_back_small(fence);
 }

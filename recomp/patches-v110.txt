@@ -12,8 +12,12 @@ set output   TOTK_PATCH_OUTPUT   0
 set scene    TOTK_PATCH_SCENE    0
 set shadow   TOTK_PATCH_SHADOW   0
 set cascade  TOTK_PATCH_CASCADE  0
-# Load-dependent quality (patches-v121.txt explains it): no sites found in this version yet, so the setting does nothing.
+set grass    TOTK_PATCH_GRASS    0
+# Load-dependent quality (patches-v121.txt, set steady): the graphics settings setup (main+0xcad2bc) reads the value
+# at main+0xcad324 (before the FSR and FXAA switch calls) and skips the list walk at +0x120 to its epilogue
+# (main+0xcad64c) when above 8; w21 is not read again on that path (the epilogue restores it).
 set steady   TOTK_LOD_STEADY     0
+site steady  main cad324 b9400815 52800135  # ldr w21, [x0, #8] -> mov w21, #9 (b.gt 0xcad64c taken)
 
 # 60 fps: the adaptive present-interval controller (main+0x8f26c8, 1.0.0 0x8f6bec) gets the minimum interval 1.
 site fps60 main 90e978 6b08015f 7100055f  # clamp: cmp w10, #1 (was cmp w10, w8 = minimum)
@@ -118,6 +122,27 @@ site cascade main 1157fb8 52a83408 @page:x8 b9404108
 site cascade main 1158040 52a84408 @page:x8 b9404508
 site cascade main 11580c8 52a85408 @page:x8 b9404908
 site cascade main 115814c 52a86408 @page:x8 b9404d08
+# In the field the shadow controller sets bit 1 of the scene's depth shadow flags (main+0xca98f8), so the per-view
+# update (main+0xa89f50) skips its copy of those parameters and the controller writes the cascade boundaries each
+# frame in main+0xd071d4: d[0] at main+0xd0768c, d[1..n-1] at main+0xd076f4 and d[n] at main+0xd0774c
+# (d = [cascade set + 0x308]). Multiply d[1..n] by page +64 / 20.0; x3, s16 and s17 are dead at both sites.
+site cascade main d076f4 bd000446 @page:x3 bd404070 1e269011 1e311a10 1e3008d0 bd000450   # str s6, [x2, #4] -> scale by page+64 / 20.0
+site cascade main d0774c bc29d945 @page:x3 bd404070 1e269011 1e311a10 1e3008b0 bc29d950   # str s5, [x10, w9, sxtw #2] -> scale by page+64 / 20.0
+
+# Grass range (runtime/resolution.c res_grass_range; patches-v143.txt describes the set and the page). The near grass
+# map's constructor loads its extent, step and texture sizes at main+0x100e890..0x100e92c, and main+0x1a3f3b4 sets the
+# extent to 62.5 or 31.25 m, as on 1.4.3.
+site grass  main 100e890 52a84f48 @page:x8 b9408108   # mov w8, #62.5      -> ldr w8, [page+128]
+site grass  main 100e89c 52a80f48 @page:x8 b9408508   # mov w8, #3.90625   -> ldr w8, [page+132]
+site grass  main 100e8c8 52802002 @page:x2 b9408842   # mov w2, #0x100     -> ldr w2, [page+136]
+site grass  main 100e92c 52801002 @page:x2 b9408c42   # mov w2, #0x80      -> ldr w2, [page+140]
+site grass  main 1a3f41c 52a84f48 @page:x8 b9408108  # mov w8, #62.5      -> ldr w8, [page+128]
+site grass  main 1a3f428 52a83f48 @page:x8 b9409108  # mov w8, #31.25     -> ldr w8, [page+144]
+# Scale the distance used by blade cutoff/LOD and cross-grass fade by the reciprocal range at page +148.
+# Save x10 and q16 in aligned stack slots so the inserted loads leave the guest registers and flags intact.
+site grass  main 18d8848 bc408ea0 a9bf7fea 3c9f0ff0 bc408ea0 @page:x10 bd409550 1e300800 3cc107f0 a8c17fea
+site grass  main 18d8c28 bd4002a0 a9bf7fea 3c9f0ff0 bd4002a0 @page:x10 bd409550 1e300800 3cc107f0 a8c17fea
+site grass  main 128e26c bd400980 a9bf7fea 3c9f0ff0 bd400980 @page:x10 bd409550 1e300800 3cc107f0 a8c17fea
 
 # High-frame-rate climbing (#35, #276, #1001): r is in s9 in the local 1.1.0 controller at main+0x1927948.
 # The shipping formula multiplies by -0.181, doubles with fadd, then adds 1.272; keep its rounding and [0.5, 1.5] clamp.
@@ -135,6 +160,140 @@ site climb main 19279f0 1e2f1001 d10183ff f90003e8 ad009be5 ad01c3e7 3d8017f1 @p
 set gears    TOTK_HIGHFPS_FIX    1
 site gears main 213eee4 f9402001 bd40082c f9402001
 site gears main 213f0d4 1e24180c 3c9f0fe4 1e241804 1e2c088c 3cc107e4
+
+# Recall and Ultrahand target that is stale memory (#1005): set ability in patches-v143.txt, here for 1.1.0's
+# main+0x16315a0 (function main+0x1631510; the callees main+0x7d97c0, 0x6e2b78 and 0x8077a8 read the same actor
+# offsets, and 0xbdf0cc updates link +0x50). x9 is dead after 0x16315a4 on every path (clobbered by bl or returned
+# via the epilogue); x30 is saved by the prologue and restored by the epilogue.
+set ability  TOTK_ABILITY_GUARD  1
+site ability main 16315a0 f9400115 94c3f270            # ldr x21, [x8] -> bl page+0xf60
+site ability main 16315a4 b4000155 aa0903f5 b4000155   # cbz x21 -> mov x21, x9; cbz x21 (x9 dead after it)
+# Sound command lists above 200 updates a second (issue #337): as in patches-v121.txt, which also says when the
+# game's guard fires. After pushing a processed list back onto the free ring, main+0x7bf0d0 goes on past the command
+# ring's check (b 0x7bec68). Send it back to the check (0x7bec38, where the game's own 0x7bf568 also branches; x21,
+# the engine loaded at 0x7bec2c, is not written between the check and the site), so it drains every queued list.
+set audiodrain TOTK_AUDIO_DRAIN_FIX 1
+site audiodrain main 7bf0d0 17fffee6 17fffeda   # b 0x7bec68 -> b 0x7bec38
+# Direct mouse camera (runtime/mouse_direct.c; the same hooks as patches-v121.txt, mapped by enclosing function to the
+# 1.1.0 main, each original word checked). The camera input update (main+0xd2286c, 1.2.1 0xd18088) after its dead zone,
+# clamp and StickExponent keeps x in s11; the host callback performs the displaced store and adds raw mouse counts.
+# The free orbit (main+0xa9fdfc) keeps its final angles at [sp+0x3c] / [sp+0x40], Ultrahand's curve results
+# (main+0x1778948) are s9 and s15. The host functions are at page +0xfd0 .. +0xf80; the page is main+0x472d000.
+set mouse_direct TOTK_MOUSE_DIRECT_PATCH 1
+site mouse_direct main d22924 bd04228b 94e82dab   # camera input: str s11, [x20, #0x420]
+site mouse_direct main d229e0 6d4123e9 94e82d78   # camera input activity: ldp d9, d8, [sp, #0x10]
+site mouse_direct main a9fe2c f9400408 94f23861   # free orbit begin: ldr x8, [x0, #8]
+site mouse_direct main aa0abc bd403fed 94f23539   # free orbit angles: ldr s13, [sp, #0x3c]
+site mouse_direct main 1778f28 b90013e9 94bed41a   # Ultrahand input: str w9, [sp, #0x10]
+# The aiming, scope, ability, horse and Purah Pad cameras: per axis, the stick load and the angle the turn is added to,
+# each a bl to page +0xf80 told apart by the return address (runtime/mouse_direct.c load_sites_110). Where 1.1.0 adds
+# the turn in a shared helper (main+0x1bc51b0, 0x1bded50: *p = wrap(*p + s0)), the hook is on the turn the helper takes
+# (Horse) or on the store of the helper's result (Aiming's pitch target). Every enclosing function saves x30 in its
+# prologue and reads it only to return.
+site mouse_direct main 1d41658 bd4426c1 94a7b24a   # Aiming: ldr s1, [x22, #0x424] (stick y)
+site mouse_direct main 1d41694 bd015660 94a7b23b   # Aiming: str s0, [x19, #0x154] (pitch target: +0x15c + turn from a helper)
+site mouse_direct main 1d418a4 bd4422c1 94a7b1b7   # Aiming: ldr s1, [x22, #0x420] (stick x)
+site mouse_direct main 1d418f0 bc5b83a1 94a7b1a4   # Aiming: ldur s1, [x29, #-0x48] (yaw)
+site mouse_direct main 1d4318c bd4422e0 94a7ab7d   # AimingTelescope: ldr s0, [x23, #0x420] (stick x)
+site mouse_direct main 1d43198 bd4426e9 94a7ab7a   # AimingTelescope: ldr s9, [x23, #0x424] (stick y)
+site mouse_direct main 1d43438 bd416260 94a7aad2   # AimingTelescope: ldr s0, [x19, #0x160] (pitch)
+site mouse_direct main 1d433dc bd405be1 94a7aae9   # AimingTelescope: ldr s1, [sp, #0x58] (yaw)
+site mouse_direct main 1d55638 bd4422cf 94a76252   # SpecialPower: ldr s15, [x22, #0x420] (stick x)
+site mouse_direct main 1d55640 bd4426cc 94a76250   # SpecialPower: ldr s12, [x22, #0x424] (stick y)
+site mouse_direct main 1d55d74 bd416262 94a76083   # SpecialPower: ldr s2, [x19, #0x160] (pitch)
+site mouse_direct main 1d55cf8 bc5a83a1 94a760a2   # SpecialPower: ldur s1, [x29, #-0x58] (yaw)
+site mouse_direct main 1d4d8cc bd442288 94a781ad   # Horse: ldr s8, [x20, #0x420] (stick x)
+site mouse_direct main 1d4d900 bd401be0 94a781a0   # Horse: ldr s0, [sp, #0x18] (yaw turn, which a helper adds to +0x68)
+site mouse_direct main 1d4dab8 bd4426a8 94a78132   # Horse: ldr s8, [x21, #0x424] (stick y)
+site mouse_direct main 1d4db6c bd406661 94a78105   # Horse: ldr s1, [x19, #0x64] (pitch)
+site mouse_direct main 1d55e8c bd4422c9 94a7603d   # SpecialPower offset mode: ldr s9, [x22, #0x420] (stick x)
+site mouse_direct main 1d55eb0 bd41da61 94a76034   # SpecialPower offset mode: ldr s1, [x19, #0x1d8] (offset x)
+site mouse_direct main 1d55ebc bd4426c9 94a76031   # SpecialPower offset mode: ldr s9, [x22, #0x424] (stick y)
+site mouse_direct main 1d55ed8 bd41de61 94a7602a   # SpecialPower offset mode: ldr s1, [x19, #0x1dc] (offset y)
+site mouse_direct main 1d557b8 bd400400 94a761f2   # SpecialPower: ldr s0, [x0, #0x4] (offset scale, read only)
+site mouse_direct main 1d44cfc bd4426ad 94a7a4a1   # CameraFinder: ldr s13, [x21, #0x424] (stick y)
+site mouse_direct main 1d44d20 bd405261 94a7a498   # CameraFinder: ldr s1, [x19, #0x50] (pitch)
+site mouse_direct main 1d44d84 bd4422ad 94a7a47f   # CameraFinder: ldr s13, [x21, #0x420] (stick x)
+site mouse_direct main 1d44dac bc5c03a1 94a7a475   # CameraFinder: ldur s1, [x29, #-0x40] (yaw)
+# The other player cameras. ClimbObj, EventMultiTalk and EventTalkManual load an angle with a pre-indexed load whose
+# write-back the code after it needs; the mov before it adds the offset instead and the hook loads [base] (no register
+# between the two words, no branch into them). Wakeboard, ShieldSurfing and Tail read the stick twice, once for its
+# length and once for its angle: the first pair gives the same values without degrees of its own (REPEAT).
+site mouse_direct main 1d45fcc bd442301 94a79fed   # ClimbObj: ldr s1, [x24, #0x420]
+site mouse_direct main 1d45fd4 bd409261 94a79feb   # ClimbObj: ldr s1, [x19, #0x90] (yaw)
+site mouse_direct main 1d45f70 bd442701 94a7a004   # ClimbObj: ldr s1, [x24, #0x424]
+site mouse_direct main 1d45f68 aa1303f6 91022276   # ClimbObj: mov x22, x19 -> add x22, x19, #0x88
+site mouse_direct main 1d45f7c bc488ec1 94a7a001   # ClimbObj: ldr s1, [x22, #0x88]! (pitch), as ldr s1, [x22]
+site mouse_direct main 1d5d8f8 bd4422c0 94a741a2   # Wakeboard: ldr s0, [x22, #0x420] (x for the length, REPEAT)
+site mouse_direct main 1d5d900 bd4426c1 94a741a0   # Wakeboard: ldr s1, [x22, #0x424] (y for the length, REPEAT)
+site mouse_direct main 1d5d928 bd4426c0 94a74196   # Wakeboard: ldr s0, [x22, #0x424] (stick y, kept)
+site mouse_direct main 1d5d92c bd4422c1 94a74195   # Wakeboard: ldr s1, [x22, #0x420]
+site mouse_direct main 1d5e01c bd40da60 94a73fd9   # Wakeboard: ldr s0, [x19, #0xd8] (pitch)
+site mouse_direct main 1d5da7c bd401fa0 94a74141   # Wakeboard: ldr s0, [x29, #0x1c] (pitch turn, cut to the pad)
+site mouse_direct main 1d5e0e0 bd403bec 94a73fa8   # Wakeboard: ldr s12, [sp, #0x38] (yaw)
+site mouse_direct main 1d5efd0 bd4422cd 94a73bec   # WaterfallClimb: ldr s13, [x22, #0x420]
+site mouse_direct main 1d5f178 b9403be8 94a73b82   # WaterfallClimb: ldr w8, [sp, #0x38] (yaw)
+site mouse_direct main 1d5f108 bd4426c9 94a73b9e   # WaterfallClimb: ldr s9, [x22, #0x424]
+site mouse_direct main 1d572dc bd442280 94a75b29   # Tail: ldr s0, [x20, #0x420] (x for the length, REPEAT)
+site mouse_direct main 1d572e4 bd442681 94a75b27   # Tail: ldr s1, [x20, #0x424] (y for the length, REPEAT)
+site mouse_direct main 1d5730c bd442680 94a75b1d   # Tail (climbing): ldr s0, [x20, #0x424] (stick y)
+site mouse_direct main 1d57310 bd442281 94a75b1c   # Tail: ldr s1, [x20, #0x420]
+site mouse_direct main 1d57660 bd40c260 94a75a48   # Tail (climbing): ldr s0, [x19, #0xc0] (yaw)
+site mouse_direct main 1d576d4 bd40b661 94a75a2b   # Tail (climbing): ldr s1, [x19, #0xb4] (pitch)
+site mouse_direct main 1d59af0 bd442320 94a75124   # LockOn / Target: ldr s0, [x25, #0x420]
+site mouse_direct main 1d59b18 bd442321 94a7511a   # LockOn / Target: ldr s1, [x25, #0x420] (stick x)
+site mouse_direct main 1d59b3c bd402be0 94a75111   # LockOn / Target: ldr s0, [sp, #0x28] (yaw turn)
+site mouse_direct main 1d59b4c bd402be9 94a7510d   # LockOn / Target: ldr s9, [sp, #0x28] (yaw turn)
+site mouse_direct main 1d59f1c bd442721 94a75019   # LockOn / Target: ldr s1, [x25, #0x424] (stick y)
+site mouse_direct main 1d59f40 bd402be0 94a75010   # LockOn / Target: ldr s0, [sp, #0x28] (pitch turn)
+site mouse_direct main 1d59f50 bd402beb 94a7500c   # LockOn / Target: ldr s11, [sp, #0x28] (pitch turn)
+site mouse_direct main 1d515a8 bd4426a9 94a77276   # LockOnAimingAt: ldr s9, [x21, #0x424] (stick y)
+site mouse_direct main 1d515f0 bd419a61 94a77264   # LockOnAimingAt: ldr s1, [x19, #0x198] (pitch offset)
+site mouse_direct main 1d51604 bd4422a9 94a7725f   # LockOnAimingAt: ldr s9, [x21, #0x420] (stick x)
+site mouse_direct main 1d51650 bd419e61 94a7724c   # LockOnAimingAt: ldr s1, [x19, #0x19c] (yaw offset)
+site mouse_direct main 1d4ea9c bd44234b 94a77d39   # HorseLockOnEmpty: ldr s11, [x26, #0x420]
+site mouse_direct main 1d47648 bd44230b 94a79a4e   # EventMultiTalk: ldr s11, [x24, #0x420]
+site mouse_direct main 1d475bc bd44270b 94a79a71   # EventMultiTalk: ldr s11, [x24, #0x424] (stick y)
+site mouse_direct main 1d475dc aa1303f7 91017277   # EventMultiTalk: mov x23, x19 -> add x23, x19, #0x5c
+site mouse_direct main 1d475e4 bc45cee1 94a79a67   # EventMultiTalk: ldr s1, [x23, #0x5c]! (pitch), as ldr s1, [x23]
+site mouse_direct main 1d476a0 aa1303f6 91019276   # EventMultiTalk: mov x22, x19 -> add x22, x19, #0x64
+site mouse_direct main 1d476a8 bc464ec1 94a79a36   # EventMultiTalk: ldr s1, [x22, #0x64]! (yaw), as ldr s1, [x22]
+site mouse_direct main 1d4b470 bd442729 94a78ac4   # EventTalkManual: ldr s9, [x25, #0x424] (stick y)
+site mouse_direct main 1d4b494 aa1303f8 9101d278   # EventTalkManual: mov x24, x19 -> add x24, x19, #0x74
+site mouse_direct main 1d4b498 bc474f01 94a78aba   # EventTalkManual: ldr s1, [x24, #0x74]! (pitch), as ldr s1, [x24]
+site mouse_direct main 1d4b4fc bd442329 94a78aa1   # EventTalkManual: ldr s9, [x25, #0x420] (stick x)
+site mouse_direct main 1d4b520 aa1303f6 9101f276   # EventTalkManual: mov x22, x19 -> add x22, x19, #0x7c
+site mouse_direct main 1d4b524 bc47cec1 94a78a97   # EventTalkManual: ldr s1, [x22, #0x7c]! (yaw), as ldr s1, [x22]
+site mouse_direct main 1d532c8 bd4422e0 94a76b2e   # ShieldSurfing: ldr s0, [x23, #0x420] (x for the length, REPEAT)
+site mouse_direct main 1d532d0 bd4426e1 94a76b2c   # ShieldSurfing: ldr s1, [x23, #0x424] (y for the length, REPEAT)
+site mouse_direct main 1d532f8 bd4426e0 94a76b22   # ShieldSurfing: ldr s0, [x23, #0x424] (stick y, kept)
+site mouse_direct main 1d532fc bd4422e1 94a76b21   # ShieldSurfing: ldr s1, [x23, #0x420] (stick x)
+site mouse_direct main 1d53948 bd40de60 94a7698e   # ShieldSurfing: ldr s0, [x19, #0xdc] (pitch)
+site mouse_direct main 1d53ad0 bd401fa0 94a7692c   # ShieldSurfing: ldr s0, [x29, #0x1c] (pitch turn, cut to the pad)
+site mouse_direct main 1d53974 bd403bec 94a76983   # ShieldSurfing: ldr s12, [sp, #0x38] (yaw)
+# Optional reference with an invalid value (#1005). The same guard as set optref in patches-v143.txt (main+0x1bd01c0)
+# and patches-v121.txt (main+0x1622bec), here for 1.1.0's main+0x163159c (function main+0x1631510):
+# ldr x8, [x19, #0x6b0]; cbz x8; ldr x21, [x8]. A negative value counts as absent. x8 and x9 are dead at the branch
+# target 0x16315cc, which loads x8 again and clobbers x9 on every path before any read; on the fall-through path x8 is
+# unchanged.
+set optref   TOTK_OPTREF_GUARD   1
+site optref main 163159c b4000188 937ffd09 8a290108 b4000188   # cbz x8 -> asr x9, x8, #63; bic x8, x8, x9; cbz x8
+# Thunderstorm lightning (issue #1287), as in patches-v143.txt: the same state machine update (main+0xbdd27c,
+# called once at main+0xbdcad4) and the same three chance draws. State 0 skips the draw; every other state
+# compares a random [0,1) with the distant-bolt chance (rodata 0.013333 at main+0x3816c5c, bit 0 of the +8 flags),
+# state 1 draws the 0.01 chance (rodata 0.01 at main+0x3816f50) through s9 for the near strike (90 units countdown
+# at +0xa0) and for bit 3, and the timer branch states 3, 4 and 5 draw the same 0.01 through s1 for bit 3.
+# The frame ratio is the time object's +0x38, loaded as the game's own slow-motion check does at main+0xbee7d8:
+# its GOT slot main+0x4630920, the storage it points at, then +0xc8. After each site x10, s2, s3 and s4 are dead
+# on every path (no read before a write) and s9's prologue save keeps the caller's value; s3/s4 hold the clamped
+# ratio and the 1.0, the chance stays in its register. At 30 fps and slower the ratio is 1 and the chance is
+# unchanged bit for bit. TOTK_LIGHTNING_FIX=0 runs the game's loads.
+set lightning TOTK_LIGHTNING_FIX 1
+site lightning main bddb30 bd4c5d01 bd4c5d01 f001d28a f944914a f940014a f940654a bd403943 1e2e1004 1e247863 1e230821   # ldr s1, [x8, #0xc5c] (0.013333)
+site lightning main bddd70 bd4f5101 bd4f5101 f001d28a f944914a f940014a f940654a bd403943 1e2e1004 1e247863 1e230821   # ldr s1, [x8, #0xf50] (0.01)
+site lightning main bdddf4 bd4f5109 bd4f5109 f001d28a f944914a f940014a f940654a bd403943 1e2e1004 1e247863 1e230929   # ldr s9, [x8, #0xf50] (0.01)
+#   each: the game's load; adrp x10, main+0x4630000; ldr x10, [x10, #0x920]; ldr x10, [x10];
+#   ldr x10, [x10, #0xc8]; ldr s3, [x10, #0x38] (ratio); fmov s4, #1.0; fminnm s3, s3, s4; fmul (chance * ratio)
 
 # Spin waits, from tools/spin_waits.py --exefs build/extracted/v110/exefs --patches recomp/patches-v110.txt: loops that only
 # another thread can end; their back-edges pass rt_spin_gate (runtime/kernel.c), TOTK_SPIN=0 keeps the core.

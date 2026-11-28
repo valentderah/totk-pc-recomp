@@ -50,6 +50,11 @@ uint64_t nvn_new_serial(void);                             // next tex_t / prog_
 void nvn_sync_ahead_present(void);
 uint64_t nvn_sync_ahead_guard(void);
 int nvn_sync_ahead_on(void);   // 1 when the frame-ahead wait is in effect: TOTK_SYNC_AHEAD=1 and a wait site known for this version
+// vk_exec_xfer.c, TOTK_SYNC_AHEAD: at the game's frame wait the newest timestamp written becomes the bound; the value
+// the game reads for the timestamp t of the report at addr (t, or the bound for a report its frame wait did not cover)
+void vk_counter_frame(void);
+uint64_t vk_counter_timestamp(uint64_t addr, uint64_t t);
+void vk_counter_log(void);   // the run total, once (gfx_exit_log)
 int vk_mem_shadow_on(void);   // vk_memory.c: 1 with shadow storage on (valid once the Vulkan back end is up)
 int vk_mem_mirror_on(void);   // vk_memory.c: 1 when pools used as buffers get VRAM mirrors (memory = mirror or auto on a discrete GPU)
 void vk_mem_shadow_fence(void);   // vk_memory.c: returns once every shadow sync that read the old guard is done
@@ -67,6 +72,10 @@ void nvn_submit_prepare(const uint64_t *handles, int n);   // weak no-op; the co
 // Asynchronous replay: as nvn_submit_prepare, writing the handles to replay to out (a clone where a still queued
 // submission uses the same recording with other deferred binds)
 void nvn_submit_prepare_async(const uint64_t *handles, uint64_t *out, int n);
+// After the back end took a submission as fence value `fence`: every sync an OP_FENCE_SYNC of the game's handles names
+// is fenced at that value. Returns at once while no recording ever held the op (the game records none; mod plugins do).
+void nvn_submit_fence_syncs(const uint64_t *handles, int n, uint64_t fence);
+void nvn_sync_fence(sync_t *s, uint64_t fence);            // nvn_api_core.c: an initialized sync now waits for fence
 int gfx_replay_async(void);                                // 1: the back end replays submissions on its own thread
 uint64_t gfx_replayed_submits(void);                       // newest submit number (nvn_submit_count) replayed
 #define NVN_HANDLE_TEX(h) ((int)((h) & 0xfffff))           // combined texture handle = texture id | sampler id << 20
@@ -105,6 +114,9 @@ typedef struct { int32_t prim, itype; uint64_t ibuf, ind; } p_draw_idx_ind;
 typedef struct { uint64_t ind, caller; } p_dispatch_ind;   // OP_DISPATCH_IND: ind = GPU address of the 3 group counts
 // OP_CLEAR_BUF: size bytes at addr filled with the 32-bit value in GPU order (ClearBuffer; ReportValue is a 4-byte one)
 typedef struct { uint64_t addr, size; uint32_t value, pad; } p_clear_buf;
+// OP_FENCE_SYNC: CommandBufferFenceSync. The front end, not the replay, signals the sync: at the submit that carries
+// the record it gets that submit's fence value (nvn_submit_fence_syncs). Every replay skips the record.
+typedef struct { sync_t *sync; } p_fence_sync;
 _Static_assert(sizeof(p_signal_event) == 16 && sizeof(p_report_counter) == 16 && sizeof(p_copy_b2b) == 24 &&
                sizeof(p_update_ub) == 16, "op payload layouts of hle_nvn.c");
 static inline const op_hdr *nvn_op_first(uint64_t handle) { return (const op_hdr *)(uintptr_t)handle; }   // OP_BEGIN

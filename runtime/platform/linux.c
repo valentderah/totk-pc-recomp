@@ -24,6 +24,7 @@
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <sys/un.h>
@@ -985,6 +986,8 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
     fault_install();
 }
 
+void plat_mem_fault_reads(int on) { (void)on; }
+
 void plat_crash_hook(void (*fn)(const PlatCrash *c)) {
     crash_fn = fn;
     fault_install();
@@ -1136,6 +1139,20 @@ void plat_fs_sync_dir(const char *path) {
 void plat_fs_busy_reason(const char *dir, char *out, size_t cap) {
     (void)dir;
     if (cap) *out = 0;
+}
+
+int plat_fs_space(const char *path, uint64_t *free_bytes, uint64_t *total_bytes) {
+    struct statvfs v;
+    if (statvfs(path, &v)) return 0;
+    *free_bytes = (uint64_t)v.f_bavail * v.f_frsize, *total_bytes = (uint64_t)v.f_blocks * v.f_frsize;
+    return 1;
+}
+
+int plat_fs_mtime(const char *path, int64_t *posix_seconds) {
+    struct stat st;
+    if (stat(path, &st)) return 0;
+    *posix_seconds = (int64_t)st.st_mtim.tv_sec;
+    return 1;
 }
 
 int plat_fs_list(const char *dir, int (*cb)(const char *name, int kind, uint64_t size, void *ctx), void *ctx) {

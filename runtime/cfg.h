@@ -23,8 +23,9 @@ unsigned cfg_version(void);
 int cfg_from_env(const char *name);
 // 1 when the player set name (the environment or totk.ini), 0 when cfg_get gives a device profile's default or NULL.
 int cfg_is_set(const char *name);
-// The folder size of w x h's shape (cfg.c SHAPED: the closest aspect ratio within 1%, the first of equal ones), the
-// one romfs-patches-<w>x<h> the setup writes for it. 0 for 16:9 and for a shape without a UI layout.
+// The folder size of w x h's shape (cfg.c SHAPED: the closest aspect ratio within 1%, the first of equal ones; an
+// unlisted shape from 4:3 to 32:9 keeps w x h), the one romfs-patches-<w>x<h> the setup writes for it. 0 for 16:9 and
+// for a shape without a UI layout (portrait, narrower than 4:3, wider than 32:9).
 int cfg_shape_size(unsigned w, unsigned h, unsigned out[2]);
 // The size output_res defaults to on this display (its shape, cfg.c screen_default) while the player set no
 // output_res, also when the default stays 1920x1080 because that shape lacks the prompts' folder. The generator the game
@@ -69,14 +70,16 @@ const char *cfg_value(const char *name);
 int cfg_int(const char *name);
 double cfg_double(const char *name);
 int cfg_bool(const char *name);
-// The 3D scene upscaler the settings name now: "off", "dlss" or "fsr3" (scene_upscaler; without it dlaa = 1 is "dlss").
+// The 3D scene upscaler the settings name now: "off", "dlss", "fsr3" or "fsr4" (scene_upscaler; without it dlaa = 1 is
+// "dlss").
 // The engine in use is the one named at start (vk_dlaa.c vk_upscaler_engine).
 const char *cfg_scene_upscaler(void);
 // vk_dlaa.c, the 3D scene upscaler (scene_upscaler): the engine picked at start (UPSCALER_*),
 // 1 while the settings still name it (the menu switches it off at once), the engine that is running (it
 // ran and has not failed; 0 none), and why an engine cannot run here (UPSCALER_MISSING_*, 0 it can).
-enum { UPSCALER_OFF, UPSCALER_DLSS, UPSCALER_FSR3 };
-enum { UPSCALER_MISSING_GPU = 1, UPSCALER_MISSING_DLL };
+// UPSCALER_FSR4 is AMD's FSR 4 from its FSR SDK libraries (vk_ffx.c), Windows only (UPSCALER_MISSING_OS elsewhere).
+enum { UPSCALER_OFF, UPSCALER_DLSS, UPSCALER_FSR3, UPSCALER_FSR4 };
+enum { UPSCALER_MISSING_GPU = 1, UPSCALER_MISSING_DLL, UPSCALER_MISSING_OS };
 int vk_upscaler_engine(void);
 int vk_upscaler_on(void);
 int vk_upscaler_running(void);

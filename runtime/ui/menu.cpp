@@ -67,7 +67,7 @@ int playtime_get(uint64_t *total_s, uint64_t *session_s);   // playtime.c
 bool amiibo_check_font_rebuild(void);  // ui/amiibo_page.cpp; check and clear font rebuild request
 }
 
-// Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin and Cyrillic glyphs.
+// Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin, Vietnamese and Cyrillic glyphs.
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wc23-extensions"   // #embed in C++
 static const unsigned char roboto_ttf[] = {
@@ -276,12 +276,14 @@ static int vk_up(const MenuTarget *t) {
     return 1;
 }
 
-// Roboto Medium (Latin, Cyrillic, dashes and quotes) at 26 px per 1080 lines, with the glyphs of the Japanese, Korean
-// and Chinese language names merged in from a system font when there is one (each language is named in its own script).
-// A catalog row also holds menu text (Simplified Chinese), so every string of the row goes into the builder: the merged
-// font must cover the whole menu of that language, not only its name. Made again when the window height changes; the old
-// texture goes after the queue is idle (CreateFontsTexture).
-static const ImWchar kRanges[] = {0x0020, 0x00FF, 0x0400, 0x052F, 0x2010, 0x2027, 0};
+// Roboto Medium (Latin with Latin Extended-A for the French oe and the Vietnamese letters Latin-1 lacks:
+// 0x0100-0x01B0, the combining marks 0x0300-0x0323 and 0x1EA0-0x1EF9; Cyrillic, dashes and quotes) at 26 px per
+// 1080 lines, with the glyphs of the Japanese, Korean and Chinese language names merged in from a system font when
+// there is one (each language is named in its own script). A catalog row also holds menu text (Japanese, Korean,
+// Simplified Chinese), so every string of the row goes into the builder: the merged font must cover the whole menu
+// of that language, not only its name. Made again when the window height changes; the old texture goes after the
+// queue is idle (CreateFontsTexture).
+static const ImWchar kRanges[] = {0x0020, 0x01B0, 0x0300, 0x0323, 0x0400, 0x052F, 0x1EA0, 0x1EF9, 0x2010, 0x2027, 0};
 static const struct { const char *lang; UiTextId name; } kCjk[] = {
     {"ja", UI_MENU_LANGNAME_JA}, {"ko", UI_MENU_LANGNAME_KO}, {"zh-Hans", UI_MENU_LANGNAME_ZH_HANS},
     {"zh-Hant", UI_MENU_LANGNAME_ZH_HANT},
@@ -569,15 +571,18 @@ static void folders_retry(const char *id, int need) {
 }
 
 // The game resolution (resolution.c): 16:9 sizes from its smallest, 1280x720 (for weak GPUs), up, the common 21:9 and
-// 32:9 monitor sizes, the 16:10 screens of the Steam Deck, handhelds and laptops and the 3:2 screens of laptops and
-// tablets (Surface, Framework; the camera and the HUD follow
-// another shape, resolution.c res_init; the installer lays the HUD out for each, installer/steps.py ASPECT_SIZES), and
-// the current value when it is another size.
+// 32:9 monitor sizes (7680x2160: the 57-inch dual-4K ones), the 16:10 screens of the Steam Deck, handhelds and laptops, the 3:2 screens of laptops and
+// tablets (Surface, Framework), the 4:3 screens of CRT monitors and iPads and the 19.5:9 and 20:9 screens of phones a
+// game is streamed to (the camera and the HUD follow another shape, resolution.c res_init; the installer lays the HUD
+// out for each, installer/screens.py ASPECT_SIZES), and the current value when it is another size: any shape from 4:3
+// to 32:9 gets a layout of its own (cfg.c cfg_shape_size).
 static void row_output_res(void) {
     static const char *const vals[] = {"1280x720", "1600x900", "1920x1080", "2560x1440", "3200x1800", "3840x2160",
-                                       "2560x1080", "3440x1440", "3840x1600", "5120x2160", "3840x1080", "5120x1440",
+                                       "2560x1080", "3440x1440", "3840x1600", "5120x2160", "3840x1080", "5120x1440", "7680x2160",
                                        "1280x800", "1680x1050", "1920x1200", "2560x1600",
-                                       "1920x1280", "2160x1440", "2256x1504", "2880x1920", "3000x2000"};
+                                       "1920x1280", "2160x1440", "2256x1504", "2880x1920", "3000x2000",
+                                       "1440x1080", "1600x1200", "2048x1536", "2732x2048",
+                                       "2340x1080", "3120x1440", "2400x1080", "3200x1440"};
     enum { N = sizeof vals / sizeof *vals };
     char shown[N][32];
     const char *names[N];
@@ -616,22 +621,30 @@ static void row_hud_width(void) {
     opt_choice_list("TOTK_HUD_WIDTH", UI_MENU_HUD_WIDTH, vals, names, n, UI_MENU_HUD_WIDTH_DESC);
 }
 
-// The 3D scene upscaler (vk_dlaa.c): off, NVIDIA DLSS or AMD FSR 3.1. An engine that cannot run here is left out of
-// the steps, and the note under the value says why; a totk.ini that names it anyway shows it, with the same note.
-// Returns the value the settings name ("off", "dlss", "fsr3"; without scene_upscaler, dlaa = 1 is "dlss").
+// The 3D scene upscaler (vk_dlaa.c): off, NVIDIA DLSS, AMD FSR 3.1 or AMD FSR 4. An engine that cannot run here is
+// left out of the steps, and the note under the value says why; a totk.ini that names it anyway shows it, with the
+// same note. FSR 4 is Windows only (AMD ships no Linux libraries): elsewhere it is left out without a note.
+// Returns the value the settings name ("off", "dlss", "fsr3", "fsr4"; without scene_upscaler, dlaa = 1 is "dlss").
 static const char *row_scene_upscaler(void) {
-    static const char *const all[] = {"off", "dlss", "fsr3"};
-    static const int engines[] = {UPSCALER_OFF, UPSCALER_DLSS, UPSCALER_FSR3};
-    static const UiTextId ids[] = {UI_MENU_SCENE_UPSCALER_OFF, UI_MENU_SCENE_UPSCALER_DLSS, UI_MENU_SCENE_UPSCALER_FSR3};
+    enum { N = 4 };
+    static const char *const all[N] = {"off", "dlss", "fsr3", "fsr4"};
+    static const int engines[N] = {UPSCALER_OFF, UPSCALER_DLSS, UPSCALER_FSR3, UPSCALER_FSR4};
+    static const UiTextId ids[N] = {UI_MENU_SCENE_UPSCALER_OFF, UI_MENU_SCENE_UPSCALER_DLSS, UI_MENU_SCENE_UPSCALER_FSR3,
+                                    UI_MENU_SCENE_UPSCALER_FSR4};
     const char *now = cfg_scene_upscaler();
-    const char *vals[3], *names[3];
+    const char *vals[N], *names[N];
     static char note[256];
     note[0] = 0;
     int n = 0, cur = -1;
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < N; i++) {
         int why = vk_upscaler_missing(engines[i]);
-        if (why) {
-            UiTextId t = why == UPSCALER_MISSING_DLL ? UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL : UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU;
+        if (why && (why != UPSCALER_MISSING_OS || !strcmp(now, all[i]))) {
+            UiTextId t = engines[i] == UPSCALER_FSR4
+                             ? (why == UPSCALER_MISSING_DLL  ? UI_MENU_SCENE_UPSCALER_NO_FSR4_DLL
+                                : why == UPSCALER_MISSING_OS ? UI_MENU_SCENE_UPSCALER_NO_FSR4_OS
+                                                             : UI_MENU_SCENE_UPSCALER_NO_FSR4_GPU)
+                         : why == UPSCALER_MISSING_DLL ? UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL
+                                                       : UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU;
             size_t k = strlen(note);
             snprintf(note + k, sizeof note - k, "%s%s", k ? "; " : "", menu_text(t));
         }
@@ -812,6 +825,7 @@ static void tab_screen(float scale) {
     static const UiTextId movie_aspect[] = {UI_MENU_MOVIE_ASPECT_KEEP, UI_MENU_MOVIE_ASPECT_STRETCH};
     opt_choice("TOTK_MOVIE_ASPECT", UI_MENU_MOVIE_ASPECT, movie_aspect, 2, UI_MENU_MOVIE_ASPECT_DESC);
     opt_slider("TOTK_FOV", UI_MENU_FOV, 70, 140, UI_MENU_FOV_DESC, 5, "%.0f %%");
+    opt_toggle("TOTK_VERT_PLUS", UI_MENU_VERT_PLUS, UI_MENU_VERT_PLUS_DESC);
     static const char *const aniso[] = {"game", "2", "4", "8", "16"};
     const char *aniso_names[] = {menu_text(UI_MENU_ANISO_GAME), "2x", "4x", "8x", "16x"};
     opt_choice_list("TOTK_ANISO", UI_MENU_ANISO, aniso, aniso_names, 5, UI_MENU_ANISO_DESC);
@@ -827,9 +841,9 @@ static void tab_screen(float scale) {
                                         UI_MENU_DLSS_PERFORMANCE, UI_MENU_DLSS_ULTRA};
         opt_choice("TOTK_DLSS", UI_MENU_DLSS, dlss, 5, UI_MENU_DLSS_DESC);
     }
-    if (!strcmp(engine, "fsr3"))   // FSR 3.1's own sharpening (vk_dlaa.c fsr_evaluate)
-        opt_slider("TOTK_FSR_SHARPNESS", UI_MENU_FSR3_SHARPNESS, 0, 100, UI_MENU_FSR3_SHARPNESS_DESC, 5, "%.0f %%");
-    if (!strcmp(engine, "dlss")) {   // DLSS's model, its characters' mask and its other switches (FSR 3.1 has none)
+    if (!strcmp(engine, "fsr3") || !strcmp(engine, "fsr4"))   // FSR's own sharpening (vk_dlaa.c fsr_evaluate)
+        opt_slider("TOTK_FSR_SHARPNESS", UI_MENU_FSR_SHARPNESS, 0, 100, UI_MENU_FSR_SHARPNESS_DESC, 5, "%.0f %%");
+    if (!strcmp(engine, "dlss")) {   // DLSS's model, its characters' mask and its other switches (FSR has none)
         static const UiTextId preset[] = {UI_MENU_DLSS_PRESET_DEFAULT, UI_MENU_DLSS_PRESET_K, UI_MENU_DLSS_PRESET_J};
         opt_choice("TOTK_DLSS_PRESET", UI_MENU_DLSS_PRESET, preset, 3, UI_MENU_DLSS_PRESET_DESC);
         static const UiTextId chars[] = {UI_MENU_DLSS_CHARS_OFF, UI_MENU_DLSS_CHARS_LIGHT, UI_MENU_DLSS_CHARS_MEDIUM,
@@ -838,8 +852,8 @@ static void tab_screen(float scale) {
         opt_toggle("TOTK_DLSS_FIXED_EXPOSURE", UI_MENU_DLSS_FIXED_EXPOSURE, UI_MENU_DLSS_FIXED_EXPOSURE_DESC);
         opt_toggle("TOTK_DLAA_EFFECTS_AFTER", UI_MENU_DLAA_EFFECTS_AFTER, UI_MENU_DLAA_EFFECTS_AFTER_DESC);
     }
-    static const UiTextId reflex[] = {UI_MENU_REFLEX_OFF, UI_MENU_REFLEX_ON, UI_MENU_REFLEX_BOOST};
-    opt_choice("TOTK_REFLEX", UI_MENU_REFLEX, reflex, 3, UI_MENU_REFLEX_DESC);
+    static const UiTextId reflex[] = {UI_MENU_REFLEX_OFF, UI_MENU_REFLEX_AUTO, UI_MENU_REFLEX_ON, UI_MENU_REFLEX_BOOST};
+    opt_choice("TOTK_REFLEX", UI_MENU_REFLEX, reflex, 4, UI_MENU_REFLEX_DESC);
     opt_toggle("TOTK_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
     rows_color();
     opt_group(UI_MENU_HDR_GROUP);
@@ -1179,7 +1193,10 @@ static void tab_controls(float scale) {
 static void tab_menu(float scale) {
     opt_begin("##menu", scale);
     static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU,
-                                     UI_MENU_LANGNAME_PT_BR, UI_MENU_LANGNAME_ZH_HANS};
+                                     UI_MENU_LANGNAME_PT_BR, UI_MENU_LANGNAME_ZH_HANS, UI_MENU_LANGNAME_DE,
+                                     UI_MENU_LANGNAME_FR, UI_MENU_LANGNAME_ES, UI_MENU_LANGNAME_IT,
+                                     UI_MENU_LANGNAME_NL, UI_MENU_LANGNAME_JA, UI_MENU_LANGNAME_KO,
+                                     UI_MENU_LANGNAME_VI};
     opt_choice("TOTK_MENU_LANG", UI_MENU_MENU_LANG, langs, sizeof langs / sizeof *langs, UI_MENU_MENU_LANG_DESC);
     opt_toggle("TOTK_DISCORD_RPC", UI_MENU_DISCORD_RPC, UI_MENU_DISCORD_RPC_DESC);
     opt_end();
@@ -1263,6 +1280,8 @@ static void tab_advanced(float scale) {
     opt_group(UI_MENU_GROUP_SCHED);
     static const UiTextId preempt[] = {UI_MENU_PREEMPT_OFF, UI_MENU_PREEMPT_ON, UI_MENU_PREEMPT_INHERIT};   // 0|1|2
     opt_choice("TOTK_ASYNC_PREEMPT", UI_MENU_ASYNC_PREEMPT, preempt, 3, UI_MENU_ASYNC_PREEMPT_DESC);
+    opt_toggle("TOTK_HOST_CHECKPOINT", UI_MENU_HOST_CHECKPOINT, UI_MENU_HOST_CHECKPOINT_DESC);
+    opt_toggle("TOTK_SYNC_AHEAD", UI_MENU_SYNC_AHEAD, UI_MENU_SYNC_AHEAD_DESC);
     opt_toggle("TOTK_REPLAY_ASYNC", UI_MENU_REPLAY_ASYNC, UI_MENU_REPLAY_ASYNC_DESC);
     row_replay_workers();
     opt_toggle("TOTK_TIMER_1MS", UI_MENU_TIMER_1MS, UI_MENU_TIMER_1MS_DESC);
@@ -1779,7 +1798,9 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
                     : !strcmp(m, "ultra_performance") ? UI_MENU_DLSS_ULTRA
                                                         : UI_MENU_DLSS_DLAA;
         snprintf(v[6], sizeof v[6], "%s, %s",
-                 menu_text(up == UPSCALER_FSR3 ? UI_MENU_SCENE_UPSCALER_FSR3 : UI_MENU_SCENE_UPSCALER_DLSS),
+                 menu_text(up == UPSCALER_FSR4   ? UI_MENU_SCENE_UPSCALER_FSR4
+                           : up == UPSCALER_FSR3 ? UI_MENU_SCENE_UPSCALER_FSR3
+                                                 : UI_MENU_SCENE_UPSCALER_DLSS),
                  menu_text(mt));
     }
     // with frame generation: the pictures shown a second, of which the FPS row above counts the ones the game drew

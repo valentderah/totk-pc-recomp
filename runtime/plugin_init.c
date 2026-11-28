@@ -38,9 +38,15 @@
 //     hook branches reach main's .text.
 //   - nn::oe::GetDisplayVersion is answered with this build's game version, so the plugin picks its table for the
 //     installed game without the applet services.
-// Only svcs the init needs are allowed (QueryMemory, GetSystemTick, OutputDebugString, GetInfo 2-5, 12-15 and 65001,
-// Map/UnmapProcessMemory); any other one, such as CreateSession and ReplyAndReceive of exlaunch's process-handle
-// fallback, ends the run with the reason in the record.
+//   - GetInfo 6, 16 and 17, the total memory and the system resource size and use, are constants (memory.c
+//     mem_info); 7, the memory in use, is the same at the same point of the same init. Zonai Fieldworks asks them
+//     after its hooks are in.
+//   - SetHeapSize grows the process heap past the size the game's nninitStartup set before the init runs (Zonai
+//     Fieldworks keeps a pool in the tail). The heap base is fixed and the game asked its size the same way at every
+//     start, so the init gets the same answer each time.
+// Only svcs the init needs are allowed (SetHeapSize, QueryMemory, GetSystemTick, OutputDebugString, GetInfo 2-7,
+// 12-17 and 65001, Map/UnmapProcessMemory); any other one, such as CreateSession and ReplyAndReceive of exlaunch's
+// process-handle fallback, ends the run with the reason in the record.
 //
 // The record, in DIR: record.json (modules, which plugins' inits ran, the writes into every game module as words, the
 // alias calls, svc and import counts, the tick offset, a refusal), plugin<N>.img (the plugin's image after its init,
@@ -56,6 +62,7 @@
 #include "kernel.h"
 #include "mods.h"
 #include "platform/platform.h"
+#include "plugin_writes.h"
 
 #if __has_include("patches.h")
 #include "patches.h"
@@ -69,7 +76,9 @@
 #define POOL_SIZE (64 * GiB)
 #define POOL_ALIGN (4 * GiB)
 #define RTLD_ALIGN 0x200000ull
-#define MAX_ALIASES 256
+// exlaunch maps a page alias for every patch it writes and unmaps it after; Zonai Fieldworks makes over 211 in its
+// init. Each slot is 48 bytes, and only the live aliases hold a copy of their pages.
+#define MAX_ALIASES 2048
 #define MAX_IMPORTS 64
 #define CUR_PROCESS 0xFFFF8001u
 // Horizon memory states and permissions of QueryMemory, and results.
@@ -94,7 +103,7 @@ static uint64_t pool_base;
 static int running;   // a plugin's init runs: svcs and imports are counted
 static int play;      // plugins_start: a refused SVC fails the plugin instead of ending the process
 static char failed[256];   // play: why the running init was refused
-static uint64_t svc_count[0x80], info_count[16], info_65001;
+static uint64_t svc_count[0x80], info_count[18], info_65001;
 static struct { const char *name; uint64_t calls; } imports[MAX_IMPORTS];
 static int nimports;
 static uint8_t **pre;   // per loaded module: its image before the plugins' inits
@@ -198,11 +207,22 @@ static uint32_t process_memory(int unmap, uint64_t dst, uint32_t process, uint64
         }
         return R_INVALID_STATE;
     }
-    if (!module_holding(src, size)) return R_INVALID_STATE;   // only the modules' own memory
+    if (!module_holding(src, size)) {   // only the modules' own memory
+        rt_log("plugin-init: MapProcessMemory refused: the source %#llx+%#llx is no module's memory",
+               (unsigned long long)src, (unsigned long long)size);
+        return R_INVALID_STATE;
+    }
     RtMemoryInfo q;
     mem_query(dst, &q);
-    if (q.state != ST_FREE || dst + size > q.base + q.size) return R_INVALID_STATE;
-    if (naliases == MAX_ALIASES) return R_LIMIT_REACHED;
+    if (q.state != ST_FREE || dst + size > q.base + q.size) {
+        rt_log("plugin-init: MapProcessMemory refused: the destination %#llx+%#llx is not free (state %#x)",
+               (unsigned long long)dst, (unsigned long long)size, q.state);
+        return R_INVALID_STATE;
+    }
+    if (naliases == MAX_ALIASES) {
+        rt_log("plugin-init: MapProcessMemory refused: all %d alias slots used", MAX_ALIASES);
+        return R_LIMIT_REACHED;
+    }
     if (!plat_mem_commit(dst, size)) return R_INVALID_STATE;   // not inside one of our reservations
     Alias *al = &aliases[naliases];
     al->snap = malloc(size);
@@ -235,10 +255,10 @@ static int plugin_svc(Cpu *c, uint32_t imm, uint64_t pc) {
     svc_count[imm & 0x7F]++;
     char why[256], at[128];
     switch (imm) {
-    case 0x06: case 0x1E: case 0x27: case 0x74: case 0x75: return 0;
+    case 0x01: case 0x06: case 0x1E: case 0x27: case 0x74: case 0x75: return 0;
     case 0x29: {
         uint32_t id = (uint32_t)c->x[1];
-        if ((id >= 2 && id <= 5) || (id >= 12 && id <= 15)) {
+        if ((id >= 2 && id <= 7) || (id >= 12 && id <= 17)) {
             info_count[id]++;
             return 0;
         }
@@ -252,12 +272,19 @@ static int plugin_svc(Cpu *c, uint32_t imm, uint64_t pc) {
         return 1;
     }
     }
-    snprintf(why, sizeof why, "svc %#x at %s (only QueryMemory, GetSystemTick, OutputDebugString, GetInfo 2-5, 12-15 "
-             "and 65001, Map/UnmapProcessMemory are served)", imm, ldr_describe(pc, at, sizeof at));
+    snprintf(why, sizeof why, "svc %#x at %s (only SetHeapSize, QueryMemory, GetSystemTick, OutputDebugString, "
+             "GetInfo 2-7, 12-17 and 65001, Map/UnmapProcessMemory are served)", imm, ldr_describe(pc, at, sizeof at));
     refuse(why);
     c->x[0] = R_NOT_IMPLEMENTED;
     return 1;
 }
+
+// The plugin's return address of the import call running on this thread, 0 outside one. rt_original runs the guest
+// definition with x30 = RT_RET_HOST, so a host override behind it (nn::fs) sees the host as its caller; this names the
+// plugin (fs_host.c fail_caller).
+static __thread uint64_t import_lr;
+
+uint64_t plugins_import_caller(void) { return import_lr; }
 
 // Every JUMP_SLOT import of a plugin binds here (loader.c resolve): counted by name, then the guest definition runs,
 // except nn::oe::GetDisplayVersion, which gets this build's game version.
@@ -273,7 +300,10 @@ static void plugin_import(Cpu *c) {
         memcpy((void *)(uintptr_t)c->x[0], v, sizeof v);
         return;
     }
+    uint64_t outer = import_lr;   // an import that calls back into the plugin, which imports again
+    import_lr = c->x[30];
     rt_original(c);
+    import_lr = outer;
 }
 
 // ---- the record
@@ -392,7 +422,7 @@ static void write_record(const char *refused) {
         if (svc_count[i]) fprintf(f, "%s\"%#x\": %llu", first ? "" : ", ", i, (unsigned long long)svc_count[i]), first = 0;
     fputs("},\n\"get_info\": {", f);
     first = 1;
-    for (int i = 0; i < 16; i++)
+    for (int i = 0; i < 18; i++)
         if (info_count[i]) fprintf(f, "%s\"%d\": %llu", first ? "" : ", ", i, (unsigned long long)info_count[i]), first = 0;
     if (info_65001) fprintf(f, "%s\"65001\": %llu", first ? "" : ", ", (unsigned long long)info_65001);
     fputs("},\n\"imports\": {", f);
@@ -504,11 +534,7 @@ static const struct { const char *module; int set; const char *sha256; } plugin_
     RT_PLUGINS(X)
 #undef X
 };
-static const struct { int plugin; const char *module; uint64_t off; uint32_t old, now; } write_tab[] = {
-#define X(p, mod, off, old, now) {p, mod, off, old, now},
-    RT_PLUGIN_WRITES(X)
-#undef X
-};
+static const PluginWrite write_tab[] = {RT_PLUGIN_WRITES(PLUGIN_WRITE)};
 #define NWRITES ((int)(sizeof write_tab / sizeof *write_tab))
 #ifdef RT_PLUGIN_ROOTS
 static const struct { const char *module; uint64_t off; } root_tab[] = {
@@ -571,7 +597,9 @@ static void restore_page(const RtLoaded *m, uint64_t off, const uint8_t *was) {
 }
 
 // After plugin i's init: what it wrote into the game modules, word by word, against the record of the build (its
-// entries of RT_PLUGIN_WRITES). The first difference goes into why (unless a reason is there already). Then the game
+// entries of RT_PLUGIN_WRITES, plugin_writes.h plugin_write_find). A recorded word the init did not change counts as
+// missing, unless the record takes any value there (the init may have written the value the word held). The first
+// difference goes into why (unless a reason is there already). Then the game
 // modules are made what they were before the init: the sealed part (.text, .rodata) gets the game's bytes back, a
 // write elsewhere stays and goes into pre, so the next plugin's init is compared only with what it writes itself.
 // The aliases this init mapped (from first_alias on) are flushed first; an earlier init's were flushed after it.
@@ -593,12 +621,8 @@ static void check_writes(int plugin, int first_alias, char *why, size_t cap) {
                 memcpy(&a, pre[i] + w, 4);
                 memcpy(&b, now + w, 4);
                 if (a == b) continue;
-                int k = 0;
-                while (k < NWRITES && !(write_tab[k].plugin == plugin && write_tab[k].off == w &&
-                                        !strcmp(write_tab[k].module, m->name) && write_tab[k].old == a &&
-                                        write_tab[k].now == b))
-                    k++;
-                if (k < NWRITES) {
+                int k = plugin_write_find(write_tab, NWRITES, plugin, m->name, w, a, b);
+                if (k >= 0) {
                     seen[k] = 1;
                 } else if (!unexpected++) {
                     snprintf(first, sizeof first, "%s+%#llx %08x -> %08x", m->name, (unsigned long long)w, a, b);
@@ -608,7 +632,7 @@ static void check_writes(int plugin, int first_alias, char *why, size_t cap) {
             else memcpy(pre[i] + off, now + off, PAGE);
         }
     }
-    for (int k = 0; k < NWRITES; k++) missing += write_tab[k].plugin == plugin && !seen[k];
+    for (int k = 0; k < NWRITES; k++) missing += write_tab[k].plugin == plugin && !seen[k] && !write_tab[k].any;
     if (why[0]) return;
     if (unexpected)
         snprintf(why, cap, "its init wrote %d words the build did not record (first %s)", unexpected, first);
@@ -694,6 +718,7 @@ int plugins_start(Cpu *c, const RtLoaded *sdk) {
     for (int i = 0; i < naliases; i++) live += aliases[i].live;
     rt_log("plugins: %d of %d plugins on in %llu ms (%d process-memory maps, %d kept)", on, nrun,
            (unsigned long long)(plat_now_ms() - t0), naliases, live);
+    mem_plugin_writes = on > 0;   // before main's DT_INIT seals its RELRO (memory.c mem_set_permission)
     if (on && cfg_bool("TOTK_PLUGIN_TRACE")) trace_entries();
     return 1;
 #else

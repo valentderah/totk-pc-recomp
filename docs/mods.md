@@ -107,29 +107,49 @@ ahead of time, after the design in [#845](https://github.com/valentderah/totk-pc
 
 1. The rebuild (the same one as for code patches above) compiles the plugins with the game, then starts the game's
    code in a service mode that runs only one plugin's start-up (`totk.exe --plugin-init`), twice per plugin, and
-   records which instructions it redirects. Each redirect becomes a code site of the mod, built into `totk.exe`. Each
+   records every instruction it writes into the game's code. What it wrote is new code there, built into `totk.exe`
+   next to the game's own: a one-word redirect of exlaunch's hook shapes becomes a code site of the mod, and any other
+   new code (SageWheel's three-word far jumps into its functions) a second copy of the game function that holds it,
+   which runs in place of that function while the mod is on. Each
    plugin is judged on its own: one that is refused, or whose start-up crashes or never returns, stays off with its
    reason, and the other plugins are built in.
 2. At every start each plugin's start-up runs again, before the game's own start-up code, in the same setting: it
    sees the game's own instructions, as in its service run. Its redirects are compared with the record of the
-   rebuild. When they match, the mod's code sites go on. When they do not, the plugin stays off for this run, the
-   mod's row says why, and the next start runs the rebuild.
+   rebuild. A value it writes into the game's data that redirects nothing (a size, a counter) only has to land at
+   the recorded place, since the game may hold another value there at this start, for example a memory pool that
+   grows with `render_scale`. When they match, the mod's code sites go on. When they do not, the plugin stays off for
+   this run, the mod's row says why, and the next start runs the rebuild, which runs the plugin's service run again.
 3. The plugin keeps what its start-up made (its memory, its tables), so its code works as on the Switch. The start
    costs about 50 ms per plugin; the game runs no differently without a plugin.
 4. Removing a plugin mod from the mods folder starts the rebuild at the next start, which builds the game without
    it (half a minute on 12 cores with the lift cache). A plugin mod switched off on the Mods tab only stays off.
 
 The Mods tab order decides between a plugin and another mod's patch on the same instruction, as for code patches. A
-plugin site over one of the port's own patches turns that built-in patch off while the mod is on.
+plugin site over one of the port's own patches turns that built-in patch off while the mod is on. Where a plugin's new
+code takes a second copy of a game function, that copy keeps the other mods' patches in the function; on an
+instruction both write, the Mods tab order decides too. When two plugins write new code into the same game function,
+the copy of the first one by mod folder name runs there.
 
 The rebuild refuses a plugin when its start-up or the code its redirects reach needs what the port does not give it:
-system calls other than the few its start-up needs (memory queries and maps, the clock, debug output), library calls
-outside a reviewed list (memory and string functions, the heap, text formatting), threads, services or input; a
-redirect that is not one of exlaunch's hook shapes (inline hook, replace hook, call-site rewrite); or two runs of its
-start-up that differ in code; or a start-up that crashes the service run or does not return within two minutes. The
-row then says **Its plugin ... cannot run in the port** with the reason, and the mod stays off; **Use <mod> without its
-code** uses the rest of it, including its other plugins that were built in. UltraCam stays refused: it hooks the graphics API,
+system calls other than the few its start-up needs (memory queries and maps, the heap size, the clock, debug output),
+or a library call the game itself never makes and a reviewed list does not hold (memory and string functions, the heap,
+text formatting, mutexes, the clock, the system language, the SD card's files), such as network sockets or the module
+loader. A library call the game makes (threads, input, time, its files) runs on the path the game runs on. A call to a
+function the plugin itself holds counts as its own code, even when it goes through the plugin's import table (C++
+library templates such as `std::vector` built into it). A start-up
+still gets only the system calls above, so it cannot start a thread or open a service; new code in the game's
+instructions that jumps anywhere but the game's code and the plugin's own, into one of exlaunch's hook stubs from
+elsewhere, makes a system call outside the few above, or loads a constant from words the start-up wrote (the game
+keeps its own instructions in memory, only the built code changes); a write into the game's read-only data or into
+another module; two runs of its start-up that differ in code; or a start-up that crashes the service run or does not
+return within two minutes.
+The row then says **Its plugin ... cannot run in the port** with the reason, and the mod stays off; **Use <mod> without
+its code** uses the rest of it, including its other plugins that were built in. UltraCam stays refused: it hooks the graphics API,
 reads input and opens sockets.
+
+When a start-up calls into the middle of a game function, the rebuild lifts the game again with that address as a
+function start and reruns the start-up, up to four times. A plugin that reads or writes files on the SD card gets
+the folder `sdcard` in the game's profile folder in its place.
 
 `plugin_trace = 1` in `totk.ini` logs the first call into each of a plugin's hooks (`plugins: hook entry ... reached`).
 
@@ -185,5 +205,8 @@ A mod never stops the game from starting. Whatever the port cannot use is left o
    game update and does not fight another mod over the same files.
 2. `logs\totk.log` next to `totk.exe` names every mod at the start (lines starting with `mods:`), the cheats
    (`cheats:`) and the resource size table (`RomFS: resource size table:`). Open log folder on the Advanced tab of
-   the menu shows the logs.
+   the menu shows the logs. A file a mod plugin could not open is logged as `fs: open failed <path>: <result>
+   (plugin<N> (<mod>))`, usually a file of the mod's own that is missing from its folder. A crash report names the mod
+   of each plugin address (`plugin0 (Zonai Fieldworks)+0xc5420`) and lists the last failed file calls (those of mod
+   plugins apart) and the last game files opened, each with the mod that served it or `game`.
 3. When reporting a problem, attach `totk.log` and list your mods with the links you downloaded them from.

@@ -25,7 +25,8 @@
 //
 // The resource size table: with a player mod enabled, the game's table is rebuilt at start with the tables the mods
 // ship merged in and the entries of the mods' files raised to what they need (restbl_overlay), the members of their
-// packs too (restbl_packs), and served from <profile>/mods/ in place of the game's or a mod's table.
+// packs too (restbl_packs), and served from <profile>/mods/ in place of the game's or a mod's table. TOTK_RESTBL_CACHE=1
+// serves the table of the last start instead when every input of the build is the same (restbl_cache_key).
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,6 +36,7 @@
 #include "fs.h"
 #include "host.h"
 #include "input_map.h"
+#include "loadwin.h"
 #include "mods.h"
 #include "romfs_config.h"
 #include "romfs_path.h"
@@ -65,7 +67,8 @@ static PlatFile *image;
 static const uint8_t *image_map;
 static char image_file[2048];
 static char index_dir[2048];         // the directory of romfs-index.bin: the proof file's default place
-static char mount_name[32];
+// The RomFS mount names, under lock: [0] is the first MountRom (the game's), which stays mounted; "" is a free slot.
+static char mount_names[ROMFS_MOUNTS][32];
 static PlatMutex lock = PLAT_MUTEX_INIT;
 static uint64_t handles[NH];         // file index + 1; 0 is free
 static uint32_t handle_ovl[NH];      // overlay slot + 1 of an open handle, 0 = original
@@ -731,6 +734,10 @@ static void pack_note(const char *key, uint32_t was, uint32_t now, void *ctx) {
         rt_log("RomFS: resource size table: %s in %s (%s): entry %u -> %u", key, pn->pack, pn->mod, was, now);
 }
 
+// The loading window's count of restbl_overlay's work: the overlays of its file pass, then those of its pack pass.
+static volatile size_t restbl_done;
+static uint64_t restbl_progress(void *ctx) { return (void)ctx, (uint64_t)restbl_done; }
+
 // The entries of the members of every pack a mod serves, raised in out against the game's table base; the number
 // raised, *packs the number of packs with one.
 static int restbl_packs(Restbl *out, const Restbl *base, int *packs, int *lines) {
@@ -739,6 +746,7 @@ static int restbl_packs(Restbl *out, const Restbl *base, int *packs, int *lines)
     *packs = 0;
     for (size_t k = 0; k < noverlay; k++) {
         const Overlay *o = &overlays[k];
+        restbl_done = noverlay + k + 1;
         if ((!o->mod && o->prio != 1) || !ends_with(o->name, ".pack.zs")) continue;
         if (!opened++ && !packs_open(&ps)) {
             rt_log("RomFS: no zstd dictionary in Pack/ZsDic.pack.zs; the members of mods' packs keep their entries");
@@ -761,6 +769,127 @@ static int restbl_packs(Restbl *out, const Restbl *base, int *packs, int *lines)
     return raised;
 }
 
+// ---- the merged table across starts (TOTK_RESTBL_CACHE=1, off by default). Building it opens every mod file and
+// unpacks the mods' packs. A start whose inputs are the same as the last one's serves the table that start wrote.
+// The key is a SHA-256 over every input restbl_overlay reads:
+// - the running totk.exe's path and identity: a new build may merge differently, and it carries the port version, the
+//   game version and the RomFS index's SHA-256 (romfs_config.h);
+// - the RomFS image's path and identity and the game table's index entry: the base table, the game's copies of the
+//   mods' packs and Pack/ZsDic.pack.zs come from the image;
+// - every shipped table (restbl_collect, mod_walk_cb; also the ones overlay_contest drops) with its owner and identity;
+// - every overlay overlay_contest kept (player mods, the TOTK_ROMFS_MODS manifest, the port's folders) with its RomFS
+//   path, file path, place in the order (index, prio, mod) and identity.
+// Identity is the volume, file id, size, last write and creation time. A file's bytes are not hashed: identity is
+// what the overlay layer already trusts (romfs_open stops the game on a file whose identity changed after the start
+// check), and hashing a texture pack would cost more than the merge does. <profile>/mods/<table>.key holds the key,
+// what the build gave (a table or none) and the SHA-256 of the table it wrote; it is replaced atomically after the
+// table is written. A key file of another size, magic or version, another key, or a table of another SHA-256 is a
+// miss: the table is built again and both files are replaced, so the cache stays two files.
+#define RESTBL_CACHE_VERSION 3
+typedef struct { char magic[8]; uint32_t version, outcome; uint8_t key[32], table[32]; } RestblCache;
+enum { RESTBL_NONE = 1, RESTBL_TABLE = 2 };
+
+static void restbl_cache_paths(char *key, size_t key_cap, char *table, size_t table_cap) {
+    const char *leaf = strrchr(restbl_rel, '/') ? strrchr(restbl_rel, '/') + 1 : restbl_rel;
+    need(snprintf(table, table_cap, "%s/mods/%s", rt_config()->profile, leaf) < (int)table_cap, "table path");
+    need(snprintf(key, key_cap, "%s.key", table) < (int)key_cap, "table key path");
+}
+
+static void hash_identity(Sha256 *h, const char *path, const Identity *id) {
+    sha256_update(h, path, strlen(path) + 1);
+    sha256_update(h, id, sizeof *id);
+}
+
+// 0 when path cannot be opened.
+static int hash_file_id(Sha256 *h, const char *path) {
+    PlatFile *f = open_read(path);
+    Identity id = {0};
+    if (f) id = identity_of(f), plat_file_close(f);
+    hash_identity(h, path, &id);
+    return f != NULL;
+}
+
+// The key of this start's inputs into out; 0 when the running exe cannot be opened (no key: the table is built).
+static int restbl_cache_key(uint64_t gi, uint8_t out[32]) {
+    char exe[2100];
+    Sha256 h;
+    sha256_init(&h);
+    static const char tag[] = "totk restbl cache";
+    uint32_t v = RESTBL_CACHE_VERSION;
+    sha256_update(&h, tag, sizeof tag);
+    sha256_update(&h, &v, sizeof v);
+    sha256_update(&h, rt_port_version, strlen(rt_port_version) + 1);
+    if (!plat_exe_path(exe, sizeof exe) || !hash_file_id(&h, exe)) return 0;
+    Identity img = identity_of(image);
+    hash_identity(&h, image_file, &img);
+    Entry ge = entry(gi);
+    sha256_update(&h, &ge, sizeof ge);
+    uint64_t n = nshipped;
+    sha256_update(&h, &n, sizeof n);
+    for (size_t s = 0; s < nshipped; s++) {
+        int32_t m[2] = {shipped[s].mod, shipped[s].other};
+        sha256_update(&h, m, sizeof m);
+        hash_file_id(&h, shipped[s].file);
+    }
+    n = noverlay;
+    sha256_update(&h, &n, sizeof n);
+    for (size_t k = 0; k < noverlay; k++) {
+        const Overlay *o = &overlays[k];
+        int64_t place[3] = {o->index == ADDED ? -1 : (int64_t)o->index, o->prio, o->mod};
+        sha256_update(&h, o->name, strlen(o->name) + 1);
+        sha256_update(&h, place, sizeof place);
+        hash_identity(&h, o->path, &o->id);
+    }
+    sha256_final(&h, out);
+    return 1;
+}
+
+// Records the build's result for key: RESTBL_NONE, or RESTBL_TABLE with the SHA-256 of the table it wrote.
+static void restbl_cache_store(const uint8_t key[32], int outcome, const uint8_t table[32]) {
+    char kp[2300], tp[2300];
+    restbl_cache_paths(kp, sizeof kp, tp, sizeof tp);
+    RestblCache c = {.magic = {'T', 'O', 'T', 'K', 'R', 'S', 'Z', 'C'}, .version = RESTBL_CACHE_VERSION,
+                     .outcome = (uint32_t)outcome};
+    memcpy(c.key, key, 32);
+    if (table) memcpy(c.table, table, 32);
+    if (!plat_file_write_atomic(kp, &c, sizeof c))
+        rt_log("RomFS: cannot write %s; the resource size table is built at every start", kp);
+}
+
+// 1 when the last start's result fits: its table is served again (or none, as then). A miss logs why.
+static int restbl_cache_use(const uint8_t key[32], Overlay *served, const char *keeps, double t0) {
+    char kp[2300], tp[2300];
+    restbl_cache_paths(kp, sizeof kp, tp, sizeof tp);
+    uint64_t n = 0;
+    RestblCache *c = (RestblCache *)plat_file_read(kp, &n);
+    const char *miss = NULL;
+    if (!c || n != sizeof *c || memcmp(c->magic, "TOTKRSZC", 8) || c->version != RESTBL_CACHE_VERSION ||
+        (c->outcome != RESTBL_NONE && c->outcome != RESTBL_TABLE))
+        miss = "no usable key from an earlier start";
+    else if (memcmp(c->key, key, 32))
+        miss = "the mods, the game files or the build changed since the last start";
+    if (!miss && c->outcome == RESTBL_TABLE) {
+        uint64_t zn = 0;
+        uint8_t *z = plat_file_read(tp, &zn), sum[32];
+        if (z) sha256(z, (size_t)zn, sum);
+        if (!z || memcmp(sum, c->table, 32)) {
+            free(z);
+            miss = "the kept table is missing or damaged";
+        } else if (!serve_generated(restbl_rel, served, z, (size_t)zn, "mods",   // frees z
+                                    "merged resource sizes, kept from the last start", keeps)) {
+            miss = "the kept table cannot be served";
+        }
+    }
+    if (miss)
+        rt_log("RomFS: resource size table: built again: %s", miss);
+    else
+        rt_log("RomFS: resource size table: the mods' files are the ones of the last start: %s (%.0f ms)",
+               c->outcome == RESTBL_TABLE ? "its merged table is used" : "they fit the game's entries",
+               (now_s() - t0) * 1000);
+    free(c);
+    return !miss;
+}
+
 // With a player mod (or the TOTK_ROMFS_MODS manifest) serving files: the game's table with every shipped table of this
 // version merged in (an entry larger than the game's wins), the entries a mod's table for another version gives for
 // that mod's files, and each served mod file's entry raised to what its size needs (restbl_grow for a file the game
@@ -773,6 +902,12 @@ static void restbl_overlay(void) {
     static const char keeps[] = "mod files that grew may fail to load";
     double t0 = now_s();
     uint64_t gi = lower(restbl_rel);
+    uint8_t cache_key[32];
+    Overlay *served_now = NULL;
+    for (size_t k = 0; k < noverlay; k++)
+        if (overlays[k].index == gi) served_now = &overlays[k];
+    int cached = rt_knob("RESTBL_CACHE", "0") && restbl_cache_key(gi, cache_key);
+    if (cached && restbl_cache_use(cache_key, served_now, keeps, t0)) return;
     Entry ge = entry(gi);
     void *gz = ge.size < (64u << 20) ? malloc((size_t)ge.size) : NULL;
     Restbl *base = NULL, *out = NULL;
@@ -810,8 +945,10 @@ static void restbl_overlay(void) {
         restbl_free(t);
     }
     Overlay *served = NULL;
+    lw_count(LW_FILES, 2 * (uint64_t)noverlay, restbl_progress, NULL);
     for (size_t k = 0; k < noverlay; k++) {
         Overlay *o = &overlays[k];
+        restbl_done = k + 1;
         if (o->index == gi) served = o;
         if ((!o->mod && o->prio != 1) || o->index == gi) continue;
         char key[4200];
@@ -838,6 +975,7 @@ static void restbl_overlay(void) {
     if (!merged && !raised && !members && !served) {
         restbl_free(out);
         rt_log("RomFS: resource size table: the mods' files fit the game's entries (%.0f ms)", (now_s() - t0) * 1000);
+        if (cached) restbl_cache_store(cache_key, RESTBL_NONE, NULL);
         return;
     }
     size_t rn = 0, zn = 0;
@@ -852,10 +990,14 @@ static void restbl_overlay(void) {
         rt_log("RomFS: cannot pack the merged resource size table; %s", keeps);
         return;
     }
-    if (serve_generated(restbl_rel, served, z, zn, "mods", "merged resource sizes", keeps))
+    uint8_t sum[32];
+    if (cached) sha256(z, zn, sum);   // before serve_generated frees z
+    if (serve_generated(restbl_rel, served, z, zn, "mods", "merged resource sizes", keeps)) {
         rt_log("RomFS: resource size table: %d tables merged (%d entries), %d entries raised for mod files (%d "
                "added files estimated), %d for members of %d mod packs, %.0f ms", tables, merged, raised, estimated,
                members, packs, (now_s() - t0) * 1000);
+        if (cached) restbl_cache_store(cache_key, RESTBL_TABLE, sum);
+    }
 }
 
 // The HeapDef table a bigger game resolution or TOTK_TEX_HEAP_EXTRA_MB needs (resolution.c): its texture heaps and
@@ -1009,6 +1151,22 @@ static int selected_shape(const char *base, const char *prefix, unsigned w, unsi
     return fallback && *suffix && shaped_name(base, prefix, w, h, "", name, cap);
 }
 
+static void layout_overlay(int port_has, unsigned w, unsigned h, int wide);
+
+// UI/LayoutArchive/Common.Product.<n>.Nin_NX_NVN.blarc.zs: the archive tools/make_romfs_patches.py edits.
+static int is_layout_archive(const char *name) {
+    static const char head[] = "UI/LayoutArchive/Common.Product.";
+    return !strncmp(name, head, sizeof head - 1) && ends_with(name, ".Nin_NX_NVN.blarc.zs");
+}
+
+// 1 when an overlay the port's patches loaded (not a mod's, not TOTK_ROMFS_MODS) replaces the UI layout archive
+// (layout_overlay). Called before overlay_contest, which drops the losers.
+static int port_layout_loaded(void) {
+    for (size_t k = 0; k < noverlay; k++)
+        if (!overlays[k].mod && !overlays[k].prio && is_layout_archive(overlays[k].name)) return 1;
+    return 0;
+}
+
 static void overlay_init(void) {
     // TOTK_ROMFS_PATCHES unset: romfs-patches next to romfs-index.bin if it has a manifest (tools/make_romfs_patches.py).
     // A game resolution that is not 16:9 takes romfs-patches-<w>x<h> instead when it is there (shaped_name: the exact
@@ -1137,9 +1295,12 @@ static void overlay_init(void) {
         else if (plain_ok) overlay_load(plain, 0, 0);
     }
     restbl_collect();
+    int port_layout = port_layout_loaded();
     overlay_contest();
     mods_overlay_log();
+    layout_overlay(port_layout, out[0], out[1], wide);
     restbl_overlay();
+    lw_count_end(LW_FILES);
     heapdef_overlay();
     camera_overlay();
     added_init();
@@ -1338,6 +1499,113 @@ int romfs_folders_prepare(unsigned w, unsigned h, const char *prompts_folder) {
     return started && !failed;
 }
 
+// ---- a mod's UI layout archive with the port's edits (overlay_init, after overlay_contest)
+// The port's patches carry UI/LayoutArchive/Common.Product.<n>.Nin_NX_NVN.blarc.zs with the 60 fps quick-menu
+// background fix and, at a game resolution of another shape than 16:9, the UI laid out for that shape
+// (tools/make_romfs_patches.py, ultrawide_layout.py). A mod that ships its own copy of that archive (button prompt and
+// logo mods, many overhauls) wins the contest, so the UI went back to the 16:9 layout stretched over the screen. Here
+// the mod's copy gets the same edits: make_romfs_patches.py --archive edits the mod's file where it kept the game's
+// values and leaves the parts the mod changed. The result is kept per mod file and shape in
+// <profile>/layout/<shape>/<first 16 hex digits of the mod file's SHA-256>/ with the generator's manifest, whose
+// original SHA-256 is the mod file's: a changed mod file has another folder. A folder with a complete manifest serves
+// in place of the mod's file; without one, its generator starts in the background (as romfs_folders_prepare does) and
+// the next start uses it. mod_layout = 0 (TOTK_MOD_LAYOUT) serves the mod's file as before.
+#define LAYOUT_SUB "layout"
+
+// 1 when <dir>/manifest.tsv lists rel with original_sha (the mod file's) and the file it names has that size and
+// SHA-256. file gets the file's path.
+static int layout_cached(const char *dir, const char *rel, const char *original_sha, char *file, size_t cap) {
+    char path[2400], line[8192];
+    if (snprintf(path, sizeof path, "%s/manifest.tsv", dir) >= (int)sizeof path) return 0;
+    FILE *m = fopen(path, "rb");
+    if (!m) return 0;
+    int ok = 0;
+    while (!ok && fgets(line, sizeof line, m)) {
+        char name[4096], sha[65], orig[65], hex[65];
+        unsigned long long size = 0;
+        if (line[0] == '#' || sscanf(line, "%4095[^\t]\t%llu\t%64[0-9a-f]\t%64[0-9a-f]", name, &size, sha, orig) != 4 ||
+            strcmp(name, rel) || strcmp(orig, original_sha) || !romfs_path_valid_relative(name) ||
+            snprintf(file, cap, "%s/%s", dir, name) >= (int)cap)
+            continue;
+        PlatFile *f = open_read(file);
+        if (!f) break;
+        Identity id = identity_of(f);
+        if (id.size == size) sha_range(f, 0, size, hex, 0);
+        plat_file_close(f);
+        ok = id.size == size && !strcmp(hex, sha);
+    }
+    fclose(m);
+    return ok;
+}
+
+static void layout_overlay(int port_has, unsigned w, unsigned h, int wide) {
+    const char *flag = cfg_get("TOTK_MOD_LAYOUT");
+    if (!port_has || (flag && !strcmp(flag, "0"))) return;
+    Overlay *o = NULL;
+    for (size_t k = 0; k < noverlay; k++)
+        if (overlays[k].mod && is_layout_archive(overlays[k].name)) o = &overlays[k];
+    if (!o) return;
+    const char *mod = mods_at(o->mod - 1)->name;
+    char sha[65], shape[64], dir[2400], file[2600];
+    PlatFile *f = open_read(o->path);
+    if (!f) {
+        rt_log("RomFS overlay: %s: cannot read %s; the mod's UI layout stays as it ships", mod, o->path);
+        return;
+    }
+    sha_range(f, 0, o->size, sha, 0);
+    plat_file_close(f);
+    unsigned s[2] = {w, h};
+    const char *suffix = "";
+    if (wide) {
+        cfg_shape_size(w, h, s);
+        suffix = hud_suffix(w, h);
+        snprintf(shape, sizeof shape, "%ux%u%s", s[0], s[1], suffix);
+    } else {
+        snprintf(shape, sizeof shape, "16x9");
+    }
+    need(snprintf(dir, sizeof dir, "%s/" LAYOUT_SUB "/%s/%.16s", rt_config()->profile, shape, sha) < (int)sizeof dir,
+         "layout overlay path");
+    if (layout_cached(dir, o->name, sha, file, sizeof file)) {
+        PlatFile *r = open_read(file);
+        need(r != NULL, "layout overlay file");
+        Identity id = identity_of(r);
+        plat_file_close(r);
+        char *copy = strdup(file);
+        need(copy != NULL, "overlay path copy");
+        free(o->path);
+        o->path = copy;
+        o->size = id.size;
+        o->id = id;
+        rt_log("RomFS overlay: %s: its %s with the port's %s edits (%s)", mod, o->name,
+               wide ? "60 fps and UI layout" : "60 fps", file);
+        return;
+    }
+    // Not made yet: the generator writes dir for the next start. This start keeps the mod's file as it ships.
+    char python[1024], script[1100], idir[2100], romfs[2200], size[32], version[8], key[160];
+    if (!prepare_tools(python, sizeof python, script, sizeof script, idir, sizeof idir)) {
+        rt_log("RomFS overlay: %s replaces the UI layout archive; its UI keeps the mod's own layout (no setup tools "
+               "next to the game to add the port's edits: tools/make_romfs_patches.py --archive)", mod);
+        return;
+    }
+    snprintf(version, sizeof version, "v%d", rt_game_version);
+    snprintf(romfs, sizeof romfs, "%s/romfs", idir);
+    snprintf(size, sizeof size, "%ux%u", s[0], s[1]);
+    snprintf(key, sizeof key, LAYOUT_SUB "/%s/%.16s", shape, sha);
+    const char *hud = *suffix ? cfg_value("TOTK_HUD_WIDTH") : "full";
+    const char *argv[20] = {python, script, "--version", version, "--romfs", romfs, "--out", dir, "--background",
+                            "--archive", o->path};
+    int argc = 11;
+    if (wide) argv[argc++] = "--aspect", argv[argc++] = size, argv[argc++] = "--hud", argv[argc++] = hud;
+    argv[argc] = NULL;
+    char parent[2400];
+    snprintf(parent, sizeof parent, "%s/" LAYOUT_SUB "/%s", rt_config()->profile, shape);
+    plat_file_mkdir_p(parent);
+    int started = shape_spawn(argv, idir, key);
+    rt_log("RomFS overlay: %s replaces the UI layout archive; %s the port's %s edits on it in the background for the "
+           "next start (%s)", mod, started ? "making" : "could not start making", wide ? "60 fps and UI layout" : "60 fps",
+           dir);
+}
+
 static void load_index(void) {
     char path[2100];
     index_path(path, sizeof path);
@@ -1382,6 +1650,7 @@ static void init_once(void *param) {
     rt_fatal("this build has no RomFS: tools/build_game.py found no index.json in its --romfs directory");
 #else
     double t0 = now_s();
+    lw_begin(LW_FILES);
     load_index();
     const char *dir = rt_config()->romfs;
     need(snprintf(image_file, sizeof image_file, "%s/romfs.bin", dir) < (int)sizeof image_file, "image path");
@@ -1406,6 +1675,7 @@ static void init_once(void *param) {
         }
     }
     overlay_init();
+    lw_end(LW_FILES);
     rt_log("RomFS ready: %llu files, %zu overlays, %zu added, %.2f s", (unsigned long long)file_count, noverlay,
            nadded, now_s() - t0);
 #endif
@@ -1449,30 +1719,130 @@ const char *romfs_overlay(size_t k, const char **file, uint64_t *size, int *is_a
     return overlays[k].name;
 }
 
+// The RomFS mount whose name path starts with ("<name>:"), copied into name; 0 when none.
+static int mount_of(const char *path, char name[32]) {
+    int found = 0;
+    if (!path) return 0;
+    plat_mutex_lock_shared(&lock);
+    for (int k = 0; k < ROMFS_MOUNTS && !found; k++) {
+        size_t n = strlen(mount_names[k]);
+        if (n && !strncmp(path, mount_names[k], n) && path[n] == ':') found = 1, memcpy(name, mount_names[k], 32);
+    }
+    plat_mutex_unlock_shared(&lock);
+    return found;
+}
+
 int romfs_owns(const char *path) {
-    size_t n = strlen(mount_name);
-    return n && path && !strncmp(path, mount_name, n) && path[n] == ':';
+    char name[32];
+    return mount_of(path, name);
+}
+
+// The RomFS path of "<mount>:/<path>" on any RomFS mount (romfs_path.h romfs_path_relative), or NULL.
+static const char *relative(const char *path) {
+    char name[32];
+    return mount_of(path, name) ? romfs_path_relative(name, path) : NULL;
+}
+
+// The RomFS folder path names, into out without a trailing '/': "" for the mount's root ("<mount>:/",
+// "<mount>://"). 0 when path is on no RomFS mount or is no valid RomFS path.
+static int folder_of(const char *path, char *out, size_t cap) {
+    char name[32];
+    if (!mount_of(path, name)) return 0;
+    size_t n = strlen(name);
+    if (path[n + 1] != '/') return 0;
+    const char *p = path + n + 1;
+    while (*p == '/') p++;
+    size_t len = strlen(p);
+    while (len && p[len - 1] == '/') len--;
+    if (len >= cap) return 0;
+    memcpy(out, p, len);
+    out[len] = 0;
+    return !len || romfs_path_valid_relative(out);
 }
 
 int romfs_handle(uint64_t h) { return h > ROMFS_HANDLE_BASE && h < ROMFS_HANDLE_BASE + NH; }
 
 uint32_t romfs_mount(const char *name) {
     fs_init();
-    if (!name || !romfs_path_valid_relative(name) || strlen(name) >= sizeof mount_name || strchr(name, '/') ||
+    if (!name || !romfs_path_valid_relative(name) || strlen(name) >= sizeof mount_names[0] || strchr(name, '/') ||
         strchr(name, ':'))
         return FS_R_INVALID;
+    if (fs_host_mounted(name)) return FS_R_ALREADY_EXISTS;   // a storage mount has the name
+    int slot = -1;
     plat_mutex_lock(&lock);
-    if (*mount_name && strcmp(name, mount_name)) rt_fatal("second RomFS mount %s (%s is mounted)", name, mount_name);
-    strcpy(mount_name, name);
+    for (int k = 0; k < ROMFS_MOUNTS; k++) {
+        if (!strcmp(mount_names[k], name)) {   // mounted already: the game mounts "content" once, the probe twice
+            plat_mutex_unlock(&lock);
+            return 0;
+        }
+        if (!*mount_names[k] && slot < 0) slot = k;
+    }
+    // slot 0 is taken first and never freed (romfs_unmount), so the game's mount stays [0]
+    if (slot < 0) rt_fatal("RomFS mount table full (%d names): %s", ROMFS_MOUNTS, name);
+    strcpy(mount_names[slot], name);
     plat_mutex_unlock(&lock);
     rt_log("fs mount %s: -> RomFS", name);
     return 0;
 }
 
+// The first RomFS mount is the game's and stays: the run time never unmounted it, and its paths are opened on every
+// thread. A mod's further names go at Unmount; their open handles stay valid (a handle names an index row, no mount).
+int romfs_unmount(const char *name) {
+    int found = 0, kept = 0;
+    if (!name) return 0;
+    plat_mutex_lock(&lock);
+    for (int k = 0; k < ROMFS_MOUNTS && !found; k++)
+        if (*mount_names[k] && !strcmp(mount_names[k], name)) {
+            found = 1, kept = !k;
+            if (k) *mount_names[k] = 0;
+        }
+    plat_mutex_unlock(&lock);
+    if (found) rt_log("fs unmount %s (RomFS)%s", name, kept ? ": kept, the game's mount" : "");
+    return found;
+}
+
+// The last OPEN_RING RomFS opens and what served each: the crash report names the files the game read just before it,
+// and whether a mod gave them (#1421: a model file of a mod merge that probably did not load). One slot per open, a
+// fixed 3.5 KiB, written without a lock: a crash report may read a slot that another thread is writing at that moment,
+// and seq tells it to skip that one.
+#define OPEN_RING 16
+typedef struct { volatile int32_t seq; const char *who; char path[200]; } OpenNote;
+static OpenNote open_ring[OPEN_RING];
+static volatile int32_t open_count;
+
+static void open_note(const char *p, uint32_t ov) {
+    int32_t n = plat_inc32(&open_count);
+    OpenNote *o = &open_ring[(uint32_t)(n - 1) % OPEN_RING];
+    __atomic_store_n(&o->seq, 0, __ATOMIC_RELEASE);
+    o->who = ov ? owner_name(&overlays[ov - 1]) : "game";
+    snprintf(o->path, sizeof o->path, "%s", p);
+    __atomic_store_n(&o->seq, n, __ATOMIC_RELEASE);
+}
+
+void romfs_crash_report(void) {
+    int32_t n = plat_cas32(&open_count, 0, 0);
+    if (!n) return;
+    int32_t from = n > OPEN_RING ? n - OPEN_RING : 0;
+    rt_logf("  RomFS opens: %d this run, the last %d (oldest first) with what served them:\n", n, n - from);
+    for (int32_t i = from; i < n; i++) {
+        const OpenNote *o = &open_ring[(uint32_t)i % OPEN_RING];
+        if (__atomic_load_n(&o->seq, __ATOMIC_ACQUIRE) == i + 1) rt_logf("    %s (%s)\n", o->path, o->who);
+    }
+}
+
+const char *romfs_handle_name(uint64_t h) {
+    if (!romfs_handle(h)) return NULL;
+    plat_mutex_lock_shared(&lock);
+    uint64_t i = handles[h - ROMFS_HANDLE_BASE];
+    plat_mutex_unlock_shared(&lock);
+    if (!i--) return NULL;
+    return i < file_count ? entry_name(entry(i)) : i - file_count < nadded ? added[i - file_count] : NULL;
+}
+
 uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
     fs_trace("rom", path);
     if (!out || mode != FS_OPEN_READ) return FS_R_UNSUPPORTED_OPEN;
-    const char *p = romfs_path_relative(mount_name, path);
+    const char *p = relative(path);
     if (!p) return FS_R_PATH_NOT_FOUND;
     uint64_t i = file_index(p);
     if (i == UINT64_MAX) return FS_R_PATH_NOT_FOUND;
@@ -1503,6 +1873,7 @@ uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
             handle_audio_cat[j] = (uint8_t)cat;
             *out = ROMFS_HANDLE_BASE + j;
             plat_mutex_unlock(&lock);
+            open_note(p, ov);
             return 0;
         }
     plat_mutex_unlock(&lock);
@@ -1582,26 +1953,106 @@ void romfs_close(uint64_t h) {
     if (of) plat_file_close(of);
 }
 
+// A path with a trailing '/' names a folder only; the mount's root ("<mount>:/") is a folder.
 uint32_t romfs_entry_type(int *out, const char *path) {
     if (!out) return FS_R_INVALID;
-    const char *p = romfs_path_relative(mount_name, path);
-    if (!p) return FS_R_PATH_NOT_FOUND;
-    if (file_index(p) != UINT64_MAX) {
+    const char *p = relative(path);
+    if (p && file_index(p) != UINT64_MAX) {
         *out = FS_ENTRY_FILE;
         return 0;
     }
     char dir[4096];
-    if (snprintf(dir, sizeof dir, "%s/", p) >= (int)sizeof dir) return FS_R_INVALID;
-    if (folder_exists(dir)) {
+    if (!folder_of(path, dir, sizeof dir - 1)) return FS_R_PATH_NOT_FOUND;
+    size_t n = strlen(dir);
+    dir[n] = '/', dir[n + 1] = 0;
+    if (!n || folder_exists(dir)) {
         *out = FS_ENTRY_DIRECTORY;
         return 0;
     }
     return FS_R_PATH_NOT_FOUND;
 }
 
+// ---- folder listings (romfs_list), made from the sorted index and the sorted added files at each OpenDirectory
+typedef struct { const char *name; uint64_t size; } Child;
+typedef struct { Child *e; size_t n, cap; } Children;
+
+static void child_add(Children *c, const char *name, uint64_t size) {
+    if (c->n == c->cap) {
+        c->cap = c->cap ? c->cap * 2 : 64;
+        c->e = realloc(c->e, c->cap * sizeof *c->e);
+        need(c->e != NULL, "RomFS folder listing");
+    }
+    c->e[c->n++] = (Child){name, size};
+}
+
+static int child_order(const void *a, const void *b) { return strcmp(((const Child *)a)->name, ((const Child *)b)->name); }
+
+// RomFS path p (index row or added file i) under the folder prefix of n bytes: a file right under the folder goes to
+// files with the size it is served with (the overlay's when one replaces or adds it), the first component of a deeper
+// path to dirs as a malloc'd copy, once per run of equal components (paths that share it are adjacent when sorted).
+static void child_of(const char *p, uint64_t i, size_t n, Children *dirs, Children *files, const char **last,
+                     size_t *last_n) {
+    const char *rest = p + n, *slash = strchr(rest, '/');
+    if (!slash) {
+        uint32_t ov = overlay_slot(i);
+        child_add(files, rest, ov ? overlays[ov - 1].size : entry(i).size);
+        return;
+    }
+    size_t len = (size_t)(slash - rest);
+    if (*last && *last_n == len && !memcmp(*last, rest, len)) return;
+    *last = rest, *last_n = len;
+    char *name = malloc(len + 1);
+    need(name != NULL, "RomFS folder listing");
+    memcpy(name, rest, len);
+    name[len] = 0;
+    child_add(dirs, name, 0);
+}
+
+uint32_t romfs_list(const char *path, int (*cb)(const char *name, int kind, uint64_t size, void *ctx), void *ctx) {
+    char pre[4096];
+    if (!folder_of(path, pre, sizeof pre - 1)) return FS_R_PATH_NOT_FOUND;
+    size_t n = strlen(pre);
+    if (n) pre[n++] = '/', pre[n] = 0;
+    // a file or a missing folder: the sdk's RomFsFileSystem::DoOpenDirectory answers both with path not found
+    if (n && !folder_exists(pre)) return FS_R_PATH_NOT_FOUND;
+    Children dirs = {0}, files = {0};
+    const char *last = NULL;
+    size_t last_n = 0;
+    for (uint64_t i = lower(pre); i < file_count; i++) {
+        const char *p = entry_name(entry(i));
+        if (strncmp(p, pre, n)) break;
+        child_of(p, i, n, &dirs, &files, &last, &last_n);
+    }
+    last = NULL;
+    for (size_t k = added_lower(pre); k < nadded && !strncmp(added[k], pre, n); k++)
+        child_of(added[k], file_count + k, n, &dirs, &files, &last, &last_n);
+    // the RomFS's folders and the added files' may share a name: sorted, a name given twice is adjacent. Folders come
+    // first, as the sdk's RomFS directory reads them (RomFsFileSystem::DoOpenDirectory's directory, its read).
+    if (dirs.n) qsort(dirs.e, dirs.n, sizeof *dirs.e, child_order);
+    if (files.n) qsort(files.e, files.n, sizeof *files.e, child_order);
+    int go = 1;
+    for (size_t k = 0; k < dirs.n && go; k++)
+        if (!k || strcmp(dirs.e[k].name, dirs.e[k - 1].name)) go = cb(dirs.e[k].name, PLAT_FS_DIR, 0, ctx);
+    for (size_t k = 0; k < files.n && go; k++) go = cb(files.e[k].name, PLAT_FS_FILE, files.e[k].size, ctx);
+    for (size_t k = 0; k < dirs.n; k++) free((void *)dirs.e[k].name);
+    free(dirs.e);
+    free(files.e);
+    return 0;
+}
+
 // ---- overrides
 // nn::Result nn::fs::MountRom(const char *name, void *cache, size_t cache_size)
-static void ov_mount_rom(Cpu *c) { ret_x(c, romfs_mount(arg_p(c, 0))); }
+static void ov_mount_rom(Cpu *c) {
+    uint32_t r = romfs_mount(arg_p(c, 0));
+    if (r) fs_failed(c, "MountRom", arg_p(c, 0), r, 0);
+    ret_x(c, r);
+}
+// nn::Result nn::fs::MountRom(const char *name): the same without a cache buffer (the sdk runs one mount routine)
+static void ov_mount_rom_nocache(Cpu *c) {
+    uint32_t r = romfs_mount(arg_p(c, 0));
+    if (r) fs_failed(c, "MountRom", arg_p(c, 0), r, 0);
+    ret_x(c, r);
+}
 // nn::Result nn::fs::QueryMountRomCacheSize(size_t *out): no cache needed, the host reads the image directly
 static void ov_query_cache(Cpu *c) {
     uint64_t *out = arg_p(c, 0);
@@ -1615,5 +2066,6 @@ static void ov_initialize(Cpu *c) {
 }
 
 HOST_OVERRIDE("_ZN2nn2fs8MountRomEPKcPvm", ov_mount_rom);
+HOST_OVERRIDE("_ZN2nn2fs8MountRomEPKc", ov_mount_rom_nocache);
 HOST_OVERRIDE("_ZN2nn2fs22QueryMountRomCacheSizeEPm", ov_query_cache);
 HOST_OVERRIDE("_ZN2nn2fs24InitializeForApplicationEv", ov_initialize);

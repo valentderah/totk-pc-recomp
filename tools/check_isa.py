@@ -33,6 +33,7 @@ NON_V2 = {'andn', 'bextr', 'blsi', 'blsmsk', 'blsr', 'bzhi', 'shlx', 'shrx', 'sa
           'pclmulqdq', 'rdrand', 'rdseed'}
 PREFIXES = {'rep', 'repe', 'repz', 'repne', 'repnz', 'lock', 'notrack', 'data16', 'cs', 'ds', 'es', 'ss', 'fs', 'gs'}
 WIDE = re.compile(r'%[yz]mm\d|%k[0-7]\b')
+INSN = re.compile(r'^\s*[0-9a-f]+:')
 
 # Function -> the runtime check that keeps it off CPUs without the instructions.
 DISPATCHED = {
@@ -89,7 +90,10 @@ def scan_one(path, objdump):
         if m:
             func = m.group(1)
             continue
-        if not line[:1].isspace():
+        # An instruction line starts with its address: short and indented in an object, 9+ hex digits at the start of
+        # the line in a linked .exe or .dll. Testing for leading whitespace alone skipped every instruction of a linked
+        # image and reported it clean.
+        if not INSN.match(line):
             continue
         mn = mnemonic(line)
         if mn and func not in DISPATCHED and is_non_v2(line, mn):

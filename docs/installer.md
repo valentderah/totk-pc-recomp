@@ -26,6 +26,7 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
 <install folder>/
   totk.exe, SDL3.dll, libopus-0.dll, totk_xlate.exe
   nvngx_dlss.dll                 NVIDIA DLSS, downloaded by the setup's DLSS step when the player keeps it ticked
+  amd_fidelityfx_*_vk.dll        AMD FSR 4 (loader and upscaler), downloaded by the setup's FSR step likewise
   totk.ini                       language; the other keys as commented defaults (totk.ini.example)
   exefs/, romfs/                 extracted from the player's files
   shared-fonts/                  the Switch system fonts, with Chinese, Korean or Traditional Chinese text
@@ -108,7 +109,9 @@ loads the saves 1.4.3 wrote.
    file but the UI archive; for `pc` with the same `--binds` as the PC prompts step, whose key the step follows). The shapes are those of every connected display (Windows: `EnumDisplayDevices`; Linux:
    `xrandr`, else the DRM connectors), of the `output_res` the game defaults to on each, and of the `totk.ini`
    `output_res` (`installer/screens.py`). One folder per shape, named after the shape's size in `ASPECT_SIZES` (the
-   closest within 1%; `5120x2160` uses `2560x1080`); `runtime/romfs.c` `overlay_init` maps the game resolution the
+   closest within 1%; `5120x2160` uses `2560x1080`), or for an unlisted shape from 4:3 to 32:9 its own size (a
+   `totk.ini` `output_res` of `2560x1200`, say; a display of an unlisted shape gets none, as the game keeps 1920x1080
+   there); `runtime/romfs.c` `overlay_init` maps the game resolution the
    same way, and a folder of the exact size from an older setup still wins. A 16:9 player gets none. The step runs
    again when the displays, the prompts or the patches change. At a game resolution whose shape has no folder the
    game draws 16:9 with bars and starts the generator itself, in the background, for the next start: at start and
@@ -123,7 +126,15 @@ loads the saves 1.4.3 wrote.
    the library; NGX loads it from the folder of totk.exe for `dlaa` and the DLSS modes. A DLSS library already in the
    folder (a newer one the player put there) is kept. Without an RTX GPU the step only logs and does nothing; a failed
    download warns, the game runs without DLSS, and the next run of the setup tries again.
-10. **Clean up** the temp folder, except the generated C and the objects (about 1.3 GB), and write
+10. **FSR** (the window's tick box, on by default when Windows lists an AMD display adapter, `screens.py`
+   `windows_adapter_names`; or `--fsr`; Windows): download
+   `amd_fidelityfx_loader_vk.dll` and `amd_fidelityfx_upscaler_vk.dll` from AMD's FSR SDK repository
+   (github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK, tag `v2.4.0`, `Kits/FidelityFX/signedbin/`, AMD FSR SDK
+   license) into the install folder and check their sizes and SHA-256 (`steps.py`, `Fsr`). Both go in only when both
+   downloaded and matched. `scene_upscaler = fsr4` loads them from the folder of totk.exe and runs FSR 4 where they
+   offer it for the GPU. Libraries already in the folder are kept; a failed download warns, the game runs without FSR
+   4, and the next run tries again.
+11. **Clean up** the temp folder, except the generated C and the objects (about 1.3 GB), and write
    `build-cache/rebuild.txt` in the install folder.
 
 A cancelled or failed setup resumes from the last finished step (`totk-install.json`).
@@ -181,8 +192,8 @@ python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR
   install sections, the explanations under More details, the share notice next to Start) in the Sun Valley ttk theme
   (`installer/vendor/sv_ttk/`, the platform theme when it does not load), step list with progress, space line,
   collapsible log, Cancel (Ctrl+Break to the CLI's process group, then it waits for the exit), finish screen with Open
-  folder. English, Russian, Brazilian Portuguese, Simplified Chinese, German, French, Spanish, Italian, Dutch, Japanese
-  or Korean (`guilogic.UI_LANGUAGES`), chosen from the Windows display language (every Chinese, zh-TW and zh-HK
+  folder. English, Russian, Brazilian Portuguese, Simplified Chinese, German, French, Spanish, Italian, Dutch, Japanese,
+  Korean or Vietnamese (`guilogic.UI_LANGUAGES`), chosen from the Windows display language (every Chinese, zh-TW and zh-HK
   included, gives Simplified Chinese; pt-PT and languages without a catalog give English), switchable in the window;
   every sentence is an id in `installer/text/<lang>.json`. The game language starts as the window's when the game has
   it; a Chinese or Korean window still starts with English, because that game text needs the Switch shared fonts,

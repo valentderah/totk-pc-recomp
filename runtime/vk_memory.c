@@ -50,6 +50,7 @@ typedef struct PoolRec {
     VPage *pt;                         // POOL_VIRT: size / 64 KiB entries
     uint64_t npages;
     volatile int32_t used;                // resolved at least once: the GPU may still read it at finalize
+    uint8_t dying;                     // pool_lock: its teardown is queued for the replay thread (vk_pool_fini_begin)
     // TOTK_TRACE=perf dirty census (vk_mem_dirty_submit), replay thread under the submit lock only:
     uint32_t bound_sub;                // last submit that bound it as a buffer (dirty_sub), 0 never
     uint32_t synced_gen;               // page generation its lazy-mirror count covers; DIRTY_UNSYNCED until scanned
@@ -94,6 +95,7 @@ static uint64_t pool_gen = 1;
 // every submission's start (mirror syncs are per submission). vk_mem_gen: both together.
 static uint64_t mirror_gen;
 static pidx pool_index;                // POOL_IMPORT, POOL_PHYS and POOL_VIRT records by GPU address
+static volatile int64_t n_dying_resolves;   // lookups that found a record whose teardown is queued (vk_mem_dying_resolves)
 static PoolRec **phys_list;            // physical pools by key, for MapVirtual requests
 static int nphys, cap_phys;
 static int32_t n_imports, n_import_failures;
@@ -128,6 +130,9 @@ static int import_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
     r->import_lo = addr & ~(al - 1);
     r->import_hi = (addr + size + al - 1) & ~(al - 1);
     uint64_t n = r->import_hi - r->import_lo;
+    // TOTK_HEAP_LAZY: the caller's mem_thaw committed the pool's own chunks; an alignment above 4 KiB can widen the
+    // import into a neighbouring chunk the game never touched, and the driver refuses reserved pages.
+    mem_heap_commit(r->import_lo, n);
     VkMemoryHostPointerPropertiesEXT hp = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
     VkResult res = p_host_props ? p_host_props(c->device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
                                                (void *)(uintptr_t)r->import_lo, &hp)
@@ -304,7 +309,8 @@ int vk_pool_init(pool_t *p) {
     return 1;
 }
 
-void vk_pool_fini(pool_t *p) {
+// queued: the replay thread's half of a teardown vk_pool_fini_begin queued (vk_backend.c vk_be_pool_fini).
+static void pool_fini(const pool_t *p, int queued) {
     VkCtx *c = vk_ctx();
     if (!c) return;
     pidx_ent e;
@@ -330,7 +336,11 @@ void vk_pool_fini(pool_t *p) {
     // Images cut from this range go first; a used buffer or memory waits until the GPU is done with it, since the
     // guest gets the storage back when this returns.
     vk_texture_range_gone(r->lo, r->size, r->alloc);
-    if (r->used && r->kind != POOL_VIRT) {
+    // Queued, the guest got the storage back when vk_pool_fini_begin returned, so a wait here protects nothing and
+    // would hold the replay behind the GPU. The record goes by completion below; the open upload batch (a texture
+    // upload may read the import buffer) is submitted first, so the retire value's signal covers it in queue order.
+    if (queued) vk_upload_flush(0);
+    else if (r->used && r->kind != POOL_VIRT) {
         vk_upload_flush(1);
         vk_queue_lock();
         vkQueueWaitIdle(c->gfx_queue);
@@ -347,6 +357,36 @@ void vk_pool_fini(pool_t *p) {
     pool_retiring(r);
     vk_completion_add(retire_value(), pool_retire, r);
 }
+
+void vk_pool_fini(pool_t *p) { pool_fini(p, 0); }
+
+// Asynchronous replay, game thread (vk_backend.c vk_be_pool_fini): the record stays in the index for the items queued
+// before the teardown, marked dying, and the replay thread finishes it with vk_pool_fini_queued in queue order. The
+// generation bump drops every thread's cached hits (vk_mem_resolve), and resolve_locked never caches a dying record, so
+// each later lookup of it is counted. Returns 0 when the pool has no record (nothing to queue), else its range and
+// whether it is physical (virtual pools' textures may sit on its memory: vk_texture_range_gone's alloc test).
+int vk_pool_fini_begin(const pool_t *p, uint64_t *lo, uint64_t *size, int *phys) {
+    if (!vk_ctx()) return 0;
+    PoolRec *r = NULL;
+    plat_mutex_lock(&pool_lock);
+    for (int i = 0; i < pool_index.n && !r; i++)
+        if (pool_index.e[i].key == p) r = pool_index.e[i].buf;
+    if (r) {
+        r->dying = 1;
+        __atomic_add_fetch(&pool_gen, 1, __ATOMIC_RELEASE);
+        *lo = r->lo, *size = r->size, *phys = r->kind == POOL_PHYS;
+    }
+    int import = r && r->kind == POOL_IMPORT;
+    plat_mutex_unlock(&pool_lock);
+    if (import) mem_thaw(*lo, *size);   // as vk_pool_fini: the storage goes back to the guest writable now
+    return r != NULL;
+}
+
+// Replay thread: the rest of the teardown, keyed by the pool object's address, which is never dereferenced (the game
+// may have reused the object).
+void vk_pool_fini_queued(const pool_t *key) { pool_fini(key, 1); }
+
+uint64_t vk_mem_dying_resolves(void) { return (uint64_t)__atomic_load_n(&n_dying_resolves, __ATOMIC_RELAXED); }
 
 // Requests were checked by the front end (nvn_api_core.c, MNG totk_vpool.c); apply them in order.
 int vk_pool_map_virtual(pool_t *v, int n, const void *requests) {
@@ -436,7 +476,8 @@ static int resolve_locked(uint64_t addr, uint64_t size, VkMemSpan *out) {
     const pidx_ent *e = pidx_find(&pool_index, (uintptr_t)addr, size);
     PoolRec *r = e ? e->buf : NULL;
     int ok = 0;
-    if (r && (r->kind == POOL_IMPORT ? r->buf != VK_NULL_HANDLE : r->kind == POOL_PHYS)) {
+    if (r && r->dying) plat_inc64(&n_dying_resolves);
+    if (r && !r->dying && (r->kind == POOL_IMPORT ? r->buf != VK_NULL_HANDLE : r->kind == POOL_PHYS)) {
         int i = (int)(e - pool_index.e);
         if ((i == 0 || pool_index.maxhi[i - 1] <= e->lo) && (i + 1 == pool_index.n || pool_index.e[i + 1].lo >= e->hi)) {
             ResolveHit *h = rhit_slot(addr);
@@ -465,6 +506,7 @@ static int resolve_locked(uint64_t addr, uint64_t size, VkMemSpan *out) {
         uint64_t rel = addr - r->lo, k = rel / NVN_VPOOL_PAGE;
         if (k < r->npages && r->pt[k].phys) {
             PoolRec *ph = r->pt[k].phys;
+            if (ph->dying) plat_inc64(&n_dying_resolves);
             uint64_t off = r->pt[k].off + rel % NVN_VPOOL_PAGE, end = r->pt[k].off + NVN_VPOOL_PAGE;
             for (uint64_t j = k + 1; j < r->npages && r->pt[j].phys == ph && r->pt[j].off == end; j++) end += NVN_VPOOL_PAGE;
             out->buffer = ph->buf;
@@ -582,6 +624,13 @@ void vk_mem_census(uint64_t frame) {
     rt_log("mem: commit at frame %llu: this process %.0f MB, the system %.0f of %.0f MB; room for device memory %s%.0f MiB",
            (unsigned long long)frame, proc, used, limit, room == UINT64_MAX ? "not counted " : "",
            room == UINT64_MAX ? 0.0 : room / 1048576.0);
+    if (mem_heap_lazy()) {   // what the heap's first-use commits (memory.c heap_fault) cost and saved so far
+        uint64_t nf, ns, hc, hs;
+        mem_heap_lazy_stats(&nf, &ns, &hc, &hs);
+        rt_log("mem: heap at frame %llu: %llu of %llu MiB committed, %llu first-use faults, %.1f ms in all",
+               (unsigned long long)frame, (unsigned long long)(hc >> 20), (unsigned long long)(hs >> 20),
+               (unsigned long long)nf, ns / 1e6);
+    }
     // Per heap, what VMA holds (blocks, and the allocations inside them) beside what the driver counts for the process:
     // usage above VMA's blocks is the driver's own memory (pipelines, command buffers, descriptor pools).
     VkCtx *vc = vk_ctx();
@@ -643,6 +692,10 @@ uint64_t vk_mem_host_room(void) {
     if (at && now - at < 250) return __atomic_load_n(&room_cached, __ATOMIC_RELAXED);   // a query costs a system call
     uint64_t commit, phys;
     plat_mem_room(&commit, &phys);
+    // The game's heap commits on first use (memory.c, heap_fault): the part it has not touched yet is commit it can
+    // still claim, which an eagerly committed heap had already taken. Its physical memory was never taken either way.
+    uint64_t later = mem_heap_uncommitted();
+    if (commit != UINT64_MAX) commit = commit > later ? commit - later : 0;
     uint64_t r = host_backed == HB_UMA && phys < commit ? phys : commit;
     r = r == UINT64_MAX ? r : r > room_reserve ? r - room_reserve : 0;
     __atomic_store_n(&room_cached, r, __ATOMIC_RELAXED);
@@ -1867,7 +1920,7 @@ static PlatMutex mirror_stat_lock = PLAT_MUTEX_INIT;
 static volatile int64_t m_live_n, m_live_bytes, m_refused_n[MR_N], m_refused_bytes[MR_N];
 static volatile int64_t m_flush_calls, m_flush_bytes, v_pages, v_skipped, v_mismatch;
 
-static void mirror_mode(int discrete) {
+static void mirror_mode(int discrete, int host_import) {
     const char *e = cfg_value("TOTK_MEMORY");
     int mode = discrete ? 1 : 0;   // 0 import, 1 mirror, 2 verify
     const char *why = discrete ? "auto, discrete gpu" : "auto, uma";
@@ -1902,6 +1955,14 @@ static void mirror_mode(int discrete) {
 #else
     shadow_on = !sh || !*sh || strcmp(sh, "0");
 #endif
+    // Without VK_EXT_external_memory_host (Qualcomm Adreno's Windows driver, some mobile and older drivers, or
+    // TOTK_VK_NO_HOST_IMPORT=1) guest memory cannot be imported: every CPU-visible pool gets shadow storage, the path
+    // Wine already takes (import_pool -> shadow_pool), whatever TOTK_SHADOW says.
+    if (!host_import) {
+        if (!shadow_on) rt_log("mem: no host import (VK_EXT_external_memory_host): shadow storage%s",
+                               sh && *sh ? ", TOTK_SHADOW=0 overridden" : "");
+        shadow_on = 1;
+    }
     defer_on = shadow_on && cfg_bool("TOTK_SYNC_AHEAD") && strcmp(cfg_value("TOTK_SYNC_AHEAD"), "check") &&
                cfg_bool("TOTK_SHADOW_DEFER");   // check: the wait stays exact, nothing is deferred
     if (defer_on) rt_log("mem: TOTK_SHADOW_DEFER: shadow updates that wait for a reader are queued for the GPU instead");
@@ -2625,14 +2686,28 @@ static void stage_ranges(VkCommandBuffer cb, MRange *a, int n, uint64_t fence) {
     }
     uint64_t t0 = qpc(), bytes = 0;
     qsort(a, (size_t)n, sizeof *a, range_cmp);
+    // Several consumers may request the same dirty pages. Stage their union once: two regions of one
+    // vkCmdCopyBuffer must not write the same destination bytes. Only the sealed prefix may be compacted.
+    int used = 0;
+    for (int j = 0; j < n; j++) {
+        MRange cur = a[j];
+        uint64_t pool_size = cur.r->import_hi - cur.r->import_lo;
+        if (cur.off >= pool_size || !cur.size) continue;
+        if (cur.size > pool_size - cur.off) cur.size = pool_size - cur.off;
+        MRange *prev = used ? &a[used - 1] : NULL;
+        if (prev && prev->r == cur.r && cur.off <= prev->off + prev->size) {
+            uint64_t end = cur.off + cur.size;
+            if (end > prev->off + prev->size) prev->size = end - prev->off;
+        } else a[used++] = cur;
+    }
+    n = used;
     const uint64_t lim = STG_BLOCK / 2;
     int i = 0;
     uint64_t at_i = 0;   // bytes of a[i] already staged
     while (i < n) {
         uint64_t total = 0, jo = at_i;
         for (int j = i; j < n && total < lim;) {
-            uint64_t lim_j = a[j].r->import_hi - a[j].r->import_lo, sz = a[j].off >= lim_j ? 0
-                           : a[j].off + a[j].size > lim_j ? lim_j - a[j].off : a[j].size;
+            uint64_t sz = a[j].size;
             uint64_t left = sz - jo, take = left < lim - total ? left : lim - total;
             total += take;
             if (take == left) j++, jo = 0;
@@ -2646,8 +2721,7 @@ static void stage_ranges(VkCommandBuffer cb, MRange *a, int n, uint64_t fence) {
         PoolRec *kr = NULL;
         for (uint64_t at = 0; at < total;) {
             PoolRec *r = a[i].r;
-            uint64_t lim_i = r->import_hi - r->import_lo, sz = a[i].off >= lim_i ? 0
-                           : a[i].off + a[i].size > lim_i ? lim_i - a[i].off : a[i].size;
+            uint64_t sz = a[i].size;
             uint64_t left = sz - at_i, take = left < total - at ? left : total - at;
             if (take) {
                 if (kr != r && k) vkCmdCopyBuffer(cb, sb, kr->mbuf, (uint32_t)k, mregions), k = 0;
@@ -2931,7 +3005,7 @@ static void vram_log(uint64_t frame) {
 
 // Device class: INTEGRATED -> uma; a discrete GPU with a DEVICE_LOCAL heap of 1 GiB or more beside a
 // heap that is not device-local (host memory) -> discrete; otherwise uma (import everywhere). Sets the mirror mode.
-void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m) {
+void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m, int host_import) {
     int big_local = -1, host_heap = -1;
     for (uint32_t h = 0; h < m->memoryHeapCount; h++) {
         if (m->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
@@ -2973,7 +3047,7 @@ void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDevic
     if (host_backed == HB_UMA)
         rt_log("mem: device memory against system memory: commit and physical memory (uma), reserve %llu MiB "
                "(TOTK_MEM_RESERVE_MIB)", (unsigned long long)(room_reserve >> 20));
-    mirror_mode(discrete);
+    mirror_mode(discrete, host_import);
 }
 
 // ---------------------------------------------------------------- upload batches and deferred destruction
