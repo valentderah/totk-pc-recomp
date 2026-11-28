@@ -88,6 +88,7 @@ static volatile LONG mouse_travel;          // raw counts moved in total, captur
 static volatile LONG mouse_wheel;           // wheel turned while captured or over the window, in WHEEL_DELTA units
                                            // (ikb_wheel_take)
 static volatile LONG cur_captured;         // cursor hidden and confined to the client area
+static volatile LONG capture_generation;   // a capture transition the input poll must see even after focus returns
 static volatile LONG cur_active;           // WM_ACTIVATEAPP: the window's application is active
 // Bits: CUR_REL, Esc or activation by a click on the title bar or border: until a client click; CUR_ESC, set with CUR_REL
 // by Esc (not when it was already set): closing the menu gives the capture back. One word, changed by one CAS.
@@ -111,10 +112,17 @@ static void cursor_update(HWND h) {
                GetForegroundWindow() == h && !IsIconic(h);
     RECT r;
     POINT tl = {0, 0};
+    int clipped = 0;
     if (want && GetClientRect(h, &r) && ClientToScreen(h, &tl)) {
         RECT clip = {tl.x, tl.y, tl.x + r.right, tl.y + r.bottom};
-        ClipCursor(&clip);
-        if (!cur_captured) { InterlockedExchange(&mouse_dx, 0); InterlockedExchange(&mouse_dy, 0); }
+        clipped = ClipCursor(&clip);
+    }
+    if (clipped) {
+        if (!cur_captured) {
+            InterlockedExchange(&mouse_dx, 0);
+            InterlockedExchange(&mouse_dy, 0);
+            InterlockedIncrement(&capture_generation);
+        }
         InterlockedExchange(&cur_captured, 1);
     } else {
         if (cur_captured) ClipCursor(NULL);
@@ -260,7 +268,8 @@ int ikb_down(int key) {
 
 int ikb_escape(void) { return key_down(VK_ESCAPE); }
 
-int ikb_captured(void) { return cur_captured != 0; }
+int ikb_captured(void) { return __atomic_load_n(&cur_captured, __ATOMIC_ACQUIRE) != 0; }
+unsigned ikb_capture_generation(void) { return (unsigned)__atomic_load_n(&capture_generation, __ATOMIC_ACQUIRE); }
 
 int ikb_pointer(float *nx, float *ny) {
     HWND h = gfx_window_handle();

@@ -11,6 +11,7 @@ int ikb_escape(void);                         // Esc held (no key id: it belongs
 int ikb_pointer(float *nx, float *ny);
 void ikb_pointer_set(float nx, float ny);   // moves the pointer there (the window in front only)
 int ikb_captured(void);                       // the cursor is captured for the mouse camera
+unsigned ikb_capture_generation(void);         // changes at each successful capture, even between input polls
 void ikb_mouse_take(int32_t *dx, int32_t *dy);   // raw mouse motion since the last call, in counts
 uint32_t ikb_mouse_travel(void);              // raw counts the mouse moved in total (|dx| + |dy|), captured or not
 int32_t ikb_wheel_take(void);                 // whole wheel notches turned since the last call while the cursor was

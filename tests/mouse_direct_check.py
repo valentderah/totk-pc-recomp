@@ -800,6 +800,7 @@ int motion_calibration_enabled(void) { abort(); }
 PlatThread *plat_thread_new(PlatThreadFn fn, void *arg, const char *name) {
     (void)fn; (void)arg; (void)name; abort();
 }
+int plat_thread_spawn(PlatThreadFn fn,void *arg,const char *name,size_t stack) { (void)fn;(void)arg;(void)name;(void)stack;abort(); }
 int plat_thread_join_ns(PlatThread *t, uint64_t ns) { (void)t; (void)ns; abort(); }
 void plat_cond_wait(PlatCond *c, PlatMutex *m) { (void)c; (void)m; abort(); }
 void plat_cond_signal(PlatCond *c) { (void)c; abort(); }
@@ -814,15 +815,15 @@ void gameplay_tweaks_prepare_keys(uint8_t *d, uint64_t b) { (void)d; (void)b; }
 void gameplay_tweaks_apply(uint64_t f, int a, uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     (void)f; (void)a; (void)b; (void)lx; (void)ly; (void)rx; (void)ry;
 }
-int cfg_bool(const char *key) { (void)key; abort(); }
+int cfg_bool(const char *key) { (void)key; return 0; }
 int quicksave_on(void) { return 0; }
 void quicksave_keys(uint8_t *d, int act) { (void)d; (void)act; abort(); }
 void quicksave_request(int load) { (void)load; abort(); }
 int quicksave_poll(uint64_t *b, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) { (void)b;(void)lx;(void)ly;(void)rx;(void)ry; abort(); }
 int quicksave_busy(void) { return 0; }
-int input_menu_gate(int *h,int open,uint64_t *b,int32_t s[4]) { (void)h;(void)open;(void)b;(void)s;abort(); }
-int input_overlay_gate(int *h,uint64_t *b) { (void)h;(void)b;abort(); }
-int menu_is_open(void) { abort(); }
+int input_menu_gate(int *h,int open,uint64_t *b,int32_t s[4]) { (void)h;(void)open;(void)b;(void)s;return 0; }
+int input_overlay_gate(int *h,uint64_t *b) { (void)h;(void)b;return 0; }
+int menu_is_open(void) { return 0; }
 void menu_toggle(void) { abort(); }
 void menu_perf_cycle(void) { abort(); }
 const char *input_action_name(int action) { (void)action;abort(); }
@@ -836,12 +837,91 @@ void input_direct_mouse_row(int32_t dx,float sensitivity,uint64_t now,InputMouse
 void input_direct_mouse_radial(int32_t dx,int32_t dy,float sensitivity,float cursor[2],int32_t out[2]) {
     (void)dx;(void)dy;(void)sensitivity;radial_calls++;cursor[0]=1;out[0]=456;out[1]=789;
 }
+// These dependencies belong to pad, gyro and free-camera paths. The merge fixture uses state=2 (keyboard only);
+// keep them fail-fast so accidentally entering a different path cannot turn this into a passing mock test.
+bool SDL_GamepadConnected(SDL_Gamepad *g) { (void)g; abort(); }
+Sint16 SDL_GetGamepadAxis(SDL_Gamepad *g, SDL_GamepadAxis a) { (void)g;(void)a;abort(); }
+bool SDL_GetGamepadButton(SDL_Gamepad *g, SDL_GamepadButton b) { (void)g;(void)b;abort(); }
+const char *SDL_GetGamepadName(SDL_Gamepad *g) { (void)g;abort(); }
+const char *SDL_GetGamepadSerial(SDL_Gamepad *g) { (void)g;abort(); }
+Uint16 SDL_GetGamepadVendor(SDL_Gamepad *g) { (void)g;abort(); }
+Uint16 SDL_GetGamepadProduct(SDL_Gamepad *g) { (void)g;abort(); }
+SDL_JoystickID SDL_GetGamepadID(SDL_Gamepad *g) { (void)g;abort(); }
+SDL_JoystickID *SDL_GetGamepads(int *count) { (void)count;abort(); }
+SDL_Gamepad *SDL_OpenGamepad(SDL_JoystickID id) { (void)id;abort(); }
+void SDL_CloseGamepad(SDL_Gamepad *g) { (void)g;abort(); }
+void SDL_UpdateGamepads(void) { abort(); }
+SDL_GUID SDL_GetGamepadGUIDForID(SDL_JoystickID id) { (void)id;abort(); }
+void SDL_GetJoystickGUIDInfo(SDL_GUID g, Uint16 *v, Uint16 *p, Uint16 *ver, Uint16 *crc) {
+    (void)g;(void)v;(void)p;(void)ver;(void)crc;abort();
+}
+SDL_GamepadButtonLabel SDL_GetGamepadButtonLabel(SDL_Gamepad *g, SDL_GamepadButton b) {
+    (void)g;(void)b;abort();
+}
+SDL_PropertiesID SDL_GetGamepadProperties(SDL_Gamepad *g) { (void)g;abort(); }
+bool SDL_GetBooleanProperty(SDL_PropertiesID p, const char *name, bool fallback) {
+    (void)p;(void)name;(void)fallback;abort();
+}
+bool SDL_GamepadHasSensor(SDL_Gamepad *g, SDL_SensorType t) { (void)g;(void)t;abort(); }
+bool SDL_SetGamepadSensorEnabled(SDL_Gamepad *g, SDL_SensorType t, bool on) { (void)g;(void)t;(void)on;abort(); }
+bool SDL_GetGamepadSensorData(SDL_Gamepad *g, SDL_SensorType t, float *data, int n) {
+    (void)g;(void)t;(void)data;(void)n;abort();
+}
+float SDL_GetGamepadSensorDataRate(SDL_Gamepad *g, SDL_SensorType t) { (void)g;(void)t;abort(); }
+void SDL_SetEventEnabled(Uint32 type, bool on) { (void)type;(void)on;abort(); }
+bool SDL_SetHint(const char *name, const char *value) { (void)name;(void)value;abort(); }
+bool SDL_SetHintWithPriority(const char *name, const char *value, SDL_HintPriority priority) {
+    (void)name;(void)value;(void)priority;abort();
+}
+bool SDL_Init(SDL_InitFlags flags) { (void)flags;abort(); }
+const char *SDL_GetError(void) { abort(); }
+void SDL_free(void *p) { (void)p;abort(); }
+SDL_JoystickID SDL_AttachVirtualJoystick(const SDL_VirtualJoystickDesc *d) { (void)d;abort(); }
+SDL_Joystick *SDL_OpenJoystick(SDL_JoystickID id) { (void)id;abort(); }
+bool SDL_SetJoystickVirtualAxis(SDL_Joystick *j, int axis, Sint16 value) { (void)j;(void)axis;(void)value;abort(); }
+bool SDL_RumbleGamepad(SDL_Gamepad *g, Uint16 low, Uint16 high, Uint32 ms) { (void)g;(void)low;(void)high;(void)ms;abort(); }
+bool SDL_RumbleGamepadTriggers(SDL_Gamepad *g, Uint16 low, Uint16 high, Uint32 ms) {
+    (void)g;(void)low;(void)high;(void)ms;abort();
+}
+double input_stick_percent(int32_t x, int32_t y) { (void)x;(void)y;abort(); }
+float input_pad_deadzone(int stick) { (void)stick;abort(); }
+void input_pad_stick(int32_t x,int32_t y,float dead,int32_t out[2]) { (void)x;(void)y;(void)dead;(void)out;abort(); }
+int input_pad_background_pick(const char *setting,int steam) { (void)setting;(void)steam;abort(); }
+int input_pad_layout_pick(const char *setting,int east) { (void)setting;(void)east;return PAD_LAYOUT_XBOX; }
+uint64_t input_map_pad_buttons(const uint8_t d[PAD_COUNT],int layout) { (void)d;(void)layout;abort(); }
+int input_key_id(const char *name) { (void)name;abort(); }
+const char *input_key_name(int key) { (void)key;abort(); }
+const char *cfg_value(const char *key) { return !strcmp(key,"TOTK_WALK_SCALE") ? "0.51" : "none"; }
+const CfgMeta *cfg_meta(const char *key) { (void)key;abort(); }
+MotionFusion *motion_global(void) { abort(); }
+int motion_calib_poll(MotionFusion *m,uint64_t ns) { (void)m;(void)ns;abort(); }
+void motion_bias_reset(MotionFusion *m) { (void)m;abort(); }
+void motion_bias_load(MotionFusion *m) { (void)m;abort(); }
+void motion_restart(MotionFusion *m) { (void)m;abort(); }
+void motion_feed(MotionFusion *m,const double a[3],const double g[3],uint64_t ns) {
+    (void)m;(void)a;(void)g;(void)ns;abort();
+}
+void motion_calibrate_start(MotionFusion *m,const char *pad,uint64_t ns) { (void)m;(void)pad;(void)ns;abort(); }
+uint64_t kern_now_ns(void) { abort(); }
+void plat_wait_ns(uint64_t ns) { (void)ns;abort(); }
+void plat_thread_priority(int priority) { (void)priority;abort(); }
+void menu_cursor_poll(uint64_t *b) { (void)b;abort(); }
+int ikb_escape(void) { abort(); }
+int menu_cursor_strip(void) { return 0; }
+int menu_cursor_camera(void) { return 0; }
+int menu_cursor_menu(void) { return 0; }
+int freecam_available(void) { return 0; }
+void freecam_cycle(void) { abort(); }
+void freecam_pad(const FreecamPad *p) { (void)p;abort(); }
+void freecam_speed_click(int faster) { (void)faster;abort(); }
+void freecam_mouse(double x,double y) { (void)x;(void)y;abort(); }
 static const char *script_path;
+static int capture_test;
 static uint64_t test_tick;
 static int64_t test_world=-1;
 const char *cfg_get(const char *key) {
     if (!strcmp(key,"TOTK_INPUT_SCRIPT")) return script_path;
-    if (!strcmp(key,"TOTK_INPUT")) return "none";
+    if (!strcmp(key,"TOTK_INPUT")) return capture_test ? "auto" : "none";
     return NULL;
 }
 unsigned cfg_version(void) { return 0; }
@@ -852,7 +932,25 @@ void rt_log(const char *fmt, ...) { (void)fmt; }
 void plat_mutex_lock(PlatMutex *m) { (void)m; }
 void plat_mutex_unlock(PlatMutex *m) { (void)m; }
 int ikb_captured(void) { return live_mouse; }
-int ikb_foreground(void) { return 0; }
+static int live_foreground, live_click, capture_during_sample;
+static unsigned capture_generation=1;
+int ikb_foreground(void) { return live_foreground; }
+unsigned ikb_capture_generation(void) { return capture_generation; }
+int ikb_down(int key) {
+    if(key==KEY_MOUSE_L && capture_during_sample) { capture_generation++; capture_during_sample=0; }
+    return key==KEY_MOUSE_L && live_click;
+}
+int ikb_pointer(float *x,float *y) { (void)x;(void)y;return 0; }
+uint32_t ikb_mouse_travel(void) { return 0; }
+int32_t ikb_wheel_take(void) { return 0; }
+int menu_cursor_pointer(void) { return 0; }
+int menu_cursor_map(void) { return 0; }
+int menu_cursor_dialogue(void) { return 0; }
+int menu_cursor_shortcut(void) { return 0; }
+int input_direct_mouse_shake(void) { return 0; }
+uint64_t input_map_buttons(const uint8_t d[KEY_COUNT]) { return d[KEY_MOUSE_L] ? 1ull<<B_Y : 0; }
+int input_map_held(const uint8_t d[KEY_COUNT],int a) { (void)d;(void)a;return 0; }
+void input_map_stick(const uint8_t d[KEY_COUNT],int stick,int32_t out[2]) { (void)d;(void)stick;out[0]=out[1]=0; }
 void ikb_mouse_take(int32_t *x,int32_t *y) { *x=*y=0; }
 uint64_t plat_now_ns(void) { return 1000000000ull; }
 int main(int argc,char **argv) {
@@ -881,6 +979,33 @@ int main(int argc,char **argv) {
     mouse_camera(right,3); assert(row_calls==2 && right[0]==123 && !right[1]);
     live_mouse=0; mouse_camera(right,3);
     assert(!input_direct_mouse_selector_active() && !right[0] && !right[1]);
+    // A backend reports a new capture even if the foreground/capture loss fell between polls.
+    state=2; capture_test=1; script_state=1; script_n=0; binds_seen=cfg_version();
+    live_foreground=1; live_mouse=1; live_click=0;
+    uint64_t merged=0; int32_t axes[4];
+    poll_merged(&merged,&axes[0],&axes[1],&axes[2],&axes[3]);
+    live_foreground=0; live_mouse=0;
+    poll_merged(&merged,&axes[0],&axes[1],&axes[2],&axes[3]);
+    live_foreground=1; live_mouse=1; live_click=1; capture_generation++;
+    poll_merged(&merged,&axes[0],&axes[1],&axes[2],&axes[3]);
+    assert(!merged);   // the activation click must not attack
+    poll_merged(&merged,&axes[0],&axes[1],&axes[2],&axes[3]); assert(!merged);
+    live_click=0; poll_merged(&merged,&axes[0],&axes[1],&axes[2],&axes[3]);
+    live_click=1; poll_merged(&merged,&axes[0],&axes[1],&axes[2],&axes[3]); assert(merged==(1ull<<B_Y));
+    live_click=0; poll_merged(&merged,&axes[0],&axes[1],&axes[2],&axes[3]);
+    // No poll at all during focus loss, as with paused background input.
+    capture_generation++; live_click=1;
+    poll_merged(&merged,&axes[0],&axes[1],&axes[2],&axes[3]); assert(!merged);
+    live_click=0; poll_merged(&merged,&axes[0],&axes[1],&axes[2],&axes[3]);
+    live_click=1; poll_merged(&merged,&axes[0],&axes[1],&axes[2],&axes[3]); assert(merged==(1ull<<B_Y));
+    live_click=0; poll_merged(&merged,&axes[0],&axes[1],&axes[2],&axes[3]);
+    capture_during_sample=1; live_click=1;
+    poll_merged(&merged,&axes[0],&axes[1],&axes[2],&axes[3]); assert(!merged);
+    poll_merged(&merged,&axes[0],&axes[1],&axes[2],&axes[3]); assert(!merged);
+    live_click=0; poll_merged(&merged,&axes[0],&axes[1],&axes[2],&axes[3]);
+    live_click=1; poll_merged(&merged,&axes[0],&axes[1],&axes[2],&axes[3]); assert(merged==(1ull<<B_Y));
+    puts("input: recapture during button sampling is deferred until a stable poll");
+    puts("input: activation clicks suppressed through background polls and focus changes between polls");
     puts("direct mouse: one-shot script replay, host-menu blocking and raw-count recording passed");
     puts("direct mouse: separate wheel/list routing, selector ownership and release passed");
 }
