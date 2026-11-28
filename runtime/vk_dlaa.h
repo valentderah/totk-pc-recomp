@@ -32,11 +32,13 @@ void vk_dlaa_pass(VkExec *ex);
 int vk_dlaa_plan(const VkExec *ex, VkExecJob *j);
 void vk_dlaa_exec(VkExec *ex, const VkExecJob *j);
 void vk_dlaa_frame(void);
-// Frame generation without DLSS (vk_dlaa.c, "frame generation"), sequential replay: vk_dlaa_hud before each draw once
-// its pass has begun (vk_exec_draw.c prepare_draw, while vk_dlaa_fg_on), vk_dlaa_sub_end at the end of each
-// submission's replay with no pass open (vk_exec.c vk_exec_record).
+// Frame generation (vk_dlaa.c, "frame generation"): vk_dlaa_hud before each draw once its pass has begun
+// (vk_exec_draw.c prepare_draw, while vk_dlaa_fg_on; it leaves a chunk's draws alone), vk_dlaa_sub_end at the end of
+// each submission's replay with no pass open (vk_exec.c vk_exec_record). A chunked replay's scan asks vk_dlaa_hud_plan
+// at each draw instead, after vk_dlaa_plan: 1 with the copy due before that draw (j), which vk_dlaa_exec records.
 extern int vk_dlaa_fg_on;
 void vk_dlaa_hud(VkExec *ex);
+int vk_dlaa_hud_plan(const VkExec *ex, VkExecJob *j);
 void vk_dlaa_sub_end(VkExec *ex);
 // vk_exec_draw.c, each draw before its fixed state is recorded: notes the scene camera block (vk_dlaa_draw), and moves
 // the viewport of the scene's draws by the frame's jitter (vk_dlaa_viewport, when the viewport is recorded).

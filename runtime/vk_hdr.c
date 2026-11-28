@@ -299,6 +299,15 @@ void vk_hdr_present_source(const VkTexImage *win, VkImage *image, VkFormat *form
     if (!logged && *image != win->image) logged = 1, rt_log("hdr: the present reads the game's float picture");
 }
 
+int vk_hdr_copy_source(VkImage win, VkImage *src, VkFormat *fmt) {
+    int ok = 0;
+    plat_mutex_lock(&rec_lock);
+    for (int i = 0; i < nrecs; i++)
+        if (recs[i].win == win) ok = recs[i].src != VK_NULL_HANDLE, *src = recs[i].src, *fmt = recs[i].fmt;
+    plat_mutex_unlock(&rec_lock);
+    return ok && vk_hdr_active();
+}
+
 void vk_hdr_image_gone(VkImage image) {   // a texture image went away: forget it as window or source
     if (!vk_hdr_track) return;   // no records before the first HDR present (vk_hdr_present_source): no lock per image
     plat_mutex_lock(&rec_lock);

@@ -26,7 +26,10 @@ vec3 pq(vec3 nits) {
 void main() {
     ivec2 at = ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(at, pc.size))) return;
-    vec3 c = max(texelFetch(src, at + pc.offset, 0).rgb, vec3(0.0));
+    vec3 c = texelFetch(src, at + pc.offset, 0).rgb;
+    // frame generation's RGBA16F picture can hold NaN (the SDK's in-painting divides by a weight sum that can be 0),
+    // and max and clamp need not drop one
+    c = max(mix(c, vec3(0.0), isnan(c)), vec3(0.0));
     if (pc.p.z > 0.5) c = srgb_decode(clamp(c, 0.0, 1.0));
     const mat3 to2020 = mat3(0.6274, 0.0691, 0.0164, 0.3293, 0.9195, 0.0880, 0.0433, 0.0114, 0.8956);
     vec3 nits = min(max(to2020 * c, vec3(0.0)) * pc.p.x, vec3(pc.p.y));

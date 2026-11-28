@@ -1126,11 +1126,13 @@ static int state_op(VkExec *ex, uint32_t op, const void *a) {
     return 1;
 }
 
-// A record the scan planned for this point (vk_contact_plan, vk_dlaa_plan): recorded before the op that triggers it, the
-// draw's pass begun after it as in prepare_draw. The records share their module's pipelines and state, so they go in
-// the scan's order; chunks are taken in order, so the chunk of an earlier record is being recorded or done. DLSS's
+// A record the scan planned for this point (vk_contact_plan, vk_dlaa_plan, vk_dlaa_hud_plan): recorded before the op
+// that triggers it, the draw's pass begun after it as in prepare_draw. The records share their module's pipelines and
+// state, so they go in the scan's order; chunks are taken in order, so the chunk of an earlier record is being recorded or done. DLSS's
 // evaluation reads what the scene's draws noted on the chunks before it (the camera block, the jitter used, the
 // per-object motion list), so it waits until they are recorded; the chunks after it wait for it (a hold, scan_job).
+// Frame generation's copy of the picture before the HUD needs only its turn: the SDK's prepare, recorded with the
+// record at DLSS's point, is an earlier record.
 static uint32_t job_turn;
 static void chunks_wait(int k);
 
@@ -1228,8 +1230,8 @@ static int walk(VkExec *ex, const op_hdr *h, int depth, const op_hdr *stop) {
 // (vk_dlaa_plan); it looks up no
 // shader, pipeline or descriptor and makes no Vulkan call. Where a chunk starts it keeps a copy of that state
 // (VK_EXEC_STATE_BEGIN..END) and how far the scan's lists got: the submission's inline uniform updates (ubo_ptr),
-// RENDER_COND results, planned records (contact shadows, DLSS) and the ops that drop uniform copies (vk_usnap_drop_at,
-// scan_writes), which a chunk takes
+// RENDER_COND results, planned records (contact shadows, DLSS, frame generation's picture before the HUD)
+// and the ops that drop uniform copies (vk_usnap_drop_at, scan_writes), which a chunk takes
 // from the lists instead of from earlier chunks. A chunk starts with every image in GENERAL and ends with a full
 // barrier, as a part of vk_sync_split does, so its recording depends only on the copy and the lists.
 // A chunk can be taken as soon as the scan has placed the next one and the threads finished what the chunks share, which
@@ -1681,6 +1683,8 @@ static void scan_draw(VkExec *s, uint32_t op, const void *a, const op_hdr *h) {
     if (s->pass_noatt) s->rt_resolved = 0;   // sized by this draw's viewport
     resolve_rt_as(s, 1);
     scan_pass(s, h);
+    VkExecJob j;
+    if (vk_dlaa_fg_on && vk_dlaa_hud_plan(s, &j)) scan_job(&j, h);
     vk_dlaa_scan_draw(s);
 }
 
@@ -1884,7 +1888,9 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
         for (int i = 0; i < n; i++) walk(ex, nvn_op_first(handles[i]), 0, NULL);
     }
     vk_exec_pass_end(ex);
-    if (vk_dlaa_fg_on) vk_dlaa_sub_end(ex);   // frame generation after the frame's window texture (vk_dlaa.c)
+    // frame generation after the frame's window texture (vk_dlaa.c); after a chunked replay every chunk is recorded
+    // and submitted, and this goes into the submission's last part
+    if (vk_dlaa_fg_on) vk_dlaa_sub_end(ex);
     x_cur = NULL;
     if (ex->recorded) vk_exec_barrier(ex);   // later submissions see this one's writes
     if (n) ex->recorded += vk_mem_mirror_end(ex->cb, fence), vk_usnap_end(fence);   // VRAM mirror bytes the GPU wrote go back to guest memory

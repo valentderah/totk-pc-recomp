@@ -1069,9 +1069,9 @@ void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int
     present_image(src, layout, fmt, w, h, crop, 1, 0);
 }
 
-int vk_present_blit_pair(VkImage gen, VkImage src, VkFormat fmt, int w, int h, const int crop[4]) {
+int vk_present_blit_pair(VkImage gen, VkFormat gen_fmt, VkImage src, VkFormat fmt, int w, int h, const int crop[4]) {
     // without the first blit (no swapchain, minimised, held) the game's frame goes alone, as any present
-    if (!present_image(gen, VK_IMAGE_LAYOUT_GENERAL, VK_FORMAT_R8G8B8A8_UNORM, w, h, crop, 1, 1)) {
+    if (!present_image(gen, VK_IMAGE_LAYOUT_GENERAL, gen_fmt, w, h, crop, 1, 1)) {
         present_image(src, VK_IMAGE_LAYOUT_GENERAL, fmt, w, h, crop, 1, 0);
         return 0;
     }

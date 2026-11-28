@@ -221,7 +221,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_GEN] = "Frame generation", [UI_MENU_FRAME_GEN_OFF] = "Off", [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
     [UI_MENU_FRAME_GEN_DESC] = "A generated picture between each two the game draws: twice the pictures on screen, the "
                                "game at half the frame limit and the controls about half a frame later. For displays "
-                               "of 120 Hz and more. Not with DLSS or HDR. Applies at once.",
+                               "of 120 Hz and more. Not with DLSS. Applies at once.",
     [UI_MENU_REALTIME] = "Game speed follows the clock",
     [UI_MENU_REALTIME_DESC] = "Steps the game by real time, so a slow frame does not slow the game down.",
     [UI_MENU_CLOTH_REALTIME] = "Cloth on the clock",
@@ -903,7 +903,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_GEN] = "Генерация кадров", [UI_MENU_FRAME_GEN_OFF] = "Выкл.", [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
     [UI_MENU_FRAME_GEN_DESC] = "Сгенерированный кадр между каждыми двумя, что рисует игра: на экране вдвое больше "
                                "кадров, игра идёт на половине лимита, управление отвечает примерно на полкадра позже. "
-                               "Для мониторов от 120 Гц. Не работает с DLSS и HDR. Применяется сразу.",
+                               "Для мониторов от 120 Гц. Не работает с DLSS. Применяется сразу.",
     [UI_MENU_REALTIME] = "Скорость игры по часам",
     [UI_MENU_REALTIME_DESC] = "Игра идёт по реальному времени, медленный кадр её не замедляет.",
     [UI_MENU_CLOTH_REALTIME] = "Ткань по часам",
@@ -1524,7 +1524,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_GEN] = "Geração de quadros", [UI_MENU_FRAME_GEN_OFF] = "Desligado", [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
     [UI_MENU_FRAME_GEN_DESC] = "Um quadro gerado entre cada dois que o jogo desenha: o dobro de quadros na tela, o "
                                "jogo na metade do limite e os controles cerca de meio quadro mais tarde. Para telas de "
-                               "120 Hz ou mais. Não funciona com DLSS nem HDR. Vale na hora.",
+                               "120 Hz ou mais. Não funciona com DLSS. Vale na hora.",
     [UI_MENU_REALTIME] = "Velocidade do jogo pelo relógio",
     [UI_MENU_REALTIME_DESC] = "Avança o jogo pelo tempo real, para que um quadro lento não deixe o jogo mais lento.",
     [UI_MENU_CLOTH_REALTIME] = "Tecidos pelo relógio",
@@ -2278,7 +2278,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_QUEUE] = "帧队列",
     [UI_MENU_FRAME_QUEUE_DESC] = "前一帧等待显示时游戏就开始绘制下一帧：在帧率上限下掉帧大幅减少，输入延迟最多增加一帧。立即生效。",
     [UI_MENU_FRAME_GEN] = "帧生成", [UI_MENU_FRAME_GEN_OFF] = "关", [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
-    [UI_MENU_FRAME_GEN_DESC] = "在游戏绘制的每两帧之间插入一帧生成画面：屏幕上的帧数翻倍，游戏以帧率上限的一半运行，操作响应约晚半帧。适合 120 Hz 及以上的显示器。不能与 DLSS 或 HDR 同时使用。立即生效。",
+    [UI_MENU_FRAME_GEN_DESC] = "在游戏绘制的每两帧之间插入一帧生成画面：屏幕上的帧数翻倍，游戏以帧率上限的一半运行，操作响应约晚半帧。适合 120 Hz 及以上的显示器。不能与 DLSS 同时使用。立即生效。",
     [UI_MENU_REALTIME] = "游戏速度跟随时钟",
     [UI_MENU_REALTIME_DESC] = "按真实时间推进游戏，帧率低时游戏速度也不会变慢。",
     [UI_MENU_CLOTH_REALTIME] = "布料跟随时钟",
@@ -3136,8 +3136,8 @@ static const char *const text_de[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
     [UI_MENU_FRAME_GEN_DESC] = "Ein erzeugtes Bild zwischen je zwei, die das Spiel zeichnet: doppelt so viele Bilder "
                                "auf dem Bildschirm, das Spiel bei der halben Bildratenbegrenzung und die Steuerung "
-                               "etwa ein halbes Bild später. Für Bildschirme mit 120 Hz und mehr. Nicht mit DLSS oder "
-                               "HDR. Wirkt sofort.",
+                               "etwa ein halbes Bild später. Für Bildschirme mit 120 Hz und mehr. Nicht mit DLSS. "
+                               "Wirkt sofort.",
     [UI_MENU_REALTIME] = "Spieltempo folgt der Uhr",
     [UI_MENU_REALTIME_DESC] = "Lässt das Spiel nach Echtzeit laufen, sodass ein langsames Bild das Spiel nicht "
                               "verlangsamt.",
@@ -4049,7 +4049,7 @@ static const char *const text_fr[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
     [UI_MENU_FRAME_GEN_DESC] = "Une image générée entre chaque paire d'images que dessine le jeu : deux fois plus "
                                "d'images à l'écran, le jeu à la moitié de la limite d'images et les commandes environ "
-                               "une demi-image plus tard. Pour les écrans de 120 Hz et plus. Pas avec DLSS ni HDR. "
+                               "une demi-image plus tard. Pour les écrans de 120 Hz et plus. Pas avec DLSS. "
                                "S'applique immédiatement.",
     [UI_MENU_REALTIME] = "Vitesse du jeu selon l'horloge",
     [UI_MENU_REALTIME_DESC] = "Fait avancer le jeu en temps réel, pour qu'une image lente ne ralentisse pas le jeu.",
@@ -4977,8 +4977,8 @@ static const char *const text_es[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
     [UI_MENU_FRAME_GEN_DESC] = "Una imagen generada entre cada dos que dibuja el juego: el doble de imágenes en "
                                "pantalla, el juego a la mitad del límite de fotogramas y los controles, alrededor de "
-                               "medio fotograma más tarde. Para pantallas de 120 Hz o más. No funciona con DLSS ni "
-                               "HDR. Se aplica al momento.",
+                               "medio fotograma más tarde. Para pantallas de 120 Hz o más. No funciona con DLSS. "
+                               "Se aplica al momento.",
     [UI_MENU_REALTIME] = "Velocidad del juego según el reloj",
     [UI_MENU_REALTIME_DESC] = "Avanza el juego según el tiempo real, para que un fotograma lento no ralentice el "
                               "juego.",
@@ -5890,7 +5890,7 @@ static const char *const text_it[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
     [UI_MENU_FRAME_GEN_DESC] = "Un'immagine generata tra ogni due che il gioco disegna: il doppio delle immagini "
                                "sullo schermo, il gioco a metà del limite fotogrammi e i comandi circa mezzo "
-                               "fotogramma più tardi. Per schermi da 120 Hz in su. Non con DLSS o HDR. Si applica "
+                               "fotogramma più tardi. Per schermi da 120 Hz in su. Non con DLSS. Si applica "
                                "subito.",
     [UI_MENU_REALTIME] = "Velocità del gioco secondo l'orologio",
     [UI_MENU_REALTIME_DESC] = "Fa avanzare il gioco in tempo reale, così un fotogramma lento non rallenta il gioco.",
@@ -6808,7 +6808,7 @@ static const char *const text_nl[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
     [UI_MENU_FRAME_GEN_DESC] = "Een gegenereerd beeld tussen elke twee die het spel tekent: twee keer zoveel beelden "
                                "op het scherm, het spel op de helft van de beeldlimiet en de besturing ongeveer een "
-                               "half beeld later. Voor schermen van 120 Hz en meer. Niet met DLSS of HDR. Werkt "
+                               "half beeld later. Voor schermen van 120 Hz en meer. Niet met DLSS. Werkt "
                                "meteen.",
     [UI_MENU_REALTIME] = "Spelsnelheid volgt de klok",
     [UI_MENU_REALTIME_DESC] = "Laat het spel in echte tijd lopen, zodat een traag beeld het spel niet vertraagt.",
@@ -7665,7 +7665,7 @@ static const char *const text_ja[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_GEN_OFF] = "オフ",
     [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
     [UI_MENU_FRAME_GEN_DESC] = "ゲームが描く 2 枚の画像の間に、生成した画像を 1 枚入れます: 画面上の画像は 2 倍になり、ゲームはフレーム上限の半分で動き、操作は約半フレーム遅れます。120 "
-                               "Hz 以上のディスプレイ向けです。DLSS や HDR とは併用できません。すぐに反映されます。",
+                               "Hz 以上のディスプレイ向けです。DLSS とは併用できません。すぐに反映されます。",
     [UI_MENU_REALTIME] = "ゲーム速度を時計に合わせる",
     [UI_MENU_REALTIME_DESC] = "ゲームを実時間で進め、遅いフレームがあってもゲームが遅くならないようにします。",
     [UI_MENU_CLOTH_REALTIME] = "布を時計に合わせる",
@@ -8423,7 +8423,7 @@ static const char *const text_ko[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_GEN_OFF] = "끄기",
     [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
     [UI_MENU_FRAME_GEN_DESC] = "게임이 그리는 두 프레임 사이마다 생성된 프레임을 넣습니다. 화면의 프레임은 두 배가 되고, 게임은 프레임 제한의 절반으로 돌며 조작은 약 반 프레임 "
-                               "늦어집니다. 120 Hz 이상 디스플레이용입니다. DLSS나 HDR과는 함께 쓸 수 없습니다. 즉시 적용됩니다.",
+                               "늦어집니다. 120 Hz 이상 디스플레이용입니다. DLSS와는 함께 쓸 수 없습니다. 즉시 적용됩니다.",
     [UI_MENU_REALTIME] = "게임 속도를 시계에 맞추기",
     [UI_MENU_REALTIME_DESC] = "게임을 실제 시간에 맞춰 진행해 느린 프레임이 있어도 게임이 느려지지 않게 합니다.",
     [UI_MENU_CLOTH_REALTIME] = "천을 시계에 맞추기",
@@ -9161,7 +9161,7 @@ static const char *const text_vi[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_GEN] = "Tạo khung hình", [UI_MENU_FRAME_GEN_OFF] = "Tắt", [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
     [UI_MENU_FRAME_GEN_DESC] = "Một hình được tạo ra giữa mỗi hai hình game vẽ: số hình trên màn hình gấp đôi, game chạy ở "
                                "một nửa giới hạn khung hình và điều khiển trễ thêm khoảng nửa khung hình. Dành cho màn hình "
-                               "từ 120 Hz trở lên. Không dùng cùng DLSS hoặc HDR. Áp dụng ngay.",
+                               "từ 120 Hz trở lên. Không dùng cùng DLSS. Áp dụng ngay.",
     [UI_MENU_REALTIME] = "Tốc độ game theo đồng hồ",
     [UI_MENU_REALTIME_DESC] = "Chạy game theo thời gian thực, để một khung hình chậm không làm game chậm theo.",
     [UI_MENU_CLOTH_REALTIME] = "Vải theo đồng hồ",

@@ -53,7 +53,7 @@
 
 #define WEAK __attribute__((weak))
 
-typedef struct { VkImage image, gen; VkFormat format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value, pid; } PresentJob;   // pid: the frame's present ID (vk_reflex_frame); gen: its generated picture (vk_fg_present_gen)
+typedef struct { VkImage image, gen; VkFormat format, gen_format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value, pid; } PresentJob;   // pid: the frame's present ID (vk_reflex_frame); gen: its generated picture (vk_fg_present_gen)
 
 static PlatMutex pl = PLAT_MUTEX_INIT;
 static PlatCond pcv = PLAT_COND_INIT;   // job queued, job taken, job submitted
@@ -192,7 +192,7 @@ static void present_main(void *arg) {
         vk_reflex_submit_frame(j.pid);
         // the frame's last submission, its interpolation included: no submission goes out while busy
         uint64_t drawn = j.gen ? vk_sync_issued() : 0;
-        int pair = j.gen && vk_present_blit_pair(j.gen, j.image, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
+        int pair = j.gen && vk_present_blit_pair(j.gen, j.gen_format, j.image, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
         if (!j.gen) vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
         uint64_t f = vk_sync_submit(NULL, 0);   // a timeline value after the blit: deferred destruction waits for the blit too
         if (j.value && f != j.value)
@@ -262,7 +262,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
                     .at = at_ns, .queued = queued, .value = value, .pid = pid};
     vk_hdr_present_source(img, &j.image, &j.format);   // TOTK_HDR: the float picture the game copied into it, same size
     vk_fg_present_swap(&j.image, &j.format);   // TOTK_FG_TEST (frame generation checks): another picture in its place
-    j.gen = vk_fg_present_gen(j.image);
+    j.gen = vk_fg_present_gen(j.image, &j.gen_format);
     if (__atomic_load_n(&fg_live, __ATOMIC_RELAXED) != (j.gen != VK_NULL_HANDLE))
         __atomic_store_n(&fg_live, j.gen != VK_NULL_HANDLE, __ATOMIC_RELAXED);
     if (crop) {

@@ -9,9 +9,13 @@
 // the parameters of fg_dispatch's three calls; its exec.c vk_fg_generate for the camera, the cut test and the HUD-less
 // copy's encoding.
 //
-// Per frame, all in the replay's command buffer (vk_dlaa.c finds the places, with DLSS off):
+// Per frame, all in the replay's command buffers (vk_dlaa.c finds the places; with replay workers steps 1 and 2 go
+// into the chunks that hold their places, one after the other, and step 3 follows the last chunk, so the state below
+// is only ever used by one thread at a time):
 // 1. vk_fg_prepare at the scene's end: the SDK dilates the scene's depth and the camera motion vectors (made there by
-//    vk_dlaa.c mv_pass, at the scene's size), and reconstructs the previous frame's depth from them.
+//    vk_dlaa.c mv_pass, at the scene's size), and reconstructs the previous frame's depth from them. With a scene
+//    upscaler (FSR 3.1, FSR 4; not beside DLSS yet, vk_dlaa_frame) it runs where the upscaler does, on the upscaler's
+//    depth and motion vectors, and the pictures of steps 2 and 3 are the upscaled ones.
 // 2. vk_fg_hudless before the HUD's first draw: the game's float picture, blitted into an R8G8B8A8_SRGB image (the
 //    blit encodes as the game's last draw encodes the picture into its sRGB window texture) and copied byte for byte
 //    into an RGBA8 UNORM image, which the SDK reads. Its bytes then equal the window texture's wherever the HUD is not,
@@ -21,6 +25,12 @@
 //    picture with the HUD, into an RGBA8 image holding bytes as the window texture does (sRGB transfer function).
 // The present (vk_backend.c present_pair) shows it before the frame, through vk_fg_present_gen (TOTK_FG_TEST shows it, or
 // the picture before the HUD, in place of the frame instead, for checks only).
+//
+// On an HDR10 swapchain (vk_hdr.c) the present reads the game's float picture, the one the window texture is copied
+// from, so that one is interpolated instead: linear Rec. 709 with the HUD's white at 1.0, which the SDK takes as scRGB
+// with a luminance range that puts the display's peak at 1 (hdr_range). The HUD-less picture is then a plain copy of
+// the float picture before the HUD (the same bits wherever the HUD is not), the generated frame an RGBA16F image the
+// present encodes to PQ as it does the game's.
 #include "vk_fg.h"
 #include "vk_fsr3.h"
 
@@ -78,7 +88,8 @@ enum { R_OF_VECTOR, R_OF_SCD, R_DILATED_DEPTH, R_DILATED_MV = R_DILATED_DEPTH + 
 typedef struct {
     uint32_t display_w, display_h;  // the window texture's (the interpolated frame's)
     uint32_t render_w, render_h;    // the largest scene (depth and motion vectors): the output's, or a larger scene's
-    VkFormat color_format;          // the window texture's bytes (its UNORM twin)
+    VkFormat color_format;          // the window texture's bytes (its UNORM twin); HDR: the float picture's as the SDK
+                                    // gets it (hdr_format)
     uint32_t inverted, infinite;
 } FgConfig;
 
@@ -103,23 +114,29 @@ static struct {
     unsigned toggle;
     uint64_t frame_id, last_prep_ns, made;
     // settings read at start (vk_fg_init)
-    int workers, hdr, test, debug, times;
+    int test, debug, times;
     uint64_t shot_at;               // TOTK_FG_SHOT: the first present shot, or (shot_w) the first after that world time
     int64_t shot_w;
     char shot_dir[260];
-    unsigned said;                  // vk_fg_wanted's reasons logged (bits)
     volatile int menu;              // vk_fg_menu
     // this frame
     bool prepared, hl_ok, gen_ok, chain, reset;
+    bool hl_hdr;                    // the HUD-less picture is the float picture's (vk_fg_hudless)
+    VkFormat pic_fmt;               // with hl_hdr: the float picture's own format
+    float lum_max;                  // the scRGB range's top last passed to the SDK, nits (hdr_range)
     float near_m, far_m, fov_y, dt_ms;
     uint32_t rw, rh;                // this frame's scene size (the SDK's renderSize), at most cfg.render_w x render_h
     VkFormat win_fmt;               // the window texture's format as last seen (UNORM twin)
     int k;                          // the pair of hudless/out images this frame writes
     VkImage gen_win;                // the window texture this frame's picture was generated against (vk_fg_generate)
     VkImage show_out, show_hl, show_win;   // the frame just ended (vk_fg_frame), for vk_fg_present_swap / _gen
+    VkFormat show_out_fmt, show_hl_fmt;
     // images
     uint32_t iw, ih;
+    VkFormat ifmt, ofmt;            // hl's and out's formats
+    bool iconv;                     // cur exists
     Img hl_srgb, hl[2], out[2];
+    Img cur;                        // HDR, a float picture the SDK cannot take as it is: its RGBA16F copy with the HUD
     // timing
     VkQueryPool qp;
     uint32_t qslot, qmask[TSLOTS];
@@ -206,16 +223,20 @@ static void cpu_log(const char *what, uint64_t from);
 extern "C" void vk_fg_release(void) {
     VkCtx *c = vk_ctx();
     if (!c || !c->device) return;
-    if (!g.live && !g.scratch_shared && !g.hl_srgb.img && !g.qp) return;
+    if (!g.live && !g.scratch_shared && !g.hl[0].img && !g.qp) return;
     vkDeviceWaitIdle(c->device);
     vk_fg_exit_log();
     if (g.live) rt_log("fg: frame interpolation contexts destroyed");
     sdk_destroy();
-    img_free(c, &g.hl_srgb);
+    img_free(c, &g.hl_srgb), img_free(c, &g.cur);
     for (int i = 0; i < 2; i++) img_free(c, &g.hl[i]), img_free(c, &g.out[i]);
     if (g.qp) vkDestroyQueryPool(c->device, g.qp, NULL);
     free(g.cpu_us);
     memset(&g, 0, sizeof g);
+}
+
+static bool is_float(VkFormat f) {
+    return f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || f == VK_FORMAT_R16G16B16A16_SFLOAT;
 }
 
 static bool create(VkCtx *c, const FgConfig *cf) {
@@ -233,7 +254,9 @@ static bool create(VkCtx *c, const FgConfig *cf) {
     fd.maxRenderSize = {cf->render_w, cf->render_h};
     fd.displaySize = {cf->display_w, cf->display_h};
     fd.backBufferFormat = ffxGetSurfaceFormatVK(cf->color_format);
-    fd.previousInterpolationSourceFormat = ffxGetSurfaceFormatVK(VK_FORMAT_R8G8B8A8_UNORM);   // the HUD-less copy's
+    // the HUD-less copy's: the SDK copies that picture into an image of this format, so it is the same one
+    fd.previousInterpolationSourceFormat = ffxGetSurfaceFormatVK(is_float(cf->color_format) ? cf->color_format
+                                                                 : VK_FORMAT_R8G8B8A8_UNORM);
     TRY(ffxFrameInterpolationContextCreate(&g.fi, &fd));
     FfxOpticalflowSharedResourceDescriptions ord = {};
     TRY(ffxOpticalflowGetSharedResourceDescriptions(&g.of, &ord));
@@ -294,8 +317,6 @@ static void start(void) {
         return;
     }
     g.win_fmt = VK_FORMAT_R8G8B8A8_UNORM;
-    g.workers = cfg_int("TOTK_REPLAY_WORKERS");
-    g.hdr = vk_hdr_wanted();
     g.test = knob_int("TOTK_FG_TEST");
     g.debug = knob_int("TOTK_FG_DEBUG");
     g.times = !cfg_get("TOTK_FG_TIMES") || knob_int("TOTK_FG_TIMES");
@@ -324,24 +345,13 @@ extern "C" int vk_fg_active(void) { return g.live && vk_fg_engine() != VK_FG_OFF
 
 extern "C" void vk_fg_menu(int open) { __atomic_store_n(&g.menu, open, __ATOMIC_RELAXED); }
 
-extern "C" int vk_fg_wanted(int dlss) {
+extern "C" int vk_fg_wanted(void) {
     if (vk_fg_engine() != VK_FG_FSR3) return 0;
     if (!started) start();   // turned on in the menu: the contexts now; the first prepare makes them for the scene
     if (!g.live || g.failed) return 0;
-    // the inputs are this frame's, recorded in replay order: chunks recording side by side are not handled yet.
     // sync_ahead only moves the game's frame wait; the replay and the presents keep their order, and the replay's
     // next submission waits until the present thread submitted the blit (vk_backend.c submit_sync, vk_present_drain),
     // so out[] and hl[] alternate safely with it on.
-    int why = dlss ? 1 : g.workers > 0 ? 2 : g.hdr ? 3 : 0;
-    if (why) {
-        if (!(g.said & 1u << why)) {
-            g.said |= 1u << why;
-            static const char *const r[] = {"", "DLSS runs (dlaa = 1)", "the replay records in chunks (replay_workers > 0)",
-                                            "HDR output (hdr = 1)"};
-            rt_log("fg: frame generation off while %s", r[why]);
-        }
-        return 0;
-    }
     return !__atomic_load_n(&g.menu, __ATOMIC_RELAXED);
 }
 
@@ -485,32 +495,68 @@ static bool img_make(VkCtx *c, VkCommandBuffer cb, Img *m, uint32_t w, uint32_t 
 }
 
 // The HUD-less copies and the generated frames at w x h, two of each (the present of the frame before may still read
-// the other pair). Another size: the old ones go once every present and submission before is done.
-static bool images_for(VkCommandBuffer cb, uint32_t w, uint32_t h) {
-    if (g.hl_srgb.img && g.iw == w && g.ih == h) return true;
+// the other pair). Another size or format: the old ones go once every present and submission before is done.
+// hl_fmt RGBA8 UNORM: the window texture's bytes, through hl_srgb. A float hl_fmt (HDR): the float picture's values,
+// the generated frame in RGBA16F (the SDK keeps a weight in the output's alpha between its passes, so a format without
+// alpha will not do), and with conv the image for the float picture's RGBA16F copy.
+static bool images_for(VkCommandBuffer cb, uint32_t w, uint32_t h, VkFormat hl_fmt, bool conv) {
+    if (g.hl[0].img && g.iw == w && g.ih == h && g.ifmt == hl_fmt && g.iconv == conv) return true;
     VkCtx *c = vk_ctx();
-    if (g.hl_srgb.img) {
+    if (g.hl[0].img) {
         vk_present_drain();
         vk_queue_lock();
         vkDeviceWaitIdle(c->device);
         vk_queue_unlock();
         g.show_out = g.show_hl = VK_NULL_HANDLE;
     }
-    img_free(c, &g.hl_srgb);
+    img_free(c, &g.hl_srgb), img_free(c, &g.cur);
     for (int i = 0; i < 2; i++) img_free(c, &g.hl[i]), img_free(c, &g.out[i]);
     const VkImageUsageFlags t = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    bool ok = img_make(c, cb, &g.hl_srgb, w, h, VK_FORMAT_R8G8B8A8_SRGB, t);
+    bool hdr = is_float(hl_fmt);
+    VkFormat out_fmt = hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
+    bool ok = hdr || img_make(c, cb, &g.hl_srgb, w, h, VK_FORMAT_R8G8B8A8_SRGB, t);
+    if (ok && conv) ok = img_make(c, cb, &g.cur, w, h, VK_FORMAT_R16G16B16A16_SFLOAT, t | VK_IMAGE_USAGE_SAMPLED_BIT);
     for (int i = 0; i < 2 && ok; i++)
-        ok = img_make(c, cb, &g.hl[i], w, h, VK_FORMAT_R8G8B8A8_UNORM, t | VK_IMAGE_USAGE_SAMPLED_BIT) &&
-             img_make(c, cb, &g.out[i], w, h, VK_FORMAT_R8G8B8A8_UNORM,
-                      t | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
+        ok = img_make(c, cb, &g.hl[i], w, h, hl_fmt, t | VK_IMAGE_USAGE_SAMPLED_BIT) &&
+             img_make(c, cb, &g.out[i], w, h, out_fmt, t | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
     if (!ok) {
         rt_log("fg: no memory for the %ux%u pictures: frame generation off for this run", w, h);
         g.failed = true;
         return false;
     }
-    g.iw = w, g.ih = h;
+    g.iw = w, g.ih = h, g.ifmt = hl_fmt, g.ofmt = out_fmt, g.iconv = conv;
     return true;
+}
+
+// The format the SDK gets a float picture in: its own when the device can make the SDK's copy of it (a storage image,
+// which Vulkan does not require of B10G11R11), else RGBA16F, which holds every value of the smaller float formats.
+static VkFormat hdr_format(VkFormat pic) {
+    static VkFormat asked, answer;
+    if (pic == asked) return answer;
+    asked = pic, answer = VK_FORMAT_R16G16B16A16_SFLOAT;
+    VkImageFormatProperties ip;
+    if (is_float(pic) &&
+        vkGetPhysicalDeviceImageFormatProperties(vk_ctx()->phys, pic, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+                                                 VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
+                                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, 0,
+                                                 &ip) == VK_SUCCESS)
+        answer = pic;
+    else
+        rt_log("fg: HDR: the device makes no storage image of the float picture's format %d: it is interpolated as "
+               "RGBA16F copies", (int)pic);
+    return answer;
+}
+
+// The scRGB luminance range for the float picture, in nits where scRGB's 1.0 is 80: the SDK takes
+// (value - min / 80) / ((max - min) / 80) as linear light, and its optical flow stores L* of that times 255 in a byte,
+// so the brightest value has to come out at 1 or below. shaders/hdr_tonemap.frag rolls off at peak / ui times the HUD's
+// white per Rec. 2020 channel; its gamma correction per Rec. 709 channel and the game's passes after it are not held
+// to that, hence the headroom.
+#define HDR_HEADROOM 1.25f
+static float hdr_range(void) {
+    float s[4];
+    vk_hdr_support(s);
+    return 80.0f * s[0] * s[1] * HDR_HEADROOM;
 }
 
 static FfxResource res(VkImage img, VkFormat f, uint32_t w, uint32_t h, bool write, const wchar_t *name) {
@@ -582,8 +628,9 @@ extern "C" int vk_fg_prepare(VkCommandBuffer cb, const VkFgScene *s) {
     pd.commandList = ffxGetCommandListVK(cb);
     pd.renderSize = {s->w, s->h};
     // the vectors are last frame's window position minus this frame's in scene pixels, y down: the SDK's convention
-    // at a scale of one (its constant divides by the render size); no jitter without an upscaler
+    // at a scale of one (its constant divides by the render size)
     pd.motionVectorScale = {1.0f, 1.0f};
+    pd.jitterOffset = {s->jx, s->jy};
     pd.frameTimeDelta = g.dt_ms;
     pd.cameraNear = s->near_m;
     pd.cameraFar = s->far_m;
@@ -618,44 +665,100 @@ extern "C" int vk_fg_prepare(VkCommandBuffer cb, const VkFgScene *s) {
     return 1;
 }
 
-extern "C" int vk_fg_hudless(VkCommandBuffer cb, VkImage src, VkFormat fmt, uint32_t level, uint32_t layer, uint32_t w,
-                             uint32_t h) {
-    (void)fmt;
-    if (!g.prepared || g.failed || !images_for(cb, w, h)) return 0;
-    vk_fg_mark(cb, FG_T_HL0);
+static void blit_whole(VkCommandBuffer cb, VkImage src, uint32_t level, uint32_t layer, VkImage dst, uint32_t w, uint32_t h) {
     VkImageBlit b = {};
     b.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1};
     b.srcOffsets[1] = {(int32_t)w, (int32_t)h, 1};
     b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     b.dstOffsets[1] = {(int32_t)w, (int32_t)h, 1};
-    vkCmdBlitImage(cb, src, VK_IMAGE_LAYOUT_GENERAL, g.hl_srgb.img, VK_IMAGE_LAYOUT_GENERAL, 1, &b, VK_FILTER_NEAREST);
+    vkCmdBlitImage(cb, src, VK_IMAGE_LAYOUT_GENERAL, dst, VK_IMAGE_LAYOUT_GENERAL, 1, &b, VK_FILTER_NEAREST);
     full_barrier(cb);
+}
+
+static void copy_whole(VkCommandBuffer cb, VkImage src, uint32_t level, uint32_t layer, VkImage dst, uint32_t w, uint32_t h) {
     VkImageCopy cp = {};
-    cp.srcSubresource = cp.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    cp.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1};
+    cp.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     cp.extent = {w, h, 1};
-    vkCmdCopyImage(cb, g.hl_srgb.img, VK_IMAGE_LAYOUT_GENERAL, g.hl[g.k].img, VK_IMAGE_LAYOUT_GENERAL, 1, &cp);
+    vkCmdCopyImage(cb, src, VK_IMAGE_LAYOUT_GENERAL, dst, VK_IMAGE_LAYOUT_GENERAL, 1, &cp);
     full_barrier(cb);
+}
+
+extern "C" int vk_fg_hudless(VkCommandBuffer cb, VkImage src, VkFormat fmt, uint32_t level, uint32_t layer, uint32_t w,
+                             uint32_t h, int hdr) {
+    if (!g.prepared || g.failed) return 0;
+    VkFormat hf = hdr ? hdr_format(fmt) : VK_FORMAT_R8G8B8A8_UNORM;
+    if (!images_for(cb, w, h, hf, hdr && hf != fmt)) return 0;
+    vk_fg_mark(cb, FG_T_HL0);
+    if (!hdr) {
+        blit_whole(cb, src, level, layer, g.hl_srgb.img, w, h);
+        copy_whole(cb, g.hl_srgb.img, 0, 0, g.hl[g.k].img, w, h);
+    } else if (hf == fmt) {
+        copy_whole(cb, src, level, layer, g.hl[g.k].img, w, h);
+    } else {
+        blit_whole(cb, src, level, layer, g.hl[g.k].img, w, h);
+    }
     vk_fg_mark(cb, FG_T_HL1);
-    g.hl_ok = true;
+    g.hl_ok = true, g.hl_hdr = hdr != 0, g.pic_fmt = fmt;
     return 1;
 }
 
 // ---- shots (TOTK_FG_SHOT=<frame>): the window texture, the generated and the HUD-less picture of three frames from
-// there, as PNGs in TOTK_FG_SHOT_DIR (fg_<frame>_real.png, _gen.png, _hudless.png)
+// there, as PNGs in TOTK_FG_SHOT_DIR (fg_<frame>_real.png, _gen.png, _hudless.png). HDR: the float pictures, clipped
+// at the HUD's white and sRGB-encoded; the log line of each names its largest channel value before the clip.
 struct Shot {
     VkBuffer buf;
     VmaAllocation mem;
     void *map;
     uint32_t w, h;
     int bgra;
+    VkFormat fmt;
     char path[300];
 };
+
+// An unsigned float of 5 exponent bits and mbits of mantissa: the fields of B10G11R11, and a half float without its sign
+static float ufloat(uint32_t v, int mbits) {
+    uint32_t e = v >> mbits, m = v & ((1u << mbits) - 1);
+    if (e == 31) return m ? NAN : INFINITY;
+    return e ? ldexpf((float)(m | 1u << mbits), (int)e - 15 - mbits) : ldexpf((float)m, -14 - mbits);
+}
+
+// The float picture in s->map to sRGB bytes in its place (4 bytes a pixel, the source's are 4 or 8)
+static void shot_float(Shot *s) {
+    uint8_t *p = (uint8_t *)s->map;
+    float top = 0;
+    size_t bad = 0, over = 0, n = (size_t)s->w * s->h;
+    for (size_t i = 0; i < n; i++) {
+        float c[3];
+        if (s->fmt == VK_FORMAT_B10G11R11_UFLOAT_PACK32) {
+            uint32_t v;
+            memcpy(&v, p + 4 * i, 4);
+            c[0] = ufloat(v & 0x7ff, 6), c[1] = ufloat(v >> 11 & 0x7ff, 6), c[2] = ufloat(v >> 22, 5);
+        } else {
+            uint16_t v[3];
+            memcpy(v, p + 8 * i, 6);
+            for (int k = 0; k < 3; k++) c[k] = v[k] & 0x8000 ? -ufloat(v[k] & 0x7fff, 10) : ufloat(v[k], 10);
+        }
+        bool hi = false;
+        for (int k = 0; k < 3; k++) {
+            if (!isfinite(c[k])) bad++, c[k] = 0;
+            if (c[k] > top) top = c[k];
+            hi |= c[k] > 1.0f;
+            float l = fminf(fmaxf(c[k], 0.0f), 1.0f);
+            p[4 * i + k] = (uint8_t)((l <= 0.0031308f ? 12.92f * l : 1.055f * powf(l, 1.0f / 2.4f) - 0.055f) * 255.0f + 0.5f);
+        }
+        over += hi;
+    }
+    rt_log("fg: shot %s: format %d, largest channel value %.4f (1 = the HUD's white), %zu of %zu pixels above 1, %zu "
+           "channel values not finite", s->path, (int)s->fmt, top, over, n, bad);
+}
 
 static void shot_write(void *arg) {
     Shot *s = (Shot *)arg;
     VkCtx *c = vk_ctx();
     vmaInvalidateAllocation(c->vma, s->mem, 0, VK_WHOLE_SIZE);
     uint8_t *p = (uint8_t *)s->map;
+    if (is_float(s->fmt)) shot_float(s);
     if (s->bgra)
         for (size_t i = 0; i < (size_t)s->w * s->h; i++) {
             uint8_t t = p[4 * i];
@@ -663,25 +766,31 @@ static void shot_write(void *arg) {
         }
     for (size_t i = 0; i < (size_t)s->w * s->h; i++) p[4 * i + 3] = 255;
     rt_write_png(s->path, p, s->w, s->h);
-    rt_log("fg: shot %s", s->path);
+    if (!is_float(s->fmt)) rt_log("fg: shot %s", s->path);
     vmaDestroyBuffer(c->vma, s->buf, s->mem);
     free(s);
 }
 
 static void shot(VkCommandBuffer cb, uint64_t fence, VkImage img, VkFormat f, uint32_t w, uint32_t h, uint64_t frame,
                  const char *kind) {
+    if (is_float(f) && f != VK_FORMAT_R16G16B16A16_SFLOAT && f != VK_FORMAT_B10G11R11_UFLOAT_PACK32) {
+        static int said;
+        if (!said) said = 1, rt_log("fg: no shot of format %d (shot_float reads RGBA16F and B10G11R11 only)", (int)f);
+        return;
+    }
     VkCtx *c = vk_ctx();
     Shot *s = (Shot *)calloc(1, sizeof *s);
     if (!s) return;
     VkBufferCreateInfo bi = {};
-    bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, bi.size = (VkDeviceSize)w * h * 4;
+    bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bi.size = (VkDeviceSize)w * h * (f == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : 4);
     bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     VmaAllocationCreateInfo ai = {};
     ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
     ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
     VmaAllocationInfo info;
     if (vmaCreateBuffer(c->vma, &bi, &ai, &s->buf, &s->mem, &info) != VK_SUCCESS) return free(s);
-    s->map = info.pMappedData, s->w = w, s->h = h;
+    s->map = info.pMappedData, s->w = w, s->h = h, s->fmt = f;
     s->bgra = f == VK_FORMAT_B8G8R8A8_UNORM || f == VK_FORMAT_B8G8R8A8_SRGB;
     snprintf(s->path, sizeof s->path, "%s/fg_%llu_%s.png", g.shot_dir, (unsigned long long)frame, kind);
     VkBufferImageCopy r = {};
@@ -695,7 +804,10 @@ extern "C" int vk_fg_generate(VkCommandBuffer cb, uint64_t fence, uint64_t frame
                               uint32_t h) {
     if (!g.prepared || !g.hl_ok || g.failed) return 0;
     VkFormat wf = unorm_of(fmt);
-    if (wf != VK_FORMAT_R8G8B8A8_UNORM && wf != VK_FORMAT_B8G8R8A8_UNORM) {
+    if (g.hl_hdr) {
+        if (fmt != g.pic_fmt) return 0;
+        wf = g.ifmt;
+    } else if (wf != VK_FORMAT_R8G8B8A8_UNORM && wf != VK_FORMAT_B8G8R8A8_UNORM) {
         static int said;
         if (!said) said = 1, rt_log("fg: the window texture's format %d is not 8-bit RGBA: no frame generated", (int)fmt);
         return 0;
@@ -709,18 +821,35 @@ extern "C" int vk_fg_generate(VkCommandBuffer cb, uint64_t fence, uint64_t frame
                    (int)g.cfg.color_format, g.iw, g.ih);
         return 0;
     }
+    VkImage cur = win;
+    float lum_max = 1;
+    if (g.hl_hdr) {
+        lum_max = hdr_range();
+        if (lum_max != g.lum_max) {   // the same values now mean another light: nothing of the last frame's compares
+            static int said;
+            if (said++ < 8)
+                rt_log("fg: HDR: the float picture (format %d) is interpolated%s, the generated frame is format %d; scRGB "
+                       "with a luminance range of 0 to %.1f nits (the HUD's white, 1.0, at 80)", (int)fmt,
+                       g.iconv ? " as RGBA16F copies" : "", (int)g.ofmt, lum_max);
+            g.lum_max = lum_max, g.reset = true;
+        }
+        if (g.iconv) blit_whole(cb, win, 0, 0, cur = g.cur.img, w, h);
+    }
     VkImage hl = g.hl[g.k].img, out = g.out[g.k].img;
     vk_fg_mark(cb, FG_T_FI0);
     uint64_t t0 = kern_now_ns();
     rec_drain();   // the SDK records into cb itself
     uint64_t t1 = kern_now_ns();
     FfxCommandList cl = ffxGetCommandListVK(cb);
-    FfxResource hud_less = res(hl, VK_FORMAT_R8G8B8A8_UNORM, w, h, false, L"FG_HudlessColor");
+    FfxBackbufferTransferFunction tf = g.hl_hdr ? FFX_BACKBUFFER_TRANSFER_FUNCTION_SCRGB
+                                                : FFX_BACKBUFFER_TRANSFER_FUNCTION_SRGB;
+    FfxResource hud_less = res(hl, g.ifmt, w, h, false, L"FG_HudlessColor");
     FfxOpticalflowDispatchDescription od = {};
     od.commandList = cl;
     od.color = hud_less;
     od.reset = g.reset;
-    od.backbufferTransferFunction = FFX_BACKBUFFER_TRANSFER_FUNCTION_SRGB;
+    od.backbufferTransferFunction = tf;
+    if (g.hl_hdr) od.minMaxLuminance = {0, lum_max};
     od.opticalFlowVector = shared(R_OF_VECTOR);
     od.opticalFlowSCD = shared(R_OF_SCD);
     FfxErrorCode e = ffxOpticalflowContextDispatch(&g.of, &od);
@@ -730,9 +859,9 @@ extern "C" int vk_fg_generate(VkCommandBuffer cb, uint64_t fence, uint64_t frame
         dd.commandList = cl;
         dd.displaySize = {w, h};
         dd.renderSize = {g.rw, g.rh};
-        dd.currentBackBuffer = res(win, wf, w, h, false, L"FG_Color");
+        dd.currentBackBuffer = res(cur, wf, w, h, false, L"FG_Color");
         dd.currentBackBuffer_HUDLess = hud_less;
-        dd.output = res(out, VK_FORMAT_R8G8B8A8_UNORM, w, h, true, L"FG_Output");
+        dd.output = res(out, g.ofmt, w, h, true, L"FG_Output");
         dd.interpolationRect = {0, 0, (int)w, (int)h};
         dd.opticalFlowVector = shared(R_OF_VECTOR);
         dd.opticalFlowSceneChangeDetection = shared(R_OF_SCD);
@@ -745,9 +874,9 @@ extern "C" int vk_fg_generate(VkCommandBuffer cb, uint64_t fence, uint64_t frame
         dd.viewSpaceToMetersFactor = 1;
         dd.frameTimeDelta = g.dt_ms;
         dd.reset = g.reset;
-        dd.backBufferTransferFunction = FFX_BACKBUFFER_TRANSFER_FUNCTION_SRGB;
+        dd.backBufferTransferFunction = tf;
         dd.minMaxLuminance[0] = 0;
-        dd.minMaxLuminance[1] = 1;
+        dd.minMaxLuminance[1] = lum_max;
         dd.frameID = g.frame_id;
         dd.dilatedDepth = shared(R_DILATED_DEPTH + g.toggle);
         dd.dilatedMotionVectors = shared(R_DILATED_MV + g.toggle);
@@ -772,8 +901,8 @@ extern "C" int vk_fg_generate(VkCommandBuffer cb, uint64_t fence, uint64_t frame
     if (g.shot_w > 0 && !g.shot_at && frame_step_world_us() >= g.shot_w) g.shot_at = frame;
     if (g.shot_at && frame >= g.shot_at && frame < g.shot_at + 3) {
         shot(cb, fence, win, fmt, w, h, frame, "real");
-        shot(cb, fence, out, VK_FORMAT_R8G8B8A8_UNORM, w, h, frame, g.reset ? "gen-reset" : "gen");
-        shot(cb, fence, hl, VK_FORMAT_R8G8B8A8_UNORM, w, h, frame, "hudless");
+        shot(cb, fence, out, g.ofmt, w, h, frame, g.reset ? "gen-reset" : "gen");
+        shot(cb, fence, hl, g.ifmt, w, h, frame, "hudless");
         full_barrier(cb);
     }
     return 1;
@@ -785,12 +914,13 @@ extern "C" void vk_fg_frame(void) {
         g.ncpu++;
         if (!g.gen_ok) g.skipped++;
     }
+    g.show_out_fmt = g.ofmt, g.show_hl_fmt = g.ifmt;
     g.show_out = g.gen_ok ? g.out[g.k].img : VK_NULL_HANDLE;
     g.show_win = g.gen_ok ? g.gen_win : VK_NULL_HANDLE;
     g.show_hl = g.hl_ok ? g.hl[g.k].img : VK_NULL_HANDLE;
     if (g.hl_ok) g.k ^= 1;
     g.chain = g.gen_ok;   // a frame without a generated picture breaks the chain: the next one starts over
-    g.prepared = g.hl_ok = g.gen_ok = false;
+    g.prepared = g.hl_ok = g.gen_ok = g.hl_hdr = false;
     g.cpu_frame = 0;
     if (g.gens >= g.gens_logged + LOG_EVERY) {
         static uint64_t from;
@@ -823,14 +953,15 @@ extern "C" void vk_fg_exit_log(void) {
            (g.prep_run + g.prep_ns) / 1e6 / g.ncpu);
 }
 
-extern "C" VkImage vk_fg_present_gen(VkImage presented) {
+extern "C" VkImage vk_fg_present_gen(VkImage presented, VkFormat *fmt) {
     if (g.test || !g.show_out || presented != g.show_win) return VK_NULL_HANDLE;
+    *fmt = g.show_out_fmt;
     return g.show_out;
 }
 
 extern "C" int vk_fg_present_swap(VkImage *img, VkFormat *fmt) {
     VkImage s = g.test == 1 ? g.show_out : g.test == 2 ? g.show_hl : VK_NULL_HANDLE;
     if (!s) return 0;
-    *img = s, *fmt = VK_FORMAT_R8G8B8A8_UNORM;
+    *img = s, *fmt = g.test == 1 ? g.show_out_fmt : g.show_hl_fmt;
     return 1;
 }
