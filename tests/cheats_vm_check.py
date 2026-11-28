@@ -130,6 +130,7 @@ void mods_scan(void) {}
 int mods_count(void) { return 0; }
 ModInfo *mods_at(int i) { (void)i; return NULL; }
 int mods_exefs_pending(uint32_t *key) { (void)key; return 0; }
+int ldr_plugins_gone(uint32_t *key) { (void)key; return 0; }
 int plat_exe_path(char *out, size_t cap) { (void)out; (void)cap; return 0; }
 PlatFile *plat_file_open(const char *path) { (void)path; return NULL; }
 void plat_file_close(PlatFile *f) { (void)f; }
