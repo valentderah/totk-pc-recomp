@@ -1414,13 +1414,13 @@ class FontsTest(unittest.TestCase):
         self.ctx.reporter.close()
         self.tmp.cleanup()
 
-    def fake_tool(self, files=None, code=0):
+    def fake_tool(self, files=None, code=0, data=b'bfttf'):
         """Stand-in for extract_shared_fonts.py: writes the requested files where --output points."""
         def run(ctx, step, script, args):
             out = Path(args[args.index('--output') + 1])
             out.mkdir(parents=True)
             for name in steps.SHARED_FONT_FILES if files is None else files:
-                (out / name).write_bytes(b'bfttf')
+                (out / name).write_bytes(data)
             (out / 'manifest.json').write_text('{}')
             log = ctx.temp / 'fonts.log'
             log.write_text('error line\n')
@@ -1459,6 +1459,111 @@ class FontsTest(unittest.TestCase):
             steps.Fonts().run(self.ctx)
         self.assertEqual(e.exception.id, 'fonts.failed')
         self.assertTrue(steps.shared_fonts_ready(self.dest))
+
+    def font_snapshot(self, folder=None):
+        folder = folder or self.dest / steps.SHARED_FONTS
+        return {p.name: p.read_bytes() for p in folder.iterdir() if p.is_file()}
+
+    def old_fonts(self):
+        self.fake_tool(data=b'old-font')
+        steps.Fonts().run(self.ctx)
+        snapshot = self.font_snapshot()
+        self.fake_tool(data=b'new-font')
+        return snapshot
+
+    def publication_failure(self, error=PermissionError, rollback=False):
+        target = self.dest / steps.SHARED_FONTS
+        old = target.with_name(steps.SHARED_FONTS + '.old')
+        original_replace, original_move = steps.os.replace, steps.shutil.move
+        def replace(src, dst):
+            if Path(dst) == target and (rollback or Path(src) != old):
+                raise error('fixture publication failure')
+            return original_replace(src, dst)
+        def move(src, dst, *args, **kwargs):
+            if Path(dst) == target:
+                raise error('fixture publication failure')
+            return original_move(src, dst, *args, **kwargs)
+        return mock.patch.object(steps.os, 'replace', side_effect=replace), \
+            mock.patch.object(steps.shutil, 'move', side_effect=move)
+
+    def test_failed_publication_keeps_every_old_file(self):
+        old = self.old_fonts()
+        rename, move = self.publication_failure()
+        with rename, move:
+            with self.assertRaises(steps.InstallError) as error:
+                steps.Fonts().run(self.ctx)
+        self.assertEqual(error.exception.id, 'fonts.copy_failed')
+        self.assertTrue(steps.shared_fonts_ready(self.dest))
+        self.assertEqual(self.font_snapshot(), old)
+        self.assertEqual(steps.Fonts().run(self.ctx), {'files': 6})
+        self.assertEqual((self.dest / steps.SHARED_FONTS / steps.SHARED_FONT_FILES[0]).read_bytes(), b'new-font')
+
+    def test_cancelled_publication_restores_every_old_file(self):
+        old = self.old_fonts()
+        rename, move = self.publication_failure(KeyboardInterrupt)
+        with rename, move:
+            with self.assertRaises(KeyboardInterrupt):
+                steps.Fonts().run(self.ctx)
+        self.assertEqual(self.font_snapshot(), old)
+
+    def test_failed_staging_keeps_every_old_file(self):
+        old = self.old_fonts()
+        with mock.patch.object(steps.shutil, 'copytree', side_effect=OSError('fixture disk full')):
+            with self.assertRaises(steps.InstallError) as error:
+                steps.Fonts().run(self.ctx)
+        self.assertEqual(error.exception.id, 'fonts.copy_failed')
+        self.assertEqual(self.font_snapshot(), old)
+
+    def test_failed_backup_rename_keeps_every_old_file(self):
+        old = self.old_fonts()
+        target = self.dest / steps.SHARED_FONTS
+        original = steps.os.replace
+        def replace(src, dst):
+            if Path(src) == target:
+                raise PermissionError('fixture backup rename failure')
+            return original(src, dst)
+        with mock.patch.object(steps.os, 'replace', side_effect=replace):
+            with self.assertRaises(steps.InstallError):
+                steps.Fonts().run(self.ctx)
+        self.assertEqual(self.font_snapshot(), old)
+
+    def test_failed_rollback_retains_recoverable_backup_without_firmware(self):
+        old = self.old_fonts()
+        rename, move = self.publication_failure(rollback=True)
+        with rename, move:
+            with self.assertRaises(steps.InstallError):
+                steps.Fonts().run(self.ctx)
+        backup = self.dest / (steps.SHARED_FONTS + '.old')
+        self.assertEqual(self.font_snapshot(backup), old)
+        self.ctx.options.firmware = None
+        self.assertFalse(steps.Fonts().current(self.ctx, {'files': 6}))
+        self.assertEqual(steps.Fonts().run(self.ctx), {})
+        self.assertEqual(self.font_snapshot(), old)
+        self.assertFalse(backup.exists())
+
+    def test_interrupted_rename_is_recovered_for_other_languages(self):
+        old = self.old_fonts()
+        target = self.dest / steps.SHARED_FONTS
+        target.rename(target.with_name(steps.SHARED_FONTS + '.old'))
+        self.ctx.lang = self.ctx.options.lang = 'en-US'
+        self.ctx.options.firmware = None
+        self.assertFalse(steps.Fonts().current(self.ctx, {'files': 6}))
+        self.assertEqual(steps.Fonts().run(self.ctx), {})
+        self.assertEqual(self.font_snapshot(), old)
+
+    def test_old_cleanup_failure_keeps_the_new_complete_set(self):
+        self.old_fonts()
+        original = steps.remove
+        backup = self.dest / (steps.SHARED_FONTS + '.old')
+        def remove(path):
+            if path == backup and path.exists():
+                raise PermissionError('fixture cleanup failure')
+            original(path)
+        with mock.patch.object(steps, 'remove', side_effect=remove):
+            self.assertEqual(steps.Fonts().run(self.ctx), {'files': 6})
+        self.assertTrue(steps.shared_fonts_ready(self.dest))
+        self.assertEqual((self.dest / steps.SHARED_FONTS / steps.SHARED_FONT_FILES[0]).read_bytes(), b'new-font')
+        self.assertTrue(steps.Fonts().current(self.ctx, {'files': 6}))
 
     def test_incomplete_output_is_an_error(self):
         self.fake_tool(files=steps.SHARED_FONT_FILES[:1])

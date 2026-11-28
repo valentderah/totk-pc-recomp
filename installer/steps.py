@@ -984,6 +984,9 @@ class Fonts(Step):
         return fingerprint('fonts-1', lang, str(firmware), firmware_stamp(firmware))
 
     def current(self, ctx, record):
+        target = ctx.dest / SHARED_FONTS
+        if not target.exists() and target.with_name(SHARED_FONTS + '.old').exists():
+            return False
         if requested_lang(ctx) not in ini.NEED_SHARED_FONTS or not getattr(ctx.options, 'firmware', None):
             return True
         return shared_fonts_ready(ctx.dest)
@@ -995,6 +998,14 @@ class Fonts(Step):
         return True
 
     def run(self, ctx):
+        target = ctx.dest / SHARED_FONTS
+        new, old = target.with_name(SHARED_FONTS + '.new'), target.with_name(SHARED_FONTS + '.old')
+        # Recover a run stopped between the two renames, even when this run needs no extraction.
+        try:
+            if not target.exists() and old.exists():
+                os.replace(old, target)
+        except OSError as e:
+            raise InstallError('fonts.copy_failed', path=str(target), detail=str(e)) from None
         lang = getattr(ctx, 'lang', None) or requested_lang(ctx)
         if lang not in ini.NEED_SHARED_FONTS:
             return {}
@@ -1020,12 +1031,34 @@ class Fonts(Step):
         if missing or not (out / 'manifest.json').is_file():
             raise InstallError('fonts.incomplete', files=', '.join(missing) or 'manifest.json')
         ctx.reporter.progress('fonts', 'copy', force=True)
+
+        def clean(path):
+            try:
+                remove(path)
+            except OSError as e:
+                ctx.reporter.log(f'fonts: could not remove {path}: {e}')
+
         try:
             ctx.dest.mkdir(parents=True, exist_ok=True)
-            remove(ctx.dest / SHARED_FONTS)
-            shutil.move(str(out), str(ctx.dest / SHARED_FONTS))
-        except OSError as e:
-            raise InstallError('fonts.copy_failed', path=str(ctx.dest / SHARED_FONTS), detail=str(e)) from None
+            remove(new)
+            # Stage on the destination's volume: the extraction may have used a different --temp drive.
+            shutil.copytree(out, new)
+            remove(old)   # target is present whenever an earlier backup needed recovery
+            if target.exists():
+                os.replace(target, old)
+            os.replace(new, target)
+        except (OSError, KeyboardInterrupt) as e:
+            if not target.exists() and old.exists():
+                try:
+                    os.replace(old, target)
+                except OSError as rollback_error:
+                    ctx.reporter.log(f'fonts: the previous set remains in {old}: {rollback_error}')
+            clean(new)
+            if isinstance(e, KeyboardInterrupt):
+                raise
+            raise InstallError('fonts.copy_failed', path=str(target), detail=str(e)) from None
+        clean(old)
+        clean(out)
         return {'files': len(SHARED_FONT_FILES)}
 
 
