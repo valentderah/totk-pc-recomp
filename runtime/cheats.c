@@ -685,7 +685,7 @@ int cheats_rebuild_pending(void) {
     char path[PLAT_PATH_MAX + 64];
     snprintf(path, sizeof path, "%sbuild-cache" SEP "rebuild.txt", g_dir);
     uint32_t key = 0;
-    int need = mods_exefs_pending(&key);
+    int need = mods_exefs_pending(&key) + ldr_plugins_gone(&key);
     for (int i = 0; i < g_n && !need; i++) need = g_cheats[i].info.kind == CHEAT_REBUILD;
     return need && g_dir[0] && plat_file_exists(path);
 }
