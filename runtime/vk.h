@@ -421,6 +421,7 @@ void vk_defer_image(VkImage img, VmaAllocation alloc);   // alloc NULL: vkDestro
 void vk_defer_view(VkImageView view);
 void vk_exec_image_gone(VkImage image);   // destroy_tex, texture lock held: the replay's views of image go with it
 void vk_defer_buffer(VkBuffer buf, VmaAllocation alloc);
+void vk_defer_pipeline(VkPipeline pipeline);   // vk_pipeline.c: an evicted or replaced pipeline or stage library
 // free(p) once the GPU is past the submission being recorded, like the deferrals above: host records that a recording
 // may still read through a pointer taken before another thread dropped them (vk_texture.c destroy_tex).
 void vk_defer_free(void *p);
@@ -709,13 +710,14 @@ typedef struct {
 // bytes a type leaves unused are zero, so equal descriptors compare equal byte for byte.
 typedef union { VkDescriptorImageInfo image; VkDescriptorBufferInfo buffer; VkBufferView view; uint64_t w[3]; } VkDescSlot;
 // Both return the cached pipeline (created on first use; failures are cached and logged once). info: may be NULL.
-// Valid until vk_pipeline_shutdown; thread-safe.
+// Valid through the submission that asked, unless vk_pipeline_trim evicts it between submissions; thread-safe.
 VkPipeline vk_pipeline_graphics(const VkPipeState *s, const VkPipeInfo **info);
 // The replay's variant: after vk_pipeline_async_enable a missing pipeline is built by background workers and this
 // returns VK_NULL_HANDLE with *pending 1 until it is ready (the draw is skipped); otherwise as vk_pipeline_graphics.
 // wait_ms > 0 waits up to that long for a pending pipeline first. Pipelines built in a run are recorded to
 // pipeline-keys.bin next to the pipeline cache and prebuilt at the next boot (TOTK_PIPE_PREBUILD=0: not).
 VkPipeline vk_pipeline_graphics_async(const VkPipeState *s, const VkPipeInfo **info, int *pending, uint32_t wait_ms);
+void vk_pipeline_touch(const VkPipeInfo *info);   // a replay memo hit: keep its entry out of the idle set
 // rt_boot calls it unless --shot is given; TOTK_PIPE_SYNC=1 makes it a no-op. Probes never call it.
 void vk_pipeline_async_enable(void);
 int vk_pipeline_async_on(void);   // 1 after vk_pipeline_async_enable: graphics shaders are translated in the background too
@@ -762,8 +764,13 @@ PFN_vkUpdateDescriptorSetWithTemplate vk_pipeline_update_tpl_fn(void);
 // Probe only: 1 selects stage-independent layouts for pipelines looked up from now on, 0 the shared set 0; returns
 // the previous mode. 1 needs vk_caps.gpl (the independent-sets flag comes with the extension).
 int vk_pipeline_set_indep(int on);
-typedef struct { uint64_t graphics, compute, failures, hits, layouts, push_layouts, async_built, pending_skips; } VkPipeStats;
+typedef struct {
+    uint64_t graphics, compute, failures, hits, layouts, push_layouts, async_built, pending_skips, evicted;
+} VkPipeStats;
 void vk_pipeline_stats(VkPipeStats *s);
+// Called between submissions when the device-local budget is above pipe_vram_pressure. Old graphics pipelines and GPL
+// stage libraries go in small batches after the GPU has finished the submissions that used them.
+void vk_pipeline_trim(uint64_t frame, uint64_t used, uint64_t budget, int pressure);
 void vk_pipeline_save(void);               // writes the VkPipelineCache to pipeline-cache.bin next to totk.exe
 void vk_pipeline_autosave(void);           // vk_pipeline_save at most every 20 s, when pipelines were built since
 void vk_pipeline_shutdown(void);           // waits for background builds, saves, destroys pipelines, layouts and the

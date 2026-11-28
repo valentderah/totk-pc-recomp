@@ -1827,6 +1827,19 @@ void vk_exec_contexts(void (*fn)(VkExec *ex)) {
     for (int i = 0; i < nrecs; i++) fn(&recs[i].ex);
 }
 
+// A budget query every 120 submissions is enough for a cache trim: the pressure changes with a scene, not a frame.
+static void pipeline_budget_check(uint64_t fence) {
+    static uint64_t next;
+    if (fence < next || vk_dump_armed) return;
+    next = fence + 120;
+    int pressure = cfg_int("TOTK_PIPE_VRAM_PRESSURE");
+    if (pressure <= 0) return;
+    uint64_t used, budget;
+    int exact;
+    if (vk_mem_vram(&used, &budget, &exact))
+        vk_pipeline_trim(__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), used, budget, pressure);
+}
+
 static int chunked_on(void) {
     if (SC.workers < 0) {
         SC.workers = cfg_int("TOTK_REPLAY_WORKERS");
@@ -1847,6 +1860,7 @@ static int chunked_on(void) {
 
 int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence) {
     VkExec *ex = &X;
+    pipeline_budget_check(fence);
     SC.rec_t0 = kern_now_ns();
     if (!x_ready) state_reset(ex), vk_dump_init(), x_ready = 1;
     const tex_t *keep[9];   // the render targets carry over to this submission (set_rt compares them by pointer)

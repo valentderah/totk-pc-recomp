@@ -43,6 +43,7 @@
 // table @ b75be8cf (MIT, Copyright (c) 2026 jhaizhou); the binding conventions are those of Ryujinx's shader translator
 // (MIT, tools/vendor/ryujinx).
 #include <stdio.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -51,9 +52,14 @@
 #include "host.h"
 #include "loadwin.h"
 #include "memx.h"
+#include "nvn_api.h"
 #include "nvn_hmap.h"
 #include "platform/platform.h"
 #include "tex.h"
+
+// vk_memory.c. vk.h is not included here because its recorder macros would replace the vkCmd* calls this file records
+// directly.
+void vk_defer_pipeline(VkPipeline pipeline);
 
 #define LOG_ONCE(...) do { static volatile int32_t once_; if (!plat_xchg32(&once_, 1)) rt_log(__VA_ARGS__); } while (0)
 
@@ -132,14 +138,21 @@ typedef struct Pipe {
     int building;                      // a background job owns info.pipeline (under P.lock)
     struct Job *job;                   // that job while building
     const struct Layout *lay;          // graphics: the layout it was entered with
-    VkPipeline fast;                   // GPL: the fast-linked pipeline (kept until shutdown: recorded draws use it)
-    uint8_t fast_tried;
+    VkPipeline fast;                   // GPL: the fast-linked pipeline until the optimised one replaces it
+    uint8_t fast_tried, evicted;       // evicted: its Vulkan objects went; the next use rebuilds into this entry
+    uint64_t last_frame;               // newest frame that asked for it, for eviction under VRAM pressure
     size_t key_size;
     uint8_t key[];
 } Pipe;
 
 static Layout *layouts[LAYOUT_BUCKETS];
 static Pipe *pipes[PIPE_BUCKETS];
+static uint64_t pipeline_frame(void) { return __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED); }
+void vk_pipeline_touch(const VkPipeInfo *info) {
+    if (!info) return;
+    Pipe *p = (Pipe *)((uint8_t *)info - offsetof(Pipe, info));
+    __atomic_store_n(&p->last_frame, pipeline_frame(), __ATOMIC_RELAXED);
+}
 
 static uint64_t fnv(uint64_t h, const void *p, size_t n) {
     const uint8_t *b = p;
@@ -1323,6 +1336,7 @@ static Pipe *pipe_add(const void *key, size_t size, uint64_t h, VkPipeline pipel
     p->info.n_sets = l && l->set1 ? 2 : 1;
     if (l) p->info.tpl[0] = l->tpl[0], p->info.tpl[1] = l->tpl[1];
     p->lay = l;
+    __atomic_store_n(&p->last_frame, pipeline_frame(), __ATOMIC_RELAXED);
     Pipe **head = &pipes[h % PIPE_BUCKETS];
     p->next = *head;
     *head = p;
@@ -1598,17 +1612,17 @@ out:
 // output (targets, blend, samples). With independent layouts each stage's set depends on its shader alone, so the
 // pre-rasterization library uses {set 0, null} and the fragment shader library {null, set 1}. The fast link runs on the
 // thread of the draw that needs it (no link-time optimisation); the optimised pipeline is the job pipe_miss queued
-// (a monolithic build with the same modules), which replaces the fast one in the Pipe when done. Libraries and fast
-// pipelines live until vk_pipeline_shutdown.
+// (a monolithic build with the same modules), which replaces the fast one in the Pipe when done. The replaced fast
+// pipeline goes through vk_defer_pipeline. Unused entries can also be dropped under pipe_vram_pressure.
 // Background build signalling, both with P.lock: work_cv wakes the pipeline workers, done_cv wakes threads waiting for a
 // pipeline or a stage library to be published.
 static PlatCond work_cv = PLAT_COND_INIT, done_cv = PLAT_COND_INIT;
 #define LIB_BUCKETS 1024
 enum { LIB_VI, LIB_PR, LIB_FS, LIB_FO };
-typedef struct Lib { struct Lib *next; uint64_t hash; VkPipeline pipe; uint32_t size; uint8_t pre, used, building, pad;
-                     struct LibJob *job; uint8_t key[]; } Lib;
+typedef struct Lib { struct Lib *next; uint64_t hash; VkPipeline pipe; uint32_t size; uint8_t pre, used, building, evicted;
+                     struct LibJob *job; uint64_t last_frame; uint8_t key[]; } Lib;
 // pre: built by the boot prebuild ("stage library prebuild" below); used: a draw's link found it; building: a thread
-// builds it or job holds it queued (pipe not set yet); entries live until libs_destroy
+// builds it or job holds it queued (pipe not set yet). last_frame lets VRAM pressure drop unused libraries.
 static Lib *libs[LIB_BUCKETS];
 
 typedef struct { uint32_t kind, topo_class, attr_fmt[32], attr_off[32]; uint8_t attr_bind[32], rate[17], pad[3]; } ViKey;
@@ -1755,11 +1769,17 @@ static VkPipeline lib_put(uint64_t h, const void *key, uint32_t size, VkPipeline
         return VK_NULL_HANDLE;
     }
     if (b) {
-        if (pipe) vkDestroyPipeline(P.device, pipe, NULL);
+        if (b->pipe) {
+            if (pipe) vkDestroyPipeline(P.device, pipe, NULL);
+        } else {
+            b->pipe = pipe, b->evicted = pipe == VK_NULL_HANDLE;
+        }
+        __atomic_store_n(&b->last_frame, pipeline_frame(), __ATOMIC_RELAXED);
         return b->pipe;
     }
     if (!(b = calloc(1, sizeof *b + size))) return pipe;
     b->hash = h, b->size = size, b->pipe = pipe;
+    __atomic_store_n(&b->last_frame, pipeline_frame(), __ATOMIC_RELAXED);
     memcpy(b->key, key, size);
     b->next = libs[h % LIB_BUCKETS];
     libs[h % LIB_BUCKETS] = b;
@@ -1804,7 +1824,7 @@ static VkPipeline lib_build(Lib *b, int kind, const VkPipeState *s, const GKey *
         if (ms > P.g.lib_max[kind]) P.g.lib_max[kind] = ms;
     }
     if (!pipe && ++P.g.lib_fail <= 8) rt_log("vk_pipeline: gpl: stage library %d not built", kind);
-    b->pipe = pipe, b->building = 0;
+    b->pipe = pipe, b->building = 0, b->evicted = pipe == VK_NULL_HANDLE;
     plat_cond_broadcast(&done_cv);
     return pipe;
 }
@@ -1833,7 +1853,15 @@ static VkPipeline lib_get(int kind, const VkPipeState *s, const GKey *k, Layout 
         else plat_cond_wait(&done_cv, &P.lock);
     }
     if (have) {
+        if (have->evicted && !have->pipe) {
+            if (!build) {
+                *miss = 1;
+                return VK_NULL_HANDLE;
+            }
+            return lib_build(have, kind, s, k, l);
+        }
         if (have->pre && !have->used) have->used = 1, P.g.pre_used[kind]++;
+        __atomic_store_n(&have->last_frame, pipeline_frame(), __ATOMIC_RELAXED);
         return have->pipe;
     }
     VkPipelineLayout lay = kind == LIB_PR ? half_layout(l, 0) : kind == LIB_FS ? half_layout(l, 1) : VK_NULL_HANDLE;
@@ -2194,9 +2222,16 @@ static void pipe_worker(void *arg) {
         }
         plat_mutex_unlock(&P.lock);
         VkPipeline pipe = create_graphics(&j->s, &j->k, j->l, j->fs_off);
+        VkPipeline release_fast = VK_NULL_HANDLE;
         plat_mutex_lock(&P.lock);
-        if (pipe || !j->p->fast) j->p->info.pipeline = pipe;   // a failed optimised build keeps the fast-linked one
-        if (pipe && j->p->fast) P.g.swaps++;
+        if (pipe) {
+            VkPipeline fast = j->p->fast;
+            j->p->info.pipeline = pipe;
+            j->p->fast = VK_NULL_HANDLE, j->p->evicted = 0;
+            if (fast) release_fast = fast, P.g.swaps++;
+        } else if (!j->p->fast) {
+            j->p->info.pipeline = VK_NULL_HANDLE;
+        }
         j->p->building = 0;
         j->p->job = NULL;
         if (pipe) {
@@ -2217,6 +2252,9 @@ static void pipe_worker(void *arg) {
         plat_cond_broadcast(&done_cv);
         if (pipe && (!j->prebuild || j->demanded)) perf_count(PERF_CNT_PIPE_ASYNC);   // a draw waited for it
         free(j);
+        plat_mutex_unlock(&P.lock);
+        if (release_fast) vk_defer_pipeline(release_fast);
+        plat_mutex_lock(&P.lock);
     }
     return;
 }
@@ -2380,13 +2418,15 @@ static void lib_wait(const VkPipeState *s, const GKey *k, Layout *l, double end)
     int queued = 0;
     for (int i = 0; i < 2; i++) {
         uint64_t h = key_hash(key[i], size[i]);
-        if ((b[i] = lib_find(h, key[i], size[i]))) continue;
+        b[i] = lib_find(h, key[i], size[i]);
+        if (b[i] && (b[i]->building || !b[i]->evicted)) continue;
         if (!half_layout(l, i)) return;   // gpl_link reports it
         LibJob *j = calloc(1, sizeof *j);
-        if (!j || !(b[i] = lib_new(h, key[i], size[i]))) {
+        if (!j || (!b[i] && !(b[i] = lib_new(h, key[i], size[i])))) {
             free(j);
             return;
         }
+        if (!b[i]->building) b[i]->building = 1;
         *j = (LibJob){.b = b[i], .kind = i ? LIB_FS : LIB_PR, .l = l, .s = *s, .k = *k};
         b[i]->job = j;
         if (U.tail) U.tail->next = j;
@@ -2414,6 +2454,43 @@ static void lib_wait(const VkPipeState *s, const GKey *k, Layout *l, double end)
     }
 }
 
+// An evicted entry keeps its key, layout and VkPipeInfo address, so replay memos stay valid. Rebuild its Vulkan objects
+// here, either now or as the same kind of background job a first use gets.
+static void pipe_refill(Pipe *p, const VkPipeState *s, const GKey *k, int mode, int *queued) {
+    *queued = 0;
+    uint32_t span = P.indep ? 1 : binding_span(s->vs);
+    VkPipeline pipe = VK_NULL_HANDLE;
+    Job *j = NULL;
+    if (mode && workers_start() && (j = calloc(1, sizeof *j)))
+        *j = (Job){.l = p->lay, .fs_off = span - 1, .low = mode == 2, .prebuild = mode == 2, .worker = -1, .s = *s,
+                   .k = *k, .p = p};
+    else if (!(pipe = create_graphics(s, k, p->lay, span - 1)))
+        rt_log("vk_pipeline: an evicted graphics pipeline could not be rebuilt");
+    if (!j) {
+        p->info.pipeline = pipe;
+        p->fast = VK_NULL_HANDLE, p->fast_tried = 0, p->building = 0;
+        p->evicted = pipe == VK_NULL_HANDLE;
+        if (pipe) P.stats.graphics++;
+        else P.stats.failures++;
+        return;
+    }
+    p->building = 1, p->job = j;
+    if (mode == 2) {
+        j->prev = A.low_tail;
+        if (A.low_tail) A.low_tail->next = j;
+        else A.low = j;
+        A.low_tail = j;
+        K.left++;
+    } else {
+        if (A.tail) A.tail->next = j;
+        else A.head = j;
+        A.tail = j;
+    }
+    A.inflight++;
+    plat_cond_signal(&work_cv);
+    *queued = 1;
+}
+
 static VkPipeline graphics(const VkPipeState *s, const VkPipeInfo **info, int async, int *pending, uint32_t wait_ms) {
     if (info) *info = NULL;
     if (pending) *pending = 0;
@@ -2425,7 +2502,11 @@ static VkPipeline graphics(const VkPipeState *s, const VkPipeInfo **info, int as
     Pipe *p = pipe_find(&k, sizeof k, h);
     int queued;
     if (p) {
-        if (!p->building) P.stats.hits++;
+        __atomic_store_n(&p->last_frame, pipeline_frame(), __ATOMIC_RELAXED);
+        if (!p->building && !p->info.pipeline && p->job == NULL && p->lay && p->evicted)
+            pipe_refill(p, s, &k, async, &queued);
+        else if (!p->building)
+            P.stats.hits++;
     } else {
         p = pipe_miss(s, &k, h, async, &queued);
     }
@@ -2466,6 +2547,7 @@ static VkPipeline graphics(const VkPipeState *s, const VkPipeInfo **info, int as
         if (final) p->fast_tried = 1;
         if (f && !p->info.pipeline) {
             p->fast = p->info.pipeline = f;
+            p->evicted = 0;
             job_lower(p->job);
             plat_cond_broadcast(&done_cv);
         } else if (f) {
@@ -2519,9 +2601,16 @@ static void warm_builder(void *arg) {
         j->low = 0;                    // not on a pool thread: promote() has nothing to raise
         plat_mutex_unlock(&P.lock);
         VkPipeline pipe = create_graphics(&j->s, &j->k, j->l, j->fs_off);
+        VkPipeline release_fast = VK_NULL_HANDLE;
         plat_mutex_lock(&P.lock);
-        if (pipe || !j->p->fast) j->p->info.pipeline = pipe;   // a failed optimised build keeps the fast-linked one
-        if (pipe && j->p->fast) P.g.swaps++;
+        if (pipe) {
+            VkPipeline fast = j->p->fast;
+            j->p->info.pipeline = pipe;
+            j->p->fast = VK_NULL_HANDLE, j->p->evicted = 0;
+            if (fast) release_fast = fast, P.g.swaps++;
+        } else if (!j->p->fast) {
+            j->p->info.pipeline = VK_NULL_HANDLE;
+        }
         j->p->building = 0;
         j->p->job = NULL;
         if (pipe) {
@@ -2535,6 +2624,9 @@ static void warm_builder(void *arg) {
         if (!--A.inflight) plat_cond_broadcast(&A.idle);
         plat_cond_broadcast(&done_cv);
         free(j);
+        plat_mutex_unlock(&P.lock);
+        if (release_fast) vk_defer_pipeline(release_fast);
+        plat_mutex_lock(&P.lock);
     }
     plat_mutex_unlock(&P.lock);
     return;
@@ -2874,7 +2966,18 @@ VkPipeline vk_pipeline_compute(const GfxShader *cs, const VkPipeInfo **info) {
     plat_mutex_lock(&P.lock);
     Pipe *p = pipe_find(&k, sizeof k, h);
     if (p) {
-        P.stats.hits++;
+        __atomic_store_n(&p->last_frame, pipeline_frame(), __ATOMIC_RELAXED);
+        if (p->evicted && !p->info.pipeline && p->lay) {
+            uint64_t p0 = perf_begin();
+            VkPipeline pipe = compute_create(cs, p->lay);
+            perf_end(PERF_PIPE, p0);
+            p->info.pipeline = pipe;
+            p->evicted = pipe == VK_NULL_HANDLE;
+            if (pipe) P.stats.compute++, LB.cs_draw++;
+            else P.stats.failures++, rt_log("vk_pipeline: an evicted compute pipeline could not be rebuilt");
+        } else {
+            P.stats.hits++;
+        }
     } else {
         const char *why = NULL;
         Bindings B = {0};
@@ -3469,6 +3572,53 @@ uint32_t vk_pipeline_set_dynamic_delta(VkCommandBuffer cb, const VkPipeState *s,
 }
 
 // ---- statistics, persistence, teardown
+
+#define PIPE_TRIM_AGE 600u
+#define PIPE_TRIM_STEP 16u
+
+// Long sessions visit new areas and add pipeline variants for each one. The driver keeps their code in device-local
+// memory after the game releases the programs, so pipe_vram_pressure retires the Vulkan objects of the least recently
+// used entries in small batches once the budget crosses the configured line. The entries and their VkPipeInfo addresses
+// stay, so replay memos remain valid; the next use rebuilds into the same entry. vk_memory.c destroys at most four
+// Vulkan pipelines a frame.
+void vk_pipeline_trim(uint64_t frame, uint64_t used, uint64_t budget, int pressure) {
+    if (!P.ready || !budget || pressure <= 0 || pressure > 100 || used <= budget / 100 * (uint64_t)pressure) return;
+    VkPipeline retire[PIPE_TRIM_STEP * 3];
+    int np = 0, nl = 0, nr = 0;
+    plat_mutex_lock(&P.lock);
+    for (int i = 0; i < PIPE_BUCKETS && np < PIPE_TRIM_STEP; i++) {
+        for (Pipe *p = pipes[i]; p && np < PIPE_TRIM_STEP; p = p->next) {
+            if (!p->building && !p->job && !p->evicted && (p->info.pipeline || p->fast) &&
+                __atomic_load_n(&p->last_frame, __ATOMIC_RELAXED) + PIPE_TRIM_AGE <= frame) {
+                VkPipeline a = p->info.pipeline, b = p->fast;
+                p->info.pipeline = p->fast = VK_NULL_HANDLE, p->fast_tried = 0, p->evicted = 1;
+                if (a) retire[nr++] = a;
+                if (b && b != a) retire[nr++] = b;
+                np++;
+            }
+        }
+    }
+    for (int i = 0; i < LIB_BUCKETS && nl < PIPE_TRIM_STEP; i++) {
+        for (Lib *l = libs[i]; l && nl < PIPE_TRIM_STEP; l = l->next) {
+            if (!l->building && !l->job && !l->evicted && l->pipe &&
+                __atomic_load_n(&l->last_frame, __ATOMIC_RELAXED) + PIPE_TRIM_AGE <= frame) {
+                retire[nr++] = l->pipe;
+                l->pipe = VK_NULL_HANDLE, l->evicted = 1;
+                nl++;
+            }
+        }
+    }
+    P.stats.evicted += (uint64_t)nr;
+    plat_mutex_unlock(&P.lock);
+    for (int i = 0; i < nr; i++) vk_defer_pipeline(retire[i]);
+    if (nr) {
+        static volatile int32_t logged;
+        int32_t n = plat_inc32(&logged);
+        if (n <= 16 || n % 32 == 0)
+            rt_log("vk_pipeline: VRAM at %.0f of %.0f MiB (%d%%): evicted %d unused pipelines and %d stage libraries",
+                   used / 1048576.0, budget / 1048576.0, pressure, np, nl);
+    }
+}
 
 void vk_pipeline_stats(VkPipeStats *s) {
     plat_mutex_lock_shared(&P.lock);

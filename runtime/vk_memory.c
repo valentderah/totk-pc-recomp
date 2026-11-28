@@ -3048,7 +3048,7 @@ typedef struct {
     VkDeviceSize held;   // staging and scratch bytes freed when the batch completes (vk_upload_held)
 } Batch;
 
-enum { DEAD_IMAGE = 1, DEAD_IMAGE_VMA, DEAD_VIEW, DEAD_BUFFER_VMA, DEAD_HOST };   // DEAD_HOST: free(handle)
+enum { DEAD_IMAGE = 1, DEAD_IMAGE_VMA, DEAD_VIEW, DEAD_BUFFER_VMA, DEAD_HOST, DEAD_PIPELINE };
 typedef struct { int kind; uint64_t handle; VmaAllocation alloc; uint64_t seq, tl; } Dead;
 
 static PlatRMutex cmd_lock;
@@ -3103,6 +3103,10 @@ static void collect_locked(VkCtx *c) {
     retire(c, 0);
     uint64_t tl = 0;
     if (c->timeline) vkGetSemaphoreCounterValue(c->device, c->timeline, &tl);
+    static uint64_t pipeline_frame;
+    static int pipeline_destroyed;
+    uint64_t frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    if (frame != pipeline_frame) pipeline_frame = frame, pipeline_destroyed = 0;
     int k = 0;
     for (int i = 0; i < ndead; i++) {
         Dead *d = &dead[i];
@@ -3111,13 +3115,21 @@ static void collect_locked(VkCtx *c) {
             free((void *)(uintptr_t)d->handle);
             continue;
         }
-        rec_check_handle(d->kind == DEAD_VIEW ? REC_VIEW : d->kind == DEAD_BUFFER_VMA ? REC_BUFFER : REC_IMAGE, d->handle, 1,
-                         d->tl, tl);
+        // Driver pipeline destruction can hold its own lock for milliseconds. Four a frame keep the retire queue
+        // moving without turning cache pressure into a visible hitch.
+        if (d->kind == DEAD_PIPELINE && pipeline_destroyed >= 4) { dead[k++] = *d; continue; }
+        if (d->kind != DEAD_PIPELINE)
+            rec_check_handle(d->kind == DEAD_VIEW ? REC_VIEW : d->kind == DEAD_BUFFER_VMA ? REC_BUFFER : REC_IMAGE,
+                             d->handle, 1, d->tl, tl);
         switch (d->kind) {
         case DEAD_IMAGE: vkDestroyImage(c->device, (VkImage)(uintptr_t)d->handle, NULL); break;
         case DEAD_IMAGE_VMA: vmaDestroyImage(c->vma, (VkImage)(uintptr_t)d->handle, d->alloc); break;
         case DEAD_VIEW: vkDestroyImageView(c->device, (VkImageView)(uintptr_t)d->handle, NULL); break;
         case DEAD_BUFFER_VMA: vmaDestroyBuffer(c->vma, (VkBuffer)(uintptr_t)d->handle, d->alloc); break;
+        case DEAD_PIPELINE:
+            vkDestroyPipeline(c->device, (VkPipeline)(uintptr_t)d->handle, NULL);
+            pipeline_destroyed++;
+            break;
         }
     }
     ndead = k;
@@ -3446,10 +3458,11 @@ static void defer(int kind, uint64_t handle, VmaAllocation alloc, uint64_t min_t
     // Recomp and Savage Wind Recomp stamp every deferral with the submission being recorded (runtime/nvn/vulkan/
     // textures.c defer: vk_pending_seq).
     uint64_t tl = tl_noted;
-    if (kind != DEAD_HOST && tl > vk_sync_issued() && tl_noted_here != tl) n_cross_defer++, cross_defer_tl = tl;
+    if (kind != DEAD_HOST && kind != DEAD_PIPELINE && tl > vk_sync_issued() && tl_noted_here != tl)
+        n_cross_defer++, cross_defer_tl = tl;
     if (min_tl > tl) tl = min_tl;   // vk_defer_buffer_until
     dead[ndead++] = (Dead){kind, handle, alloc, open_active ? open_b.seq : next_seq, tl};
-    if (kind != DEAD_HOST)
+    if (kind != DEAD_HOST && kind != DEAD_PIPELINE)
         rec_check_handle(kind == DEAD_VIEW ? REC_VIEW : kind == DEAD_BUFFER_VMA ? REC_BUFFER : REC_IMAGE, handle, 0, tl,
                          vk_sync_fence_done());
     plat_rmutex_unlock(&cmd_lock);
@@ -3469,6 +3482,9 @@ void vk_defer_image(VkImage img, VmaAllocation alloc) {
 void vk_defer_view(VkImageView view) { if (view) defer(DEAD_VIEW, (uint64_t)(uintptr_t)view, NULL, 0); }
 void vk_defer_buffer(VkBuffer buf, VmaAllocation alloc) {
     if (buf) defer(DEAD_BUFFER_VMA, (uint64_t)(uintptr_t)buf, alloc, 0);
+}
+void vk_defer_pipeline(VkPipeline pipeline) {
+    if (pipeline) defer(DEAD_PIPELINE, (uint64_t)(uintptr_t)pipeline, NULL, 0);
 }
 // A buffer a submission of timeline value tl writes or reads that may not be submitted yet (vk_texture.c eager
 // write-back snapshots): it goes once the GPU has reached tl, whatever vk_mem_note_submit has seen.
