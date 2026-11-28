@@ -68,14 +68,14 @@ if not BUNDLED_LIST.is_file():
     BUNDLED_LIST = ROOT / 'data' / 'shader_list.tsv'          # release folder layout (tools/make_release.py)
 
 
-def read_list(path, supplement=True):
+def read_list(path, supplement=True, *, version=None):
     if path:
         text = Path(path).read_text(encoding='utf-8')
     elif BUNDLED_LIST.is_file():
         text = BUNDLED_LIST.read_text(encoding='utf-8')
     else:
         text = shader_list.history(ROOT / 'refs' / 'MacNativeGames')
-    return shader_list.merge_supplement(text) if supplement else text
+    return shader_list.merge_supplement(text) if supplement and shader_list.has_supplement(version) else text
 
 
 def pipeline_variants(key):
@@ -155,12 +155,12 @@ def main():
     ap.add_argument('--romfs', type=Path, help='RomFS directory (default build/extracted/<version>/romfs)')
     ap.add_argument('--exefs', type=Path, help='ExeFS directory (default build/extracted/<version>/exefs)')
     ap.add_argument('--list', help='a shader_list.tsv instead of tools/data/shader_list.tsv or refs/MacNativeGames')
-    ap.add_argument('--no-supplement', action='store_true', help='do not merge tools/data/shader_list_supplement.tsv')
+    ap.add_argument('--no-supplement', action='store_true', help='skip the 1.1.0 supplement to the selected shader list')
     ap.add_argument('--mvprev', action='store_true', help='also prepare mvprev=1 variants for vertex shaders')
     ap.add_argument('--no-run', action='store_true', help='write the seed files only')
     a = ap.parse_args()
     t0 = time.monotonic()
-    variants, prio = parse_list(read_list(a.list, supplement=not a.no_supplement))
+    variants, prio = parse_list(read_list(a.list, supplement=not a.no_supplement, version=a.version))
     extracted = ROOT / 'build' / 'extracted' / a.version
     listed = len(variants)
     shaders, _ = inventory(a.romfs or extracted / 'romfs', a.exefs or extracted / 'exefs', everything=False)

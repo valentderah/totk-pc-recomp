@@ -19,6 +19,11 @@ def git(repo, *args):
     return subprocess.run(['git', '-C', str(repo), *args], check=True, capture_output=True, encoding='utf-8').stdout
 
 
+def has_supplement(version):
+    """The shipped variant and priority rows were recorded on game update 1.1.0."""
+    return version in ('v110', '1.1.0')
+
+
 def merge_supplement(text, extra=SUPPLEMENT):
     """Append repo-owned supplement rows (new V variants and warm priorities) without duplicating lines."""
     if not extra or not Path(extra).is_file():

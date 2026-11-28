@@ -155,6 +155,9 @@ of them.
    .venv-py314\Scripts\python tools\prepare_shaders.py build\<ver> --version <ver>
    ```
 
+   Game update 1.1.0 adds the variants and warm priorities recorded for that update. Pass `--no-supplement` to
+   use the upstream list alone. Other updates already use only the upstream list.
+
    Without this step the first launch compiles shaders and pipelines during play and stutters until the caches fill.
    The AMD driver keeps its pipeline cache per exe path and holds a limited amount: preparing another build folder can
    evict this one's. `totk.exe --warm-shaders` rebuilds it from the shader cache.

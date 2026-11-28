@@ -75,10 +75,12 @@ class ShaderListPrepareTest(unittest.TestCase):
              mock.patch.object(sl, 'git', side_effect=lambda repo, cmd, *_: {
                  'rev-parse': 'false', 'show': base, 'log': 'upstream'}[cmd]):
             release = Path(tmp)
-            # No bundle: read upstream history from refs. The default still adds the repository rows.
+            # No bundle: read upstream history from refs. Only 1.1.0 adds the repository rows.
             with mock.patch.object(ps, 'BUNDLED_LIST', release / 'missing.tsv'):
-                self.assertEqual(ps.read_list(None, supplement=False), base)
-                merged = ps.read_list(None)
+                for version in ('v121', 'v143', None):
+                    self.assertEqual(ps.read_list(None, version=version), base)
+                self.assertEqual(ps.read_list(None, supplement=False, version='v110'), base)
+                merged = ps.read_list(None, version='v110')
                 self.assertNotEqual(merged, base)
 
             # Assemble the release sources; the base and supplement must also be separable without refs.
@@ -87,8 +89,10 @@ class ShaderListPrepareTest(unittest.TestCase):
             bundled = release / 'data' / 'shader_list.tsv'
             self.assertEqual((release / 'tools' / 'data' / sl.SUPPLEMENT.name).read_bytes(), sl.SUPPLEMENT.read_bytes())
             with mock.patch.object(ps, 'BUNDLED_LIST', bundled):
-                self.assertEqual(ps.read_list(None, supplement=False), base)
-                self.assertEqual(ps.read_list(None), merged)
+                for version in ('v121', 'v143', None):
+                    self.assertEqual(ps.read_list(None, version=version), base)
+                self.assertEqual(ps.read_list(None, supplement=False, version='v110'), base)
+                self.assertEqual(ps.read_list(None, version='v110'), merged)
 
     def test_unspecified_storage_image_format_roundtrips(self):
         _, _, ctrl, _, _, _ = fake_program(4)
@@ -186,6 +190,28 @@ class ShaderListPrepareTest(unittest.TestCase):
                 before = supp.read_bytes()
                 self.assertEqual(hsl.main(), 0)
                 self.assertEqual(supp.read_bytes(), before)
+
+    def test_cli_supplement_only_changes_110_seed(self):
+        key, _, ctrl, code, _, _ = fake_program()
+        inventory = {key: {'stage': 'vs', 'control': ctrl, 'code': code}}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            base = out / 'list.tsv'
+            base.write_bytes(b'')
+            extra = out / 'extra.tsv'
+            extra.write_text(f'V\t{key}\t{{"mvprev":true}}\nS\t{key}\t0\tt\n', encoding='utf-8')
+            argv = ['prepare_shaders.py', str(out), '--list', str(base), '--no-run']
+            merge = sl.merge_supplement
+            for args, expected in (([], [(0, 2)]), (['--version', 'v143'], [(0, 2)]),
+                                   (['--version', 'v110'], [(0x80, 0), (0, 0)]),
+                                   (['--version', 'v110', '--no-supplement'], [(0, 2)])):
+                with self.subTest(args=args), mock.patch.object(sys, 'argv', argv + args), \
+                     mock.patch.object(sl, 'merge_supplement', side_effect=lambda text: merge(text, extra)), \
+                     mock.patch.object(ps, 'inventory', return_value=(inventory, 0)):
+                    self.assertEqual(ps.main(), 0)
+                    records = (out / 'seed-answers.bin').read_bytes()[16:]
+                    ends = range(ps.ANS_REC, len(records) + 1, ps.ANS_REC)
+                    self.assertEqual([tuple(records[end - 2:end]) for end in ends], expected)
 
     def test_prepare_shaders_cli_with_mvprev_and_supplement(self):
         vs_key, _, vs_ctrl, vs_code, _, _ = fake_program(0, b'\x44' * 64, b'\x55' * 4)
