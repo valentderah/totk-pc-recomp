@@ -102,8 +102,8 @@ void vk_fg_exit_log(void);   // vk_backend.c gfx_exit_log: the run's counts and 
 // vk_backend.c present_image (testing, TOTK_FG_TEST): 1 = the frame's first generated picture, 2 = its picture before
 // the HUD in place of the window texture (*img, *fmt). 0: the present is left as it is.
 int vk_fg_present_swap(VkImage *img, VkFormat *fmt);
-// Nonzero while present_swap put a generated picture in place of the game's: it holds linear colour and needs the
-// same sRGB encoding as the generated pictures shown between real frames.
+// Nonzero while present_swap put a linear DLSS Frame Generation picture in place of the game's: it needs the same sRGB
+// encoding as the generated pictures shown between real frames. FSR 3's output is already in display space.
 int vk_fg_present_linear(void);
 // vk_backend.c present_image, after vk_dlaa_frame: the pictures generated between the last frame and the one just
 // ended, in display order, when presented is the window texture they were generated against (RGBA8 holding the window

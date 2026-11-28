@@ -980,8 +980,10 @@ static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w,
     // Colour adjustment (TOTK_COLOR_*, vk_color.c), or on an HDR10 swapchain the PQ encode (vk_hdr.c; the adjustment is
     // for SDR): a copy of the crop takes the game image's place below
     // DLSS Frame Generation writes its interpolated picture in linear space. Encode it once here so a generated
-    // picture and the game's sRGB-encoded real picture have the same brightness on the display.
-    int generated = pair == 1 || pair == 3 || (!pair && vk_fg_present_linear());
+    // picture and the game's sRGB-encoded real picture have the same brightness on the display. FSR 3 writes its
+    // generated picture in display space already.
+    int generated = ((pair == 1 || pair == 3) && vk_fg_engine() == VK_FG_DLSSG) ||
+                    (!pair && vk_fg_present_linear());
     VkImage graded = !general ? VK_NULL_HANDLE : g_sc_hdr ? vk_hdr_encode(cb, slot, src, fmt, rect)
                     : generated ? vk_color_record_srgb(cb, slot, src, fmt, rect)
                                 : vk_color_record(cb, slot, src, fmt, rect);

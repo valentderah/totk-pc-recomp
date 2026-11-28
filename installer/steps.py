@@ -1769,9 +1769,9 @@ class Shapes(Step):
 # ---- 7. NVIDIA DLSS
 
 # NVIDIA's DLSS libraries, which NGX loads from the folder of totk.exe (runtime/vk_dlaa.c). The setup does not ship
-# them: with --dlss it downloads NVIDIA's own copies from the DLSS SDK repository (NVIDIA RTX SDK license) at a pinned
-# tag and checks their hashes. The game runs without them; dlaa and DLSS upscaling need nvngx_dlss.dll, and DLSS Frame
-# Generation needs nvngx_dlssg.dll.
+# them: --dlss downloads nvngx_dlss.dll and --dlssg downloads nvngx_dlssg.dll from NVIDIA's DLSS SDK repository (NVIDIA
+# RTX SDK license) at a pinned tag and checks their hashes. The game runs without them; dlaa and DLSS upscaling need
+# nvngx_dlss.dll, and DLSS Frame Generation needs nvngx_dlssg.dll.
 DLSS_DLL = 'nvngx_dlss.dll'
 DLSS_VERSION = '310.9.1'
 DLSS_URL = f'https://raw.githubusercontent.com/NVIDIA/DLSS/v{DLSS_VERSION}/lib/Windows_x86_64/rel/{DLSS_DLL}'
@@ -1781,7 +1781,8 @@ DLSSG_DLL = 'nvngx_dlssg.dll'
 DLSSG_URL = f'https://raw.githubusercontent.com/NVIDIA/DLSS/v{DLSS_VERSION}/lib/Windows_x86_64/rel/{DLSSG_DLL}'
 DLSSG_SIZE = 7460976
 DLSSG_SHA256 = 'ff6e90eb78b827927dff5b4ecc6b1c870c2e9bca29ed9f48c7d348cc9e170b82'
-DLSS_FILES = ((DLSS_DLL, DLSS_URL, DLSS_SIZE, DLSS_SHA256), (DLSSG_DLL, DLSSG_URL, DLSSG_SIZE, DLSSG_SHA256))
+DLSS_FILES = ((DLSS_DLL, DLSS_URL, DLSS_SIZE, DLSS_SHA256),)
+DLSSG_FILES = ((DLSSG_DLL, DLSSG_URL, DLSSG_SIZE, DLSSG_SHA256),)
 DLSS_LICENSE = 'https://github.com/NVIDIA/DLSS/blob/main/LICENSE.txt'
 
 
@@ -1791,24 +1792,36 @@ def nvidia_rtx(host):
 
 
 class Dlss(Step):
-    """With --dlss on Windows and an NVIDIA RTX GPU: nvngx_dlss.dll and nvngx_dlssg.dll next to totk.exe. A DLSS
+    """With --dlss or --dlssg on Windows and an NVIDIA RTX GPU: the requested NVIDIA library next to totk.exe. A
     library the player put there (another version) is kept. A failed download warns and is tried again on the next
     run; the game runs without it."""
 
     id = 'dlss'
 
+    def files(self, ctx):
+        return ((DLSS_FILES if getattr(ctx.options, 'dlss', False) else ()) +
+                (DLSSG_FILES if getattr(ctx.options, 'dlssg', False) else ()))
+
     def key(self, ctx):
-        if not getattr(ctx.options, 'dlss', False):
+        dlss = getattr(ctx.options, 'dlss', False)
+        dlssg = getattr(ctx.options, 'dlssg', False)
+        if not dlss and not dlssg:
             return fingerprint('dlss-1', 'off')
+        if not dlssg:
+            # DLSS-only installs keep the key from before frame generation existed.
+            return fingerprint('dlss-1', DLSS_VERSION, DLSS_SHA256)
+        # This is also the key written by the earlier combined-download build, so an install that already has both
+        # files does not rerun merely because the download is now an explicit choice.
         return fingerprint('dlss-2', DLSS_VERSION, DLSS_SHA256, DLSSG_SHA256)
 
     def current(self, ctx, record):
         if record.get('failed'):
             return False
-        return not record.get('installed') or all((ctx.dest / name).is_file() for name, *_ in DLSS_FILES)
+        return not record.get('installed') or all((ctx.dest / name).is_file() for name, *_ in self.files(ctx))
 
     def run(self, ctx):
-        if not getattr(ctx.options, 'dlss', False):
+        files = self.files(ctx)
+        if not files:
             return {}
         if os.name != 'nt':
             return {'skipped': 'not_windows'}
@@ -1819,7 +1832,7 @@ class Dlss(Step):
         rep = ctx.reporter
         missing = []
         kept = False
-        for name, url, size, sha in DLSS_FILES:
+        for name, url, size, sha in files:
             target = ctx.dest / name
             if target.is_file():
                 if file_sha256(target) != sha:

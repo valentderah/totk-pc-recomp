@@ -237,9 +237,11 @@ class FormTest(unittest.TestCase):
     def test_command(self):
         firmware = self.dir / 'firmware'
         firmware.mkdir()
-        cmd = self.form(firmware=str(firmware)).command('py.exe', root=ROOT, temp=self.dir / 't', verify_hashes=True)
+        cmd = self.form(firmware=str(firmware), dlss=True, dlssg=True).command(
+            'py.exe', root=ROOT, temp=self.dir / 't', verify_hashes=True)
         self.assertEqual(cmd[:3], ['py.exe', '-m', 'installer'])
-        for flag in ('--base', '--update', '--keys', '--firmware', '--lang', '--dest', '--root', '--temp', '--verify'):
+        for flag in ('--base', '--update', '--keys', '--firmware', '--lang', '--dest', '--root', '--temp', '--verify',
+                     '--dlss', '--dlssg'):
             self.assertIn(flag, cmd)
         self.assertEqual(cmd[cmd.index('--firmware') + 1], str(firmware))
         self.assertEqual(cmd[cmd.index('--lang') + 1], 'en-US')

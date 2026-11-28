@@ -159,6 +159,7 @@ class Form:
     lang: str = ''
     dest: str = ''
     dlss: bool = False
+    dlssg: bool = False
     fsr: bool = False
 
     def installed_state(self):
@@ -212,6 +213,8 @@ class Form:
             cmd.append('--verify')
         if self.dlss:
             cmd.append('--dlss')
+        if self.dlssg:
+            cmd.append('--dlssg')
         if self.fsr:
             cmd.append('--fsr')
         return cmd

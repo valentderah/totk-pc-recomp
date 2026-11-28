@@ -123,9 +123,10 @@ loads the saves 1.4.3 wrote.
 9. **DLSS** (the window's tick box, on by default, or `--dlss`; Windows with an NVIDIA RTX GPU): download
    `nvngx_dlss.dll` from NVIDIA's own DLSS SDK repository (github.com/NVIDIA/DLSS, a pinned tag, NVIDIA RTX SDK
    license) into the install folder and check its size and SHA-256 (`steps.py`, `Dlss`). The release does not ship
-   the library; NGX loads it from the folder of totk.exe for `dlaa` and the DLSS modes. A DLSS library already in the
-   folder (a newer one the player put there) is kept. Without an RTX GPU the step only logs and does nothing; a failed
-   download warns, the game runs without DLSS, and the next run of the setup tries again.
+   the library; NGX loads it from the folder of totk.exe for `dlaa` and the DLSS modes. The separate frame-generation
+   box (off by default, or `--dlssg`) downloads `nvngx_dlssg.dll` the same way for `frame_gen = dlssg`. A DLSS library
+   already in the folder (a newer one the player put there) is kept. Without an RTX GPU the step only logs and does
+   nothing; a failed download warns, the game runs without that feature, and the next run of the setup tries again.
 10. **FSR** (the window's tick box, on by default when Windows lists an AMD display adapter, `screens.py`
    `windows_adapter_names`; or `--fsr`; Windows): download
    `amd_fidelityfx_loader_vk.dll` and `amd_fidelityfx_upscaler_vk.dll` from AMD's FSR SDK repository

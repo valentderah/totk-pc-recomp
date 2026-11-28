@@ -1,5 +1,5 @@
 """Command line: python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR [--firmware DIR]
-                                     [--root DIR] [--temp DIR] [--verify] [--dlss] [--fsr]
+                                     [--root DIR] [--temp DIR] [--verify] [--dlss] [--dlssg] [--fsr]
 
 A first install needs every option. --firmware names the Switch firmware folder (an unpacked firmware or an emulator's
 Contents/registered); the setup extracts the system shared fonts from it when the language is Chinese, Korean or
@@ -8,8 +8,9 @@ release) only --dest is needed: --lang defaults to the recorded language, and th
 extraction has to run again. Prints JSON events on stdout (events.py). Exit code: 0 done, 1 failed, 2 bad command
 line, 3 cancelled (Ctrl+C or Ctrl+Break).
 
---dlss downloads NVIDIA's DLSS library (nvngx_dlss.dll) from NVIDIA's DLSS SDK repository into the install folder on
-Windows with an NVIDIA RTX GPU (steps.py, Dlss). --fsr downloads AMD's FSR loader and upscaler
+--dlss and --dlssg download NVIDIA's DLSS upscaling and frame-generation libraries (nvngx_dlss.dll and
+nvngx_dlssg.dll) from NVIDIA's DLSS SDK repository into the install folder on Windows with an NVIDIA RTX GPU (steps.py,
+Dlss). --fsr downloads AMD's FSR loader and upscaler
 (amd_fidelityfx_loader_vk.dll, amd_fidelityfx_upscaler_vk.dll) from AMD's FSR SDK repository into the install folder on
 Windows, for scene_upscaler = fsr4; the libraries decide which GPUs get FSR 4 (steps.py, Fsr).
 """
@@ -53,6 +54,8 @@ def main(argv=None):
     ap.add_argument('--verify', action='store_true', help='hash every kept file, also those this release made')
     ap.add_argument('--dlss', action='store_true', help="download NVIDIA's nvngx_dlss.dll (NVIDIA RTX SDK license) next "
                                                       'to the game, for dlaa and the DLSS modes')
+    ap.add_argument('--dlssg', action='store_true', help="download NVIDIA's nvngx_dlssg.dll (NVIDIA RTX SDK license) "
+                                                        'next to the game, for DLSS frame generation')
     ap.add_argument('--fsr', action='store_true', help="download AMD's FSR loader and upscaler DLLs (AMD FSR SDK "
                                                      'license) next to the game, for scene_upscaler = fsr4')
     args = ap.parse_args(argv)

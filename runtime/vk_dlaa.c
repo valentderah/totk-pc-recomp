@@ -1616,7 +1616,10 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     VkImageView zv = vk_exec_target_view(z->img, z->format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT, z->level,
                                          z->base_layer, 1, 0);
     float jx = D.jit_used ? D.ux : 0.0f, jy = D.jit_used ? D.uy : 0.0f;
-    const float *rows = !D.fsr && D.cam_addr ? (const float *)vk_usnap_bytes(D.cam_addr, 11 * 16) : NULL;
+    // DLSS Frame Generation needs the camera for its interpolation. Reading it for ordinary DLSS too made every
+    // camera cut reset DLSS's history, although the history handling below already covers ordinary DLSS.
+    int dlssg = D.fg && vk_fg_engine() == VK_FG_DLSSG;
+    const float *rows = dlssg && D.cam_addr ? (const float *)vk_usnap_bytes(D.cam_addr, 11 * 16) : NULL;
     VkFgScene cam = {.near_m = 0.1f, .far_m = 25000.0f, .fov_y = 0.8727f};
     int cut = rows && vk_fg_camera(rows, nvn_depth_minus_w(), D.cam_dr, &cam);
     if (cut) D.reset = 1, D.why[1]++;
@@ -1713,7 +1716,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     if (timed) T.cpu_ngx += kern_now_ns() - c0;
     if (!NGX_OK(r)) return dl_fail("DLSS evaluation", r);
 engine_done:
-    if (vk_fg_engine() == VK_FG_DLSSG && rows)
+    if (dlssg && rows)
         D.fg_mv_ok = dlssg_scene_ready(e, t, z, jx, jy, D.reset, &cam, ow, oh);
     if (timed) times_mark(cb, T_DL1);   // through the recorder, after NGX's or FSR's own commands
     D.reset = 0;

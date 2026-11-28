@@ -151,6 +151,8 @@
  "ui.firmware_help": "Для текста на китайском и корейском: папка Contents/registered прошивки, например из Ryujinx или Yuzu. Установка скопирует из неё системные шрифты Switch в папку установки.",
  "ui.dlss": "Загрузить NVIDIA DLSS (nvngx_dlss.dll) для видеокарт NVIDIA RTX",
  "ui.dlss_help": "Из DLSS SDK от NVIDIA на GitHub, по лицензии NVIDIA RTX SDK (github.com/NVIDIA/DLSS). Без него настройки dlaa и DLSS ничего не делают.",
+ "ui.dlssg": "Загрузить NVIDIA DLSS Frame Generation (nvngx_dlssg.dll) для видеокарт NVIDIA RTX",
+ "ui.dlssg_help": "Из DLSS SDK от NVIDIA на GitHub, по лицензии NVIDIA RTX SDK (github.com/NVIDIA/DLSS). Без него frame_gen = dlssg не работает.",
  "ui.fsr": "Загрузить AMD FSR 4 (библиотеки FSR SDK от AMD) для видеокарт AMD Radeon",
  "ui.fsr_help": "Из FSR SDK от AMD на GitHub, по лицензии AMD FSR SDK (github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK). С ними работает вариант AMD FSR 4 в апскейлере 3D-сцены на тех видеокартах Radeon, для которых библиотеки AMD предлагают FSR 4; без них этот выбор ничего не делает. Отмечено по умолчанию, если в компьютере есть видеокарта AMD.",
  "ui.compressed_help": "Сжатые файлы NSZ и XCZ подходят как есть: установка сама их распакует (для этого, пока извлекаются данные игры, нужно столько свободного места, сколько занимают распакованные файлы).",

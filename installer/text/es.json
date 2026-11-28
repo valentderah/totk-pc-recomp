@@ -145,6 +145,8 @@
  "ui.firmware_help": "Para texto en chino, coreano y chino tradicional: la carpeta Contents/registered del firmware, por ejemplo de Ryujinx o Yuzu. El instalador copia de ella las fuentes del sistema de Switch a la carpeta de instalación.",
  "ui.dlss": "Descargar NVIDIA DLSS (nvngx_dlss.dll) para tarjetas gráficas NVIDIA RTX",
  "ui.dlss_help": "Del DLSS SDK de NVIDIA en GitHub, bajo la licencia RTX SDK de NVIDIA (github.com/NVIDIA/DLSS). Hace que funcionen los ajustes dlaa y DLSS; sin él no hacen nada.",
+ "ui.dlssg": "Descargar NVIDIA DLSS Frame Generation (nvngx_dlssg.dll) para tarjetas gráficas NVIDIA RTX",
+ "ui.dlssg_help": "Del DLSS SDK de NVIDIA en GitHub, bajo la licencia RTX SDK de NVIDIA (github.com/NVIDIA/DLSS). Hace que funcione frame_gen = dlssg; sin él, este generador de fotogramas no hace nada.",
  "ui.fsr": "Descargar AMD FSR 4 (bibliotecas del FSR SDK de AMD) para tarjetas gráficas AMD Radeon",
  "ui.fsr_help": "Del FSR SDK de AMD en GitHub, bajo la licencia FSR SDK de AMD (github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK). Hace que funcione la opción AMD FSR 4 del escalador de la escena 3D en las tarjetas Radeon para las que las bibliotecas de AMD ofrecen FSR 4; sin ellas esa opción no hace nada. Viene marcada si el equipo tiene una tarjeta gráfica AMD.",
  "ui.compressed_help": "Los archivos comprimidos NSZ y XCZ funcionan tal cual: el instalador los descomprime por sí mismo (hasta que se extraen los datos del juego, necesita tanto espacio libre como ocupan los archivos descomprimidos).",

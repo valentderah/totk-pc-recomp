@@ -1239,4 +1239,4 @@ extern "C" int vk_fg_present_swap(VkImage *img, VkFormat *fmt) {
     return 1;
 }
 
-extern "C" int vk_fg_present_linear(void) { return g.test == 1; }
+extern "C" int vk_fg_present_linear(void) { return g.test == 1 && vk_fg_engine() == VK_FG_DLSSG; }
