@@ -24,6 +24,7 @@ typedef struct {
     const SwkbdRequest *req;
     uint16_t text[KB_LIMIT + 1];
     size_t n;
+    int selected;                // initial text is selected until the first accepted edit
     int sel;                     // the grid cell the controller's cursor is on
     int lower;                   // the grid shows and types lower case letters
     int result;                  // 1 OK, -1 Cancel, 0 still open
@@ -84,7 +85,7 @@ static void draw(const Box *b) {
     } else {
         swkbd_utf16_to_utf8(b->text, b->n, text, sizeof text);
     }
-    snprintf(line, sizeof line, "%s_", text);
+    snprintf(line, sizeof line, "%s%s", text, b->selected ? "" : "_");
     // the debug font draws ASCII: the hints are the catalog's English text whatever the game's language
     snprintf(pad1, sizeof pad1, ui_text_in("en", UI_SWKBD_SDL_PAD_HINT1), face_label(b, SDL_GAMEPAD_BUTTON_SOUTH, "A"),
              face_label(b, SDL_GAMEPAD_BUTTON_EAST, "B"));
@@ -95,6 +96,15 @@ static void draw(const Box *b) {
     SDL_SetRenderScale(b->ren, 4.0f, 4.0f);
     SDL_SetRenderDrawColor(b->ren, 240, 240, 240, 255);
     SDL_RenderDebugText(b->ren, 4, 4, prompt);
+    if (b->selected) {
+        size_t chars = 0;
+        for (size_t i = 0; i < b->n; i++)
+            if (b->text[i] < 0xdc00 || b->text[i] >= 0xe000) chars++;
+        SDL_FRect selection = {4.0f, 20.0f, (float)(chars < 39 ? chars : 39) * 8.0f, 8.0f};
+        SDL_SetRenderDrawColor(b->ren, 64, 96, 160, 255);
+        SDL_RenderFillRect(b->ren, &selection);
+        SDL_SetRenderDrawColor(b->ren, 240, 240, 240, 255);
+    }
     SDL_RenderDebugText(b->ren, 4, 20, line);
     for (int i = 0; i < GRID_N; i++) {
         float x = 4.0f + (float)(i % GRID_COLS) * 14.0f, y = 40.0f + (float)(i / GRID_COLS) * 18.0f;
@@ -162,7 +172,12 @@ static void close_box(Box *b) {
     plat_event_set(&b->done);
 }
 
-// Appends typed UTF-16 within the game's limits: a surrogate pair goes in whole or not at all (as clean in swkbd.c),
+static void clear_selection(Box *b) {
+    if (b->selected) b->n = 0, b->selected = 0;
+}
+
+// Replaces the initial selection on the first accepted character, then appends UTF-16 within the game's limits.
+// A surrogate pair goes in whole or not at all (as clean in swkbd.c),
 // and a number pad takes digits only.
 static void add_text(Box *b, const uint16_t *u, size_t k) {
     const SwkbdRequest *r = b->req;
@@ -170,15 +185,20 @@ static void add_text(Box *b, const uint16_t *u, size_t k) {
     for (size_t i = 0; i < k; i++) {
         int pair = u[i] >= 0xd800 && u[i] < 0xdc00 && i + 1 < k && u[i + 1] >= 0xdc00 && u[i + 1] < 0xe000;
         if (pair) {
-            if (!r->numeric && b->n + 2 <= max) b->text[b->n++] = u[i], b->text[b->n++] = u[i + 1];
+            if (!r->numeric && (b->selected ? 0 : b->n) + 2 <= max) {
+                clear_selection(b);
+                b->text[b->n++] = u[i], b->text[b->n++] = u[i + 1];
+            }
             i++;
-        } else if (b->n < max && swkbd_allowed(u[i], r->disabled, r->numeric)) {
+        } else if ((b->selected ? 0 : b->n) < max && swkbd_allowed(u[i], r->disabled, r->numeric)) {
+            clear_selection(b);
             b->text[b->n++] = u[i];
         }
     }
 }
 
 static void delete_last(Box *b) {
+    if (b->selected) { clear_selection(b); return; }
     if (!b->n) return;
     int pair = b->n >= 2 && b->text[b->n - 1] >= 0xdc00 && b->text[b->n - 1] < 0xe000 && b->text[b->n - 2] >= 0xd800 &&
                b->text[b->n - 2] < 0xdc00;
@@ -281,6 +301,7 @@ int text_entry_run(const SwkbdRequest *req, uint16_t *out, size_t cap, size_t *n
     while (k < KB_LIMIT && req->initial[k]) k++;
     memcpy(b.text, req->initial, k * 2);
     b.n = k;
+    b.selected = k != 0;
     if (gfx_window_sdl()) {
         plat_event_init(&b.done, 1, 0);
         gfx_window_sdl_run(open_box, &b);
