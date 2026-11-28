@@ -85,6 +85,7 @@ void gfx_window_closed(void) {
     rt_log("gfx: window closed; %s", restart ? "restarting" : "exiting");
     fs_failed_summary();
     fs_save_flush();
+    cfg_save();   // a menu edit may still be inside its 400 ms write debounce
     vk_pipeline_save();
     playtime_save();
     prof_write();   // plat_exit runs no atexit handlers
