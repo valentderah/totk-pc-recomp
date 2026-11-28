@@ -78,16 +78,18 @@ static int write_frame(PlatIpc *p, uint32_t op, const char *json) {
 
 // One frame off the wire, its 8-byte header in as many reads as the peer made, then its payload; a payload longer
 // than cap-1 fills buf with its first cap-1 bytes and the rest is still consumed. *op gets the opcode; buf is
-// NUL-terminated. 1 on a whole frame, 0 when the deadline passed, -1 when the connection broke.
+// NUL-terminated. 1 on a whole frame, 0 when the deadline passed before any bytes arrived, -1 when the connection
+// broke or an incomplete frame timed out. Partial frame state is local, so that connection cannot be reused safely.
 static int read_one_frame(PlatIpc *p, uint32_t *op, char *buf, size_t cap, uint64_t deadline) {
     uint8_t head[8];
     size_t got = 0;
     while (got < sizeof head) {
-        uint32_t left = deadline > plat_now_ms() ? (uint32_t)(deadline - plat_now_ms()) : 0;
+        uint64_t now = plat_now_ms();
+        uint32_t left = deadline > now ? (uint32_t)(deadline - now) : 0;
         int n = plat_ipc_read(p, head + got, sizeof head - got, left);
         if (n < 0) return -1;
         if (!n) {
-            if (plat_now_ms() >= deadline) return 0;
+            if (plat_now_ms() >= deadline) return got ? -1 : 0;
             continue;
         }
         got += (size_t)n;
@@ -95,13 +97,19 @@ static int read_one_frame(PlatIpc *p, uint32_t *op, char *buf, size_t cap, uint6
     *op = head[0] | head[1] << 8 | head[2] << 16 | (uint32_t)head[3] << 24;
     uint32_t len = head[4] | head[5] << 8 | head[6] << 16 | (uint32_t)head[7] << 24;
     size_t taken = 0;
+    char discard[1024];
     while (taken < len) {
-        size_t want = len - taken > cap - 1 ? cap - 1 : len - taken;
-        uint32_t left = deadline > plat_now_ms() ? (uint32_t)(deadline - plat_now_ms()) : 0;
-        int n = plat_ipc_read(p, buf, want, left);
+        // Keep each fragment after the previous one. Once the retained prefix is full, consume the suffix elsewhere
+        // so the next frame stays aligned without overwriting the bytes the caller will use.
+        size_t room = taken < cap - 1 ? cap - 1 - taken : 0;
+        size_t chunk = room ? room : sizeof discard;
+        size_t want = len - taken > chunk ? chunk : len - taken;
+        uint64_t now = plat_now_ms();
+        uint32_t left = deadline > now ? (uint32_t)(deadline - now) : 0;
+        int n = plat_ipc_read(p, room ? buf + taken : discard, want, left);
         if (n < 0) return -1;
         if (!n) {
-            if (plat_now_ms() >= deadline) return 0;
+            if (plat_now_ms() >= deadline) return -1;
             continue;
         }
         taken += (size_t)n;
@@ -160,8 +168,8 @@ static uint32_t next_nonce(void) {
 // The activity as one SET_ACTIVITY frame: the game update and the port version as the details line ("Game 1.4.3 ·
 // Recomp 0.3.7": the port version without its +commit suffix, the art's hover text keeps the full one; the dot goes
 // as a JSON escape), the process's start as the timestamp Discord counts the elapsed time from, and the application's
-// art asset. 1 when the client answered (a slow answer that ran out of the 2 s read is fine: the next drain takes
-// it), 0 when the connection broke.
+// art asset. 1 when the client answered or no answer bytes arrived before the 2 s deadline (the next drain can take
+// a later whole frame), 0 when the connection broke or a partial answer timed out and lost its frame boundary.
 static int send_activity(PlatIpc *p, const char *image) {
     char json[512];
     int v = rt_game_version;
