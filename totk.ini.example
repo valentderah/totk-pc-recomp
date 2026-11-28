@@ -77,6 +77,11 @@
 # threads add little. Needs 8 or more logical processors to help. Contact shadows and DLSS (dlaa = 1) run in chunks too.
 # Read at start.
 # replay_workers = 0
+
+# Shrine floor depth snapshots during sequential replay. 0 disables them, 1 reuses eligible snapshots (default),
+# and 2 copies before every eligible draw. Chunked replay uses the standard feedback handling.
+# feedback_r32_copy = 1
+# feedback_debug = 0
 # EXPERIMENTAL, THE GAME CRASHES WITH 1. 1 lifts the virtual core gate: guest threads run without the console's limit
 # of one thread per core, and the game keeps per-core data without locks. With 1, 1.2.1 and 1.4.3 crash or hang,
 # usually at start (#212). Keep 0 to play.
