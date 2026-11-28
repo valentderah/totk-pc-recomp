@@ -367,6 +367,8 @@ static struct {
                                  // target and its scaling draw came / the copy into the window texture came / the
                                  // generation ran (vk_dlaa_sub_end)
     VkExecTarget hud_t, win;     // the output-sized target the scene is scaled into; the window texture
+    VkExecTarget fg_pic;         // the float picture the HUD-less copy was taken from
+    int fg_hdr;                  // the swapchain was HDR10 then: the float picture is interpolated, not the window texture
     float cam_dr[2];             // the viewport depth range of the draw cam_addr was noted at
     int fg_mv_ok;                // the frame's motion is in the motion image (fg_motion)
     int fsr;                     // the AMD FSR engine (UPSCALER_FSR3 or UPSCALER_FSR4, picked at start), 0: DLSS
@@ -1853,9 +1855,10 @@ void vk_dlaa_hud(VkExec *ex) {
     if (rgba8(c->format)) D.win = *c, D.fin = 1;   // no HUD this frame: this draw is the copy
     uint64_t c0 = kern_now_ns();
     VkExecTarget p = *pic;
+    D.fg_pic = p, D.fg_hdr = vk_hdr_active();
     vk_exec_pass_end(ex);
     vk_exec_barrier(ex);   // what drew the picture is done
-    vk_fg_hudless(ex->cb, p.image, p.format, p.level, p.base_layer, p.width, p.height);
+    vk_fg_hudless(ex->cb, p.image, p.format, p.level, p.base_layer, p.width, p.height, D.fg_hdr);
     ex->recorded += 4;
     ex->dirty = VK_EXEC_DIRTY_ALL;
     vk_exec_pass_begin(ex);
@@ -1868,7 +1871,24 @@ void vk_dlaa_sub_end(VkExec *ex) {
     uint64_t c0 = kern_now_ns();
     vk_exec_barrier(ex);   // the window texture is drawn
     const VkExecTarget *w = &D.win;
-    if (!w->level && !w->base_layer)
+    if (D.fg_hdr) {   // the present will read the float picture the window texture was copied from: only that one fits
+        VkImage src = VK_NULL_HANDLE;
+        VkFormat sf = VK_FORMAT_UNDEFINED;
+        int copied = vk_hdr_copy_source(w->image, &src, &sf);
+        if (copied && src == D.fg_pic.image && sf == D.fg_pic.format) {
+            w = &D.fg_pic;
+        } else {
+            // (a window texture's first frame always lands here: vk_hdr.c tracks it from its first present)
+            static int said;
+            if (said < 4)
+                said++, rt_log("fg: HDR: the window texture's last draw %s (format %d; the HUD-less picture's is %d): "
+                                 "no frame generated for such frames", !copied ? "is not a copy of a float picture"
+                                 : "copies another float picture than the one taken before the HUD", (int)sf,
+                                 (int)D.fg_pic.format);
+            w = NULL;
+        }
+    }
+    if (w && !w->level && !w->base_layer)
         vk_fg_generate(ex->cb, ex->fence, __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1, w->image, w->format,
                        w->width, w->height);
     ex->recorded += 4;

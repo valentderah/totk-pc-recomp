@@ -22,8 +22,8 @@
 # frame_queue = 0
 # Frame generation: off, or fsr3 (AMD FSR 3 frame interpolation). A generated picture goes on screen between each two
 # the game draws: twice the pictures, the game at half of fps_limit (the limit counts the pictures shown), the controls
-# about half a frame later. For displays of 120 Hz and more; off with DLSS, FSR (scene_upscaler) or HDR, and in
-# menus and fades. Applies at once.
+# about half a frame later. For displays of 120 Hz and more; off with DLSS or FSR (scene_upscaler), and in menus and
+# fades. Works with HDR output (hdr = 1). Applies at once.
 # frame_gen = off
 # Real-time frame step: game speed follows the clock instead of the frame count.
 # realtime = 1

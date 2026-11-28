@@ -141,7 +141,10 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
   shown at the HUD's white); a compute pass turns the picture into PQ code values in Rec. 2020 for an HDR10
   swapchain, which FSR 1 or the blit then scale; the in-game menu is drawn into an RGBA8 image and blended on at the
   HUD's white. Without an HDR10 surface format (Windows with "Use HDR" off, a compositor without colour management)
-  the swapchain stays SDR. `TOTK_SHOTS` reads the window texture, so its pictures clip highlights in HDR.
+  the swapchain stays SDR. `TOTK_SHOTS` reads the window texture, so its pictures clip highlights in HDR. Frame
+  generation (`frame_gen = fsr3`, `vk_fg.cpp`) then interpolates that float target instead of the window texture: the
+  FidelityFX SDK takes it as scRGB, the picture before the HUD is a copy of the same target taken before the HUD's
+  first draw, and the generated frame is an RGBA16F image the same compute pass encodes.
 - DLAA (`vk_dlaa.c`, `dlaa`, off by default). NVIDIA DLSS at the scene's own size, through the driver's NGX core loaded
   at run time (no SDK code compiled in). It runs on the R11G11B10F light target right before the bloom chain's first
   pass, so post effects and the HUD read the anti-aliased picture. The scene's draws get a sub-pixel Halton viewport
