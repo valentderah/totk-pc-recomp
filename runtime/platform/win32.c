@@ -1375,15 +1375,25 @@ int plat_fs_list(const char *dir, int (*cb)(const char *name, int kind, uint64_t
     WIN32_FIND_DATAW fd;
     HANDLE h = FindFirstFileW(pat, &fd);
     if (h == INVALID_HANDLE_VALUE) return fs_err(GetLastError());
-    do {
-        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
-        char name[1024];
-        if (!WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, name, sizeof name, NULL, NULL)) continue;
-        int kind = fs_kind_of(&fd);
-        if (!cb(name, kind, (uint64_t)fd.nFileSizeHigh << 32 | fd.nFileSizeLow, ctx)) break;
-    } while (FindNextFileW(h, &fd));
+    int result = PLAT_FS_OK;
+    for (;;) {
+        if (wcscmp(fd.cFileName, L".") && wcscmp(fd.cFileName, L"..")) {
+            char name[1024];
+            if (!WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, name, sizeof name, NULL, NULL)) {
+                result = PLAT_FS_ERROR;
+                break;
+            }
+            int kind = fs_kind_of(&fd);
+            if (!cb(name, kind, (uint64_t)fd.nFileSizeHigh << 32 | fd.nFileSizeLow, ctx)) break;
+        }
+        if (!FindNextFileW(h, &fd)) {
+            DWORD error = GetLastError();
+            if (error != ERROR_NO_MORE_FILES) result = fs_err(error);
+            break;
+        }
+    }
     FindClose(h);
-    return PLAT_FS_OK;
+    return result;
 }
 
 static PlatFile *fs_open(const char *path, DWORD access, DWORD share, DWORD how, int *err) {

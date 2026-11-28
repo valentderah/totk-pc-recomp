@@ -1158,15 +1158,26 @@ int plat_fs_mtime(const char *path, int64_t *posix_seconds) {
 int plat_fs_list(const char *dir, int (*cb)(const char *name, int kind, uint64_t size, void *ctx), void *ctx) {
     DIR *d = opendir(dir);
     if (!d) return fs_err(errno);
-    for (struct dirent *e; (e = readdir(d));) {
+    int result = PLAT_FS_OK;
+    for (;;) {
+        // A callback may use errno too: only readdir's own error distinguishes failure from the end.
+        errno = 0;
+        struct dirent *e = readdir(d);
+        if (!e) {
+            if (errno) result = fs_err(errno);
+            break;
+        }
         if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
         struct stat st;
-        if (fstatat(dirfd(d), e->d_name, &st, AT_SYMLINK_NOFOLLOW)) continue;
+        if (fstatat(dirfd(d), e->d_name, &st, AT_SYMLINK_NOFOLLOW)) {
+            result = fs_err(errno);
+            break;
+        }
         int kind = S_ISLNK(st.st_mode) ? PLAT_FS_LINK : S_ISDIR(st.st_mode) ? PLAT_FS_DIR : PLAT_FS_FILE;
         if (!cb(e->d_name, kind, kind == PLAT_FS_FILE ? (uint64_t)st.st_size : 0, ctx)) break;
     }
     closedir(d);
-    return PLAT_FS_OK;
+    return result;
 }
 
 PlatFile *plat_fs_open(const char *path, int write, int *err) {
