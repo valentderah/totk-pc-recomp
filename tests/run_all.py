@@ -98,6 +98,8 @@ TESTS = {
                                  'the release launcher runs installer on the embeddable Python'),
     'installer_gui_test':       ('.venv-py314', 'gui', [],
                                  'drives the installer window; needs an interactive desktop'),
+    'frame_gen_visual_test':    ('.venv-py314', 'exe+gui', ['--exe', '<exe>'],
+                                 'runs FSR generated-frame and DLSS camera-reset visual regressions'),
 }
 
 

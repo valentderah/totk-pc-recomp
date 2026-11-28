@@ -9,12 +9,18 @@ layout(push_constant) uniform P {
     ivec2 offset;   // the crop rectangle's corner in src
     ivec2 size;     // its size, the size of dst
     vec4 adj;       // brightness (added), contrast, saturation, gamma (exponent)
+    uint srgb_encode; // DLSS Frame Generation's interpolated colour is linear; encode it before the other settings
 } pc;
 
 void main() {
     ivec2 p = ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(p, pc.size))) return;
     vec3 c = texelFetch(src, p + pc.offset, 0).rgb;
+    if (pc.srgb_encode != 0u) {
+        vec3 lo = c * 12.92;
+        vec3 hi = 1.055 * pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
+        c = mix(lo, hi, greaterThan(c, vec3(0.0031308)));
+    }
     c += pc.adj.x;
     c = (c - 0.5) * pc.adj.y + 0.5;
     c = mix(vec3(dot(c, vec3(0.2126, 0.7152, 0.0722))), c, pc.adj.z);

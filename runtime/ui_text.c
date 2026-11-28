@@ -219,9 +219,17 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_QUEUE_DESC] = "The game starts a frame while the previous one waits for its turn on screen: far fewer "
                                  "dropped frames at the limit, up to one frame more input delay. Applies at once.",
     [UI_MENU_FRAME_GEN] = "Frame generation", [UI_MENU_FRAME_GEN_OFF] = "Off", [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
-    [UI_MENU_FRAME_GEN_DESC] = "A generated picture between each two the game draws: twice the pictures on screen, the "
-                               "game at half the frame limit and the controls about half a frame later. For displays "
-                               "of 120 Hz and more. Not with DLSS or HDR. Applies at once.",
+    [UI_MENU_FRAME_GEN_DLSSG] = "NVIDIA DLSS",
+    [UI_MENU_FRAME_GEN_DESC] = "Inserts generated pictures between the frames the game draws. AMD FSR 3 inserts one; "
+                               "NVIDIA DLSS inserts one to three on supported RTX GPUs. The game draws less often so "
+                               "the display can show every picture. DLSS works with DLSS upscaling; neither generator "
+                               "works with FSR upscaling or HDR. FSR 3 applies at once; selecting DLSS needs a restart.",
+    [UI_MENU_DLSSG_FRAMES] = "DLSS generated frames",
+    [UI_MENU_DLSSG_FRAMES_AUTO] = "Automatic", [UI_MENU_DLSSG_FRAMES_2X] = "2x",
+    [UI_MENU_DLSSG_FRAMES_3X] = "3x", [UI_MENU_DLSSG_FRAMES_4X] = "4x",
+    [UI_MENU_DLSSG_FRAMES_DESC] = "Pictures shown for each picture the game draws. Automatic uses the maximum this GPU "
+                                  "supports: 2x on RTX 40, up to 4x with Multi Frame Generation on RTX 50. Higher "
+                                  "settings need more VRAM and a faster display.",
     [UI_MENU_REALTIME] = "Game speed follows the clock",
     [UI_MENU_REALTIME_DESC] = "Steps the game by real time, so a slow frame does not slow the game down.",
     [UI_MENU_CLOTH_REALTIME] = "Cloth on the clock",
@@ -901,9 +909,20 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_QUEUE_DESC] = "Игра начинает кадр, пока предыдущий ждёт показа: намного меньше пропущенных кадров на "
                                  "лимите, задержка ввода больше не более чем на кадр. Применяется сразу.",
     [UI_MENU_FRAME_GEN] = "Генерация кадров", [UI_MENU_FRAME_GEN_OFF] = "Выкл.", [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
-    [UI_MENU_FRAME_GEN_DESC] = "Сгенерированный кадр между каждыми двумя, что рисует игра: на экране вдвое больше "
-                               "кадров, игра идёт на половине лимита, управление отвечает примерно на полкадра позже. "
-                               "Для мониторов от 120 Гц. Не работает с DLSS и HDR. Применяется сразу.",
+    [UI_MENU_FRAME_GEN_DLSSG] = "NVIDIA DLSS Frame Generation",
+    [UI_MENU_FRAME_GEN_DESC] = "Вставляет сгенерированные кадры между кадрами, которые рисует игра. AMD FSR 3 "
+                               "вставляет один; NVIDIA DLSS Frame Generation вставляет от одного до трёх на "
+                               "поддерживаемых видеокартах RTX. Игра рисует реже, чтобы монитор успевал показать все "
+                               "кадры. DLSS Frame Generation работает с масштабированием DLSS; обе генерации не "
+                               "работают с масштабированием FSR и HDR. FSR 3 применяется сразу; после выбора DLSS "
+                               "нужен перезапуск.",
+    [UI_MENU_DLSSG_FRAMES] = "Сгенерированные кадры DLSS",
+    [UI_MENU_DLSSG_FRAMES_AUTO] = "Автоматически", [UI_MENU_DLSSG_FRAMES_2X] = "2×",
+    [UI_MENU_DLSSG_FRAMES_3X] = "3×", [UI_MENU_DLSSG_FRAMES_4X] = "4×",
+    [UI_MENU_DLSSG_FRAMES_DESC] = "Сколько кадров показывать на каждый кадр, нарисованный игрой. «Автоматически» "
+                                  "использует максимум видеокарты: 2× на RTX 40 и до 4× с Multi Frame Generation "
+                                  "на RTX 50. Более высокие значения требуют больше видеопамяти и более быстрого "
+                                  "монитора.",
     [UI_MENU_REALTIME] = "Скорость игры по часам",
     [UI_MENU_REALTIME_DESC] = "Игра идёт по реальному времени, медленный кадр её не замедляет.",
     [UI_MENU_CLOTH_REALTIME] = "Ткань по часам",
@@ -1522,9 +1541,18 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_QUEUE_DESC] = "O jogo começa um quadro enquanto o anterior espera a vez de aparecer: muito menos quadros "
                                  "perdidos no limite, com até um quadro a mais de atraso na entrada. Vale na hora.",
     [UI_MENU_FRAME_GEN] = "Geração de quadros", [UI_MENU_FRAME_GEN_OFF] = "Desligado", [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
-    [UI_MENU_FRAME_GEN_DESC] = "Um quadro gerado entre cada dois que o jogo desenha: o dobro de quadros na tela, o "
-                               "jogo na metade do limite e os controles cerca de meio quadro mais tarde. Para telas de "
-                               "120 Hz ou mais. Não funciona com DLSS nem HDR. Vale na hora.",
+    [UI_MENU_FRAME_GEN_DLSSG] = "NVIDIA DLSS Frame Generation",
+    [UI_MENU_FRAME_GEN_DESC] = "Insere quadros gerados entre os quadros que o jogo desenha. O AMD FSR 3 insere um; o "
+                               "NVIDIA DLSS Frame Generation gera de um a três em placas RTX compatíveis. O jogo "
+                               "desenha menos vezes para a tela mostrar todos os quadros. O DLSS Frame Generation "
+                               "funciona com a ampliação DLSS; nenhum dos geradores funciona com ampliação FSR nem "
+                               "HDR. O FSR 3 vale na hora; selecionar o DLSS exige reiniciar.",
+    [UI_MENU_DLSSG_FRAMES] = "Quadros gerados pelo DLSS",
+    [UI_MENU_DLSSG_FRAMES_AUTO] = "Automático", [UI_MENU_DLSSG_FRAMES_2X] = "2×",
+    [UI_MENU_DLSSG_FRAMES_3X] = "3×", [UI_MENU_DLSSG_FRAMES_4X] = "4×",
+    [UI_MENU_DLSSG_FRAMES_DESC] = "Quantos quadros mostrar para cada quadro desenhado pelo jogo. O modo automático "
+                                  "usa o máximo da placa: 2× na RTX 40, até 4× com Multi Frame Generation na RTX "
+                                  "50. Valores mais altos exigem mais VRAM e uma tela mais rápida.",
     [UI_MENU_REALTIME] = "Velocidade do jogo pelo relógio",
     [UI_MENU_REALTIME_DESC] = "Avança o jogo pelo tempo real, para que um quadro lento não deixe o jogo mais lento.",
     [UI_MENU_CLOTH_REALTIME] = "Tecidos pelo relógio",
@@ -2278,7 +2306,17 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_QUEUE] = "帧队列",
     [UI_MENU_FRAME_QUEUE_DESC] = "前一帧等待显示时游戏就开始绘制下一帧：在帧率上限下掉帧大幅减少，输入延迟最多增加一帧。立即生效。",
     [UI_MENU_FRAME_GEN] = "帧生成", [UI_MENU_FRAME_GEN_OFF] = "关", [UI_MENU_FRAME_GEN_FSR3] = "AMD FSR 3",
-    [UI_MENU_FRAME_GEN_DESC] = "在游戏绘制的每两帧之间插入一帧生成画面：屏幕上的帧数翻倍，游戏以帧率上限的一半运行，操作响应约晚半帧。适合 120 Hz 及以上的显示器。不能与 DLSS 或 HDR 同时使用。立即生效。",
+    [UI_MENU_FRAME_GEN_DLSSG] = "NVIDIA DLSS",
+    [UI_MENU_FRAME_GEN_DESC] = "在游戏实际绘制的帧之间插入生成画面。AMD FSR 3 插入一帧；"
+                               "NVIDIA DLSS 在支持的 RTX 显卡上可插入一到三帧。游戏会降低实际绘制频率，"
+                               "让显示器按顺序展示全部画面。DLSS 帧生成可与 DLSS 超分同时使用；"
+                               "两种帧生成都不能与 FSR 超分或 HDR 同时使用。FSR 3 立即生效；选择 DLSS 后需重启。",
+    [UI_MENU_DLSSG_FRAMES] = "DLSS 生成帧倍率",
+    [UI_MENU_DLSSG_FRAMES_AUTO] = "自动", [UI_MENU_DLSSG_FRAMES_2X] = "2 倍",
+    [UI_MENU_DLSSG_FRAMES_3X] = "3 倍", [UI_MENU_DLSSG_FRAMES_4X] = "4 倍",
+    [UI_MENU_DLSSG_FRAMES_DESC] = "游戏每实际绘制一帧时显示的画面上限。自动采用显卡支持的最高倍率："
+                                  "RTX 40 为 2 倍，RTX 50 的 Multi Frame Generation 最高 4 倍。"
+                                  "更高倍率需要更多显存和更快的显示器。",
     [UI_MENU_REALTIME] = "游戏速度跟随时钟",
     [UI_MENU_REALTIME_DESC] = "按真实时间推进游戏，帧率低时游戏速度也不会变慢。",
     [UI_MENU_CLOTH_REALTIME] = "布料跟随时钟",

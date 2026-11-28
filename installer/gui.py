@@ -439,6 +439,11 @@ class App:
         dlss = ttk.Checkbutton(content, variable=self.dlss_var)
         self.bind_text(dlss, 'text', 'ui.dlss')
         dlss.pack(anchor='w', pady=(dpi.px(12), 0))
+        # Frame generation is a separate download (7.5 MB); players who only use DLSS upscaling need not fetch it.
+        self.dlssg_var = tk.BooleanVar(value=False)
+        dlssg = ttk.Checkbutton(content, variable=self.dlssg_var)
+        self.bind_text(dlssg, 'text', 'ui.dlssg')
+        dlssg.pack(anchor='w', pady=(dpi.px(4), 0))
         # Ticked by default with an AMD display adapter only (guilogic.fsr_default); the player can tick it on any GPU.
         # Its source and licence line follows DLSS's under More details.
         self.fsr_var = tk.BooleanVar(value=fsr_default(screens.windows_adapter_names()))
@@ -453,7 +458,7 @@ class App:
         self.details_toggle.pack(anchor='w', pady=(dpi.px(8), 0))
         self.details = ttk.Frame(content)   # packed after the link when open; no holder frame, as an emptied Tk frame keeps
         # the height its last child gave it
-        for id in ('ui.dlss_help', 'ui.fsr_help', 'ui.formats_help', 'ui.compressed_help', 'ui.firmware_help',
+        for id in ('ui.dlss_help', 'ui.dlssg_help', 'ui.fsr_help', 'ui.formats_help', 'ui.compressed_help', 'ui.firmware_help',
                    'ui.keys_private'):
             self.label(self.details, id, style='Muted.TLabel', wraplength=WRAP - dpi.px(16),
                        justify='left').pack(anchor='w', pady=(dpi.px(6), 0))
@@ -536,7 +541,7 @@ class App:
     def form(self):
         return Form(base=self.vars['base'].get(), update=self.vars['update'].get(), keys=self.vars['keys'].get(),
                     firmware=self.vars['firmware'].get(), lang=self.selected_lang(), dest=self.vars['dest'].get(),
-                    dlss=self.dlss_var.get(), fsr=self.fsr_var.get())
+                    dlss=self.dlss_var.get(), dlssg=self.dlssg_var.get(), fsr=self.fsr_var.get())
 
     def set_prefill(self, name, value):
         self.programmatic = True

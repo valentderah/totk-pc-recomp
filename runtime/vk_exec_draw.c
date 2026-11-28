@@ -3480,7 +3480,6 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         }
     }
     const VkPipeInfo *info = NULL;
-    int pending;
     // A draw of at most 6 vertices over half the render area or more (a full-screen triangle or quad, a tile) waits for
     // its pipeline: skipping it can leave a black tile. The waits share 50 ms per presented frame
     // (TOTK_PIPE_SKIP=fullscreen skips them instead). A one-shot draw waits without that budget. Everything else is
@@ -3503,19 +3502,30 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     uint64_t w0 = 0;
     PipeCache *pc = NULL;
     int pg_take = pg_hit && pg == 1;   // the memo's pipeline without building or comparing the state
+    int memo_hit = 0;
+    int pending = 0;
     if (!pg_take && pipe_memo_on() && !(D->PM.valid && MX_EQ(&D->PM.s, &s, sizeof s)))
         pc = &D->PC[nvn_hm_hash(&s, sizeof s) & (PC_N - 1)];
     if (pg_take) {
-        info = D->PM.info, pending = 0;
+        info = D->PM.info;
         p = __atomic_load_n(&info->pipeline, __ATOMIC_ACQUIRE);
+        memo_hit = p != VK_NULL_HANDLE;
+        if (!memo_hit) info = NULL;
     } else if (pipe_memo_on() && (!pc || (pc->info && MX_EQ(&pc->s, &s, sizeof s)))) {
-        info = pc ? pc->info : D->PM.info, pending = 0;
+        info = pc ? pc->info : D->PM.info;
         p = __atomic_load_n(&info->pipeline, __ATOMIC_ACQUIRE);
-        if (pc) D->PM.valid = 1, MX_CPY(&D->PM.s, &s, sizeof s), D->PM.info = info, D->B.st_pm = 0;
-        D->PM.gen = pgen;   // s equals PM.s: built from pipe as it is now
-    } else {
+        if (p) {
+            memo_hit = 1;
+            if (pc) D->PM.valid = 1, MX_CPY(&D->PM.s, &s, sizeof s), D->PM.info = info, D->B.st_pm = 0;
+            D->PM.gen = pgen;   // s equals PM.s: built from pipe as it is now
+        } else {
+            info = NULL;
+        }
+    }
+    if (memo_hit) vk_pipeline_touch(info);
+    if (!memo_hit) {
         w0 = t0 ? t0 : wait_ms ? kern_now_ns() : 0;   // the clock is read only for draws that may wait
-        p = vk_pipeline_graphics_async(&s, &info, &pending, wait_ms);
+        p = vk_pipeline_graphics_async(sp, &info, &pending, wait_ms);
         if (t0) {
             uint64_t spent = kern_now_ns() - t0;
             D->wait_left_ns = spent < D->wait_left_ns ? D->wait_left_ns - spent : 0;
@@ -4226,6 +4236,7 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
         info = pmemo[pi].info;
         pipe = __atomic_load_n(&info->pipeline, __ATOMIC_ACQUIRE);   // its optimised build once swapped in
         if (!pipe) return;
+        vk_pipeline_touch(info);
     } else {
         pipe = vk_pipeline_graphics_async(&ms, &info, &pending, 0);
         if (pending || !pipe || !info) {

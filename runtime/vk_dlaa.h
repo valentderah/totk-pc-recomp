@@ -2,6 +2,11 @@
 // scene_upscaler (dlaa = 1 without it: DLSS).
 #pragma once
 #include "vk.h"
+#include "vk_fg.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 // The narrowest scene the DLSS pass and the motion passes recognise by its D32F depth: Ultra Performance at a 1080p
 // output renders 640 wide, smaller windows less.
@@ -15,6 +20,10 @@ void vk_dlaa_device_exts(const VkExtensionProperties *have, uint32_t nhave, cons
 void vk_dlaa_init(void);
 // 1 when dlaa is on and NGX came up with DLSS (after vk_dlaa_init): a DLSS mode's smaller scene is scaled up by DLSS.
 int vk_dlaa_available(void);
+// DLSS Frame Generation came up through NGX and the device reports a supported feature. The requested number of
+// generated pictures comes from dlssg_frames, capped by the feature's MultiFrameCountMax.
+int vk_dlssg_available(void);
+int vk_dlssg_generated_count(void);
 // 1 when the per-object motion runs (the upscaler's half after vk_dlaa_init, frame generation's live): DLSS with NGX
 // up (vk_dlaa_available), FSR 3.1 picked as the scene upscaler, FSR 4 picked and offered for the device
 // (vk_ffx_available), or frame generation following the scene with its objects (vk_fg_objects_on: TOTK_FG_OBJECTS,
@@ -32,12 +41,19 @@ void vk_dlaa_pass(VkExec *ex);
 int vk_dlaa_plan(const VkExec *ex, VkExecJob *j);
 void vk_dlaa_exec(VkExec *ex, const VkExecJob *j);
 void vk_dlaa_frame(void);
-// Frame generation without DLSS (vk_dlaa.c, "frame generation"), sequential replay: vk_dlaa_hud before each draw once
-// its pass has begun (vk_exec_draw.c prepare_draw, while vk_dlaa_fg_on), vk_dlaa_sub_end at the end of each
-// submission's replay with no pass open (vk_exec.c vk_exec_record).
+// Frame generation (vk_dlaa.c, "frame generation"), sequential replay: vk_dlaa_hud before each draw once its pass has
+// begun (vk_exec_draw.c prepare_draw, while vk_dlaa_fg_on), vk_dlaa_sub_end at the end of each submission's replay
+// with no pass open (vk_exec.c vk_exec_record).
 extern int vk_dlaa_fg_on;
 void vk_dlaa_hud(VkExec *ex);
 void vk_dlaa_sub_end(VkExec *ex);
+// vk_fg.cpp after the frame's window texture is drawn: DLSS FG writes count pictures into outputs through cb. The
+// scene depth, motion vectors, camera and jitter were kept by the scene's DLSS or frame-generation point. 0: no
+// picture was generated this frame.
+int vk_dlssg_generate(VkCommandBuffer cb, VkImage win, VkImageView win_view, VkFormat win_fmt, VkImage hudless,
+                      VkImageView hudless_view, VkImage depth, VkImageView depth_view, VkFormat depth_format, VkImage mv,
+                      VkImageView mv_view, VkImage outputs[VK_FG_MAX_GENERATED],
+                      VkImageView output_views[VK_FG_MAX_GENERATED], int count, uint32_t w, uint32_t h);
 // vk_exec_draw.c, each draw before its fixed state is recorded: notes the scene camera block (vk_dlaa_draw), and moves
 // the viewport of the scene's draws by the frame's jitter (vk_dlaa_viewport, when the viewport is recorded).
 void vk_dlaa_draw(VkExec *ex);
@@ -68,3 +84,7 @@ void vk_mvcheck_output(VkCommandBuffer cb, VkImage out, uint32_t ow, uint32_t oh
 // vk_exec_draw.c, once a draw's fragment shader is known: 1 skips the draw (the game's FXAA while TOTK_FXAA is 0, its
 // scaling draw when DLSS wrote the scaled picture).
 int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs);
+
+#ifdef __cplusplus
+}
+#endif

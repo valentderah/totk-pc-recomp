@@ -20,11 +20,28 @@
 # Frame queue: the game starts a frame while the previous one waits for its display time, so a frame that runs long
 # still makes its turn. Far fewer dropped frames at the limit for up to one frame more input delay. Takes effect at once.
 # frame_queue = 0
-# Frame generation: off, or fsr3 (AMD FSR 3 frame interpolation). A generated picture goes on screen between each two
-# the game draws: twice the pictures, the game at half of fps_limit (the limit counts the pictures shown), the controls
-# about half a frame later. For displays of 120 Hz and more; off with DLSS, FSR (scene_upscaler) or HDR, and in
-# menus and fades. Applies at once.
+# While frame generation is active, let the next source frame begin at the display slot instead of after the generated
+# group. It removes a source-frame wait for up to one source frame of extra input latency. Ordinary frames still use
+# frame_queue. Takes effect at once.
+# frame_gen_queue = 1
+# Frame generation: off, fsr3 (AMD FSR 3) or dlssg (NVIDIA DLSS Frame Generation). FSR 3 inserts one picture between
+# each two the game draws; DLSS inserts one to three on supported RTX GPUs. fps_limit counts the pictures shown, so the
+# game draws less often. DLSS works with DLSS upscaling; both are off with FSR upscaling, HDR, replay_workers > 0 and
+# sync_ahead = 1, and in menus and fades. Selecting dlssg after the game started needs a restart; fsr3 applies at once.
 # frame_gen = off
+# DLSS generated frames: auto (the GPU's maximum: 2x on RTX 40, up to 4x with Multi Frame Generation on RTX 50), 2, 3
+# or 4. A setting above the GPU's maximum is capped. Applies at once; a changed count rebuilds the swapchain.
+# dlssg_frames = auto
+# Run DLSS Frame Generation on a second graphics queue while the next real frame is rendered. The inputs are copied
+# into three private image sets, so the next frame cannot overwrite the generated frame's colour, depth or motion.
+# 0 keeps the previous serial path. Needs a graphics queue family with two queues; without one it falls back to the
+# serial path. fg_shot is unavailable while this is on. Read at start; it also uses more VRAM.
+# dlssg_async = 0
+# Release cached DLSS and DLSS Frame Generation scene-size contexts when the DLSS mode or dynamic_res setting changes.
+# Normal dynamic-resolution size changes still reuse their recent sizes. Useful when changing between DLAA and DLSS
+# modes, or turning dynamic resolution off, late in a long session; recreating the next feature can cost one short hitch.
+# Applies at the next mode or resolution-policy change.
+# dlss_cache_prune = 0
 # Real-time frame step: game speed follows the clock instead of the frame count.
 # realtime = 1
 # Cloth simulation on the real-time clock. Needs realtime = 1.
@@ -130,6 +147,11 @@
 # prewarm_xlate = 8
 # Vulkan graphics pipeline library, 0 or 1. Default: on.
 # gpl = 1
+  # Percent of the device-local memory budget above which pipelines and stage libraries unused for 600 presented
+  # frames are retired, 0 to 100. Default: 0 (off). 80 bounds the driver memory that long travel retains on an 8 GB
+  # card; an old effect rebuilds its pipeline from the disk cache when it returns. The retirement is spread across
+  # frames and keeps the metadata used by the replay caches. Takes effect at once.
+  # pipe_vram_pressure = 0
 
 # Textures and memory.
 # ASTC texture decoding: native (the GPU's own ASTC support), gpu (a compute shader), cpu, or auto (native when the GPU

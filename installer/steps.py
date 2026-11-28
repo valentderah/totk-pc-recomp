@@ -1768,14 +1768,21 @@ class Shapes(Step):
 
 # ---- 7. NVIDIA DLSS
 
-# NVIDIA's DLSS library, which NGX loads from the folder of totk.exe (runtime/vk_dlaa.c). The setup does not ship it:
-# with --dlss it downloads NVIDIA's own copy from the DLSS SDK repository (NVIDIA RTX SDK license) at a pinned tag and
-# checks its hash. The game runs without it; dlaa and the DLSS modes then do nothing.
+# NVIDIA's DLSS libraries, which NGX loads from the folder of totk.exe (runtime/vk_dlaa.c). The setup does not ship
+# them: --dlss downloads nvngx_dlss.dll and --dlssg downloads nvngx_dlssg.dll from NVIDIA's DLSS SDK repository (NVIDIA
+# RTX SDK license) at a pinned tag and checks their hashes. The game runs without them; dlaa and DLSS upscaling need
+# nvngx_dlss.dll, and DLSS Frame Generation needs nvngx_dlssg.dll.
 DLSS_DLL = 'nvngx_dlss.dll'
 DLSS_VERSION = '310.9.1'
 DLSS_URL = f'https://raw.githubusercontent.com/NVIDIA/DLSS/v{DLSS_VERSION}/lib/Windows_x86_64/rel/{DLSS_DLL}'
 DLSS_SIZE = 58956912
 DLSS_SHA256 = '3975567b8943c53acce397f2b72380092f84f162d00b0d2c7d08a1025c563983'
+DLSSG_DLL = 'nvngx_dlssg.dll'
+DLSSG_URL = f'https://raw.githubusercontent.com/NVIDIA/DLSS/v{DLSS_VERSION}/lib/Windows_x86_64/rel/{DLSSG_DLL}'
+DLSSG_SIZE = 7460976
+DLSSG_SHA256 = 'ff6e90eb78b827927dff5b4ecc6b1c870c2e9bca29ed9f48c7d348cc9e170b82'
+DLSS_FILES = ((DLSS_DLL, DLSS_URL, DLSS_SIZE, DLSS_SHA256),)
+DLSSG_FILES = ((DLSSG_DLL, DLSSG_URL, DLSSG_SIZE, DLSSG_SHA256),)
 DLSS_LICENSE = 'https://github.com/NVIDIA/DLSS/blob/main/LICENSE.txt'
 
 
@@ -1785,24 +1792,36 @@ def nvidia_rtx(host):
 
 
 class Dlss(Step):
-    """With --dlss on Windows and an NVIDIA RTX GPU: nvngx_dlss.dll next to totk.exe. A DLSS library the player put
-    there (another version) is kept. A failed download warns and is tried again on the next run; the game runs
-    without it."""
+    """With --dlss or --dlssg on Windows and an NVIDIA RTX GPU: the requested NVIDIA library next to totk.exe. A
+    library the player put there (another version) is kept. A failed download warns and is tried again on the next
+    run; the game runs without it."""
 
     id = 'dlss'
 
+    def files(self, ctx):
+        return ((DLSS_FILES if getattr(ctx.options, 'dlss', False) else ()) +
+                (DLSSG_FILES if getattr(ctx.options, 'dlssg', False) else ()))
+
     def key(self, ctx):
-        if not getattr(ctx.options, 'dlss', False):
+        dlss = getattr(ctx.options, 'dlss', False)
+        dlssg = getattr(ctx.options, 'dlssg', False)
+        if not dlss and not dlssg:
             return fingerprint('dlss-1', 'off')
-        return fingerprint('dlss-1', DLSS_VERSION, DLSS_SHA256)
+        if not dlssg:
+            # DLSS-only installs keep the key from before frame generation existed.
+            return fingerprint('dlss-1', DLSS_VERSION, DLSS_SHA256)
+        # This is also the key written by the earlier combined-download build, so an install that already has both
+        # files does not rerun merely because the download is now an explicit choice.
+        return fingerprint('dlss-2', DLSS_VERSION, DLSS_SHA256, DLSSG_SHA256)
 
     def current(self, ctx, record):
         if record.get('failed'):
             return False
-        return not record.get('installed') or (ctx.dest / DLSS_DLL).is_file()
+        return not record.get('installed') or all((ctx.dest / name).is_file() for name, *_ in self.files(ctx))
 
     def run(self, ctx):
-        if not getattr(ctx.options, 'dlss', False):
+        files = self.files(ctx)
+        if not files:
             return {}
         if os.name != 'nt':
             return {'skipped': 'not_windows'}
@@ -1810,35 +1829,50 @@ class Dlss(Step):
             # The box is ticked by default, so most players without an RTX GPU never chose it: a log line, no warning
             ctx.reporter.log('dlss: no NVIDIA RTX GPU among the Vulkan devices, nothing downloaded')
             return {'skipped': 'no_rtx'}
-        rep, target = ctx.reporter, ctx.dest / DLSS_DLL
-        if target.is_file():
-            if file_sha256(target) == DLSS_SHA256:
-                return {'installed': DLSS_VERSION}
-            rep.warning('warn.dlss_kept', path=str(target))
-            return {'kept': True}
-        part = ctx.temp / (DLSS_DLL + '.part')
-        rep.progress('dlss', 'download', 0, DLSS_SIZE, 'bytes', force=True)
-        rep.log(f'dlss: {DLSS_URL} (license {DLSS_LICENSE})')
-        try:
-            part.parent.mkdir(parents=True, exist_ok=True)
-            h, done = hashlib.sha256(), 0
-            with urllib.request.urlopen(DLSS_URL, timeout=60) as r, open(part, 'wb') as f:
-                while block := r.read(1 << 20):
-                    f.write(block)
-                    h.update(block)
-                    done += len(block)
-                    rep.progress('dlss', 'download', min(done, DLSS_SIZE), DLSS_SIZE, 'bytes')
-            if done != DLSS_SIZE or h.hexdigest() != DLSS_SHA256:
-                raise OSError(f'{done} bytes, SHA-256 {h.hexdigest()[:16]}, not the expected file')
-            replace_file(part, target)
-            remove(part)
-        # urllib's errors, timeouts and a bad file; a connection cut mid-file raises http.client.IncompleteRead,
-        # which is not an OSError
-        except (OSError, http.client.HTTPException) as e:
-            remove(part)
-            rep.warning('warn.dlss_download_failed', url=DLSS_URL, detail=str(e)[:300])
+        rep = ctx.reporter
+        missing = []
+        kept = False
+        for name, url, size, sha in files:
+            target = ctx.dest / name
+            if target.is_file():
+                if file_sha256(target) != sha:
+                    rep.warning('warn.dlss_kept', path=str(target))
+                    kept = True
+            else:
+                missing.append((name, url, size, sha))
+        if not missing:
+            return {'kept': True} if kept else {'installed': DLSS_VERSION}
+        total = sum(size for _, _, size, _ in missing)
+        rep.progress('dlss', 'download', 0, total, 'bytes', force=True)
+        done_all = 0
+        failed = False
+        for name, url, size, sha in missing:
+            rep.log(f'dlss: {url} (license {DLSS_LICENSE})')
+            part = ctx.temp / (name + '.part')
+            target = ctx.dest / name
+            try:
+                part.parent.mkdir(parents=True, exist_ok=True)
+                h, done = hashlib.sha256(), 0
+                with urllib.request.urlopen(url, timeout=60) as r, open(part, 'wb') as f:
+                    while block := r.read(1 << 20):
+                        f.write(block)
+                        h.update(block)
+                        done += len(block)
+                        rep.progress('dlss', 'download', min(done_all + done, total), total, 'bytes')
+                if done != size or h.hexdigest() != sha:
+                    raise OSError(f'{done} bytes, SHA-256 {h.hexdigest()[:16]}, not the expected file')
+                replace_file(part, target)
+                remove(part)
+            # urllib's errors, timeouts and a bad file; a connection cut mid-file raises http.client.IncompleteRead,
+            # which is not an OSError
+            except (OSError, http.client.HTTPException) as e:
+                remove(part)
+                rep.warning('warn.dlss_download_failed', url=url, detail=str(e)[:300])
+                failed = True
+            done_all += size
+        if failed:
             return {'failed': True}
-        return {'installed': DLSS_VERSION}
+        return {'kept': True} if kept else {'installed': DLSS_VERSION}
 
 
 # ---- 8. AMD FSR

@@ -145,6 +145,8 @@
  "ui.firmware_help": "Dành cho văn bản tiếng Trung Giản thể, tiếng Hàn và tiếng Trung Phồn thể: thư mục Contents/registered của firmware, ví dụ từ Ryujinx hoặc Yuzu. Trình cài đặt sẽ sao chép phông chữ hệ thống của Switch từ đó vào thư mục cài đặt.",
  "ui.dlss": "Tải xuống NVIDIA DLSS (nvngx_dlss.dll) cho card đồ họa NVIDIA RTX",
  "ui.dlss_help": "Từ DLSS SDK của NVIDIA trên GitHub, theo giấy phép RTX SDK của NVIDIA (github.com/NVIDIA/DLSS). Thư viện này giúp các tùy chọn dlaa và DLSS hoạt động; nếu không có, các tùy chọn đó không có tác dụng.",
+ "ui.dlssg": "Tải xuống NVIDIA DLSS Frame Generation (nvngx_dlssg.dll) cho card đồ họa NVIDIA RTX",
+ "ui.dlssg_help": "Từ DLSS SDK của NVIDIA trên GitHub, theo giấy phép RTX SDK của NVIDIA (github.com/NVIDIA/DLSS). Thư viện này giúp frame_gen = dlssg hoạt động; nếu không có, trình tạo khung hình này không có tác dụng.",
  "ui.fsr": "Tải xuống AMD FSR 4 (thư viện FSR SDK của AMD) cho card đồ họa AMD Radeon",
  "ui.fsr_help": "Từ FSR SDK của AMD trên GitHub, theo giấy phép FSR SDK của AMD (github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK). Thư viện này giúp lựa chọn AMD FSR 4 cho bộ nâng độ phân giải cảnh 3D hoạt động trên các card Radeon mà thư viện của AMD hỗ trợ FSR 4; nếu không có, lựa chọn đó không có tác dụng. Được chọn sẵn khi máy có card đồ họa AMD.",
  "ui.compressed_help": "Các tệp nén NSZ và XCZ dùng được ngay: trình cài đặt tự giải nén chúng (cho đến khi dữ liệu trò chơi được trích xuất xong, cần dung lượng trống bằng dung lượng của các tệp sau khi giải nén).",

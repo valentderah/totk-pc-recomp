@@ -1,6 +1,7 @@
-// AMD FSR 3 frame generation (frame_gen = fsr3): the FidelityFX SDK 1.1.4's frame interpolation and optical flow
-// (third_party/FidelityFX, MIT) on its Vulkan backend, driven directly instead of through the SDK's frame
-// interpolation swapchain (Windows only, and it would own the present).
+// Frame generation (frame_gen = fsr3 or dlssg). AMD FSR 3 uses the FidelityFX SDK 1.1.4's frame interpolation and
+// optical flow (third_party/FidelityFX, MIT) on its Vulkan backend, driven directly instead of through the SDK's frame
+// interpolation swapchain (Windows only, and it would own the present). NVIDIA DLSS Frame Generation uses the driver's
+// NGX core and nvngx_dlssg.dll; dlssg_frames asks for 2x, 3x or 4x and the device caps the request.
 //
 // Ported from Savage Wind (https://github.com/Revivedx/SavageWindRecomp @ bf6146c14c37fee8781a601e5a544b93dff6d75e,
 // MIT), runtime/nvn/vulkan/framegen.cpp: the blob lookup, the backend set-up, the contexts as it makes them (what the
@@ -9,7 +10,7 @@
 // the parameters of fg_dispatch's three calls; its exec.c vk_fg_generate for the camera, the cut test and the HUD-less
 // copy's encoding.
 //
-// Per frame, all in the replay's command buffer (vk_dlaa.c finds the places, with DLSS off):
+// Per frame (vk_dlaa.c finds the places, with DLSS off):
 // 1. vk_fg_prepare at the scene's end: the SDK dilates the scene's depth and the camera motion vectors (made there by
 //    vk_dlaa.c mv_pass, at the scene's size), and reconstructs the previous frame's depth from them.
 // 2. vk_fg_hudless before the HUD's first draw: the game's float picture, blitted into an R8G8B8A8_SRGB image (the
@@ -19,8 +20,11 @@
 // 3. vk_fg_generate at the end of the submission that drew the window texture: the optical flow over the HUD-less
 //    picture, then the interpolation between the last frame and this one, with this frame's window texture as the
 //    picture with the HUD, into an RGBA8 image holding bytes as the window texture does (sRGB transfer function).
-// The present (vk_backend.c present_pair) shows it before the frame, through vk_fg_present_gen (TOTK_FG_TEST shows it, or
-// the picture before the HUD, in place of the frame instead, for checks only).
+// FSR 3 and the default DLSS path record these steps in the replay's command buffer. dlssg_async copies the four
+// DLSSG inputs into a private image set, submits NGX on a second graphics queue after the real frame, and lets the
+// next real frame render on the main queue at the same time.
+// The present (vk_backend.c present_generated) shows the pictures before the frame, through vk_fg_present_gens
+// (TOTK_FG_TEST shows the first generated picture, or the picture before the HUD, in place of the frame instead).
 #include "vk_fg.h"
 #include "vk_fsr3.h"
 
@@ -39,6 +43,13 @@ extern "C" {
 #include "cfg.h"
 #include "host.h"
 #include "vk.h"
+
+int vk_dlssg_available(void);
+int vk_dlssg_generated_count(void);
+int vk_dlssg_generate(VkCommandBuffer cb, VkImage win, VkImageView win_view, VkFormat win_fmt, VkImage hudless,
+                      VkImageView hudless_view, VkImage depth, VkImageView depth_view, VkFormat depth_format, VkImage mv,
+                      VkImageView mv_view, VkImage outputs[VK_FG_MAX_GENERATED],
+                      VkImageView output_views[VK_FG_MAX_GENERATED], int count, uint32_t w, uint32_t h);
 }
 
 // The shaders: tools/ffx_shaders.py's blobs (wave32, 32-bit floats; frame interpolation for low-resolution motion
@@ -85,11 +96,23 @@ typedef struct {
 struct Img {
     VkImage img;
     VmaAllocation mem;
+    VkImageView view;
 };
 
 #define TSLOTS 8u           // frames of timestamps in flight: a slot is read when it comes round again
 #define CPU_RING 65536u     // frames of replay-thread times kept for the median and p99
 #define LOG_EVERY 600u      // generated frames between two summary lines
+#define ASYNC_SLOTS 3u      // inputs, outputs and command buffers kept while the second queue runs
+
+typedef struct {
+    bool armed;
+    int count, slot;
+    VkImage win, hudless, out[VK_FG_MAX_GENERATED];
+    VkImageView win_view, hudless_view, out_views[VK_FG_MAX_GENERATED];
+    VkFormat win_fmt;
+    uint32_t w, h;
+    VkFgScene scene;
+} FgAsyncJob;
 
 static struct {
     bool live, failed;
@@ -103,7 +126,7 @@ static struct {
     unsigned toggle;
     uint64_t frame_id, last_prep_ns, made;
     // settings read at start (vk_fg_init)
-    int workers, hdr, test, debug, times;
+    int workers, sync_ahead, hdr, test, debug, times, settings_read, async_wanted, async_ok;
     uint64_t shot_at;               // TOTK_FG_SHOT: the first present shot, or (shot_w) the first after that world time
     int64_t shot_w;
     char shot_dir[260];
@@ -111,15 +134,33 @@ static struct {
     volatile int menu;              // vk_fg_menu
     // this frame
     bool prepared, hl_ok, gen_ok, chain, reset;
+    int gen_count;
     float near_m, far_m, fov_y, dt_ms;
     uint32_t rw, rh;                // this frame's scene size (the SDK's renderSize), at most cfg.render_w x render_h
     VkFormat win_fmt;               // the window texture's format as last seen (UNORM twin)
     int k;                          // the pair of hudless/out images this frame writes
     VkImage gen_win;                // the window texture this frame's picture was generated against (vk_fg_generate)
-    VkImage show_out, show_hl, show_win;   // the frame just ended (vk_fg_frame), for vk_fg_present_swap / _gen
+    VkImage show_out[VK_FG_MAX_GENERATED], show_hl, show_win;   // the frame just ended, for vk_fg_present_swap / _gens
+    int show_ngen, show_slot;
+    VkFormat show_fmt;
+    uint64_t show_async_value;
+    FgAsyncJob async_job;
+    VkCommandPool async_pool;
+    VkCommandBuffer async_cb[ASYNC_SLOTS];
+    uint64_t async_done[ASYNC_SLOTS];
+    uint64_t present_done[ASYNC_SLOTS];
+    uint64_t async_seq, async_pending_value;
+    uint32_t slots;                 // image sets: two normally, three with dlssg_async
+    int reuse_slot;                 // image set a recorded frame used; submit_sync waits before it is submitted
     // images
     uint32_t iw, ih;
-    Img hl_srgb, hl[2], out[2];
+    Img hl_srgb;
+    Img hl[ASYNC_SLOTS], win[ASYNC_SLOTS], depth[ASYNC_SLOTS], mv[ASYNC_SLOTS];
+    Img out[ASYNC_SLOTS][VK_FG_MAX_GENERATED], out_bgra[ASYNC_SLOTS][VK_FG_MAX_GENERATED];
+    uint32_t snap_w, snap_h, snap_depth_w, snap_depth_h;
+    VkFormat snap_win_fmt, snap_depth_fmt;
+    VkFormat out_fmt;
+    VkFgScene scene;
     // timing
     VkQueryPool qp;
     uint32_t qslot, qmask[TSLOTS];
@@ -196,6 +237,7 @@ static void sdk_destroy(void) {
 }
 
 static void img_free(VkCtx *c, Img *m) {
+    if (m->view) vkDestroyImageView(c->device, m->view, NULL);
     if (m->img) vmaDestroyImage(c->vma, m->img, m->mem);
     *m = Img{};
 }
@@ -206,13 +248,20 @@ static void cpu_log(const char *what, uint64_t from);
 extern "C" void vk_fg_release(void) {
     VkCtx *c = vk_ctx();
     if (!c || !c->device) return;
-    if (!g.live && !g.scratch_shared && !g.hl_srgb.img && !g.qp) return;
+    if (!g.live && !g.scratch_shared && !g.hl_srgb.img && !g.qp && !g.async_pool) return;
     vkDeviceWaitIdle(c->device);
     vk_fg_exit_log();
     if (g.live) rt_log("fg: frame interpolation contexts destroyed");
     sdk_destroy();
     img_free(c, &g.hl_srgb);
-    for (int i = 0; i < 2; i++) img_free(c, &g.hl[i]), img_free(c, &g.out[i]);
+    for (int i = 0; i < ASYNC_SLOTS; i++) {
+        img_free(c, &g.hl[i]);
+        img_free(c, &g.win[i]);
+        img_free(c, &g.depth[i]);
+        img_free(c, &g.mv[i]);
+        for (int j = 0; j < VK_FG_MAX_GENERATED; j++) img_free(c, &g.out[i][j]), img_free(c, &g.out_bgra[i][j]);
+    }
+    if (g.async_pool) vkDestroyCommandPool(c->device, g.async_pool, NULL);
     if (g.qp) vkDestroyQueryPool(c->device, g.qp, NULL);
     free(g.cpu_us);
     memset(&g, 0, sizeof g);
@@ -261,11 +310,12 @@ extern "C" VkFgEngine vk_fg_engine(void) {
     unsigned v = cfg_version();
     if (__atomic_load_n(&seen, __ATOMIC_ACQUIRE) != v + 1) {
         const char *s = cfg_value("TOTK_FRAME_GEN");
-        int n = !strcmp(s, "fsr3") ? VK_FG_FSR3 : VK_FG_OFF;
+        int n = !strcmp(s, "fsr3") ? VK_FG_FSR3 : !strcmp(s, "dlssg") ? VK_FG_DLSSG : VK_FG_OFF;
         static char said[16];
         if (strncmp(said, s, sizeof said - 1)) {
             snprintf(said, sizeof said, "%s", s);
-            if (n == VK_FG_OFF && strcmp(s, "off")) rt_log("fg: frame_gen = %s is not off or fsr3: off", s);
+            if (n == VK_FG_OFF && strcmp(s, "off"))
+                rt_log("fg: frame_gen = %s is not off, fsr3 or dlssg: off", s);
             else if (seen) rt_log("fg: frame_gen = %s", s);
         }
         e = n;
@@ -277,6 +327,66 @@ extern "C" VkFgEngine vk_fg_engine(void) {
 // The settings and the contexts, once: at start with frame_gen = fsr3, else at the first frame after the menu turns it
 // on (vk_fg_wanted).
 static bool started;
+
+static int async_init(VkCtx *c) {
+    if (g.async_ok) return 1;
+    if (!g.async_wanted || !c || c->fg_shared) {
+        static int said;
+        if (g.async_wanted && c && c->fg_shared && !said)
+            said = 1, rt_log("fg: dlssg_async needs a second graphics queue; this family only has one");
+        return 0;
+    }
+    VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                                  .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT |
+                                           VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+                                  .queueFamilyIndex = c->gfx_family};
+    if (vkCreateCommandPool(c->device, &pi, NULL, &g.async_pool) != VK_SUCCESS) {
+        rt_log("fg: dlssg_async command pool creation failed: frame generation stays on the graphics queue");
+        return 0;
+    }
+    VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                      .commandPool = g.async_pool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                                      .commandBufferCount = ASYNC_SLOTS};
+    if (vkAllocateCommandBuffers(c->device, &ai, g.async_cb) != VK_SUCCESS) {
+        rt_log("fg: dlssg_async command buffer allocation failed: frame generation stays on the graphics queue");
+        vkDestroyCommandPool(c->device, g.async_pool, NULL);
+        g.async_pool = VK_NULL_HANDLE;
+        return 0;
+    }
+    g.async_ok = 1;
+    rt_log("fg: DLSSG runs on a second graphics queue");
+    return 1;
+}
+
+static void common_settings(void) {
+    if (g.settings_read) return;
+    g.settings_read = 1;
+    g.workers = cfg_int("TOTK_REPLAY_WORKERS");
+    g.sync_ahead = cfg_bool("TOTK_SYNC_AHEAD") && strcmp(cfg_value("TOTK_SYNC_AHEAD"), "check") != 0;   // check: exact
+    g.hdr = vk_hdr_wanted();
+    g.test = knob_int("TOTK_FG_TEST");
+    g.debug = knob_int("TOTK_FG_DEBUG");
+    g.async_wanted = cfg_bool("TOTK_DLSSG_ASYNC");
+    VkCtx *c = vk_ctx();
+    if (g.async_wanted && g.test) {
+        rt_log("fg: fg_test uses the serial path; dlssg_async is off for this run");
+        g.async_wanted = 0;
+    } else if (g.async_wanted && c) {
+        async_init(c);
+    }
+    g.slots = g.async_ok ? ASYNC_SLOTS : 2;
+    g.reuse_slot = -1;
+    // These diagnostics apply to both generators. DLSSG creates its feature lazily, so it never goes through start(),
+    // where the FSR contexts are made.
+    g.times = !cfg_get("TOTK_FG_TIMES") || knob_int("TOTK_FG_TIMES");
+    const char *sh = cfg_get("TOTK_FG_SHOT");
+    if (sh && (sh[0] == 'w' || sh[0] == 'W')) g.shot_w = (int64_t)(atof(sh + 1) * 1e6);
+    else g.shot_at = (uint64_t)knob_int("TOTK_FG_SHOT");
+    const char *d = cfg_get("TOTK_FG_SHOT_DIR");
+    snprintf(g.shot_dir, sizeof g.shot_dir, "%s", d && *d ? d : ".");
+    g.cpu_us = (uint32_t *)calloc(CPU_RING, sizeof *g.cpu_us);
+}
+
 static void start(void) {
     started = true;
     VkCtx *c = vk_ctx();
@@ -294,17 +404,7 @@ static void start(void) {
         return;
     }
     g.win_fmt = VK_FORMAT_R8G8B8A8_UNORM;
-    g.workers = cfg_int("TOTK_REPLAY_WORKERS");
-    g.hdr = vk_hdr_wanted();
-    g.test = knob_int("TOTK_FG_TEST");
-    g.debug = knob_int("TOTK_FG_DEBUG");
-    g.times = !cfg_get("TOTK_FG_TIMES") || knob_int("TOTK_FG_TIMES");
-    const char *sh = cfg_get("TOTK_FG_SHOT");
-    if (sh && (sh[0] == 'w' || sh[0] == 'W')) g.shot_w = (int64_t)(atof(sh + 1) * 1e6);
-    else g.shot_at = (uint64_t)knob_int("TOTK_FG_SHOT");
-    const char *d = cfg_get("TOTK_FG_SHOT_DIR");
-    snprintf(g.shot_dir, sizeof g.shot_dir, "%s", d && *d ? d : ".");
-    g.cpu_us = (uint32_t *)calloc(CPU_RING, sizeof *g.cpu_us);
+    common_settings();
     if (g.times) {
         VkQueryPoolCreateInfo qi = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, NULL, 0, VK_QUERY_TYPE_TIMESTAMP,
                                     TSLOTS * FG_T_N, 0};
@@ -320,23 +420,47 @@ extern "C" void vk_fg_init(void) {
     if (vk_fg_engine() == VK_FG_FSR3) start();
 }
 
-extern "C" int vk_fg_active(void) { return g.live && vk_fg_engine() != VK_FG_OFF; }
+extern "C" int vk_fg_active(void) {
+    VkFgEngine e = vk_fg_engine();
+    return e == VK_FG_FSR3 ? g.live : e == VK_FG_DLSSG ? vk_dlssg_available() : 0;
+}
+
+extern "C" int vk_fg_generated_count(void) {
+    VkFgEngine e = vk_fg_engine();
+    return e == VK_FG_FSR3 ? 1 : e == VK_FG_DLSSG ? vk_dlssg_generated_count() : 0;
+}
+
+extern "C" int vk_fg_swapchain_extra(void) {
+    VkFgEngine e = vk_fg_engine();
+    return e == VK_FG_FSR3 ? 1 : e == VK_FG_DLSSG ? vk_dlssg_generated_count() : 0;
+}
 
 extern "C" void vk_fg_menu(int open) { __atomic_store_n(&g.menu, open, __ATOMIC_RELAXED); }
 
-extern "C" int vk_fg_wanted(int dlss) {
-    if (vk_fg_engine() != VK_FG_FSR3) return 0;
-    if (!started) start();   // turned on in the menu: the contexts now; the first prepare makes them for the scene
-    if (!g.live || g.failed) return 0;
-    // the inputs are this frame's, recorded in replay order: chunks recording side by side are not handled yet.
-    // sync_ahead only moves the game's frame wait; the replay and the presents keep their order, and the replay's
-    // next submission waits until the present thread submitted the blit (vk_backend.c submit_sync, vk_present_drain),
-    // so out[] and hl[] alternate safely with it on.
-    int why = dlss ? 1 : g.workers > 0 ? 2 : g.hdr ? 3 : 0;
+extern "C" int vk_fg_wanted(int dlss, int fsr) {
+    VkFgEngine e = vk_fg_engine();
+    if (e == VK_FG_FSR3) {
+        if (!started) start();   // turned on in the menu: the contexts now; the first prepare makes them for the scene
+        if (!g.live || g.failed) return 0;
+    } else if (e == VK_FG_DLSSG) {
+        common_settings();
+        if (!vk_dlssg_available()) return 0;
+    } else {
+        return 0;
+    }
+    // The inputs are this frame's, recorded in replay order: chunks recording side by side are not handled yet. FSR 3
+    // cannot share the scene with an upscaler; DLSS FG can share it with DLSS. FSR 3 is safe with sync_ahead because
+    // replay and present order are preserved. DLSS FG also needs async replay, so the game may build the next frame
+    // while this one is recorded without changing this frame's depth, motion vectors or camera.
+    int async_replay = vk_replay_async();
+    int why = (e == VK_FG_FSR3 && dlss) ? 1 : fsr ? 2 : g.workers > 0 ? 3
+              : e == VK_FG_DLSSG && g.sync_ahead && !async_replay ? 4 : g.hdr ? 5 : 0;
     if (why) {
         if (!(g.said & 1u << why)) {
             g.said |= 1u << why;
-            static const char *const r[] = {"", "DLSS runs (dlaa = 1)", "the replay records in chunks (replay_workers > 0)",
+            static const char *const r[] = {"", "DLSS upscaling runs", "an FSR upscaler runs",
+                                            "the replay records in chunks (replay_workers > 0)",
+                                            "DLSS FG needs replay_async = 1 with sync_ahead = 1",
                                             "HDR output (hdr = 1)"};
             rt_log("fg: frame generation off while %s", r[why]);
         }
@@ -463,7 +587,8 @@ static void full_barrier(VkCommandBuffer cb) {
     vkCmdPipelineBarrier2(cb, &di);
 }
 
-static bool img_make(VkCtx *c, VkCommandBuffer cb, Img *m, uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags u) {
+static bool img_make(VkCtx *c, VkCommandBuffer cb, Img *m, uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags u,
+                     VkImageAspectFlags aspect) {
     VkImageCreateInfo ii = {};
     ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, ii.imageType = VK_IMAGE_TYPE_2D, ii.format = f;
     ii.extent = {w, h, 1}, ii.mipLevels = 1, ii.arrayLayers = 1, ii.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -471,21 +596,42 @@ static bool img_make(VkCtx *c, VkCommandBuffer cb, Img *m, uint32_t w, uint32_t 
     VmaAllocationCreateInfo ai = {};
     ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
     if (vmaCreateImage(c->vma, &ii, &ai, &m->img, &m->mem, NULL) != VK_SUCCESS) return m->img = VK_NULL_HANDLE, false;
+    VkImageViewCreateInfo vi = {};
+    vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, vi.image = m->img, vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = f, vi.subresourceRange = {aspect, 0, 1, 0, 1};
+    if (vkCreateImageView(c->device, &vi, NULL, &m->view) != VK_SUCCESS) {
+        vmaDestroyImage(c->vma, m->img, m->mem);
+        *m = Img{};
+        return false;
+    }
     VkImageMemoryBarrier2 b = {};
     b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     b.srcStageMask = b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
     b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
     b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = m->img, b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    b.image = m->img, b.subresourceRange = {aspect, 0, 1, 0, 1};
     VkDependencyInfo di = {};
     di.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, di.imageMemoryBarrierCount = 1, di.pImageMemoryBarriers = &b;
     vkCmdPipelineBarrier2(cb, &di);
     return true;
 }
 
-// The HUD-less copies and the generated frames at w x h, two of each (the present of the frame before may still read
-// the other pair). Another size: the old ones go once every present and submission before is done.
+static void async_images_free(VkCtx *c) {
+    for (int i = 0; i < ASYNC_SLOTS; i++) {
+        img_free(c, &g.win[i]);
+        img_free(c, &g.depth[i]);
+        img_free(c, &g.mv[i]);
+        g.async_done[i] = 0;
+        g.present_done[i] = 0;
+    }
+    g.snap_w = g.snap_h = g.snap_depth_w = g.snap_depth_h = 0;
+    g.snap_win_fmt = g.snap_depth_fmt = VK_FORMAT_UNDEFINED;
+}
+
+// The HUD-less copies and the generated frames at w x h, two of each normally and three with dlssg_async (the present
+// of the frame before may still read the other pair). Another size: the old ones go once every present and submission
+// before is done.
 static bool images_for(VkCommandBuffer cb, uint32_t w, uint32_t h) {
     if (g.hl_srgb.img && g.iw == w && g.ih == h) return true;
     VkCtx *c = vk_ctx();
@@ -494,23 +640,188 @@ static bool images_for(VkCommandBuffer cb, uint32_t w, uint32_t h) {
         vk_queue_lock();
         vkDeviceWaitIdle(c->device);
         vk_queue_unlock();
-        g.show_out = g.show_hl = VK_NULL_HANDLE;
+        memset(g.show_out, 0, sizeof g.show_out);
+        g.show_hl = VK_NULL_HANDLE;
+        async_images_free(c);
     }
     img_free(c, &g.hl_srgb);
-    for (int i = 0; i < 2; i++) img_free(c, &g.hl[i]), img_free(c, &g.out[i]);
+    if (!g.slots) g.slots = g.async_ok ? ASYNC_SLOTS : 2;
+    for (int i = 0; i < ASYNC_SLOTS; i++) {
+        img_free(c, &g.hl[i]);
+        for (int j = 0; j < VK_FG_MAX_GENERATED; j++) img_free(c, &g.out[i][j]), img_free(c, &g.out_bgra[i][j]);
+    }
     const VkImageUsageFlags t = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    bool ok = img_make(c, cb, &g.hl_srgb, w, h, VK_FORMAT_R8G8B8A8_SRGB, t);
-    for (int i = 0; i < 2 && ok; i++)
-        ok = img_make(c, cb, &g.hl[i], w, h, VK_FORMAT_R8G8B8A8_UNORM, t | VK_IMAGE_USAGE_SAMPLED_BIT) &&
-             img_make(c, cb, &g.out[i], w, h, VK_FORMAT_R8G8B8A8_UNORM,
-                      t | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
+    bool ok = img_make(c, cb, &g.hl_srgb, w, h, VK_FORMAT_R8G8B8A8_SRGB, t, VK_IMAGE_ASPECT_COLOR_BIT);
+    for (int i = 0; i < (int)g.slots && ok; i++) {
+        ok = img_make(c, cb, &g.hl[i], w, h, VK_FORMAT_R8G8B8A8_UNORM, t | VK_IMAGE_USAGE_SAMPLED_BIT,
+                      VK_IMAGE_ASPECT_COLOR_BIT);
+        for (int j = 0; j < VK_FG_MAX_GENERATED && ok; j++)
+            ok = img_make(c, cb, &g.out[i][j], w, h, VK_FORMAT_R8G8B8A8_UNORM,
+                          t | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT, VK_IMAGE_ASPECT_COLOR_BIT) &&
+                 img_make(c, cb, &g.out_bgra[i][j], w, h, VK_FORMAT_B8G8R8A8_UNORM,
+                          t | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    }
     if (!ok) {
         rt_log("fg: no memory for the %ux%u pictures: frame generation off for this run", w, h);
         g.failed = true;
         return false;
     }
     g.iw = w, g.ih = h;
+    g.out_fmt = VK_FORMAT_R8G8B8A8_UNORM;
     return true;
+}
+
+static void async_slot_wait(int slot) {
+    uint64_t value = __atomic_load_n(&g.async_done[slot], __ATOMIC_ACQUIRE);
+    if (value) vk_fg_async_wait(value);
+    value = __atomic_load_n(&g.present_done[slot], __ATOMIC_ACQUIRE);
+    if (value && !vk_sync_fence_wait(value, UINT64_MAX))
+        rt_fatal("fg: DLSSG image set %d waited for a presentation that never completed", slot);
+}
+
+// Each asynchronous evaluation reads private copies. The game reuses the window texture, depth and motion images in
+// the next real frame, so referencing those images after the real frame's submission would race the generated frame.
+static bool async_images_for(VkCommandBuffer cb, uint32_t w, uint32_t h, VkFormat win_fmt) {
+    const VkFgScene *s = &g.scene;
+    if (!s->depth || !s->depth_view || !s->mv || !s->mv_view || !s->w || !s->h) {
+        static int said;
+        if (!said)
+            said = 1, rt_log("fg: dlssg_async scene inputs missing (depth %p/%p, motion %p/%p, %ux%u); using the serial path",
+                             (void *)s->depth, (void *)s->depth_view, (void *)s->mv, (void *)s->mv_view, s->w, s->h);
+        return false;
+    }
+    if (g.win[0].img && g.snap_w == w && g.snap_h == h && g.snap_win_fmt == win_fmt && g.snap_depth_w == s->w &&
+        g.snap_depth_h == s->h && g.snap_depth_fmt == s->depth_format)
+        return true;
+
+    VkCtx *c = vk_ctx();
+    vk_present_drain();
+    vk_queue_lock();
+    vkDeviceWaitIdle(c->device);
+    vk_queue_unlock();
+    async_images_free(c);
+
+    const VkImageUsageFlags copy = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    bool ok = true;
+    for (int i = 0; i < ASYNC_SLOTS && ok; i++) {
+        ok = img_make(c, cb, &g.win[i], w, h, win_fmt, copy | VK_IMAGE_USAGE_SAMPLED_BIT,
+                      VK_IMAGE_ASPECT_COLOR_BIT) &&
+             img_make(c, cb, &g.depth[i], s->w, s->h, s->depth_format, copy | VK_IMAGE_USAGE_SAMPLED_BIT,
+                      VK_IMAGE_ASPECT_DEPTH_BIT) &&
+             img_make(c, cb, &g.mv[i], s->w, s->h, VK_FORMAT_R16G16_SFLOAT, copy | VK_IMAGE_USAGE_SAMPLED_BIT,
+                      VK_IMAGE_ASPECT_COLOR_BIT);
+    }
+    if (!ok) {
+        rt_log("fg: no memory for DLSSG input snapshots at %ux%u: dlssg_async falls back to the serial path", w, h);
+        return false;
+    }
+    g.snap_w = w, g.snap_h = h, g.snap_win_fmt = win_fmt;
+    g.snap_depth_w = s->w, g.snap_depth_h = s->h, g.snap_depth_fmt = s->depth_format;
+    return true;
+}
+
+static bool snapshot_inputs(VkCommandBuffer cb, int slot, VkImage win, uint32_t w, uint32_t h) {
+    const VkFgScene *s = &g.scene;
+    if (!g.win[slot].img || !g.depth[slot].img || !g.mv[slot].img) {
+        static int said;
+        if (!said)
+            said = 1, rt_log("fg: dlssg_async snapshot set %d is incomplete; using the serial path", slot);
+        return false;
+    }
+    full_barrier(cb);
+    VkImageCopy cp[3] = {};
+    VkImage src[3] = {win, s->depth, s->mv};
+    VkImage dst[3] = {g.win[slot].img, g.depth[slot].img, g.mv[slot].img};
+    VkImageAspectFlags aspect[3] = {VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_ASPECT_COLOR_BIT};
+    for (int i = 0; i < 3; i++) {
+        cp[i].srcSubresource = cp[i].dstSubresource = {aspect[i], 0, 0, 1};
+        cp[i].extent = {i == 0 ? w : s->w, i == 0 ? h : s->h, 1};
+        vkCmdCopyImage(cb, src[i], VK_IMAGE_LAYOUT_GENERAL, dst[i], VK_IMAGE_LAYOUT_GENERAL, 1, &cp[i]);
+    }
+    full_barrier(cb);
+    return true;
+}
+
+extern "C" void vk_fg_async_wait(uint64_t value) {
+    if (!value) return;
+    VkCtx *c = vk_ctx();
+    VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1,
+                              .pSemaphores = &c->fg_timeline, .pValues = &value};
+    if (vkWaitSemaphores(c->device, &wi, UINT64_MAX) != VK_SUCCESS)
+        rt_fatal("fg: DLSSG queue did not finish timeline value %llu", (unsigned long long)value);
+}
+
+extern "C" void vk_fg_wait_reuse(void) {
+    if (!g.async_ok || g.reuse_slot < 0) return;
+    async_slot_wait(g.reuse_slot);
+    g.reuse_slot = -1;
+}
+
+// Called by the replay thread immediately after the real frame's submission. The DLSSG command buffer waits on that
+// submission's timeline value on fg_queue, so the next real frame can use gfx_queue at the same time.
+extern "C" uint64_t vk_fg_async_submit(uint64_t ready) {
+    if (!g.async_job.armed) return 0;
+    FgAsyncJob j = g.async_job;
+    g.async_job = {};
+    if (!g.async_ok) {
+        g.gen_ok = false;
+        g.gen_count = 0;
+        return 0;
+    }
+    VkCtx *c = vk_ctx();
+    uint32_t slot = (uint32_t)j.slot;
+    async_slot_wait((int)slot);
+    rec_drain();   // NGX records into its command buffer on this thread while the replay recorder may still be busy
+    VkCommandBuffer cb = g.async_cb[slot];
+    vkResetCommandBuffer(cb, 0);
+    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    if (vkBeginCommandBuffer(cb, &bi) != VK_SUCCESS) rt_fatal("fg: begin DLSSG command buffer");
+    int made = vk_dlssg_generate(cb, j.win, j.win_view, j.win_fmt, j.hudless, j.hudless_view, j.scene.depth,
+                                 j.scene.depth_view, j.scene.depth_format, j.scene.mv, j.scene.mv_view, j.out,
+                                 j.out_views, j.count, j.w, j.h);
+    if (vkEndCommandBuffer(cb) != VK_SUCCESS) rt_fatal("fg: end DLSSG command buffer");
+    if (made <= 0) {
+        g.gen_ok = false;
+        g.gen_count = 0;
+        return 0;
+    }
+    uint64_t value = ++g.async_seq;
+    VkSemaphoreSubmitInfo wait = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = c->timeline,
+                                  .value = ready, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    VkSemaphoreSubmitInfo sig = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = c->fg_timeline,
+                                 .value = value, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    VkCommandBufferSubmitInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cb};
+    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .waitSemaphoreInfoCount = 1, .pWaitSemaphoreInfos = &wait,
+                        .commandBufferInfoCount = 1, .pCommandBufferInfos = &cbi, .signalSemaphoreInfoCount = 1,
+                        .pSignalSemaphoreInfos = &sig};
+    vk_queue_lock();
+    VkResult r = vkQueueSubmit2(c->fg_queue, 1, &si, VK_NULL_HANDLE);
+    vk_queue_unlock();
+    if (r != VK_SUCCESS) {
+        vk_device_fault_report(r);
+        rt_fatal("fg: DLSSG queue submit failed (%d)", (int)r);
+    }
+    __atomic_store_n(&g.async_done[slot], value, __ATOMIC_RELEASE);
+    g.async_pending_value = value;
+    g.gen_count = made;
+    g.gens += (uint64_t)made;
+    g.resets += g.reset ? (uint64_t)made : 0;
+    if (!g.gens_logged && g.gens == (uint64_t)made)
+        rt_log("fg: first DLSS frame generated asynchronously: %d picture%s between real frames (%dx), %ux%u from a %ux%u scene",
+               made, made == 1 ? "" : "s", made + 1, j.w, j.h, g.rw, g.rh);
+    return value;
+}
+
+extern "C" uint64_t vk_fg_present_state(VkImage presented, int *slot) {
+    int mine = g.show_ngen > 0 && presented == g.show_win ? g.show_slot : -1;
+    if (slot) *slot = mine;
+    return mine >= 0 ? g.show_async_value : 0;
+}
+
+extern "C" void vk_fg_present_submitted(int slot, uint64_t value) {
+    if (slot < 0 || slot >= (int)ASYNC_SLOTS) return;
+    __atomic_store_n(&g.present_done[slot], value, __ATOMIC_RELEASE);
 }
 
 static FfxResource res(VkImage img, VkFormat f, uint32_t w, uint32_t h, bool write, const wchar_t *name) {
@@ -536,6 +847,19 @@ static VkFormat unorm_of(VkFormat f) {  // (the bytes as written: an sRGB image 
 }
 
 // ---------------------------------------------------------------- the frame
+extern "C" void vk_fg_dlssg_scene(const VkFgScene *s) {
+    g.prepared = false;
+    if (vk_fg_engine() != VK_FG_DLSSG || !vk_dlssg_available()) return;
+    uint64_t now = kern_now_ns();
+    double dt = g.last_prep_ns ? (double)(now - g.last_prep_ns) / 1e6 : 0.0;
+    g.last_prep_ns = now;
+    g.dt_ms = dt > 0.0 && dt < 100.0 ? (float)dt : 16.67f;
+    g.rw = s->w, g.rh = s->h, g.near_m = s->near_m, g.far_m = s->far_m, g.fov_y = s->fov_y;
+    g.reset = s->reset || !g.chain;
+    g.scene = *s;
+    g.prepared = true;
+}
+
 extern "C" int vk_fg_prepare(VkCommandBuffer cb, const VkFgScene *s) {
     g.prepared = false;
     if (g.failed || !g.scratch_shared) return 0;
@@ -622,6 +946,7 @@ extern "C" int vk_fg_hudless(VkCommandBuffer cb, VkImage src, VkFormat fmt, uint
                              uint32_t h) {
     (void)fmt;
     if (!g.prepared || g.failed || !images_for(cb, w, h)) return 0;
+    if (g.async_ok) g.reuse_slot = g.k;
     vk_fg_mark(cb, FG_T_HL0);
     VkImageBlit b = {};
     b.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1};
@@ -691,16 +1016,19 @@ static void shot(VkCommandBuffer cb, uint64_t fence, VkImage img, VkFormat f, ui
     vk_completion_add(fence, shot_write, s);
 }
 
-extern "C" int vk_fg_generate(VkCommandBuffer cb, uint64_t fence, uint64_t frame, VkImage win, VkFormat fmt, uint32_t w,
-                              uint32_t h) {
+extern "C" int vk_fg_generate(VkCommandBuffer cb, uint64_t fence, uint64_t frame, VkImage win, VkImageView win_view,
+                              VkFormat fmt, uint32_t w, uint32_t h) {
     if (!g.prepared || !g.hl_ok || g.failed) return 0;
+    VkFgEngine engine = vk_fg_engine();
     VkFormat wf = unorm_of(fmt);
     if (wf != VK_FORMAT_R8G8B8A8_UNORM && wf != VK_FORMAT_B8G8R8A8_UNORM) {
         static int said;
         if (!said) said = 1, rt_log("fg: the window texture's format %d is not 8-bit RGBA: no frame generated", (int)fmt);
         return 0;
     }
-    if (wf != g.cfg.color_format || w != g.cfg.display_w || h != g.cfg.display_h || w != g.iw || h != g.ih) {
+    if (w != g.iw || h != g.ih ||
+        (engine == VK_FG_FSR3 &&
+         (wf != g.cfg.color_format || w != g.cfg.display_w || h != g.cfg.display_h))) {
         g.win_fmt = wf;   // the next prepare makes the contexts for it
         static int said;
         if (said++ < 4)
@@ -709,7 +1037,70 @@ extern "C" int vk_fg_generate(VkCommandBuffer cb, uint64_t fence, uint64_t frame
                    (int)g.cfg.color_format, g.iw, g.ih);
         return 0;
     }
-    VkImage hl = g.hl[g.k].img, out = g.out[g.k].img;
+    VkImage hl = g.hl[g.k].img;
+    if (engine == VK_FG_DLSSG) {
+        VkImage outs[VK_FG_MAX_GENERATED];
+        VkImageView out_views[VK_FG_MAX_GENERATED];
+        int count = vk_dlssg_generated_count();
+        Img (*outputs)[VK_FG_MAX_GENERATED] = wf == VK_FORMAT_B8G8R8A8_UNORM ? g.out_bgra : g.out;
+        g.out_fmt = wf == VK_FORMAT_B8G8R8A8_UNORM ? VK_FORMAT_B8G8R8A8_UNORM : VK_FORMAT_R8G8B8A8_UNORM;
+        for (int i = 0; i < count; i++)
+            outs[i] = outputs[g.k][i].img, out_views[i] = outputs[g.k][i].view;
+        if (g.async_wanted && g.async_ok) {
+            if (!async_images_for(cb, w, h, fmt)) {
+                g.async_ok = 0;
+            } else if (snapshot_inputs(cb, g.k, win, w, h)) {
+                g.reuse_slot = g.k;
+                g.async_job = {.armed = true, .count = count, .slot = g.k, .win = g.win[g.k].img,
+                               .hudless = hl, .win_view = g.win[g.k].view, .hudless_view = g.hl[g.k].view,
+                               .win_fmt = wf, .w = w, .h = h, .scene = g.scene};
+                memcpy(g.async_job.out, outs, sizeof outs);
+                memcpy(g.async_job.out_views, out_views, sizeof out_views);
+                g.async_job.scene.depth = g.depth[g.k].img;
+                g.async_job.scene.depth_view = g.depth[g.k].view;
+                g.async_job.scene.mv = g.mv[g.k].img;
+                g.async_job.scene.mv_view = g.mv[g.k].view;
+                g.gen_ok = true;
+                g.gen_count = count;
+                g.gen_win = win;
+                g.async_pending_value = 0;
+                if (g.shot_at || g.shot_w > 0) {
+                    static int said;
+                    if (!said) said = 1, rt_log("fg: fg_shot is unavailable while dlssg_async is on");
+                }
+                return 1;
+            }
+        }
+        vk_fg_mark(cb, FG_T_FI0);
+        uint64_t t0 = kern_now_ns();
+        rec_drain();   // the SDK records into cb itself
+        uint64_t t1 = kern_now_ns();
+        int made = vk_dlssg_generate(cb, win, win_view, wf, hl, g.hl[g.k].view, g.scene.depth, g.scene.depth_view,
+                                     g.scene.depth_format, g.scene.mv, g.scene.mv_view, outs, out_views, count, w, h);
+        g.drain_ns += t1 - t0, g.sdk_ns += kern_now_ns() - t1;
+        full_barrier(cb);
+        vk_fg_mark(cb, FG_T_FI1);
+        if (made <= 0) return 0;
+        g.gen_ok = true;
+        g.gen_count = made;
+        g.gen_win = win;
+        g.gens += (uint64_t)made;
+        g.resets += g.reset ? (uint64_t)made : 0;
+        if (!g.gens_logged && g.gens == (uint64_t)made)
+            rt_log("fg: first DLSS frame generated: %d picture%s between real frames (%dx)%s, %ux%u from a %ux%u scene",
+                   made, made == 1 ? "" : "s", made + 1,
+                   made == 1 ? " (RTX 40-class frame generation)" : " (multi-frame generation)", w, h, g.rw, g.rh);
+        if (g.shot_w > 0 && !g.shot_at && frame_step_world_us() >= g.shot_w) g.shot_at = frame;
+        if (g.shot_at && frame >= g.shot_at && frame < g.shot_at + 3) {
+            shot(cb, fence, win, fmt, w, h, frame, "real");
+            shot(cb, fence, outs[0], wf, w, h, frame, g.reset ? "gen-reset" : "gen");
+            shot(cb, fence, hl, VK_FORMAT_R8G8B8A8_UNORM, w, h, frame, "hudless");
+            full_barrier(cb);
+        }
+        return 1;
+    }
+    g.out_fmt = VK_FORMAT_R8G8B8A8_UNORM;
+    VkImage out = g.out[g.k][0].img;
     vk_fg_mark(cb, FG_T_FI0);
     uint64_t t0 = kern_now_ns();
     rec_drain();   // the SDK records into cb itself
@@ -763,6 +1154,7 @@ extern "C" int vk_fg_generate(VkCommandBuffer cb, uint64_t fence, uint64_t frame
         return 0;
     }
     g.gen_ok = true;
+    g.gen_count = 1;
     g.gen_win = win;
     g.gens++, g.resets += g.reset;
     if (g.gens == 1)
@@ -785,12 +1177,21 @@ extern "C" void vk_fg_frame(void) {
         g.ncpu++;
         if (!g.gen_ok) g.skipped++;
     }
-    g.show_out = g.gen_ok ? g.out[g.k].img : VK_NULL_HANDLE;
+    memset(g.show_out, 0, sizeof g.show_out);
+    g.show_ngen = g.gen_ok ? g.gen_count : 0;
+    Img (*outputs)[VK_FG_MAX_GENERATED] = g.out_fmt == VK_FORMAT_B8G8R8A8_UNORM ? g.out_bgra : g.out;
+    for (int i = 0; i < g.show_ngen; i++) g.show_out[i] = outputs[g.k][i].img;
+    g.show_fmt = g.out_fmt;
     g.show_win = g.gen_ok ? g.gen_win : VK_NULL_HANDLE;
+    g.show_slot = g.gen_ok ? g.k : -1;
+    g.show_async_value = g.gen_ok ? g.async_pending_value : 0;
     g.show_hl = g.hl_ok ? g.hl[g.k].img : VK_NULL_HANDLE;
-    if (g.hl_ok) g.k ^= 1;
+    if (g.hl_ok) g.k = (g.k + 1) % (int)(g.slots ? g.slots : 2);
     g.chain = g.gen_ok;   // a frame without a generated picture breaks the chain: the next one starts over
     g.prepared = g.hl_ok = g.gen_ok = false;
+    g.gen_count = 0;
+    g.async_pending_value = 0;
+    g.reuse_slot = -1;
     g.cpu_frame = 0;
     if (g.gens >= g.gens_logged + LOG_EVERY) {
         static uint64_t from;
@@ -823,14 +1224,19 @@ extern "C" void vk_fg_exit_log(void) {
            (g.prep_run + g.prep_ns) / 1e6 / g.ncpu);
 }
 
-extern "C" VkImage vk_fg_present_gen(VkImage presented) {
-    if (g.test || !g.show_out || presented != g.show_win) return VK_NULL_HANDLE;
-    return g.show_out;
+extern "C" int vk_fg_present_gens(VkImage presented, VkImage out[VK_FG_MAX_GENERATED]) {
+    if (g.test || g.show_ngen <= 0 || presented != g.show_win) return 0;
+    memcpy(out, g.show_out, (size_t)g.show_ngen * sizeof out[0]);
+    return g.show_ngen;
 }
 
+extern "C" VkFormat vk_fg_present_format(void) { return g.show_fmt; }
+
 extern "C" int vk_fg_present_swap(VkImage *img, VkFormat *fmt) {
-    VkImage s = g.test == 1 ? g.show_out : g.test == 2 ? g.show_hl : VK_NULL_HANDLE;
+    VkImage s = g.test == 1 ? g.show_out[0] : g.test == 2 ? g.show_hl : VK_NULL_HANDLE;
     if (!s) return 0;
-    *img = s, *fmt = VK_FORMAT_R8G8B8A8_UNORM;
+    *img = s, *fmt = g.test == 1 ? g.show_fmt : VK_FORMAT_R8G8B8A8_UNORM;
     return 1;
 }
+
+extern "C" int vk_fg_present_linear(void) { return g.test == 1 && vk_fg_engine() == VK_FG_DLSSG; }

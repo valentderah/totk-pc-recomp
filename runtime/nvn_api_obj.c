@@ -673,6 +673,9 @@ static void sleep_until(uint64_t deadline) {
 // from acquire to present. Its present is a copy already on the queue by its display time, so with the frame queue
 // (TOTK_FRAME_QUEUE=1) the image is free from that time on: the game draws the next frame while the previous one waits
 // for its turn, and a frame that takes up to one more period still makes its slot, for up to one frame more latency.
+// Frame generation is the same case by default (TOTK_FRAME_GEN_QUEUE=1): its first picture is shown at the slot and the
+// game's frame one interval later, so holding the source image until after that frame would make the next source frame
+// wait for the whole generated group. The switch affects only frames that actually carry generated pictures.
 // Town at 4K with DLAA at 60 on an RTX 5070: frames over 17.5 ms 1-8 per 30 s with the queue against 25-33 without.
 NVN_API(nvnWindowAcquireTexture) {
     win_t *o = arg_p(c, 0);
@@ -721,7 +724,9 @@ NVN_API(nvnQueuePresentTexture) {
     nvn_sync_ahead_present();
     gfx_backend()->present(t, o->crop, slot);
     o->ticket[idx] = o->presents;
-    o->avail[idx] = cfg_bool("TOTK_FRAME_QUEUE") ? slot : slot + period;
+    int queued = cfg_bool("TOTK_FRAME_QUEUE") ||
+                 (gfx_frame_gen_live() && cfg_bool("TOTK_FRAME_GEN_QUEUE"));
+    o->avail[idx] = queued ? slot : slot + period;
     frame_step_present(slot, o->interval);   // frame_rate.c: the real-time step follows the display times
     rt_frame_presented(t, o->presents);
 }

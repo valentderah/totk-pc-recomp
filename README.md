@@ -22,6 +22,8 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - Custom resolutions (1080p, 2k...), supersampling and AMD FSR 1 upscaling
 - NVIDIA DLSS / DLAA on RTX GPUs: the setup downloads `nvngx_dlss.dll` from NVIDIA's DLSS SDK repository
   (github.com/NVIDIA/DLSS, NVIDIA RTX SDK license) when it finds an RTX GPU; untick it in the setup to skip it
+- NVIDIA DLSS Frame Generation on RTX GPUs: 2x on RTX 40, with Multi Frame Generation up to 4x on RTX 50; the setup
+  also downloads `nvngx_dlssg.dll`, and frame generation can run together with DLSS upscaling
 - AMD FSR 3.1 on any GPU, and AMD FSR 4 on Windows on the Radeon GPUs AMD's FSR SDK libraries support, in the same
   modes as DLSS: for FSR 4 the setup downloads AMD's signed FSR SDK libraries
   (github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK, AMD FSR SDK license), ticked by default with an AMD GPU

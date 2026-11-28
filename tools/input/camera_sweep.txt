@@ -1,0 +1,30 @@
+# Load the first save, then sweep the camera while the final swapchain frames are captured.
+300 A 4
+450 A 4
+600 A 4
+750 A 4
+900 A 4
+1050 A 4
+1200 A 4
+1350 A 4
+1500 A 4
+1650 A 4
+1800 A 4
+1950 A 4
+2100 A 4
+2250 A 4
+2400 A 4
+2550 A 4
+2700 A 4
+2850 A 4
+3000 A 4
+3150 A 4
+3300 A 4
+3450 A 4
+3600 A 4
+@1 RSTICK 0 0 1
+@4500 RSTICK 30000 0 500
+@5200 RSTICK 0 30000 500
+@5900 RSTICK -30000 0 500
+@6600 RSTICK 0 -30000 500
+@7300 RSTICK 0 0 1

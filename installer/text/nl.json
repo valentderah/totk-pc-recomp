@@ -145,6 +145,8 @@
  "ui.firmware_help": "Voor Chinese, Koreaanse en traditioneel Chinese tekst: de map Contents/registered van de firmware, bijvoorbeeld uit Ryujinx of Yuzu. De installatie kopieert daaruit de systeemlettertypen van de Switch naar de installatiemap.",
  "ui.dlss": "NVIDIA DLSS (nvngx_dlss.dll) downloaden voor NVIDIA RTX-videokaarten",
  "ui.dlss_help": "Uit NVIDIA's DLSS SDK op GitHub, onder NVIDIA's RTX SDK-licentie (github.com/NVIDIA/DLSS). Hiermee werken de instellingen dlaa en DLSS; zonder doen ze niets.",
+ "ui.dlssg": "NVIDIA DLSS Frame Generation (nvngx_dlssg.dll) downloaden voor NVIDIA RTX-videokaarten",
+ "ui.dlssg_help": "Uit NVIDIA's DLSS SDK op GitHub, onder NVIDIA's RTX SDK-licentie (github.com/NVIDIA/DLSS). Hiermee werkt frame_gen = dlssg; zonder doet deze beeldgenerator niets.",
  "ui.fsr": "AMD FSR 4 (AMD's FSR SDK-bibliotheken) downloaden voor AMD Radeon-videokaarten",
  "ui.fsr_help": "Uit AMD's FSR SDK op GitHub, onder AMD's FSR SDK-licentie (github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK). Hiermee werkt de keuze AMD FSR 4 van de 3D-scène-upscaler op de Radeon-kaarten waarvoor AMD's bibliotheken FSR 4 bieden; zonder doet die keuze niets. Aangevinkt bij de start als de computer een AMD-videokaart heeft.",
  "ui.compressed_help": "Gecomprimeerde NSZ- en XCZ-bestanden werken zoals ze zijn: de installatie pakt ze zelf uit (tot de spelgegevens zijn uitgepakt, is daarvoor evenveel vrije ruimte nodig als de uitgepakte bestanden innemen).",
