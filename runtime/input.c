@@ -13,6 +13,7 @@
 #include <SDL3/SDL.h>
 
 #include "cfg.h"
+#include "deck_imu.h"
 #include "host.h"
 #include "input.h"
 #include "input_map.h"
@@ -506,6 +507,28 @@ static int steam_virtual(SDL_Gamepad *g) {
 
 static int has_motion(SDL_Gamepad *g) {
     return SDL_GamepadHasSensor(g, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(g, SDL_SENSOR_ACCEL);
+}
+
+// Valve's own controller (28de:1205/12fe) behind Steam's virtual pad: unlike every other controller, un-hiding it
+// from SDL (steam_reveal) is not enough - Steam/SDL's own Steam Deck driver resets its sensor state regardless, so
+// the six-axis sensor keeps reading at rest. deck_imu.c reads it directly from its hidraw node instead.
+static DeckImu deck_imu = {.fd = -1};
+// True while the button pad in use is Steam's virtual one and the real controller behind it (SDL_GetGamepadVendor,
+// GamepadProduct on a Steam virtual pad: the ids of the controller behind it, raw_ids above) is Valve's own - the
+// case motion_source()'s normal SDL-sensor path cannot read correctly (its "live motion" is Steam/SDL's Deck driver
+// resetting the sensor state, not real samples; see the comment above deck_imu).
+static int deck_imu_candidate(const char **why) {
+    if (!steam_hidden_n) { *why = "steam_hidden_n is 0"; return 0; }
+    if (!pad) { *why = "no button pad open"; return 0; }
+    if (!SDL_GamepadConnected(pad)) { *why = "button pad not connected"; return 0; }
+    if (!steam_virtual(pad)) { *why = "button pad is not Steam's virtual gamepad"; return 0; }
+    uint16_t v = SDL_GetGamepadVendor(pad), p = SDL_GetGamepadProduct(pad);
+    if (!(v == 0x28de && (p == 0x1205 || p == 0x12fe))) { *why = "controller behind it is not 28de:1205/12fe"; return 0; }
+    return 1;
+}
+static void deck_imu_sample(const double acc[3], const double gyro[3], uint64_t now_ns, void *user) {
+    (void)user;
+    motion_feed(motion_global(), acc, gyro, now_ns);
 }
 
 // A gamepad Steam did not hide is connected (Steam's virtual pad, or another controller).
@@ -1472,16 +1495,27 @@ static void motion_main(void *arg) {
     for (;;) {
         plat_wait_ns(4000000);
         float a[3], g[3];
-        int have = 0;
+        int have = 0, deck = 0;
         plat_mutex_lock(&lock);
         SDL_Gamepad *src = motion_source();
-        if (src) {
+        const char *why = "";
+        deck = deck_imu_candidate(&why);
+        static int was_deck;
+        if (deck && !was_deck)
+            rt_log("input: Steam Input's virtual gamepad hides the Steam Deck's own controller (28de): reading its "
+                   "gyroscope and accelerometer from its hidraw node instead of SDL's gamepad sensor API");
+        if (!deck && was_deck) rt_log("input: Steam Deck hidraw motion stopped: %s", why);
+        was_deck = deck;
+        if (!deck && deck_imu.fd >= 0) deck_imu_close(&deck_imu);
+        if (!deck && src) {
             SDL_UpdateGamepads();
             have = sensors_ready(src) && SDL_GetGamepadSensorData(src, SDL_SENSOR_ACCEL, a, 3) &&
                    SDL_GetGamepadSensorData(src, SDL_SENSOR_GYRO, g, 3);
         }
         plat_mutex_unlock(&lock);
-        if (!have || !input_motion_enabled()) continue;
+        if (!input_motion_enabled()) continue;
+        if (deck) { deck_imu_poll(&deck_imu, kern_now_ns(), deck_imu_sample, NULL); continue; }
+        if (!have) continue;
         double acc[3], gyro[3];
         input_motion_axes(a, g, acc, gyro);
         motion_feed(motion_global(), acc, gyro, kern_now_ns());
