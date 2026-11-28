@@ -17,6 +17,7 @@
 #include "cfg.h"
 #include "cheats.h"
 #include "fs.h"
+#include "input.h"
 #include "gfx.h"
 #include "loadwin.h"
 #include "mods.h"
@@ -329,6 +330,7 @@ void rt_frame_presented(const tex_t *t, uint64_t n) {
     fs_save_flush();
     vk_pipeline_save();   // no-op without the Vulkan back end
     playtime_save();
+    input_record_save();
     prof_write();
     fflush(stderr);
     plat_exit(0);

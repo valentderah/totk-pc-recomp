@@ -222,13 +222,22 @@ static void rec_flush_all(void) {
     fflush(rec);
 }
 
+// Normal shutdown uses plat_exit, which bypasses atexit. Close under the poll lock so late input cannot add tails.
+void input_record_save(void) {
+    plat_mutex_lock(&lock);
+    rec_flush_all();
+    if (rec) fclose(rec), rec = NULL;
+    rec_state = -1;
+    plat_mutex_unlock(&lock);
+}
+
 static void rec_apply(uint64_t b, const int32_t sl[2], const int32_t sr[2]) {
     if (!rec_state) {
         const char *path = cfg_get("TOTK_INPUT_RECORD");   // no default: not recording when unset
         rec = path && *path ? fopen(path, "w") : NULL;
         rec_state = rec ? 1 : -1;
         if (path && *path && !rec) rt_log("input: cannot open TOTK_INPUT_RECORD %s", path);
-        if (rec) { fprintf(rec, "# Recorded input (TOTK_INPUT_RECORD); frame = 60 Hz ticks of game time, @ms = world clock.\n"); atexit(rec_flush_all);
+        if (rec) { fprintf(rec, "# Recorded input (TOTK_INPUT_RECORD); frame = 60 Hz ticks of game time, @ms = world clock.\n"); atexit(input_record_save);
                    rt_log("input: recording to %s", path); }
     }
     if (rec_state != 1) return;

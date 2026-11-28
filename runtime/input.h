@@ -9,6 +9,8 @@ void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_
 // 1 when keyboard and mouse are the device the player used last, 0 when the gamepad is: what is shown for pointing
 // (menu_cursor.c shows the pointer in the game's menus only for the keyboard and mouse)
 int input_kbm_last(void);
+// Finalize held recording segments and close the file before normal shutdown; safe to call more than once.
+void input_record_save(void);
 // Direct mouse input is consumed by the game's camera-input update, after its stick response. While that update
 // accepts camera input, the HID right stick contains only the controller and keyboard. Selectors route mouse input
 // separately: a persistent radial cursor for the ability wheel, discrete steps for horizontal quick lists.
