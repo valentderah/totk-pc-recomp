@@ -279,7 +279,9 @@ long plat_tz_west(void);                  // the local zone's standard offset, s
 
 // Runs this executable again with the same arguments and env_name=env_value added to its environment, for probes that
 // expect the child to stop with a fatal. Its stdout and stderr go into out (NUL-terminated, the rest discarded); waits
-// at most timeout_ms (0: no limit) and kills it after that. Returns the exit code, -1 when it could not start.
+// at most timeout_ms (0: no limit), including output capture/discard, and kills it after that. Once the child exits,
+// only already buffered output is drained; descendants retaining the pipe do not delay its return.
+// Returns the exit code, -1 on startup, capture or wait failure.
 int plat_run_self(const char *env_name, const char *env_value, char *out, size_t cap, uint32_t timeout_ms);
 
 // ---- randomness

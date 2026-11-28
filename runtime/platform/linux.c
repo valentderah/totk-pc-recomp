@@ -1544,12 +1544,19 @@ int plat_run_self(const char *env_name, const char *env_value, char *out, size_t
     if (!argc || !plat_exe_path(exe, sizeof exe)) return -1;
     int p[2];
     if (pipe2(p, O_CLOEXEC)) return -1;
+    // Only the parent's read end is nonblocking: changing the child's writer would make large writes fail.
+    int flags = fcntl(p[0], F_GETFL);
+    if (flags < 0 || fcntl(p[0], F_SETFL, flags | O_NONBLOCK)) {
+        close(p[0]), close(p[1]);
+        return -1;
+    }
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
     posix_spawn_file_actions_adddup2(&fa, p[1], 1);
     posix_spawn_file_actions_adddup2(&fa, p[1], 2);
     setenv(env_name, env_value, 1);
     pid_t pid;
+    uint64_t deadline = timeout_ms ? plat_now_ns() + (uint64_t)timeout_ms * 1000000u : 0;
     int e = posix_spawn(&pid, exe, &fa, NULL, argv, environ);
     unsetenv(env_name);
     posix_spawn_file_actions_destroy(&fa);
@@ -1558,26 +1565,83 @@ int plat_run_self(const char *env_name, const char *env_value, char *out, size_t
         close(p[0]);
         return -1;
     }
-    size_t len = 0;
-    char sink[512];
-    ssize_t k;
-    while (len + 1 < cap && (k = read(p[0], out + len, cap - 1 - len)) != 0)
-        if (k > 0) len += (size_t)k;
-        else if (errno != EINTR) break;
-    if (cap) out[len] = 0;
-    while ((k = read(p[0], sink, sizeof sink)) > 0 || (k < 0 && errno == EINTR)) {}
-    close(p[0]);
-    int status = 0;
-    uint64_t end = plat_now_ns() + (uint64_t)timeout_ms * 1000000u;
-    while (waitpid(pid, &status, timeout_ms ? WNOHANG : 0) == 0) {
-        if (plat_now_ns() >= end) {
-            kill(pid, SIGKILL);
-            waitpid(pid, &status, 0);
+    size_t len = 0, drain = 0;
+    char sink[4096];
+    int status = 0, done = 0, failed = 0, pipe_open = 1;
+    for (;;) {
+        uint64_t now = plat_now_ns();
+        if (!done) {
+            pid_t waited = waitpid(pid, &status, WNOHANG);
+            if (waited < 0) {
+                if (errno == EINTR) continue;
+                failed = 1;
+                // An error does not prove that this pid still names our child; do not signal it.
+                done = 1;
+                break;
+            }
+            if (waited == pid) {
+                done = 1;
+                // A descendant may keep the pipe open or continue writing. Capture only the bytes buffered when
+                // the direct child exited, rather than waiting for that descendant's EOF, even with no timeout.
+                int available = 0;
+                if (ioctl(p[0], FIONREAD, &available) || available < 0) {
+                    failed = 1;
+                    break;
+                }
+                drain = (size_t)available;
+            }
+        }
+        if (deadline && now >= deadline) {
+            if (!done) {
+                kill(pid, SIGKILL);
+                pid_t waited;
+                do waited = waitpid(pid, &status, 0);
+                while (waited < 0 && errno == EINTR);
+                if (waited != pid) failed = 1;
+                done = 1;
+            }
             break;
         }
-        plat_sleep_ms(10);
+        if (done && !drain) break;
+        size_t room = cap && len < cap - 1 ? cap - 1 - len : 0;
+        size_t want = room && room < sizeof sink ? room : sizeof sink;
+        if (done && want > drain) want = drain;
+        ssize_t got = pipe_open ? read(p[0], room ? out + len : sink, want) : 0;
+        if (got > 0) {
+            if (room) len += (size_t)got;
+            if (done) drain -= (size_t)got;
+            continue;   // the process and deadline are checked even while discarding a continuous output stream
+        }
+        if (got < 0 && errno == EINTR) continue;
+        if (got < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            failed = 1;
+            break;
+        }
+        if (done) break;
+        if (!got) pipe_open = 0;
+        now = plat_now_ns();
+        if (deadline && now >= deadline) continue;
+        int wait_ms = 10;
+        if (deadline) {
+            uint64_t left_ms = (deadline - now + 999999u) / 1000000u;
+            if (left_ms < (uint64_t)wait_ms) wait_ms = (int)left_ms;
+        }
+        struct pollfd ready = {.fd = p[0], .events = POLLIN};
+        if (poll(pipe_open ? &ready : NULL, pipe_open ? 1 : 0, wait_ms) < 0 && errno != EINTR) {
+            failed = 1;
+            break;
+        }
     }
-    return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+    if (!done) {
+        kill(pid, SIGKILL);
+        pid_t waited;
+        do waited = waitpid(pid, &status, 0);
+        while (waited < 0 && errno == EINTR);
+        if (waited != pid) failed = 1;
+    }
+    if (cap) out[len] = 0;
+    close(p[0]);
+    return failed ? -1 : WIFEXITED(status) ? WEXITSTATUS(status) : 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
 }
 
 int plat_random(void *out, size_t n) {
