@@ -101,8 +101,10 @@ static void refresh_dir(void) {
         g_entries.push_back({"..", true});
     }
 
-    for (const auto &entry : fs::directory_iterator(dir_path, fs::directory_options::skip_permission_denied, ec)) {
-        if (ec) break;
+    // A range-for uses the throwing increment even when construction takes an error_code.
+    for (fs::directory_iterator it(dir_path, fs::directory_options::skip_permission_denied, ec), end;
+         !ec && it != end; it.increment(ec)) {
+        const auto &entry = *it;
         std::error_code status_ec;
         bool is_dir = entry.is_directory(status_ec);
         if (status_ec) continue;
@@ -318,8 +320,10 @@ void amiibo_collect_filenames(void (*callback)(void *, const char *), void *ctx)
         return;
     }
     
-    for (const auto &entry : fs::directory_iterator(dir_path, fs::directory_options::skip_permission_denied, ec)) {
-        if (ec) break;
+    // A range-for uses the throwing increment even when construction takes an error_code.
+    for (fs::directory_iterator it(dir_path, fs::directory_options::skip_permission_denied, ec), end;
+         !ec && it != end; it.increment(ec)) {
+        const auto &entry = *it;
         std::error_code status_ec;
         bool is_dir = entry.is_directory(status_ec);
         if (status_ec || is_dir) continue;
