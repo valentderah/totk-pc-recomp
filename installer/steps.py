@@ -1873,6 +1873,11 @@ class Fsr(Step):
     def current(self, ctx, record):
         if record.get('failed'):
             return False
+        if record.get('kept'):
+            present = [(ctx.dest / name, sha) for name, _, sha in FSR_FILES if (ctx.dest / name).is_file()]
+            # Older runs kept an interrupted install's matching half as if it belonged to the player.
+            # A differing library still belongs to the player; only a missing pinned member needs repair.
+            return any(file_sha256(path) != sha for path, sha in present) or len(present) == len(FSR_FILES)
         return not record.get('installed') or all((ctx.dest / name).is_file() for name, _, _ in FSR_FILES)
 
     def run(self, ctx):
@@ -1882,18 +1887,20 @@ class Fsr(Step):
             return {'skipped': 'not_windows'}
         rep = ctx.reporter
         present = [ctx.dest / name for name, _, _ in FSR_FILES if (ctx.dest / name).is_file()]
-        if present:
-            if all((ctx.dest / name).is_file() and file_sha256(ctx.dest / name) == sha for name, _, sha in FSR_FILES):
-                return {'installed': FSR_VERSION}
-            # A set the player put there (or half of one): kept as it is, the loader and its effect belong together
+        if any(path.is_file() and file_sha256(path) != sha for name, _, sha in FSR_FILES
+               for path in (ctx.dest / name,)):
+            # Never mix the pinned SDK with a library from another version, even if only one is present.
             rep.warning('warn.fsr_kept', path=str(present[0]))
             return {'kept': True}
-        total, done = sum(size for _, size, _ in FSR_FILES), 0
+        missing = [(name, size, sha) for name, size, sha in FSR_FILES if not (ctx.dest / name).is_file()]
+        if not missing:
+            return {'installed': FSR_VERSION}
+        total, done = sum(size for _, size, _ in missing), 0
         rep.progress('fsr', 'download', 0, total, 'bytes', force=True)
         rep.log(f'fsr: {FSR_BASE} (license {FSR_LICENSE})')
-        parts = []
+        parts, published = [], []
         try:
-            for name, size, sha in FSR_FILES:
+            for name, size, sha in missing:
                 url, part = FSR_BASE + name, ctx.temp / (name + '.part')
                 parts.append(part)
                 part.parent.mkdir(parents=True, exist_ok=True)
@@ -1907,15 +1914,23 @@ class Fsr(Step):
                 if got != size or h.hexdigest() != sha:
                     raise OSError(f'{name}: {got} bytes, SHA-256 {h.hexdigest()[:16]}, not the expected file')
                 done += size
-            # both downloaded and checked: only then into the install folder, so it never holds half a set
-            for (name, _, _), part in zip(FSR_FILES, parts):
-                replace_file(part, ctx.dest / name)
+            # Check all missing members before publishing. A killed run may leave a matching subset, which the
+            # next run completes without replacing its existing files.
+            for (name, _, _), part in zip(missing, parts):
+                target = ctx.dest / name
+                replace_file(part, target)
+                published.append(target)
                 remove(part)
         # urllib's errors, timeouts and a bad file; a connection cut mid-file raises http.client.IncompleteRead,
         # which is not an OSError
-        except (OSError, http.client.HTTPException) as e:
-            for part in parts:
-                remove(part)
+        except (OSError, http.client.HTTPException, KeyboardInterrupt) as e:
+            for path in [*published, *parts]:
+                try:
+                    remove(path)
+                except OSError as cleanup_error:
+                    rep.log(f'fsr: could not remove incomplete install file {path}: {cleanup_error}')
+            if isinstance(e, KeyboardInterrupt):
+                raise
             rep.warning('warn.fsr_download_failed', url=FSR_BASE, detail=str(e)[:300])
             return {'failed': True}
         return {'installed': FSR_VERSION}
