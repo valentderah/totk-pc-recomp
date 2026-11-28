@@ -941,7 +941,9 @@ def main():
             subprocess.run([args.cc, '-O2', '-flto', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', *(['-fuse-ld=lld', '-Wl,--exclude-all-symbols'] if os.name == 'nt' else []),
                             '-I', str(ROOT/'runtime'), '-I', str(args.deps), '-I', str(args.deps/'vma'),
                             str(source), *link, '-o', str(exe)], check=True)
-            subprocess.run([str(exe), str(script)], check=True)
+            for encoding in ('utf-8', 'utf-8-sig'):
+                script.write_text('10 MOUSE 123 -45\n20 MOUSE 1000 0\n@100 MOUSE -100 50\n', encoding=encoding)
+                subprocess.run([str(exe), str(script)], check=True)
 
 if __name__ == '__main__':
     main()

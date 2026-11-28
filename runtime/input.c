@@ -104,6 +104,8 @@ static void script_load(void) {
     int cap = 0, ln = 0;
     while (fgets(line, sizeof line, f)) {
         ln++;
+        // Editors may save the script as UTF-8 with a BOM; it is not part of the first event's time.
+        if (ln == 1 && !strncmp(line, "\xef\xbb\xbf", 3)) memmove(line, line + 3, strlen(line + 3) + 1);
         char *h = strchr(line, '#');
         if (h) *h = 0;
         char name[32];
