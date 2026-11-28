@@ -9,7 +9,9 @@
 // the parameters of fg_dispatch's three calls; its exec.c vk_fg_generate for the camera, the cut test and the HUD-less
 // copy's encoding.
 //
-// Per frame, all in the replay's command buffer (vk_dlaa.c finds the places):
+// Per frame, all in the replay's command buffers (vk_dlaa.c finds the places; with replay workers steps 1 and 2 go
+// into the chunks that hold their places, one after the other, and step 3 follows the last chunk, so the state below
+// is only ever used by one thread at a time):
 // 1. vk_fg_prepare at the scene's end: the SDK dilates the scene's depth and the camera motion vectors (made there by
 //    vk_dlaa.c mv_pass, at the scene's size), and reconstructs the previous frame's depth from them. With a scene
 //    upscaler (FSR 3.1, FSR 4; not beside DLSS yet, vk_dlaa_frame) it runs where the upscaler does, on the upscaler's
@@ -112,11 +114,10 @@ static struct {
     unsigned toggle;
     uint64_t frame_id, last_prep_ns, made;
     // settings read at start (vk_fg_init)
-    int workers, test, debug, times;
+    int test, debug, times;
     uint64_t shot_at;               // TOTK_FG_SHOT: the first present shot, or (shot_w) the first after that world time
     int64_t shot_w;
     char shot_dir[260];
-    unsigned said;                  // vk_fg_wanted's reasons logged (bits)
     volatile int menu;              // vk_fg_menu
     // this frame
     bool prepared, hl_ok, gen_ok, chain, reset;
@@ -316,7 +317,6 @@ static void start(void) {
         return;
     }
     g.win_fmt = VK_FORMAT_R8G8B8A8_UNORM;
-    g.workers = cfg_int("TOTK_REPLAY_WORKERS");
     g.test = knob_int("TOTK_FG_TEST");
     g.debug = knob_int("TOTK_FG_DEBUG");
     g.times = !cfg_get("TOTK_FG_TIMES") || knob_int("TOTK_FG_TIMES");
@@ -349,19 +349,9 @@ extern "C" int vk_fg_wanted(void) {
     if (vk_fg_engine() != VK_FG_FSR3) return 0;
     if (!started) start();   // turned on in the menu: the contexts now; the first prepare makes them for the scene
     if (!g.live || g.failed) return 0;
-    // the inputs are this frame's, recorded in replay order: chunks recording side by side are not handled yet.
     // sync_ahead only moves the game's frame wait; the replay and the presents keep their order, and the replay's
     // next submission waits until the present thread submitted the blit (vk_backend.c submit_sync, vk_present_drain),
     // so out[] and hl[] alternate safely with it on.
-    int why = g.workers > 0 ? 1 : 0;
-    if (why) {
-        if (!(g.said & 1u << why)) {
-            g.said |= 1u << why;
-            static const char *const r[] = {"", "the replay records in chunks (replay_workers > 0)"};
-            rt_log("fg: frame generation off while %s", r[why]);
-        }
-        return 0;
-    }
     return !__atomic_load_n(&g.menu, __ATOMIC_RELAXED);
 }
 

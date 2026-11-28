@@ -4,7 +4,8 @@
 // The frame's inputs come from the replay (vk_dlaa.c follows the scene for it): at the scene's end, or with a scene
 // upscaler where that runs, the motion vectors and the SDK's prepare step (vk_fg_prepare), before the HUD's first draw
 // the picture without the HUD (vk_fg_hudless), at the end of the submission that copied the picture into the window
-// texture the optical flow and the interpolation (vk_fg_generate). All of it goes into the replay's command buffer. On an HDR10 swapchain
+// texture the optical flow and the interpolation (vk_fg_generate). All of it goes into the replay's command buffers,
+// a chunked replay's included (vk_dlaa.c, "frame generation"), one call at a time. On an HDR10 swapchain
 // the float picture the window texture is copied from stands in for the window texture (vk_fg.cpp's header).
 #pragma once
 
@@ -28,9 +29,8 @@ int vk_fg_active(void);
 // vk_device.c destroy_all, before the device goes away; harmless when nothing was made.
 void vk_fg_release(void);
 
-// vk_dlaa.c vk_dlaa_frame, once per present: 1 when frame generation follows the scene in the next frame. 0 with
-// replay workers (the inputs are per frame and recorded in replay order), or while the game shows a
-// menu without its world (vk_fg_menu); each reason is logged once.
+// vk_dlaa.c vk_dlaa_frame, once per present: 1 when frame generation follows the scene in the next frame. 0 while
+// the game shows a menu without its world (vk_fg_menu).
 int vk_fg_wanted(void);
 // vk_dlaa.c, the game's thread at each present: 1 while the map or a loading or event fade is open (sampled there,
 // read by vk_fg_wanted).
@@ -73,7 +73,7 @@ int vk_fg_generate(VkCommandBuffer cb, uint64_t fence, uint64_t frame, VkImage w
 // slot, so it comes first in the frame.
 enum { FG_T_MV0, FG_T_MV1, FG_T_PREP0, FG_T_PREP1, FG_T_HL0, FG_T_HL1, FG_T_FI0, FG_T_FI1, FG_T_N };
 void vk_fg_mark(VkCommandBuffer cb, int which);
-void vk_fg_cpu(uint64_t ns);   // replay-thread time the frame generation recording took, added to the frame's
+void vk_fg_cpu(uint64_t ns);   // time the frame generation recording took on its thread, added to the frame's
 // vk_dlaa.c vk_dlaa_frame, each present before the frame state is cleared: the frame's counts and times.
 void vk_fg_frame(void);
 void vk_fg_exit_log(void);   // vk_backend.c gfx_exit_log: the run's counts and times, once

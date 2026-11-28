@@ -368,6 +368,9 @@ static struct {
                                  // generation ran (vk_dlaa_sub_end)
     VkExecTarget hud_t, win;     // the output-sized target the scene is scaled into; the window texture
     VkExecTarget fg_pic;         // the float picture the HUD-less copy was taken from
+    VkExecTarget lit;            // color as vk_dlaa_plan armed it, for a chunked replay's scan (vk_dlaa_hud_plan): the
+                                 // chunks' records give color its image of their own op while the scan goes on (target_now)
+    int fin_scan;                // this frame: a scan found the copy into the window texture, win is as it resolved it
     int fg_hdr;                  // the swapchain was HDR10 then: the float picture is interpolated, not the window texture
     float cam_dr[2];             // the viewport depth range of the draw cam_addr was noted at
     int fg_mv_ok;                // the SDK prepared from the frame's motion image (fg_motion, fg_prepare)
@@ -1718,7 +1721,7 @@ int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
         return 0;
     }
     if (effects_point(ex)) {
-        D.color = *c, D.depth = D.glight_z, D.armed = 1;
+        D.color = D.lit = *c, D.depth = D.glight_z, D.armed = 1;
         D.end_fence = ex->fence, D.end_pos = ex->pos;
         __atomic_store_n(&D.ended, 1, __ATOMIC_RELEASE);
         D.done = 1, D.fx_frames++;
@@ -1757,7 +1760,7 @@ int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
         (!D.armed || (c->width >= D.color.width && c->height >= D.color.height)) &&
         c->samples <= 1 && !c->is3d && scene_large(c)) {
         int first = !D.armed;
-        D.color = *c, D.depth = *z, D.armed = 1, D.nodepth = VK_NULL_HANDLE;
+        D.color = D.lit = *c, D.depth = *z, D.armed = 1, D.nodepth = VK_NULL_HANDLE;
         if (!first || !dl_active()) return 0;
         *j = (VkExecJob){.kind = VK_JOB_DLSS_MASK, .scene = *c};   // the lit scene, before the transparents (reactive mask)
         return 1;
@@ -1793,8 +1796,7 @@ int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
 
 // ---------------------------------------------------------------- frame generation (vk_fg.cpp)
 // Without an upscaler the scene is followed as for DLSS (vk_dlaa_plan: armed on the light target, ended at the bloom
-// chain's first pass), without the jitter, the reactive mask or NGX. Three points of the frame, in the sequential
-// replay:
+// chain's first pass), without the jitter, the reactive mask or NGX. Three points of the frame, in replay order:
 // 1. The scene's end (fg_motion, the VK_JOB_DLSS point): the motion vectors at the scene's size (mv_pass: the camera's
 //    reprojection, as Savage Wind's fg_mv.frag does, then the per-object pass over it unless TOTK_FG_OBJECTS=0) and
 //    the SDK's prepare, which reads them with the scene depth while that still holds the scene. With an upscaler
@@ -1816,12 +1818,20 @@ int vk_dlaa_plan(const VkExec *ex, VkExecJob *j) {
 //    pass began, and the scaling draw, skipped or not, is still its first.
 // 3. The submission's end after the copy into the window texture (vk_dlaa_sub_end): the optical flow and the
 //    interpolation, which read the window texture as the picture with the HUD.
+// A chunked replay (replay_workers) keeps the three in that order. Point 1 is the record planned at the scene's end
+// (VK_JOB_DLSS), made on the chunk that holds its op once the chunks before it are recorded. Point 2's rule runs in the
+// scan (vk_dlaa_hud_plan), which is ahead of that record and so takes the planned prepare for a done one; the copy is a
+// record of its own (VK_JOB_FG_HUD), made after point 1's (vk_exec.c run_job takes the records in the scan's order),
+// and it does nothing where the prepare failed. Point 3 is recorded by the submitting thread after the last chunk. The
+// rule's state (hud, hud_wait, fin, hud_t, win) is the submitting thread's alone, scan or sequential replay, so a
+// frame may mix chunked submissions and others; what a record leaves for a later point (fg_mv_ok, fg_pic's image) is
+// read only by later records and after the chunks are done.
 static void fg_motion(VkExec *ex) {
     const VkExecTarget *t = &D.color, *z = &D.depth;
     uint32_t w = t->width, h = t->height;
     VkCommandBuffer cb = ex->cb;
     uint64_t c0 = kern_now_ns();
-    D.done = 1;
+    if (!ex->chunked) D.done = 1;   // chunked, the scan set it when it planned this record
     vk_exec_barrier(ex);   // what drew the scene is done (no pass is open here)
     D.jdepth = z->image;   // the scene depth note_camera knows the scene's draws by in the next frame
     static int said;
@@ -1857,51 +1867,78 @@ static void fg_motion(VkExec *ex) {
     vk_fg_cpu(kern_now_ns() - c0);
 }
 
+// The scan resolved its targets without making entries (vk_texture_revive); a record made on a chunk takes their images
+// now, as the scan's pointers may be stale by then.
+static void target_now(VkExecTarget *t) {
+    const VkTexImage *i = t->tex ? vk_texture_get(t->tex) : NULL;
+    if (i) t->img = i, t->image = i->image;
+}
+
 static int rgba8(VkFormat f) {
     return f == VK_FORMAT_R8G8B8A8_SRGB || f == VK_FORMAT_R8G8B8A8_UNORM || f == VK_FORMAT_B8G8R8A8_SRGB ||
            f == VK_FORMAT_B8G8R8A8_UNORM;
 }
 
-void vk_dlaa_hud(VkExec *ex) {
-    if (!D.fg_mv_ok || !D.armed || !D.ended || !D.bloom || D.fin || ex->chunked) return;
+// Point 2's rule at a draw, in replay order: 1 when the picture before the HUD (*pic) is to be copied before it.
+// prepared: the SDK's prepare ran this frame, or a scan planned it. lit: the light target.
+static int hud_rule(const VkExec *ex, int prepared, const VkExecTarget *lit, VkExecTarget *pic) {
+    if (!prepared || !D.armed || !D.ended || !D.bloom || D.fin) return 0;
     const VkExecTarget *c = &ex->color[0];
-    if (ex->pass_ncolor != 1 || !c->image || ex->depth.image || c->level || c->is3d || c->samples > 1) return;
+    if (ex->pass_ncolor != 1 || !c->image || ex->depth.image || c->level || c->is3d || c->samples > 1) return 0;
     unsigned o[2], sc[2];
     res_sizes(o, sc);
-    if (c->width != o[0] || c->height != o[1]) return;
+    if (c->width != o[0] || c->height != o[1]) return 0;
     if (D.hud) {   // after the picture: the copy into the window texture
         if (rgba8(c->format)) D.win = *c, D.fin = 1;
-        return;
+        return 0;
     }
-    int scaled = D.color.width < o[0];
-    const VkExecTarget *pic = scaled ? &D.hud_t : &D.color;
+    int scaled = lit->width < o[0];
+    const VkExecTarget *p = scaled ? &D.hud_t : lit;
     if (scene_color(c->format)) {
         if (scaled && !D.hud_wait) {   // the scaling draw
             D.hud_t = *c, D.hud_wait = 1;
-            return;
+            return 0;
         }
-        if (c->image != pic->image) return;
-    } else if (!rgba8(c->format) || (scaled && !D.hud_wait) || D.color.width > o[0]) {
-        return;
+        if (c->image != p->image) return 0;
+    } else if (!rgba8(c->format) || (scaled && !D.hud_wait) || lit->width > o[0]) {
+        return 0;
     }
     D.hud = 1;
     if (rgba8(c->format)) D.win = *c, D.fin = 1;   // no HUD this frame: this draw is the copy
-    uint64_t c0 = kern_now_ns();
-    VkExecTarget p = *pic;
-    D.fg_pic = p, D.fg_hdr = vk_hdr_active();
-    vk_exec_pass_end(ex);
+    *pic = D.fg_pic = *p, D.fg_hdr = vk_hdr_active();
+    return 1;
+}
+
+static void hud_copy(VkExec *ex, const VkExecTarget *p) {
     vk_exec_barrier(ex);   // what drew the picture is done
-    vk_fg_hudless(ex->cb, p.image, p.format, p.level, p.base_layer, p.width, p.height, D.fg_hdr);
+    vk_fg_hudless(ex->cb, p->image, p->format, p->level, p->base_layer, p->width, p->height, D.fg_hdr);
     ex->recorded += 4;
+}
+
+void vk_dlaa_hud(VkExec *ex) {
+    VkExecTarget p;
+    if (ex->chunked || !hud_rule(ex, D.fg_mv_ok, &D.color, &p)) return;
+    uint64_t c0 = kern_now_ns();
+    vk_exec_pass_end(ex);
+    hud_copy(ex, &p);
     ex->dirty = VK_EXEC_DIRTY_ALL;
     vk_exec_pass_begin(ex);
     vk_fg_cpu(kern_now_ns() - c0);
 }
 
+int vk_dlaa_hud_plan(const VkExec *ex, VkExecJob *j) {
+    VkExecTarget p;
+    int due = hud_rule(ex, D.done, &D.lit, &p);
+    D.fin_scan |= D.fin;
+    if (due) *j = (VkExecJob){.kind = VK_JOB_FG_HUD, .scene = p};
+    return due;
+}
+
 void vk_dlaa_sub_end(VkExec *ex) {
-    if (!D.fin || D.gen || ex->chunked) return;
+    if (!D.fin || D.gen) return;
     D.gen = 1;
     uint64_t c0 = kern_now_ns();
+    if (D.fin_scan) target_now(&D.win);
     vk_exec_barrier(ex);   // the window texture is drawn
     const VkExecTarget *w = &D.win;
     if (D.fg_hdr) {   // the present will read the float picture the window texture was copied from: only that one fits
@@ -1929,15 +1966,16 @@ void vk_dlaa_sub_end(VkExec *ex) {
     vk_fg_cpu(kern_now_ns() - c0);
 }
 
-// The scan resolved its targets without making entries (vk_texture_revive); a record made on a chunk takes their images
-// now, as the scan's pointers may be stale by then.
-static void target_now(VkExecTarget *t) {
-    const VkTexImage *i = t->tex ? vk_texture_get(t->tex) : NULL;
-    if (i) t->img = i, t->image = i->image;
-}
-
 void vk_dlaa_exec(VkExec *ex, const VkExecJob *j) {
     VkExecTarget t = j->scene;
+    if (j->kind == VK_JOB_FG_HUD) {
+        if (!D.fg_mv_ok) return;
+        uint64_t c0 = kern_now_ns();
+        target_now(&t);
+        D.fg_pic = t;   // vk_dlaa_sub_end compares the image the copy was taken from
+        hud_copy(ex, &t);
+        return vk_fg_cpu(kern_now_ns() - c0);
+    }
     if (ex->chunked) {
         target_now(&t), target_now(&D.color), target_now(&D.depth);
         if (D.ids_ok) target_now(&D.ids);
@@ -2009,7 +2047,7 @@ void vk_dlaa_frame(void) {
         static int said;
         if (!said) said = 1, rt_log("fg: frame generation off while DLSS runs");
     }
-    D.bloom = D.hud = D.hud_wait = D.fin = D.gen = D.fg_mv_ok = 0;
+    D.bloom = D.hud = D.hud_wait = D.fin = D.fin_scan = D.gen = D.fg_mv_ok = 0;
     if (on != D.on || fg != D.fg) {
         if (on != D.on)
             rt_log("dlaa: %s%s%s", on ? "on" : "off", on && fsr ? " with " : "",

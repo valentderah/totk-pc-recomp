@@ -22,8 +22,8 @@
 # frame_queue = 0
 # Frame generation: off, or fsr3 (AMD FSR 3 frame interpolation). A generated picture goes on screen between each two
 # the game draws: twice the pictures, the game at half of fps_limit (the limit counts the pictures shown), the controls
-# about half a frame later. For displays of 120 Hz and more; off with DLSS, with replay_workers above 0, and in menus
-# and fades. Works with FSR 3.1 and FSR 4 (scene_upscaler) and with HDR output (hdr = 1). Applies at once.
+# about half a frame later. For displays of 120 Hz and more; off with DLSS, and in menus and fades. Works with FSR
+# 3.1 and FSR 4 (scene_upscaler), with HDR output (hdr = 1) and with replay_workers. Applies at once.
 # frame_gen = off
 # Real-time frame step: game speed follows the clock instead of the frame count.
 # realtime = 1
@@ -74,7 +74,8 @@
 # replay_queue_write_texels = 1
 # Record each large submission in chunks on this many threads (0 to 16; 0 = one thread, the default). The chunks go to
 # the GPU in order. In the town at 4K on an RTX 5070, 4 cut the replay from 8.2 to 4.5 ms a frame (71 to 79 fps); more
-# threads add little. Needs 8 or more logical processors to help. Contact shadows and DLSS (dlaa = 1) run in chunks too.
+# threads add little. Needs 8 or more logical processors to help. Contact shadows, the scene upscaler and frame
+# generation run in chunks too.
 # Read at start.
 # replay_workers = 0
 # EXPERIMENTAL, THE GAME CRASHES WITH 1. 1 lifts the virtual core gate: guest threads run without the console's limit
