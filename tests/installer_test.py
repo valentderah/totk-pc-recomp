@@ -1592,6 +1592,51 @@ class DlssTest(unittest.TestCase):
         self.assertEqual((self.dest / 'nvngx_dlss.dll').read_bytes(), b'newer')
         self.assertEqual(self.warnings(), ['warn.dlss_kept'])
 
+    def plan_record(self, record, host):
+        state = {'format': 1, 'release': 'same', 'inputs': {}, 'steps': {
+            'dlss': {'key': steps.Dlss().key(self.ctx), 'release': 'same', **record}}}
+        ctx = runner.Context(SimpleNamespace(release='same'), self.dest, self.ctx.temp,
+                             self.ctx.reporter, self.ctx.options, state=state)
+        ctx.steps = [steps.Check(), steps.Dlss()]
+        # Exercise Check.key's early host probe before Dlss.current participates in planning.
+        with mock.patch.object(steps.Check, 'check_host', side_effect=lambda c: setattr(c, 'host', host)):
+            ctx.plan()
+        return ctx
+
+    def test_no_rtx_record_retried_after_gpu_change(self):
+        rtx = self.ctx.host
+        amd = {'devices': [{'name': 'AMD Radeon RX 7800 XT'}]}
+        self.ctx.host = amd
+        record = steps.Dlss().run(self.ctx)
+        self.assertEqual(record, {'skipped': 'no_rtx'})
+        self.assertFalse(self.plan_record(record, amd).runs['dlss'])
+        ctx = self.plan_record(record, rtx)
+        self.assertTrue(ctx.runs['dlss'])
+        self.assertEqual(steps.Dlss().run(ctx), {'installed': steps.DLSS_VERSION})
+        self.assertEqual((self.dest / steps.DLSS_DLL).read_bytes(), self.src.read_bytes())
+
+    def test_non_windows_record_retried_on_windows(self):
+        ctx = self.plan_record({'skipped': 'not_windows'}, self.ctx.host)
+        self.assertTrue(ctx.runs['dlss'])
+        self.assertEqual(steps.Dlss().run(ctx), {'installed': steps.DLSS_VERSION})
+
+    def test_removed_custom_library_is_downloaded_on_resume(self):
+        target = self.dest / steps.DLSS_DLL
+        target.write_bytes(b'custom')
+        record = steps.Dlss().run(self.ctx)
+        self.assertEqual(record, {'kept': True})
+        self.assertFalse(self.plan_record(record, self.ctx.host).runs['dlss'])
+        target.unlink()
+        ctx = self.plan_record(record, self.ctx.host)
+        self.assertTrue(ctx.runs['dlss'])
+        self.assertEqual(steps.Dlss().run(ctx), {'installed': steps.DLSS_VERSION})
+        self.assertEqual(target.read_bytes(), self.src.read_bytes())
+
+    def test_disabled_step_stays_current_without_a_library(self):
+        self.ctx.options.dlss = False
+        ctx = self.plan_record({}, self.ctx.host)
+        self.assertFalse(ctx.runs['dlss'])
+
     def test_skipped_without_an_rtx_gpu(self):
         self.ctx.host = {'devices': [{'name': 'AMD Radeon RX 7800 XT', 'api': [1, 3, 0], 'type': 2}]}
         self.assertEqual(steps.Dlss().run(self.ctx), {'skipped': 'no_rtx'})
