@@ -1799,7 +1799,14 @@ class Dlss(Step):
     def current(self, ctx, record):
         if record.get('failed'):
             return False
-        return not record.get('installed') or (ctx.dest / DLSS_DLL).is_file()
+        # The host check runs before planning: a portable install may now have an RTX GPU or be on Windows.
+        if record.get('skipped') == 'no_rtx':
+            return os.name != 'nt' or not nvidia_rtx(getattr(ctx, 'host', None))
+        if record.get('skipped') == 'not_windows':
+            return os.name != 'nt'
+        if record.get('installed') or record.get('kept'):
+            return (ctx.dest / DLSS_DLL).is_file()
+        return True
 
     def run(self, ctx):
         if not getattr(ctx.options, 'dlss', False):
