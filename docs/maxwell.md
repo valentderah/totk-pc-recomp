@@ -194,7 +194,12 @@ Grep-level look on 2026-10-22, statuses updated 2026-10-26; "saw" is what the gr
     ground, and the sage spirit next to Link was not drawn. `vk_exec_draw.c` (feedback loops) now detects such a draw:
     with `VK_EXT_attachment_feedback_loop_layout` and `dynamicRenderingLocalRead` the target moves to the feedback
     layout and a by-region barrier precedes the draw; without them the pass restarts behind a full barrier
-    (`TOTK_FEEDBACK`). **Fixed.**
+    (`TOTK_FEEDBACK`). **Fixed.** Within one draw: the G-buffer decals of Hyrule Castle's floors blend in the shader
+    (read the albedo and normal at the pixel, write them back with blending off), and a decal mesh's pieces overlap
+    inside one indexed draw. A barrier between draws does not order a later piece after an earlier one, and on an RTX
+    5070 floor tiles and dirt swapped in 16x16 px squares that changed every frame. `vk_exec_draw.c` `feedback_split`
+    records such a draw as runs of triangles connected through shared vertices, with a colour-only by-region barrier
+    between runs. **Fixed.**
 11. **Border colours.** `vk_texture.c` `make_sampler`: custom colour only with `customBorderColorWithoutFormat`, else transparent
     black; integer formats use the float path. Confirm the RX 9070 reports the feature (grass map needs 0.5).
     **OK if supported.**

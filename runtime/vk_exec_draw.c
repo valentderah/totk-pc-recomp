@@ -479,6 +479,15 @@ typedef struct {
 #define ASET_BATCH 16
 typedef struct { VkDescriptorSetLayout layout; uint64_t fence; int n, next; VkDescriptorSet set[ASET_BATCH]; } ASetCache;
 
+// feedback_split's per-context 2-way cache (keyed by index and position buffers; kept while write-watch sees no writes).
+enum { FB_SPLIT_SETS = 256, FB_SPLIT_WAYS = 2 };
+typedef struct {
+    uint64_t ibuf, vb_addr, vb_size, vb_lo, vb_len, pool_gen;
+    uint32_t count, itype, vattr0, vb_stride, ib_gen, vb_gen, epoch, nbatch;
+    int32_t base_vertex;
+    uint32_t *ends;
+} FbSplitEnt;
+
 // The memos and command buffer state of one recording context (VkExec.draw). Nothing in it is shared: the context's
 // thread reads and writes it without a lock.
 typedef struct VkExecDraw {
@@ -496,6 +505,8 @@ typedef struct VkExecDraw {
     const VkPipeInfo *rs_last;           // the last lookup
     const RsList *rs_last_l;
     uint32_t c0_dim[3], c0_binst;        // the dispatch size and base instance of the draw or dispatch being bound
+    uint32_t fb_self, fb_wr;             // the draw being prepared: colour attachments it samples in the feedback layout
+                                         // and also writes; colour attachments it writes (feedback_split)
     uint64_t bind_gen;                   // bumped by every bind op that writes ex->prog, ubo, ssbo, tex or img
     int twin_dispatch;                   // op_dispatch*: the resources being bound are a dispatch's
     uint64_t wait_frame, wait_left_ns;   // prepare_draw: full-screen pipeline waits left in this frame
@@ -504,6 +515,8 @@ typedef struct VkExecDraw {
     AcSlots AC[6];
     SlotMask slotm[SLOTM_N];
     FbMemo FM[FM_N];
+    FbSplitEnt FBS[FB_SPLIT_SETS][FB_SPLIT_WAYS];
+    uint8_t fbs_rr[FB_SPLIT_SETS];
     TexMemo TD[TD_N];
     ShaderMemo SM;
     PipeMemo PM;
@@ -799,6 +812,10 @@ static void rs_forget(VkExec *ex) {   // the pipeline infos the lists are keyed 
     nvn_hm_clear(&ex->draw->rs_lists, free);
     ex->draw->rs_last = NULL, ex->draw->rs_last_l = NULL;
     memset(ex->draw->PC, 0, sizeof ex->draw->PC), ex->draw->PM.valid = 0;
+    for (int s = 0; s < FB_SPLIT_SETS; s++)
+        for (int w = 0; w < FB_SPLIT_WAYS; w++) free(ex->draw->FBS[s][w].ends);
+    memset(ex->draw->FBS, 0, sizeof ex->draw->FBS);
+    memset(ex->draw->fbs_rr, 0, sizeof ex->draw->fbs_rr);
 }
 
 // Releases the stand-ins and the depth twins. The device must be idle; the game path leaves them to process exit like
@@ -1693,29 +1710,368 @@ static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
     return mode == VK_FEEDBACK_LAYOUT ? m & ex->fbl_mask : 0;
 }
 
-// By-region barrier inside the pass: earlier attachment writes become visible to this draw's fragment shader reads.
-static void feedback_barrier(VkExec *ex) {
+// By-region barrier inside the pass: earlier writes of the attachments m (bit 8 depth/stencil) become visible to this
+// draw's fragment shader reads. It waits only for the kind of attachment output m names: with the depth writes waited
+// for as well, the barriers feedback_split adds in Hyrule Castle's dining hall cost 2.4 ms of GPU time a frame on an
+// RTX 5070 at 3840x2160 instead of 0.9 ms.
+static void feedback_barrier(VkExec *ex, uint32_t m) {
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                           .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
-                                           VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                           .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                            .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                            .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT};
+    uint32_t covered = 0;
+    if (m & 0xff) {
+        mb.srcStageMask |= VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        mb.srcAccessMask |= VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        covered |= 0xff;
+    }
+    if (m & 0x100) {
+        mb.srcStageMask |= VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        mb.srcAccessMask |= VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        covered |= 0x100;
+    }
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
                            .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
     vkCmdPipelineBarrier2(ex->cb, &di);
     ex->recorded++;
-    ex->fb_dirty = 0;
+    ex->fb_dirty &= ~covered;
     ex->fr.fb_barriers++;
 }
 
 // Marks the attachments the draw with state s writes: colour targets with a nonzero effective write mask, depth with
-// depth writes or the stencil test on.
-static void feedback_written(VkExec *ex, const VkPipeState *s) {
-    if (vk_ctx()->feedback == VK_FEEDBACK_OFF) return;
+// depth writes or the stencil test on. Returns the colour targets it writes.
+static uint32_t feedback_written(VkExec *ex, const VkPipeState *s) {
+    if (vk_ctx()->feedback == VK_FEEDBACK_OFF) return 0;
     if (ex->depth.image && !(ex->fb_dirty & 0x100) && ((s->ds.dt && s->ds.dw) || s->ds.st)) ex->fb_dirty |= 0x100;
+    uint32_t w = 0;
     for (uint32_t i = 0; i < ex->pass_ncolor; i++)
-        if (ex->color[i].image && !(ex->fb_dirty >> i & 1) && vk_pipeline_target_wmask(s, (int)i)) ex->fb_dirty |= 1u << i;
+        if (ex->color[i].image && vk_pipeline_target_wmask(s, (int)i)) w |= 1u << i;
+    ex->fb_dirty |= w;
+    return w;
+}
+
+// ---- feedback within one draw
+// TotK's G-buffer decals (Hyrule Castle's floors: fragment shaders eca3008f8dd6b919, 9227b162aca00d33,
+// adcdc043c21ff486) blend in the shader: each fragment samples the albedo and normal targets at its own pixel and
+// writes them back with blending off, depth test LEQUAL and no depth writes. A decal mesh is several pieces in one
+// indexed draw, and pieces overlap: where they do, the later piece has to read what the earlier one wrote, as with
+// blending. Vulkan orders such a read only behind a barrier, so on an RTX 5070 the later piece read the earlier one's
+// result in some 16x16 pixel tiles and the floor under it in others: tile and dirt swapping in screen-aligned squares
+// that changed from frame to frame. Depth-writing draws (such as cave/terrain meshes, shader 7952156a8ff8a724, which
+// otherwise split into 6,000-7,200 barriers a frame) are not decals and are recorded whole. For depth-read-only draws,
+// vertices sharing identical 3D positions are welded across UV/normal seams and consecutive runs are grouped in draw
+// order into batches that insert a feedback_barrier only when a run's expanded 3D AABB overlaps an earlier run of a
+// different connected component in the same batch. Results are cached per recording context in VkExecDraw.FBS while
+// write-watch sees no writes to the index or position buffers. In the Hyrule Castle chasm at 3840x2160 DLAA on an
+// RTX 5070 this cuts feedback barriers from ~20,300 to ~1,480 a frame (GPU 16.0 -> 11.1-11.5 ms, replay 12.1 -> 6.4-
+// 7.4 ms, 47.7 -> 72.8-77.7 fps). A draw of more than FB_SPLIT_MAX batches is recorded whole.
+enum { FB_SPLIT_MAX = 1024 };
+
+static uint32_t find_root(uint32_t *par, uint32_t a) {
+    while (par[a] != a) a = par[a] = par[par[a]];
+    return a;
+}
+
+// The slot of a welding key among 2^(64 - shift) open-addressing slots: the top bits of 64-bit multiplicative hashes.
+// The low bits of a product keep the key's trailing zeros, and a position decoded from half floats or 16-bit integers
+// has at least 13 of them: with the low bits every vertex of such a decal took slot 0 and each insert probed past all
+// the vertices before it, and at the Lanayru sky sphere these draws held a quarter of the replay threads' time.
+static inline uint32_t weld_slot(uint32_t a, uint32_t b, uint32_t c, int shift) {
+    return (uint32_t)(((uint64_t)a * 0x9E3779B97F4A7C15ull ^ (uint64_t)b * 0xC2B2AE3D27D4EB4Full ^
+                       (uint64_t)c * 0x165667B19E3779F9ull) >> shift);
+}
+
+static inline uint32_t read_index(const void *ib, int itype, uint32_t i) {
+    return itype == NVN_INDEX_TYPE_UNSIGNED_BYTE    ? ((const uint8_t *)ib)[i]
+           : itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? ((const uint16_t *)ib)[i]
+                                                    : ((const uint32_t *)ib)[i];
+}
+
+// The runs of connected triangles of the triangle list whose 3 * ntri indices of type itype are at ib: the index of the
+// triangle after each run, in order, into end[] (room for ntri). Returns their number.
+static uint32_t connected_runs(const void *ib, int itype, uint32_t ntri, uint32_t *end) {
+    uint32_t n = 3 * ntri, hn = 1;
+    while (hn < 2 * n) hn <<= 1;
+    int shift = 64 - __builtin_ctz(hn);
+    uint32_t *key = malloc(sizeof *key * hn), *node = malloc(sizeof *node * hn), *par = malloc(sizeof *par * n),
+             *tri = malloc(sizeof *tri * n);
+    if (!key || !node || !par || !tri) rt_fatal("vk: out of memory");
+    memset(node, 0xff, sizeof *node * hn);
+    uint32_t nodes = 0;
+    for (uint32_t i = 0; i < n; i++) {   // vertex index -> union-find node, by open addressing
+        uint32_t v = read_index(ib, itype, i);
+        uint32_t h = weld_slot(v, 0, 0, shift);
+        while (node[h] != UINT32_MAX && key[h] != v) h = (h + 1) & (hn - 1);
+        if (node[h] == UINT32_MAX) key[h] = v, node[h] = nodes, par[nodes] = nodes, nodes++;
+        tri[i] = node[h];
+    }
+    for (uint32_t t = 0; t < ntri; t++)
+        for (int k = 1; k < 3; k++) {
+            uint32_t a = find_root(par, tri[3 * t]), b = find_root(par, tri[3 * t + k]);
+            if (a != b) par[b] = a;
+        }
+    uint32_t runs = 0;
+    for (uint32_t t = 1; t <= ntri; t++)
+        if (t == ntri || find_root(par, tri[3 * t]) != find_root(par, tri[3 * t - 3])) end[runs++] = t;
+    free(key), free(node), free(par), free(tri);
+    return runs;
+}
+
+static float half_to_float(uint16_t h) {
+    uint32_t s = (uint32_t)(h >> 15) << 31, e = (h >> 10) & 31, m = h & 1023;
+    if (e == 0) return m ? (s ? -1.0f : 1.0f) * (float)m * (1.0f / 16777216.0f) : 0.0f;
+    uint32_t u = e == 31 ? (s | (255u << 23) | (m << 13)) : (s | ((e + 112) << 23) | (m << 13));
+    float f;
+    memcpy(&f, &u, sizeof f);
+    return f;
+}
+
+static uint32_t pos_attr_bytes(uint32_t fmt) {
+    switch (fmt) {
+    case 0x22: case 0x2e: return 12;
+    case 0x1d: case 0x29: case 0x1e: case 0x2a: case 0x20: case 0x2c: case 0x1f: case 0x2b: case 0x21: case 0x2d:
+        return 6;
+    default: return 0;
+    }
+}
+
+static int decode_pos3(const uint8_t *p, uint32_t fmt, float out[3]) {
+    switch (fmt) {
+    case 0x22: case 0x2e:
+        memcpy(out, p, 12);
+        break;
+    case 0x1d: case 0x29: {
+        uint16_t h[3];
+        memcpy(h, p, 6);
+        out[0] = half_to_float(h[0]), out[1] = half_to_float(h[1]), out[2] = half_to_float(h[2]);
+        break;
+    }
+    case 0x1e: case 0x2a: case 0x20: case 0x2c: {
+        uint16_t u[3];
+        memcpy(u, p, 6);
+        out[0] = (float)u[0], out[1] = (float)u[1], out[2] = (float)u[2];
+        break;
+    }
+    case 0x1f: case 0x2b: case 0x21: case 0x2d: {
+        int16_t s[3];
+        memcpy(s, p, 6);
+        out[0] = (float)s[0], out[1] = (float)s[1], out[2] = (float)s[2];
+        break;
+    }
+    default:
+        return 0;
+    }
+    for (int c = 0; c < 3; c++) {
+        if (!(out[c] == out[c]) || out[c] > 1e30f || out[c] < -1e30f) return 0;
+        if (out[c] == 0.0f) out[c] = 0.0f;   // canonicalize -0.0f
+    }
+    return 1;
+}
+
+// Welds triangles that share identical 3D vertex positions (joining pieces split across UV or normal seams), then groups
+// consecutive runs in draw order into batches that only separate runs of distinct connected components whose 3D AABBs
+// overlap (expanded by eps so stacked coplanar decals still get a barrier). Returns 0 when attribute 0 cannot be read
+// on the host, so the caller falls back to connected_runs.
+static uint32_t split_by_pos(const VkExec *ex, const p_draw_idx *d, uint32_t ntri, uint32_t ep, uint32_t *end,
+                             uint64_t *vb_lo_out, uint64_t *vb_len_out, uint32_t *vb_gen_out, int *vb_tracked_out) {
+    va_st va;
+    memcpy(&va, &ex->pipe.vattr[0], sizeof va);
+    uint32_t need = pos_attr_bytes(va.fmt);
+    if (!need || va.stream >= 16) return 0;
+    uint32_t stride = ex->pipe.vstream[va.stream].stride;
+    if (!stride || ex->pipe.vstream[va.stream].divisor) return 0;
+    const NVNbufferRange *r = &ex->vbuf[va.stream];
+    if (!r->address) return 0;
+    const void *ib = (const void *)(uintptr_t)d->ibuf;
+    uint32_t n = 3 * ntri;
+    int64_t min_v = INT64_MAX, max_v = INT64_MIN;
+    for (uint32_t i = 0; i < n; i++) {
+        int64_t vi = (int64_t)read_index(ib, d->itype, i) + d->base_vertex;
+        if (vi < min_v) min_v = vi;
+        if (vi > max_v) max_v = vi;
+    }
+    if (min_v < 0) return 0;
+    uint64_t off_lo = (uint64_t)min_v * stride + va.offset;
+    uint64_t off_hi = (uint64_t)max_v * stride + va.offset + need;
+    if (off_hi > r->size || off_hi < off_lo) return 0;
+    uint64_t vb_lo = r->address + off_lo, vb_len = off_hi - off_lo;
+    VkMemSpan vb_sp;
+    if (!vk_mem_resolve(vb_lo, vb_len, &vb_sp) || vb_sp.alloc) return 0;
+    uint32_t vb_gen = 0;
+    int tracked = vk_mem_changed_snap(vb_lo, vb_len, 0, ep, &vb_gen) >= 0;
+    float (*pts)[3] = malloc(sizeof *pts * n);
+    if (!pts) rt_fatal("vk: out of memory");
+    for (uint32_t i = 0; i < n; i++) {
+        int64_t vi = (int64_t)read_index(ib, d->itype, i) + d->base_vertex;
+        const uint8_t *p = (const uint8_t *)(uintptr_t)(r->address + (uint64_t)vi * stride + va.offset);
+        if (!decode_pos3(p, va.fmt, pts[i])) return free(pts), 0;
+    }
+    uint32_t hn = 1;
+    while (hn < 2 * n) hn <<= 1;
+    int shift = 64 - __builtin_ctz(hn);
+    uint32_t *pkey = malloc(sizeof *pkey * 3 * hn), *pnode = malloc(sizeof *pnode * hn),
+             *par = malloc(sizeof *par * n), *tri = malloc(sizeof *tri * n);
+    if (!pkey || !pnode || !par || !tri) rt_fatal("vk: out of memory");
+    memset(pnode, 0xff, sizeof *pnode * hn);
+    uint32_t nodes = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t k[3];
+        memcpy(k, pts[i], 12);
+        uint32_t h = weld_slot(k[0], k[1], k[2], shift);
+        while (pnode[h] != UINT32_MAX &&
+               !(pkey[3 * h] == k[0] && pkey[3 * h + 1] == k[1] && pkey[3 * h + 2] == k[2]))
+            h = (h + 1) & (hn - 1);
+        if (pnode[h] == UINT32_MAX) {
+            pkey[3 * h] = k[0], pkey[3 * h + 1] = k[1], pkey[3 * h + 2] = k[2];
+            pnode[h] = nodes, par[nodes] = nodes, nodes++;
+        }
+        tri[i] = pnode[h];
+    }
+    for (uint32_t t = 0; t < ntri; t++)
+        for (int k = 1; k < 3; k++) {
+            uint32_t a = find_root(par, tri[3 * t]), b = find_root(par, tri[3 * t + k]);
+            if (a != b) par[b] = a;
+        }
+    uint32_t *run_end = malloc(sizeof *run_end * ntri), *run_comp = malloc(sizeof *run_comp * ntri);
+    if (!run_end || !run_comp) rt_fatal("vk: out of memory");
+    uint32_t nruns = 0;
+    for (uint32_t t = 1; t <= ntri; t++) {
+        uint32_t c_prev = find_root(par, tri[3 * (t - 1)]);
+        if (t == ntri || find_root(par, tri[3 * t]) != c_prev) {
+            run_end[nruns] = t, run_comp[nruns] = c_prev, nruns++;
+        }
+    }
+    uint32_t nbatch = 0;
+    if (nruns < 2) {
+        end[nbatch++] = ntri;
+    } else {
+        float (*rmin)[3] = malloc(sizeof *rmin * nruns), (*rmax)[3] = malloc(sizeof *rmax * nruns);
+        if (!rmin || !rmax) rt_fatal("vk: out of memory");
+        for (uint32_t rr = 0, start = 0; rr < nruns; start = run_end[rr++]) {
+            rmin[rr][0] = rmin[rr][1] = rmin[rr][2] = 1e30f;
+            rmax[rr][0] = rmax[rr][1] = rmax[rr][2] = -1e30f;
+            for (uint32_t i = 3 * start; i < 3 * run_end[rr]; i++)
+                for (int c = 0; c < 3; c++) {
+                    if (pts[i][c] < rmin[rr][c]) rmin[rr][c] = pts[i][c];
+                    if (pts[i][c] > rmax[rr][c]) rmax[rr][c] = pts[i][c];
+                }
+        }
+        const float eps = 0.05f;
+        uint32_t bstart = 0;
+        for (uint32_t rr = 1; rr < nruns; rr++) {
+            int ov = 0;
+            for (uint32_t q = bstart; q < rr; q++) {
+                if (run_comp[rr] == run_comp[q]) continue;
+                if (rmin[rr][0] <= rmax[q][0] + eps && rmax[rr][0] + eps >= rmin[q][0] &&
+                    rmin[rr][1] <= rmax[q][1] + eps && rmax[rr][1] + eps >= rmin[q][1] &&
+                    rmin[rr][2] <= rmax[q][2] + eps && rmax[rr][2] + eps >= rmin[q][2]) {
+                    ov = 1;
+                    break;
+                }
+            }
+            if (ov) end[nbatch++] = run_end[rr - 1], bstart = rr;
+        }
+        end[nbatch++] = ntri;
+        free(rmin), free(rmax);
+    }
+    free(run_end), free(run_comp), free(pkey), free(pnode), free(par), free(tri), free(pts);
+    *vb_lo_out = vb_lo, *vb_len_out = vb_len, *vb_gen_out = vb_gen, *vb_tracked_out = tracked;
+    return nbatch;
+}
+
+// The indexed draw being recorded (op_draw_idx), its indices bound: when its fragment shader samples a colour target
+// it writes (D->fb_self), depth writes are off (decal draws), and it is a list of triangles whose indices the CPU can
+// read, records it as draw-order batches of non-overlapping pieces with a feedback_barrier between them. Returns 0
+// when it does not, and the caller records the draw whole.
+static int feedback_split(VkExec *ex, const p_draw_idx *d, int host_readable) {
+    VkExecDraw *D = ex->draw;
+    if (!D->fb_self || (D->B.st.ds.dt && D->B.st.ds.dw) || d->prim != NVN_DRAW_PRIMITIVE_TRIANGLES ||
+        d->instances > 1 || !host_readable || d->count < 6)
+        return 0;
+    static const uint32_t isize[3] = {1, 2, 4};
+    uint32_t ntri = (uint32_t)d->count / 3;
+    uint64_t ib_bytes = (uint64_t)d->count * isize[d->itype];
+    va_st va;
+    memcpy(&va, &ex->pipe.vattr[0], sizeof va);
+    uint32_t vb_stride = va.stream < 16 && !ex->pipe.vstream[va.stream].divisor ? ex->pipe.vstream[va.stream].stride : 0;
+    uint64_t vb_addr = va.fmt && va.stream < 16 && vb_stride ? ex->vbuf[va.stream].address : 0;
+    uint64_t vb_size = vb_addr ? ex->vbuf[va.stream].size : 0;
+    uint32_t ep = vk_texture_epoch();
+    uint64_t pgen = vk_mem_pool_gen();
+    uint64_t kh = d->ibuf * 0x9E3779B97F4A7C15ull ^ vb_addr * 0xBF58476D1CE4E5B9ull ^
+                  ((uint64_t)(uint32_t)d->count << 32) ^ ((uint64_t)ex->pipe.vattr[0] << 16) ^
+                  ((uint64_t)vb_stride << 8) ^ (uint64_t)(uint32_t)d->base_vertex ^ (uint64_t)d->itype;
+    uint32_t set = (uint32_t)((kh ^ (kh >> 32)) & (FB_SPLIT_SETS - 1));
+    FbSplitEnt *e = NULL;
+    int hit = 0;
+    for (int w = 0; w < FB_SPLIT_WAYS; w++) {
+        FbSplitEnt *cand = &D->FBS[set][w];
+        if (cand->ibuf == d->ibuf && cand->vb_addr == vb_addr && cand->vb_size == vb_size &&
+            cand->count == (uint32_t)d->count && cand->itype == (uint32_t)d->itype &&
+            cand->base_vertex == d->base_vertex && cand->vattr0 == ex->pipe.vattr[0] &&
+            cand->vb_stride == vb_stride && cand->pool_gen == pgen) {
+            e = cand, hit = 1;
+            break;
+        }
+    }
+    if (hit && e->epoch != ep) {
+        uint32_t ib_now = 0, vb_now = 0;
+        int ok = vk_mem_changed_snap(e->ibuf, ib_bytes, e->ib_gen, ep, &ib_now) == 0;
+        if (ok && e->vb_len) ok = vk_mem_changed_snap(e->vb_lo, e->vb_len, e->vb_gen, ep, &vb_now) == 0;
+        if (ok) e->ib_gen = ib_now, e->vb_gen = vb_now, e->epoch = ep;
+        else hit = 0;
+    }
+    const uint32_t *ends = NULL;
+    uint32_t nbatch = 0;
+    uint32_t *tmp_end = NULL;
+    if (hit) {
+        nbatch = e->nbatch, ends = e->ends;
+    } else {
+        uint32_t ib_gen = 0;
+        int ib_tracked = vk_mem_changed_snap(d->ibuf, ib_bytes, 0, ep, &ib_gen) >= 0;
+        tmp_end = malloc(sizeof *tmp_end * ntri);
+        if (!tmp_end) rt_fatal("vk: out of memory");
+        uint64_t vb_lo = 0, vb_len = 0;
+        uint32_t vb_gen = 0;
+        int vb_tracked = 1;
+        nbatch = split_by_pos(ex, d, ntri, ep, tmp_end, &vb_lo, &vb_len, &vb_gen, &vb_tracked);
+        if (!nbatch) {
+            vb_lo = 0, vb_len = 0, vb_gen = 0, vb_tracked = 1;
+            nbatch = connected_runs((const void *)(uintptr_t)d->ibuf, d->itype, ntri, tmp_end);
+        }
+        if (ib_tracked && vb_tracked) {
+            if (!e) {
+                int w = D->fbs_rr[set]++ & (FB_SPLIT_WAYS - 1);
+                for (int k = 0; k < FB_SPLIT_WAYS; k++)
+                    if (!D->FBS[set][k].ibuf) { w = k; break; }
+                e = &D->FBS[set][w];
+            }
+            free(e->ends);
+            e->ends = NULL;
+            if (nbatch >= 2 && nbatch <= FB_SPLIT_MAX) {
+                e->ends = malloc(sizeof *e->ends * nbatch);
+                if (!e->ends) rt_fatal("vk: out of memory");
+                memcpy(e->ends, tmp_end, sizeof *e->ends * nbatch);
+            }
+            e->ibuf = d->ibuf, e->vb_addr = vb_addr, e->vb_size = vb_size, e->vb_lo = vb_lo, e->vb_len = vb_len;
+            e->pool_gen = pgen, e->count = (uint32_t)d->count, e->itype = (uint32_t)d->itype;
+            e->base_vertex = d->base_vertex, e->vattr0 = ex->pipe.vattr[0], e->vb_stride = vb_stride;
+            e->ib_gen = ib_gen, e->vb_gen = vb_gen, e->epoch = ep, e->nbatch = nbatch;
+            ends = e->ends;
+            free(tmp_end), tmp_end = NULL;
+        } else {
+            ends = tmp_end;
+        }
+    }
+    if (nbatch < 2 || nbatch > FB_SPLIT_MAX || !ends) return free(tmp_end), 0;
+    for (uint32_t r = 0, start = 0; r < nbatch; start = ends[r++]) {
+        if (r) feedback_barrier(ex, D->fb_self);
+        vkCmdDrawIndexed(ex->cb, 3 * (ends[r] - start), 1, 3 * start, d->base_vertex, (uint32_t)d->base_instance);
+        ex->recorded++;
+    }
+    free(tmp_end);
+    ex->fb_dirty |= D->fb_wr;   // the last batch wrote them after the barrier before it
+    ex->fr.fb_splits++;
+    return 1;
 }
 
 static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate,
@@ -3584,10 +3940,11 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     if (bim) bi_gt(ex, bgt), bi_gb(ex, bgb);
     if (bim == 2) bi_census(ex, info, sp, bgt, bgb, bsg, sm_hit);   // on counts nothing: it is what gets timed
     bind_resources(ex, info, bim ? bgt : NULL, bgb);
-    if (fbl & ex->fb_dirty) feedback_barrier(ex);
+    if (fbl & ex->fb_dirty) feedback_barrier(ex, fbl & ex->fb_dirty);
     else if (ex->in_pass && anv_vs_barrier() && gfx_shader_resources(vs, GFX_RES_SSBO, &(const GfxShaderRes *){0}))
-        { uint32_t keep = ex->fb_dirty; feedback_barrier(ex); ex->fb_dirty = keep; }   // keep fb_dirty: feedback_prepare learns from it
-    feedback_written(ex, sp);
+        { uint32_t keep = ex->fb_dirty; feedback_barrier(ex, 0x1ff); ex->fb_dirty = keep; }   // keep fb_dirty: feedback_prepare learns from it
+    D->fb_wr = feedback_written(ex, sp);
+    D->fb_self = fbl & D->fb_wr;
     bind_vertex_buffers(ex);
     if (vk_dump_armed) vk_dump_draw(ex, sp, p, info);
     if (vk_hdr_track) vk_hdr_draw(ex, info);
@@ -4478,9 +4835,11 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
         vk_mem_count(sp.cls, VK_MUSE_IB, bytes);
         VK_MEM_BOUND(sp);
     }
-    vkCmdDrawIndexed(ex->cb, (uint32_t)d->count, d->instances > 0 ? (uint32_t)d->instances : 1, 0, d->base_vertex,
-                     (uint32_t)d->base_instance);
-    ex->recorded++;
+    if (!feedback_split(ex, d, !sp.alloc)) {
+        vkCmdDrawIndexed(ex->cb, (uint32_t)d->count, d->instances > 0 ? (uint32_t)d->instances : 1, 0, d->base_vertex,
+                         (uint32_t)d->base_instance);
+        ex->recorded++;
+    }
     if (d->itype != NVN_INDEX_TYPE_UNSIGNED_BYTE) mvobj_draw(ex, d, sp.buffer, sp.offset);
 }
 
