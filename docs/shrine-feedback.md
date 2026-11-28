@@ -19,7 +19,8 @@ The default path now accepts any of:
 
 - A fragment-terminating shader.
 - Fixed-function blending into another written, non-feedback colour attachment.
-- Sampling a non-R32F colour attachment that the draw also writes.
+- Sampling and writing at least two non-R32F colour attachments. The captured shrine writes back to both colour
+  attachments 1 and 3. A single self-read colour also occurs in the field and does not qualify on its own.
 
 The copy itself remains limited to writable, sampled, single-level, single-layer, single-sample R32F 2D attachments
 with transfer-source usage. Other attachments keep the existing feedback handling. These conditions are a local
@@ -32,6 +33,8 @@ snapshot, keyed by frame counter, attachment-image signature, source image and s
 image while those values match; a changed frame, attachment set or snapshot generation requires another copy.
 Snapshot-induced rendering restarts do not invalidate it. Cached copies are reserved before allocating copies for
 other attachments of the draw, so a later lookup cannot overwrite an image already selected for sampling.
+The regular and incremental descriptor paths compare the source-to-snapshot-view mapping. Reusing a view, or updating
+its pixels in place, does not invalidate its descriptors. A draw without a snapshot uses the normal texture bindings.
 
 This is an approximation, rather than a version of the attachments' contents. A snapshot contains depth at the
 first eligible draw, not necessarily at the start of a Vulkan render pass. Writes or clears to unchanged attachments

@@ -208,7 +208,7 @@ Grep-level look on 2026-10-22, statuses updated 2026-10-26; "saw" is what the gr
     13.79 ms with snapshots off, 47.51 ms with all-material snapshots, and 13.73 ms with cutout snapshots.
     A second shrine on 0.3.7 still flickered: its material samples and writes colour targets 1/3 and linear depth 7
     without fragment termination or fixed-function blending. The default now also accepts draws that read and
-    write a non-R32F colour target, or blend into another written target. It reuses the first eligible draw's depth
+    write at least two non-R32F colour targets, or blend into another written target. It reuses the first eligible draw's depth
     snapshot while the frame, attachment-image signature and snapshot generation match, avoiding a copy per mesh.
     The player reported clean floors without the per-draw slowdown; this update has no matched GPU timing result.
     This reuse is an approximation: earlier writes or clears of unchanged attachments are not included, so
