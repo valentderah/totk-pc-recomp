@@ -291,6 +291,11 @@ int plat_dir_exists(const char *path);                    // 1 for a directory
 // path made absolute against the working directory (not resolved further); 0 when it does not fit cap.
 int plat_full_path(const char *path, char *out, size_t cap);
 void plat_file_mkdir_p(const char *path);                 // creates every missing directory of path, itself included
+// Creates dir if needed and exclusively locks its persistent .totk.lock file. Hold the returned OS handle until
+// process exit; it is not inherited by child processes. NULL on failure; *busy is 1 only for lock contention.
+// Never delete the file: its existence does not mean a process is running, and deleting it defeats exclusion.
+typedef struct PlatProfileLock PlatProfileLock;
+PlatProfileLock *plat_profile_lock(const char *dir, int *busy);
 // Whole file into a malloc'd buffer with a NUL after the last byte; NULL when missing, empty or over 1 GiB.
 uint8_t *plat_file_read(const char *path, uint64_t *size);
 int plat_file_write(const char *path, const void *data, size_t n);   // create or truncate; 1 when all n bytes landed

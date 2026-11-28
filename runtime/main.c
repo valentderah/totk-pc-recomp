@@ -721,6 +721,14 @@ int main(int argc, char **argv) {
         size_t early_n = g_log_early_n < sizeof g_log_early ? g_log_early_n : sizeof g_log_early;
         lw_start(g_log_early, early_n);
     }
+    if (!mode || !strcmp(mode, "--boot") || !strcmp(mode, "--plugin-init")) {
+        // Before playtime, account.uid or save recovery can write the profile. A second startup must not treat a
+        // running game's working copy as an interrupted save. Restart already waited for its previous process above.
+        int busy;
+        if (!plat_profile_lock(cfg.profile, &busy))
+            rt_fatal(busy ? "profile is already in use by another TotK process: %s"
+                          : "cannot lock profile directory: %s", cfg.profile);
+    }
     log_open(!mode);
     if (!mode) {
         cfg.boot = cfg.seconds > 0;   // --seconds starts the game like --boot, with its checkpoints

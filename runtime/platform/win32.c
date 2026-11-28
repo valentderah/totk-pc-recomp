@@ -536,6 +536,29 @@ void plat_file_mkdir_p(const char *path) {
     CreateDirectoryW(tmp, NULL);
 }
 
+PlatProfileLock *plat_profile_lock(const char *dir, int *busy) {
+    *busy = 0;
+    if (!dir || !*dir) return NULL;
+    char path[WPATH];
+    wchar_t w[WPATH];
+    int n = snprintf(path, sizeof path, "%s/.totk.lock", dir);
+    if (n < 0 || n >= (int)sizeof path || !widen(path, w, WPATH)) return NULL;
+    plat_file_mkdir_p(dir);
+    HANDLE h = CreateFileW(w, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    // Near INT64_MAX, beyond both EOF and the ranges of ordinary buffered reads of this empty file, so copying or
+    // hashing a live profile still works. No delete sharing:
+    // every contender must open this same file, including through a directory junction or an alternate path spelling.
+    OVERLAPPED at = {.Offset = 0xfffffffeu, .OffsetHigh = 0x7fffffffu};
+    if (!LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &at)) {
+        *busy = GetLastError() == ERROR_LOCK_VIOLATION;
+        CloseHandle(h);
+        return NULL;
+    }
+    return (PlatProfileLock *)h;
+}
+
 uint8_t *plat_file_read(const char *path, uint64_t *size) {
     wchar_t w[WPATH];
     if (!widen(path, w, WPATH)) return NULL;
