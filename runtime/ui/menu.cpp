@@ -1253,10 +1253,15 @@ static bool validation_layer_present(void) {
 
 // Every setting the menu shows back to its default (the environment's keys stay), written to totk.ini.
 static void reset_all(void) {
-    const char *keys[256];   // above the number of rows in cfg.c metas (128 on 2026-11-11)
+    const char *keys[256 + ACTION_COUNT];   // room for cfg.c metas and the Controls tab's bindings
+    char bindings[ACTION_COUNT][32];
     int n = 0;
     for (const CfgMeta *m; n < 256 && (m = cfg_meta_at(n)); n++) keys[n] = m->key;
     if (cfg_meta_at(n)) rt_log("menu: reset covers the first %d settings only; raise keys[] in reset_all", n);
+    for (int a = 0; a < ACTION_COUNT; a++) {
+        snprintf(bindings[a], sizeof bindings[a], "BIND_%s", input_action_name(a));
+        keys[n++] = bindings[a];
+    }
     int done = cfg_reset(keys, n);
     opt_save_soon();
     rt_log("menu: reset %d settings to their defaults", done);
