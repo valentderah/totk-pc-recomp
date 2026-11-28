@@ -1811,6 +1811,107 @@ class FsrTest(unittest.TestCase):
         self.assertFalse((self.dest / self.NAMES[0]).exists())
         self.assertEqual(self.warnings(), ['warn.fsr_kept'])
 
+    def test_publication_failure_removes_new_files_and_retry_installs(self):
+        original = steps.replace_file
+        for fail_at in (1, 2):
+            with self.subTest(fail_at=fail_at):
+                calls = []
+                def publish(src, dst):
+                    calls.append(dst)
+                    if len(calls) == fail_at:
+                        raise PermissionError('fixture publication failure')
+                    original(src, dst)
+                with mock.patch.object(steps, 'replace_file', side_effect=publish):
+                    self.assertEqual(steps.Fsr().run(self.ctx), {'failed': True})
+                self.assertFalse(list(self.dest.iterdir()))
+                self.assertFalse(list(self.ctx.temp.iterdir()))
+                self.assertEqual(steps.Fsr().run(self.ctx), {'installed': steps.FSR_VERSION})
+                for name in self.NAMES:
+                    (self.dest / name).unlink()
+
+    def test_completes_either_matching_half_without_replacing_it(self):
+        for existing in self.NAMES:
+            with self.subTest(existing=existing):
+                path = self.dest / existing
+                path.write_bytes((self.src / existing).read_bytes())
+                # No source download or publication is allowed for the existing member.
+                (self.src / existing).rename(self.src / (existing + '.saved'))
+                original = steps.replace_file
+                with mock.patch.object(steps, 'replace_file', wraps=original) as publish:
+                    self.assertFalse(steps.Fsr().current(self.ctx, {'kept': True}))
+                    self.assertEqual(steps.Fsr().run(self.ctx), {'installed': steps.FSR_VERSION})
+                    self.assertEqual([call.args[1].name for call in publish.call_args_list],
+                                     [name for name in self.NAMES if name != existing])
+                (self.src / (existing + '.saved')).rename(self.src / existing)
+                for name in self.NAMES:
+                    self.assertEqual((self.dest / name).read_bytes(), (self.src / name).read_bytes())
+                    (self.dest / name).unlink()
+
+    def test_failed_repair_keeps_existing_matching_member(self):
+        path = self.dest / self.NAMES[0]
+        content = (self.src / self.NAMES[0]).read_bytes()
+        path.write_bytes(content)
+        with mock.patch.object(steps, 'replace_file', side_effect=PermissionError('fixture')):
+            self.assertEqual(steps.Fsr().run(self.ctx), {'failed': True})
+        self.assertEqual(path.read_bytes(), content)
+        self.assertFalse((self.dest / self.NAMES[1]).exists())
+        self.assertEqual(steps.Fsr().run(self.ctx), {'installed': steps.FSR_VERSION})
+
+    def test_matching_complete_pair_needs_no_download(self):
+        for name in self.NAMES:
+            (self.dest / name).write_bytes((self.src / name).read_bytes())
+        with mock.patch.object(steps.urllib.request, 'urlopen', side_effect=AssertionError('download')):
+            self.assertEqual(steps.Fsr().run(self.ctx), {'installed': steps.FSR_VERSION})
+        self.assertTrue(steps.Fsr().current(self.ctx, {'kept': True}))
+
+    def test_custom_pair_is_kept_even_with_one_matching_member(self):
+        (self.dest / self.NAMES[0]).write_bytes((self.src / self.NAMES[0]).read_bytes())
+        (self.dest / self.NAMES[1]).write_bytes(b'custom')
+        self.assertTrue(steps.Fsr().current(self.ctx, {'kept': True}))
+        self.assertEqual(steps.Fsr().run(self.ctx), {'kept': True})
+        self.assertEqual((self.dest / self.NAMES[1]).read_bytes(), b'custom')
+
+    def test_cancel_cleans_new_publications_and_propagates(self):
+        original = steps.replace_file
+        def publish(src, dst):
+            if dst.name == self.NAMES[1]:
+                raise KeyboardInterrupt()
+            original(src, dst)
+        with mock.patch.object(steps, 'replace_file', side_effect=publish):
+            with self.assertRaises(KeyboardInterrupt):
+                steps.Fsr().run(self.ctx)
+        self.assertFalse(list(self.dest.iterdir()))
+        self.assertFalse(list(self.ctx.temp.iterdir()))
+
+    def test_cleanup_failure_leaves_a_repairable_matching_half(self):
+        original_publish, original_remove = steps.replace_file, steps.remove
+        def publish(src, dst):
+            if dst.name == self.NAMES[1]:
+                raise PermissionError('fixture publication failure')
+            original_publish(src, dst)
+        def remove(path):
+            if path == self.dest / self.NAMES[0]:
+                raise PermissionError('fixture cleanup failure')
+            original_remove(path)
+        with mock.patch.object(steps, 'replace_file', side_effect=publish), \
+             mock.patch.object(steps, 'remove', side_effect=remove):
+            self.assertEqual(steps.Fsr().run(self.ctx), {'failed': True})
+        self.assertFalse(steps.Fsr().current(self.ctx, {'kept': True}))
+        self.assertEqual(steps.Fsr().run(self.ctx), {'installed': steps.FSR_VERSION})
+
+    def test_parked_empty_or_matching_half_is_planned_again(self):
+        for matching_half in (False, True):
+            with self.subTest(matching_half=matching_half):
+                if matching_half:
+                    (self.dest / self.NAMES[0]).write_bytes((self.src / self.NAMES[0]).read_bytes())
+                state = {'format': 1, 'release': 'old', 'inputs': {}, 'steps': {
+                    'fsr': {'key': steps.Fsr().key(self.ctx), 'release': 'old', 'kept': True}}}
+                ctx = runner.Context(SimpleNamespace(release='new'), self.dest, self.ctx.temp,
+                                     self.ctx.reporter, self.ctx.options, state=state)
+                ctx.steps = [steps.Fsr()]
+                ctx.plan()
+                self.assertTrue(ctx.runs['fsr'])
+
     def test_downloads_on_an_nvidia_gpu(self):
         self.ctx.host = {'devices': [{'name': 'NVIDIA GeForce GTX 1050', 'api': [1, 3, 0], 'type': 2}]}
         rec = steps.Fsr().run(self.ctx)
