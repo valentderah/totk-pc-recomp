@@ -9,12 +9,37 @@ our play meets: at 1340bee the list alone has 134 rows of 1.4.3 shaders, its his
 """
 import subprocess
 import sys
+from pathlib import Path
 
 PATH = 'games/totk/assets/shader_list.tsv'
+SUPPLEMENT = Path(__file__).resolve().parent / 'data' / 'shader_list_supplement.tsv'
 
 
 def git(repo, *args):
     return subprocess.run(['git', '-C', str(repo), *args], check=True, capture_output=True, encoding='utf-8').stdout
+
+
+def has_supplement(version):
+    """The shipped variant and priority rows were recorded on game update 1.1.0."""
+    return version in ('v110', '1.1.0')
+
+
+def merge_supplement(text, extra=SUPPLEMENT):
+    """Append repo-owned supplement rows (new V variants and warm priorities) without duplicating lines."""
+    if not extra or not Path(extra).is_file():
+        return text
+    lines = text.splitlines()
+    seen = set(lines)
+    added = False
+    for line in Path(extra).read_text(encoding='utf-8').splitlines():
+        if not line or line.startswith('#') or line in seen:
+            continue
+        seen.add(line)
+        lines.append(line)
+        added = True
+    if not added and text.endswith('\n'):
+        return text
+    return '\n'.join(lines) + '\n'
 
 
 def history(repo, rev='origin/HEAD'):

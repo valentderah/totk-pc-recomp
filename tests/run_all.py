@@ -57,6 +57,7 @@ TESTS = {
     'extract_skip_base_romfs_test': ('.venv-py314', None, [], ''),
     'perf_summary_test':        ('.venv', None, [], ''),
     'pack_shader_cache_test':   ('.venv', None, [], ''),
+    'shader_list_prepare_test': ('.venv-py314', None, [], ''),
     'spin_waits_test':          ('.venv', None, [], ''),
     'prof_report_test':         ('.venv', None, [], ''),
     'worktree_test':            ('.venv', None, [], ''),

@@ -605,6 +605,35 @@ class CompileKeyTest(unittest.TestCase):
         self.assertNotEqual(self.key('0.4.2+abc'), self.key('0.4.3+def'))
 
 
+class PrepareKeyTest(unittest.TestCase):
+    def test_only_110_invalidates_pre_supplement_installs(self):
+        # Prepare.key before the supplement, for these inputs and the shipped prepare_shaders.py.
+        old_key = 'fbede9d2691f3c057a203e15d56eb0411722ce838d5a32439619bd9893435f6c'
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(steps, 'runtime_key', return_value='runtime'):
+            root = Path(tmp)
+            layout = SimpleNamespace(tools=root, shader_list=root / 'base.tsv', xlate=root / 'xlate')
+            layout.shader_list.write_bytes(b'base\n')
+            tool = root / 'prepare_shaders.py'
+            tool.write_bytes((ROOT / 'tools' / tool.name).read_bytes())
+            extra = root / 'data' / 'shader_list_supplement.tsv'
+            extra.parent.mkdir()
+            extra.write_bytes(b'V\texample\t{}\n')
+            ctx = SimpleNamespace(layout=layout, keys={'extract': 'extract'}, state={})
+            prepare = steps.Prepare()
+            self.assertEqual(prepare.key(ctx), old_key)  # no recorded version means 1.2.1
+            ctx.state['version'] = '1.1.0'
+            first = prepare.key(ctx)
+            self.assertNotEqual(first, old_key)
+            extra.write_bytes(b'V\tother\t{}\n')
+            self.assertNotEqual(prepare.key(ctx), first)
+            (root / 'shader_list.py').write_bytes(b'# new merge logic\n')
+            for version in ('1.2.1', '1.4.3'):
+                ctx.state['version'] = version
+                self.assertEqual(prepare.key(ctx), old_key)
+            tool.write_bytes(b'# another preparation tool\n')
+            self.assertNotEqual(prepare.key(ctx), old_key)
+
+
 class CompileLockedTest(unittest.TestCase):
     """Compile.run when the linker cannot write its totk.exe: another program holds the file (a game started from the
     temp build folder, an antivirus that quarantined it), which gets its own message instead of the plain failure."""

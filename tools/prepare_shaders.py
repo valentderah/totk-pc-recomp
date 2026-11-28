@@ -68,12 +68,14 @@ if not BUNDLED_LIST.is_file():
     BUNDLED_LIST = ROOT / 'data' / 'shader_list.tsv'          # release folder layout (tools/make_release.py)
 
 
-def read_list(path):
+def read_list(path, supplement=True, *, version=None):
     if path:
-        return Path(path).read_text(encoding='utf-8')
-    if BUNDLED_LIST.is_file():
-        return BUNDLED_LIST.read_text(encoding='utf-8')
-    return shader_list.history(ROOT / 'refs' / 'MacNativeGames')
+        text = Path(path).read_text(encoding='utf-8')
+    elif BUNDLED_LIST.is_file():
+        text = BUNDLED_LIST.read_text(encoding='utf-8')
+    else:
+        text = shader_list.history(ROOT / 'refs' / 'MacNativeGames')
+    return shader_list.merge_supplement(text) if supplement and shader_list.has_supplement(version) else text
 
 
 def pipeline_variants(key):
@@ -94,6 +96,8 @@ def parse_list(text):
         prio[key] = min(prio.get(key, 2), p)
 
     for line in text.splitlines():
+        if not line or line.startswith('#'):
+            continue
         f = line.split('\t')
         if f[0] == 'V' and len(f) == 3:
             variants.append((f[1], json.loads(f[2])))
@@ -116,7 +120,8 @@ def answers(deps, stage, control):
         tex[int(slot)] = TEX.index('2d' if t == '*' else t)   # "*": any kind, translated as the plain 2D it stands for
     for slot, o in deps.get('img', {}).items():
         img[int(slot)] = TEX.index(o['type'])
-        fmt[int(slot)] = FMT.index(o['fmt']) if o.get('fmt') in FMT else 0
+        name = o.get('fmt')  # absent for a storage image whose format was unspecified in play
+        fmt[int(slot)] = FMT.index(name) if name in FMT else 0
     for loc, t in deps.get('attr', {}).items():
         attr[int(loc)] = TYPES[t]
     for idx, t in deps.get('fout', {}).items():
@@ -124,7 +129,8 @@ def answers(deps, stage, control):
     local = [0, 0, 0]   # vk_exec_draw.c answers_for: zero for graphics stages (they are in the input id)
     if stage == 5:      # compute: the control section's local size, 0 read as 1
         local = [v or 1 for v in struct.unpack_from('<III', control, 0x748)]
-    packed = bytes(tex + img + fmt + attr + fout) + struct.pack('<HHHIB', *local, 0, 0)
+    flags = 0x80 if (stage == 0 and deps.get('mvprev')) else 0
+    packed = bytes(tex + img + fmt + attr + fout) + struct.pack('<HHHIB', *local, 0, flags)
     assert len(packed) == 147
     return packed
 
@@ -149,10 +155,12 @@ def main():
     ap.add_argument('--romfs', type=Path, help='RomFS directory (default build/extracted/<version>/romfs)')
     ap.add_argument('--exefs', type=Path, help='ExeFS directory (default build/extracted/<version>/exefs)')
     ap.add_argument('--list', help='a shader_list.tsv instead of tools/data/shader_list.tsv or refs/MacNativeGames')
+    ap.add_argument('--no-supplement', action='store_true', help='skip the 1.1.0 supplement to the selected shader list')
+    ap.add_argument('--mvprev', action='store_true', help='also prepare mvprev=1 variants for vertex shaders')
     ap.add_argument('--no-run', action='store_true', help='write the seed files only')
     a = ap.parse_args()
     t0 = time.monotonic()
-    variants, prio = parse_list(read_list(a.list))
+    variants, prio = parse_list(read_list(a.list, supplement=not a.no_supplement, version=a.version))
     extracted = ROOT / 'build' / 'extracted' / a.version
     listed = len(variants)
     shaders, _ = inventory(a.romfs or extracted / 'romfs', a.exefs or extracted / 'exefs', everything=False)
@@ -166,6 +174,10 @@ def main():
     t1 = time.monotonic()
     progs, recs, seen, skipped = {}, [], set(), {'not in this version': 0, 'stage': 0}
     variants += [(key, DEFAULT) for key in sorted(shaders)]
+    if a.mvprev:
+        variants += [(key, {**deps, 'mvprev': True})
+                     for key, deps in list(variants)
+                     if (s := shaders.get(key)) and STAGES.get(s['stage']) == 0 and not deps.get('mvprev')]
     for key, deps in variants:
         s = shaders.get(key)
         if not s:

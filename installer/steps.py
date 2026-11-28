@@ -86,7 +86,7 @@ def file_sha256(path, progress=None):
     return h.hexdigest()
 
 
-def fingerprint(*parts):
+def fingerprint(*parts, equivalent_files=None):
     """SHA-256 over strings and the contents of files and directory trees (a missing path counts as missing)."""
     h = hashlib.sha256()
     for p in parts:
@@ -96,7 +96,10 @@ def fingerprint(*parts):
                     if f.is_file() and '__pycache__' not in f.parts:
                         h.update(f.relative_to(p).as_posix().encode() + b'\0' + bytes.fromhex(file_sha256(f)))
             elif p.is_file():
-                h.update(p.name.encode() + b'\0' + bytes.fromhex(file_sha256(p)))
+                digest = file_sha256(p)
+                if equivalent_files:
+                    digest = equivalent_files.get((p.name, digest), digest)
+                h.update(p.name.encode() + b'\0' + bytes.fromhex(digest))
             else:
                 h.update(b'missing\0' + p.name.encode())
         else:
@@ -370,6 +373,7 @@ def migrate_state(ctx):
 
 
 def shader_list_text(layout):
+    """Upstream rows only. prepare_shaders.read_list adds the supplement for game update 1.1.0."""
     if layout.shader_list:
         return layout.shader_list.read_text(encoding='utf-8')
     try:
@@ -1488,6 +1492,13 @@ SKIPPED = re.compile(r'prepare-shaders: (\d+) variants skipped: the graphics dri
 
 ASPECT_SIZES = screens.ASPECT_SIZES
 
+# The installer recorded the whole script's digest before the 1.1.0 supplement. For the unchanged base list,
+# this exact revision produces the same seed. Any later edit to the script gets its own digest as usual.
+BASE_PREPARE_EQUIVALENT = {
+    ('prepare_shaders.py', '4ce8c5f8be39306173a5d07fe7a4469a56c14914bb08484965a914e66f6337b2'):
+        'd9f8a21808a53d1d88117cc293bd433f1c21f72bde8913f562223e97fc12d731',
+}
+
 
 class Prepare(Step):
     id = 'prepare'
@@ -1497,9 +1508,15 @@ class Prepare(Step):
         xlate_id = layout.xlate.with_suffix('.id')
         tools = [layout.tools / n for n in ('prepare_shaders.py', 'shader_census.py', 'make_romfs_patches.py',
                                             'pack_shader_cache.py', 'ultrawide_layout.py', 'button_icons.py')]
+        text = shader_list_text(layout)
+        equivalent = BASE_PREPARE_EQUIVALENT
+        if shader_list.has_supplement(game_version(ctx)):
+            text = shader_list.merge_supplement(text, layout.tools / 'data' / shader_list.SUPPLEMENT.name)
+            tools.append(layout.tools / 'shader_list.py')
+            equivalent = None
         # not the compile key: a rebuild for the mods' code cheats keeps the prepared shaders
         return fingerprint('prepare-2', ctx.keys['extract'], runtime_key(ctx), layout.xlate, xlate_id,
-                           shader_list_text(layout), *tools)
+                           text, *tools, equivalent_files=equivalent)
 
     def current(self, ctx, record):
         dest = ctx.dest
