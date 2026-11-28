@@ -10,6 +10,7 @@
 
 #include "fs.h"
 #include "host.h"
+#include "input.h"
 #include "kernel.h"
 #include "vk.h"
 #include "platform/platform.h"
@@ -236,6 +237,7 @@ static void svc_body(Cpu *c, uint32_t imm, uint64_t pc) {
         fs_save_flush();
         vk_pipeline_save();
         playtime_save();
+        input_record_save();
         prof_write();
         fflush(NULL);
         if (svc_test_exit_hook) return svc_test_exit_hook(0);

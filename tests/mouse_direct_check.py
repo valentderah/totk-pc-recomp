@@ -836,11 +836,12 @@ void input_direct_mouse_row(int32_t dx,float sensitivity,uint64_t now,InputMouse
 void input_direct_mouse_radial(int32_t dx,int32_t dy,float sensitivity,float cursor[2],int32_t out[2]) {
     (void)dx;(void)dy;(void)sensitivity;radial_calls++;cursor[0]=1;out[0]=456;out[1]=789;
 }
-static const char *script_path;
+static const char *script_path, *record_path;
 static uint64_t test_tick;
 static int64_t test_world=-1;
 const char *cfg_get(const char *key) {
     if (!strcmp(key,"TOTK_INPUT_SCRIPT")) return script_path;
+    if (!strcmp(key,"TOTK_INPUT_RECORD")) return record_path;
     if (!strcmp(key,"TOTK_INPUT")) return "none";
     return NULL;
 }
@@ -881,6 +882,24 @@ int main(int argc,char **argv) {
     mouse_camera(right,3); assert(row_calls==2 && right[0]==123 && !right[1]);
     live_mouse=0; mouse_camera(right,3);
     assert(!input_direct_mouse_selector_active() && !right[0] && !right[1]);
+    char record_name[2048]; snprintf(record_name,sizeof record_name,"%s.record",script_path);
+    record_path=record_name; rec_state=0;
+    test_tick=30; test_world=100000;
+    int32_t held_left[2]={32767,0},held_right[2]={0,-32767};
+    rec_apply(1,held_left,held_right);
+    test_tick=40; test_world=200000;
+    input_record_save();
+    assert(!rec && rec_state==-1);
+    input_record_save();   // a second shutdown path or atexit cannot duplicate segments
+    rec_apply(1,held_left,held_right); assert(!rec && rec_state==-1);
+    FILE *recorded=fopen(record_path,"r"); assert(recorded);
+    char recorded_text[1024]={0}; size_t recorded_n=fread(recorded_text,1,sizeof recorded_text-1,recorded);
+    fclose(recorded);
+    assert(strstr(recorded_text,"@100.0 A 100.0\n"));
+    assert(strstr(recorded_text,"@100.0 LSTICK 32767 0 100.0\n"));
+    assert(strstr(recorded_text,"@100.0 RSTICK 0 -32767 100.0\n"));
+    assert(recorded_n==strlen(recorded_text));
+    puts("input recording: held button and both sticks saved once at shutdown; late polls stay disabled");
     puts("direct mouse: one-shot script replay, host-menu blocking and raw-count recording passed");
     puts("direct mouse: separate wheel/list routing, selector ownership and release passed");
 }
